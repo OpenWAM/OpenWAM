@@ -88,7 +88,7 @@ def run_simulator_rollout_command(args: argparse.Namespace) -> dict[str, Any]:
                 compatibility=(
                     CheckpointCompatibilityPolicy.ALLOW_PARTIAL
                     if args.allow_partial_checkpoint
-                    else CheckpointCompatibilityPolicy.STRICT
+                    else CheckpointCompatibilityPolicy.ALLOW_CHECKPOINT_SUPERSET
                 ),
             )
             if checkpoint_report.missing_keys:
@@ -133,7 +133,7 @@ def run_simulator_rollout_command(args: argparse.Namespace) -> dict[str, Any]:
             "checkpoint_compatibility": (
                 CheckpointCompatibilityPolicy.ALLOW_PARTIAL.value
                 if args.allow_partial_checkpoint
-                else CheckpointCompatibilityPolicy.STRICT.value
+                else CheckpointCompatibilityPolicy.ALLOW_CHECKPOINT_SUPERSET.value
             ),
             "checkpoint_missing_keys": (
                 []

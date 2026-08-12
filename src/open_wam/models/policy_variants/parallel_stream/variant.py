@@ -31,10 +31,6 @@ from ..contracts import (
     RolloutCursor,
 )
 from .action_adapter import LingbotActionAdapter, build_action_adapter_spec
-from .anchored_action_rollout import (
-    run_parallel_current_frame_action_chunk_inference_rollout,
-    run_parallel_fastwam_first_frame_inference_rollout,
-)
 from .cache_lifecycle import run_parallel_exact_cache_warmup
 from .conditioning import ParallelStreamConditioning
 from .decoder_artifacts import (
@@ -45,7 +41,6 @@ from .decoder_artifacts import (
 from .forward_execution import (
     run_parallel_action_conditioned_train,
     run_parallel_exact_train,
-    run_parallel_first_frame_conditioned_train,
 )
 from .packed_rollout import run_parallel_packed_inference_rollout
 from .reference_profile import (
@@ -61,12 +56,6 @@ from .training_exact_artifacts import (
 from .training_prefix_artifacts import (
     prepare_parallel_prefix_condition_exact_train_artifacts,
 )
-from .training_single_frame_artifacts import (
-    prepare_parallel_current_frame_action_chunk_train_artifacts,
-    prepare_parallel_fastwam_first_frame_train_artifacts,
-)
-
-
 def _resolve_generalist_singleton_chunk_frame(
     metadata: dict,
     *,
@@ -109,8 +98,6 @@ class ParallelStreamPolicyVariant(PolicyVariant):
         if config.runtime_mode not in {
             ParallelRuntimeMode.LINGBOT_EXACT,
             ParallelRuntimeMode.LINGBOT_EXACT_ACTION_CONDITIONED,
-            ParallelRuntimeMode.CURRENT_FRAME_ACTION_CHUNK,
-            ParallelRuntimeMode.FASTWAM_FIRST_FRAME,
         }:
             raise ValueError(
                 "Parallel-stream now only supports the exact-runtime semantics. "
@@ -219,31 +206,7 @@ class ParallelStreamPolicyVariant(PolicyVariant):
                 "An external single-frame condition prefix only supports LingBot exact "
                 "dual-stream parallel-stream runtime modes."
             )
-        if self.config.runtime_mode == ParallelRuntimeMode.CURRENT_FRAME_ACTION_CHUNK:
-            train_artifacts = prepare_parallel_current_frame_action_chunk_train_artifacts(
-                backbone_config=self.backbone_config,
-                policy_config=self.config,
-                training_config=self.training_config,
-                video_latents=visual_outputs.frontend.video_latents,
-                actions=model_actions,
-                action_mask=model_action_mask,
-                text_emb=visual_outputs.frontend.conditioning.text_context,
-                condition_latents=condition_latents,
-                frame_shift=0,
-            )
-        elif self.config.runtime_mode == ParallelRuntimeMode.FASTWAM_FIRST_FRAME:
-            train_artifacts = prepare_parallel_fastwam_first_frame_train_artifacts(
-                backbone_config=self.backbone_config,
-                policy_config=self.config,
-                training_config=self.training_config,
-                video_latents=visual_outputs.frontend.video_latents,
-                actions=model_actions,
-                action_mask=model_action_mask,
-                text_emb=visual_outputs.frontend.conditioning.text_context,
-                condition_latents=condition_latents,
-                frame_shift=0,
-            )
-        elif external_condition_prefix:
+        if external_condition_prefix:
             if not isinstance(condition_latents, torch.Tensor):
                 raise ValueError(
                     "`context_condition_latent_source=single_frame_condition_latent` with no "
@@ -469,12 +432,7 @@ class ParallelStreamPolicyVariant(PolicyVariant):
         self.conditioning.append_train_proprio_text_context(reference_transformer, train_artifacts)
         runtime_input_dict = dict(train_artifacts.input_dict)
         runtime_input_dict.pop("proprio_state", None)
-        if self.config.runtime_mode == ParallelRuntimeMode.FASTWAM_FIRST_FRAME:
-            latent_pred, action_pred = run_parallel_first_frame_conditioned_train(
-                reference_transformer,
-                runtime_input_dict,
-            )
-        elif self.config.runtime_mode == ParallelRuntimeMode.LINGBOT_EXACT_ACTION_CONDITIONED:
+        if self.config.runtime_mode == ParallelRuntimeMode.LINGBOT_EXACT_ACTION_CONDITIONED:
             latent_pred, action_pred = run_parallel_action_conditioned_train(
                 reference_transformer,
                 runtime_input_dict,
@@ -585,11 +543,6 @@ class ParallelStreamPolicyVariant(PolicyVariant):
         action_conditioning_mode: object = "vanilla_joint_rollout",
         proprio_state: torch.Tensor | None = None,
     ) -> PolicyInferState:
-        if self.config.runtime_mode in {
-            ParallelRuntimeMode.CURRENT_FRAME_ACTION_CHUNK,
-            ParallelRuntimeMode.FASTWAM_FIRST_FRAME,
-        }:
-            return infer_state
         # Warmup mirrors the original LingBot server lifecycle: observed video
         # and aligned action history are committed to the exact cache before any
         # new chunk is denoised.
@@ -699,51 +652,7 @@ class ParallelStreamPolicyVariant(PolicyVariant):
             label="parallel-stream inference",
             infer_cache=infer_state.cache,
         )
-        if self.config.runtime_mode == ParallelRuntimeMode.CURRENT_FRAME_ACTION_CHUNK:
-            if visual_outputs is None:
-                raise ValueError("Current-frame action-chunk inference requires visual outputs for every chunk.")
-            infer_artifacts = run_parallel_current_frame_action_chunk_inference_rollout(
-                transformer=reference_transformer,
-                backbone_config=self.backbone_config,
-                policy_config=self.config,
-                training_config=self.training_config,
-                inference_config=self.inference_config,
-                action_dim=self.action_dim,
-                condition_latents=condition_latents,
-                text_emb=text_emb,
-                negative_text_emb=negative_text_emb,
-                action_channel_mask=self._reference_action_channel_mask(
-                    device=condition_latents.device,
-                    dtype=output_dtype,
-                ),
-                infer_cache=infer_state.cache,
-                advance_frame_start=True,
-                proprio_state=resolved_proprio_state,
-                hidden_proprio_state=resolved_hidden_proprio_state,
-            )
-        elif self.config.runtime_mode == ParallelRuntimeMode.FASTWAM_FIRST_FRAME:
-            if visual_outputs is None:
-                raise ValueError("FastWAM first-frame inference requires visual outputs for every chunk.")
-            infer_artifacts = run_parallel_fastwam_first_frame_inference_rollout(
-                transformer=reference_transformer,
-                backbone_config=self.backbone_config,
-                policy_config=self.config,
-                training_config=self.training_config,
-                inference_config=self.inference_config,
-                action_dim=self.action_dim,
-                condition_latents=condition_latents,
-                text_emb=text_emb,
-                negative_text_emb=negative_text_emb,
-                action_channel_mask=self._reference_action_channel_mask(
-                    device=condition_latents.device,
-                    dtype=output_dtype,
-                ),
-                infer_cache=infer_state.cache,
-                advance_frame_start=True,
-                proprio_state=resolved_proprio_state,
-                hidden_proprio_state=resolved_hidden_proprio_state,
-            )
-        elif resolve_parallel_current_block_coupling(self.config) in {
+        if resolve_parallel_current_block_coupling(self.config) in {
             CurrentBlockCoupling.JOINT,
             CurrentBlockCoupling.VIDEO_NOISY_TO_ACTION,
             CurrentBlockCoupling.ACTION_NOISY_TO_VIDEO,
@@ -848,14 +757,7 @@ class ParallelStreamPolicyVariant(PolicyVariant):
         warmed_state = infer_state
         condition_outputs: VisualStageOutputs | None = visual_outputs
         action_conditioning_mode = context.extra.get("action_conditioning_mode", "vanilla_joint_rollout")
-        if (
-            context.previous_action is not None
-            and self.config.runtime_mode
-            not in {
-                ParallelRuntimeMode.CURRENT_FRAME_ACTION_CHUNK,
-                ParallelRuntimeMode.FASTWAM_FIRST_FRAME,
-            }
-        ):
+        if context.previous_action is not None:
             batch_size = visual_outputs.frontend.video_latents.shape[0]
             device = visual_outputs.frontend.video_latents.device
             previous_actions = expand_previous_action(

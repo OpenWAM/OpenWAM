@@ -17,7 +17,7 @@ from open_wam.configs import (
     GeneralistDenoisingMode,
     InferenceConfig,
     JointTimestepCoupling,
-    MLPActionDecoderConfig,
+    DualExpertActionDecoderConfig,
     ProprioContextMode,
     RobotWinDataConfig,
     TrainingConfig,
@@ -1056,7 +1056,7 @@ def test_dual_expert_variant_train_forward_from_latents_smoke(
             teacher_forcing_video_noise_prob=teacher_forcing_video_noise_prob,
             num_action_layers=2,
         ),
-        action_decoder=MLPActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
+        action_decoder=DualExpertActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
         training=TrainingConfig(chunk_size=2, window_size=8, action_loss_weight=1.0, latent_loss_weight=0.0),
         inference=InferenceConfig(frame_chunk_size=2),
     )
@@ -1101,7 +1101,7 @@ def test_dual_expert_prefers_condition_latents_by_default() -> None:
             teacher_forcing_video_noise_prob=0.0,
             num_action_layers=2,
         ),
-        action_decoder=MLPActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
+        action_decoder=DualExpertActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
         training=TrainingConfig(chunk_size=2, window_size=8, action_loss_weight=1.0, latent_loss_weight=0.0),
         inference=InferenceConfig(frame_chunk_size=2),
     )
@@ -1149,7 +1149,7 @@ def test_dual_expert_accepts_time_first_train_condition_latents() -> None:
             teacher_forcing_video_noise_prob=0.0,
             num_action_layers=2,
         ),
-        action_decoder=MLPActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
+        action_decoder=DualExpertActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
         training=TrainingConfig(chunk_size=2, window_size=8, action_loss_weight=1.0, latent_loss_weight=0.0),
         inference=InferenceConfig(frame_chunk_size=2),
     )
@@ -1198,7 +1198,7 @@ def test_dual_expert_condition_latents_can_be_disabled() -> None:
             num_action_layers=2,
             use_condition_latents=False,
         ),
-        action_decoder=MLPActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
+        action_decoder=DualExpertActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
         training=TrainingConfig(chunk_size=2, window_size=8, action_loss_weight=1.0, latent_loss_weight=0.0),
         inference=InferenceConfig(frame_chunk_size=2),
     )
@@ -1246,7 +1246,7 @@ def test_dual_expert_deprecated_text_token_proprio_context_uses_shared_batch_con
             num_action_layers=1,
             proprio_context_mode=ProprioContextMode.TEXT_CONTEXT_TOKEN,  # deprecated compatibility
         ),
-        action_decoder=MLPActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
+        action_decoder=DualExpertActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
         training=TrainingConfig(chunk_size=2, window_size=8, action_loss_weight=1.0, latent_loss_weight=0.0),
         inference=InferenceConfig(frame_chunk_size=2),
     )
@@ -1320,7 +1320,7 @@ def test_dual_expert_per_chunk_additive_does_not_build_text_proprio_mask() -> No
             num_action_layers=1,
             proprio_context_mode=ProprioContextMode.PER_CHUNK_ADDITIVE,
         ),
-        action_decoder=MLPActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
+        action_decoder=DualExpertActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
         training=TrainingConfig(chunk_size=2, window_size=8, action_loss_weight=1.0, latent_loss_weight=1.0),
         inference=InferenceConfig(frame_chunk_size=2),
     )
@@ -1389,7 +1389,7 @@ def test_dual_expert_deprecated_text_token_proprio_mask_exposes_matching_chunk_t
             num_action_layers=1,
             proprio_context_mode=ProprioContextMode.TEXT_CONTEXT_TOKEN,  # deprecated compatibility
         ),
-        action_decoder=MLPActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=6),
+        action_decoder=DualExpertActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=6),
         training=TrainingConfig(chunk_size=2, window_size=8, action_loss_weight=1.0, latent_loss_weight=0.0),
         inference=InferenceConfig(frame_chunk_size=2),
     )
@@ -1464,7 +1464,7 @@ def test_dual_expert_chunk_origin_aligns_one_frame_context_with_first_target_chu
             num_action_layers=1,
             proprio_context_mode=ProprioContextMode.TEXT_CONTEXT_TOKEN,  # deprecated compatibility
         ),
-        action_decoder=MLPActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=5),
+        action_decoder=DualExpertActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=5),
         training=TrainingConfig(chunk_size=4, window_size=8, action_loss_weight=1.0, latent_loss_weight=0.0),
         inference=InferenceConfig(frame_chunk_size=4),
     )
@@ -1568,7 +1568,7 @@ def test_dual_expert_prepare_infer_state_appends_deprecated_proprio_context_toke
             num_action_layers=1,
             proprio_context_mode=ProprioContextMode.TEXT_CONTEXT_TOKEN,  # deprecated compatibility
         ),
-        action_decoder=MLPActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
+        action_decoder=DualExpertActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
         training=TrainingConfig(chunk_size=2, window_size=8, action_loss_weight=1.0, latent_loss_weight=0.0),
         inference=InferenceConfig(frame_chunk_size=2),
     )
@@ -1639,7 +1639,7 @@ def test_dual_expert_variant_infer_from_latents_smoke(
             teacher_forcing_video_noise_prob=0.0,
             num_action_layers=2,
         ),
-        action_decoder=MLPActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
+        action_decoder=DualExpertActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
         training=TrainingConfig(chunk_size=2, window_size=8, action_loss_weight=1.0, latent_loss_weight=0.0),
         inference=InferenceConfig(frame_chunk_size=2, action_num_inference_steps=3),
     )
@@ -1690,7 +1690,7 @@ def test_dual_expert_legacy_joint_infer_uses_actual_rollout_video_length() -> No
             video_prefix_frames=1,
             num_action_layers=1,
         ),
-        action_decoder=MLPActionDecoderConfig(
+        action_decoder=DualExpertActionDecoderConfig(
             hidden_size=32,
             action_dim=4,
             action_horizon=4,
@@ -1749,7 +1749,7 @@ def test_dual_expert_variant_train_from_latents_supports_joint_action_and_video_
             video_prefix_frames=1,
             num_action_layers=2,
         ),
-        action_decoder=MLPActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
+        action_decoder=DualExpertActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
         training=TrainingConfig(
             chunk_size=2,
             window_size=8,
@@ -1815,7 +1815,7 @@ def test_dual_expert_joint_denoise_train_supports_same_step_couplings(
             video_prefix_frames=1,
             num_action_layers=1,
         ),
-        action_decoder=MLPActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
+        action_decoder=DualExpertActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
         training=TrainingConfig(
             chunk_size=2,
             window_size=8,
@@ -1875,7 +1875,7 @@ def test_dual_expert_joint_denoise_infer_supports_same_step_couplings(
             video_prefix_frames=1,
             num_action_layers=1,
         ),
-        action_decoder=MLPActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
+        action_decoder=DualExpertActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
         training=TrainingConfig(chunk_size=2, window_size=8, action_loss_weight=1.0, latent_loss_weight=1.0),
         inference=InferenceConfig(frame_chunk_size=2, video_num_inference_steps=2, action_num_inference_steps=2),
     )
@@ -1937,7 +1937,7 @@ def test_dual_expert_legacy_split_cache_infer_threads_per_chunk_action_proprio(
             num_action_layers=1,
             proprio_context_mode=ProprioContextMode.PER_CHUNK_ADDITIVE,
         ),
-        action_decoder=MLPActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
+        action_decoder=DualExpertActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
         training=TrainingConfig(chunk_size=2, window_size=8, action_loss_weight=1.0, latent_loss_weight=1.0),
         inference=InferenceConfig(frame_chunk_size=2, video_num_inference_steps=2, action_num_inference_steps=2),
     )
@@ -1995,7 +1995,7 @@ def test_dual_expert_generalist_packed_infer_couples_action_to_video_sigma_sched
             video_prefix_frames=1,
             num_action_layers=1,
         ),
-        action_decoder=MLPActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
+        action_decoder=DualExpertActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
         training=TrainingConfig(
             chunk_size=2,
             window_size=8,
@@ -2101,7 +2101,7 @@ def test_dual_expert_packed_infer_modes_keep_two_chunk_history(
             video_prefix_frames=1,
             num_action_layers=1,
         ),
-        action_decoder=MLPActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
+        action_decoder=DualExpertActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
         training=TrainingConfig(chunk_size=2, window_size=8, action_loss_weight=1.0, latent_loss_weight=1.0),
         inference=InferenceConfig(frame_chunk_size=2, video_num_inference_steps=2, action_num_inference_steps=2),
     )
@@ -2165,7 +2165,7 @@ def test_dual_expert_packed_infer_chunk0_uses_one_frame_startup_bootstrap() -> N
             video_prefix_frames=1,
             num_action_layers=1,
         ),
-        action_decoder=MLPActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
+        action_decoder=DualExpertActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
         training=TrainingConfig(chunk_size=2, window_size=8, action_loss_weight=1.0, latent_loss_weight=1.0),
         inference=InferenceConfig(frame_chunk_size=2, video_num_inference_steps=2, action_num_inference_steps=2),
     )
@@ -2236,7 +2236,7 @@ def test_dual_expert_action_then_video_action_only_rollout_skips_predicted_video
             video_prefix_frames=1,
             num_action_layers=1,
         ),
-        action_decoder=MLPActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
+        action_decoder=DualExpertActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
         training=TrainingConfig(chunk_size=2, window_size=8, action_loss_weight=1.0, latent_loss_weight=1.0),
         inference=InferenceConfig(frame_chunk_size=2, video_num_inference_steps=2, action_num_inference_steps=2),
     )
@@ -2295,7 +2295,7 @@ def test_dual_expert_action_then_video_action_only_rollout_preserves_hidden_prop
             num_action_layers=1,
             proprio_context_mode=ProprioContextMode.PER_CHUNK_ADDITIVE,
         ),
-        action_decoder=MLPActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
+        action_decoder=DualExpertActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
         training=TrainingConfig(chunk_size=2, window_size=8, action_loss_weight=1.0, latent_loss_weight=1.0),
         inference=InferenceConfig(frame_chunk_size=2, video_num_inference_steps=2, action_num_inference_steps=2),
     )
@@ -2385,7 +2385,7 @@ def test_dual_expert_action_only_rollout_rejects_video_then_action() -> None:
             video_prefix_frames=1,
             num_action_layers=1,
         ),
-        action_decoder=MLPActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
+        action_decoder=DualExpertActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
         training=TrainingConfig(chunk_size=2, window_size=8, action_loss_weight=1.0, latent_loss_weight=1.0),
         inference=InferenceConfig(frame_chunk_size=2, video_num_inference_steps=2, action_num_inference_steps=2),
     )
@@ -2425,7 +2425,7 @@ def test_dual_expert_decoupled_action_only_rollout_skips_split_cache_video_denoi
             video_prefix_frames=1,
             num_action_layers=1,
         ),
-        action_decoder=MLPActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
+        action_decoder=DualExpertActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
         training=TrainingConfig(chunk_size=2, window_size=8, action_loss_weight=1.0, latent_loss_weight=1.0),
         inference=InferenceConfig(frame_chunk_size=2, video_num_inference_steps=2, action_num_inference_steps=2),
     )
@@ -2477,7 +2477,7 @@ def test_dual_expert_action_then_video_rollout_frame_chunk_override_shortens_int
             video_prefix_frames=1,
             num_action_layers=1,
         ),
-        action_decoder=MLPActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
+        action_decoder=DualExpertActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
         training=TrainingConfig(chunk_size=2, window_size=8, action_loss_weight=1.0, latent_loss_weight=1.0),
         inference=InferenceConfig(frame_chunk_size=2, video_num_inference_steps=2, action_num_inference_steps=2),
     )
@@ -2530,7 +2530,7 @@ def test_dual_expert_decoupled_rollout_frame_chunk_override_shortens_split_cache
             video_prefix_frames=1,
             num_action_layers=1,
         ),
-        action_decoder=MLPActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
+        action_decoder=DualExpertActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
         training=TrainingConfig(chunk_size=2, window_size=8, action_loss_weight=1.0, latent_loss_weight=1.0),
         inference=InferenceConfig(frame_chunk_size=2, video_num_inference_steps=2, action_num_inference_steps=2),
     )
@@ -2595,7 +2595,7 @@ def test_dual_expert_packed_infer_uses_rollout_history_contract_for_cached_conte
             video_prefix_frames=1,
             num_action_layers=1,
         ),
-        action_decoder=MLPActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
+        action_decoder=DualExpertActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
         training=TrainingConfig(chunk_size=2, window_size=8, action_loss_weight=1.0, latent_loss_weight=1.0),
         inference=InferenceConfig(frame_chunk_size=2, video_num_inference_steps=2, action_num_inference_steps=2),
     )
@@ -2657,7 +2657,7 @@ def test_dual_expert_legacy_prefix_prepends_current_state_to_hidden_proprio() ->
             proprio_context_mode=ProprioContextMode.PER_CHUNK_ADDITIVE,
             sequence_contract=VideoActionSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO,
         ),
-        action_decoder=MLPActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
+        action_decoder=DualExpertActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
         training=TrainingConfig(chunk_size=4, window_size=8, action_loss_weight=1.0, latent_loss_weight=1.0),
         inference=InferenceConfig(frame_chunk_size=4),
     )
@@ -2741,7 +2741,7 @@ def test_dual_expert_legacy_prefix_requires_frame_level_hidden_proprio() -> None
             proprio_context_mode=ProprioContextMode.PER_CHUNK_ADDITIVE,
             sequence_contract=VideoActionSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO,
         ),
-        action_decoder=MLPActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
+        action_decoder=DualExpertActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
         training=TrainingConfig(chunk_size=4, window_size=8, action_loss_weight=1.0, latent_loss_weight=1.0),
         inference=InferenceConfig(frame_chunk_size=4),
     )
@@ -2786,7 +2786,7 @@ def test_dual_expert_packed_strict_old_infer_skips_video_hidden_proprio(
             proprio_context_mode=ProprioContextMode.PER_CHUNK_ADDITIVE,
             sequence_contract=VideoActionSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO,
         ),
-        action_decoder=MLPActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
+        action_decoder=DualExpertActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
         training=TrainingConfig(chunk_size=2, window_size=8, action_loss_weight=1.0, latent_loss_weight=1.0),
         inference=InferenceConfig(frame_chunk_size=2, video_num_inference_steps=2, action_num_inference_steps=2),
     )
@@ -2856,7 +2856,7 @@ def test_dual_expert_packed_infer_tracks_per_chunk_hidden_proprio_history() -> N
             num_action_layers=1,
             proprio_context_mode=ProprioContextMode.PER_CHUNK_ADDITIVE,
         ),
-        action_decoder=MLPActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
+        action_decoder=DualExpertActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
         training=TrainingConfig(chunk_size=2, window_size=8, action_loss_weight=1.0, latent_loss_weight=1.0),
         inference=InferenceConfig(frame_chunk_size=2, video_num_inference_steps=2, action_num_inference_steps=2),
     )
@@ -2909,7 +2909,7 @@ def test_dual_expert_variant_builds_with_interpolated_action_expert_ffn() -> Non
             action_ffn_dim=32,
             num_action_layers=2,
         ),
-        action_decoder=MLPActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
+        action_decoder=DualExpertActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
         training=TrainingConfig(enabled_objectives=("action",)),
         inference=InferenceConfig(frame_chunk_size=2),
     )

@@ -214,7 +214,6 @@ class TrainingRuntime:
         )
 
     def run(self) -> TrainState:
-        train_video_condition_source = getattr(self.config.policy_variant, "train_video_condition_source", None)
         self.log_sink.log_event(
             name="run_start",
             payload={
@@ -231,7 +230,6 @@ class TrainingRuntime:
                 "enabled_objectives": self.trainability_report.enabled_objectives,
                 "trainable_components": self.trainability_report.trainable_components,
                 "frozen_components": self.trainability_report.frozen_components,
-                "train_video_condition_source": train_video_condition_source,
                 "validation_interval": self.config.trainer.validation_interval,
                 "auxiliary_validation_tasks": [
                     {

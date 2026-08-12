@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import zipfile
 from pathlib import Path
 
 import numpy as np
@@ -60,3 +61,29 @@ def test_numpy_compatible_loader_admits_only_restricted_numpy_payloads(
 
     assert isinstance(actual, list)
     assert np.array_equal(actual[0], expected[0])
+
+
+def test_numpy_compatible_loader_accepts_numpy_1_module_path(
+    tmp_path: Path,
+) -> None:
+    current_path = tmp_path / "numpy_2.pt"
+    legacy_path = tmp_path / "numpy_1.pt"
+    expected = np.arange(6, dtype=np.float64).reshape(2, 3)
+    torch.save(expected, current_path)
+
+    with zipfile.ZipFile(current_path, "r") as source, zipfile.ZipFile(
+        legacy_path,
+        "w",
+    ) as destination:
+        for member in source.infolist():
+            payload = source.read(member.filename)
+            if member.filename.endswith("data.pkl"):
+                payload = payload.replace(
+                    b"numpy._core.multiarray\n",
+                    b"numpy.core.multiarray\n",
+                )
+            destination.writestr(member, payload)
+
+    actual = load_numpy_compatible_torch_artifact(legacy_path)
+
+    assert np.array_equal(actual, expected)

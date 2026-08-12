@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 from pathlib import Path
@@ -81,6 +82,7 @@ from tests.characterization.run_dual_expert_refactor_characterization import (
     _comparison_projection,
     _initialize_golden_files,
     _numeric_tolerance_resolver,
+    _parse_args,
     _preflight_checkpoint_provenance,
     _selected_asset_ids,
     _stage_directory,
@@ -131,6 +133,32 @@ def test_default_exact_checkpoint_selection_uses_available_strict_assets() -> No
         method.asset_id for method in EXACT_CHECKPOINT_METHODS
     )
     assert _selected_asset_ids(["gjd_vanilla"]) == ("gjd_vanilla",)
+
+
+@pytest.mark.parametrize("asset_id", ("dual_expert_joint", "mot_joint"))
+def test_training_cli_smoke_resolves_public_and_frozen_asset_ids(
+    asset_id: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "characterization",
+            "training-cli-smoke",
+            "--assets",
+            str(tmp_path / "assets.yaml"),
+            "--output-root",
+            str(tmp_path / "output"),
+            "--asset-id",
+            asset_id,
+        ],
+    )
+
+    args = _parse_args()
+
+    assert resolve_characterization_asset_id(args.asset_id) == "mot_joint"
 
 
 def test_golden_initialization_never_replaces_an_existing_report(
@@ -1917,7 +1945,7 @@ def test_comparison_projection_normalizes_only_schema_v1_metadata() -> None:
     assert _comparison_projection(legacy) != _comparison_projection(canonical)
 
 
-def test_comparison_projection_ignores_path_sized_resume_metadata() -> None:
+def test_comparison_projection_ignores_serialized_checkpoint_sizes() -> None:
     first = {
         "checkpoint_artifacts": {
             "files": {
@@ -1938,7 +1966,49 @@ def test_comparison_projection_ignores_path_sized_resume_metadata() -> None:
     assert _comparison_projection(first) == _comparison_projection(second)
 
     second["checkpoint_artifacts"]["files"]["model_state.pt"]["size_bytes"] = 201
+    assert _comparison_projection(first) == _comparison_projection(second)
+
+    second["checkpoint_artifacts"]["files"]["model_state.pt"]["nonempty"] = False
     assert _comparison_projection(first) != _comparison_projection(second)
+
+
+def test_comparison_projection_canonicalizes_only_retired_decoder_state() -> None:
+    retained = {
+        "restored_state_contract": {
+            "model": {
+                "per_rank": [
+                    {
+                        "rank": 0,
+                        "tensor_count": 1688,
+                        "total_bytes": 7_674_197_344,
+                        "components": {
+                            "other_trainable": {
+                                "tensor_count": 6,
+                                "total_bytes": 629_904,
+                            },
+                            "video_backbone": {
+                                "tensor_count": 850,
+                                "total_bytes": 5_109_384_392,
+                            },
+                        },
+                    }
+                ]
+            }
+        }
+    }
+    legacy = json.loads(json.dumps(retained))
+    legacy_rank = legacy["restored_state_contract"]["model"]["per_rank"][0]
+    legacy_rank["tensor_count"] += 2
+    legacy_rank["total_bytes"] += 9_440_256
+    legacy_rank["components"]["other_trainable"] = {
+        "tensor_count": 8,
+        "total_bytes": 10_070_160,
+    }
+
+    assert _comparison_projection(legacy) == _comparison_projection(retained)
+
+    legacy_rank["components"]["other_trainable"]["total_bytes"] += 4
+    assert _comparison_projection(legacy) != _comparison_projection(retained)
 
 
 def _write_dotted_contract(path: Path, contract: dict[str, object]) -> None:

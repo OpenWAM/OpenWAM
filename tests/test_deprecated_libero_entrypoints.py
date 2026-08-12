@@ -34,7 +34,6 @@ def _run_entrypoint(relative_path: str, *, allow_deprecated: bool = False) -> su
     (
         ("scripts/run_libero_exact_realtime_sandbox.py", "scripts/run_libero_realtime_sandbox.py"),
         ("scripts/run_libero_exact_visualization.py", "scripts/run_libero_realtime_sandbox.py"),
-        ("scripts/run_libero_realtime_ablation.py", "scripts/run_libero_sampled_eval.py"),
     ),
 )
 @pytest.mark.parametrize("allow_deprecated", (False, True))

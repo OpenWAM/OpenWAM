@@ -43,15 +43,19 @@ backbone:
   ffn_dim: 1024
 
 policy_variant:
-  name: post_latent
+  name: dual_expert
   hidden_size: 256
   attach_site: post_visual_core
-  pooling_mode: per_frame_mean
-  use_state_projection: true
-  local_video_window_frames: 2
+  preset: fastwam
+  runtime_mode: video_prefill_action_denoise
+  action_expert_init_mode: random
+  num_action_layers: 1
+  action_hidden_size: 256
+  use_text_conditioning: false
+  use_state_conditioning: false
 
 action_decoder:
-  name: mlp_decoder
+  name: dual_expert_decoder
   hidden_size: 256
   action_dim: 30
   action_horizon: 3
@@ -62,6 +66,8 @@ training:
   video_sigma_shift: 5.0
   action_sigma_shift: 1.0
   use_teacher_forcing: false
+  enabled_objectives: [action]
+  trainable_components: [policy_variant.action_expert]
 
 inference:
   video_num_inference_steps: 4

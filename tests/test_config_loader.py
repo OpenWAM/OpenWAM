@@ -7,7 +7,6 @@ import pytest
 import yaml
 
 from open_wam.configs import (
-    ActionChunkAnchorMode,
     ActionDecoderName,
     ActionNormalizationMode,
     ActionTargetRepresentation,
@@ -42,29 +41,19 @@ from open_wam.configs import (
     ParallelRuntimeMode,
     ParallelStreamPolicyConfig,
     ParallelStreamVariantProfile,
-    PoolingMode,
-    PostDecodedPolicyConfig,
-    PostLatentPolicyConfig,
     ProprioContextMode,
-    ReferenceCoreInitMode,
     ReplayStatusPolicy,
     RolloutContextPolicy,
     SampleConstructionConfig,
     SampleLossWeightMode,
     SampleOrderMode,
-    SampleStateAnchorMode,
     SampleTargetAlignment,
     SampleWeightMode,
     SegmentContextPolicy,
-    StrategyName,
     TailPaddingPolicy,
-    TemporalPositionMode,
     TrainingComponentSelector,
-    TrainingObjective,
     VideoActionProgram,
     VideoActionSequenceContract,
-    VideoConditionInputSpace,
-    VideoConditionTrainMode,
     WindowSamplingMode,
     load_experiment_config,
     normalize_video_action_policy_fields,
@@ -79,9 +68,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 PARALLEL_STREAM_PROGRAM_CONFIG_NAMES = (
     "parallel_stream_libero_action_noisy_to_video.yaml",
     "parallel_stream_libero_action_then_video.yaml",
-    "parallel_stream_libero_current_frame_action_chunk.yaml",
     "parallel_stream_libero_decoupled_same_step.yaml",
-    "parallel_stream_libero_fastwam_first_frame.yaml",
     "parallel_stream_libero_generalist_joint_denoising.yaml",
     "parallel_stream_libero_joint.yaml",
     "parallel_stream_libero_video_noisy_to_action.yaml",
@@ -198,7 +185,6 @@ def test_non_boolean_legacy_timestep_coupling_is_rejected(legacy_value: object) 
 @pytest.mark.parametrize(
     ("config_name", "expected_proprio_mode"),
     [
-        ("parallel_stream_libero_lingbot_exact.yaml", ProprioContextMode.NONE),
         (
             "parallel_stream_libero_video_then_action.yaml",
             ProprioContextMode.PER_CHUNK_ADDITIVE,
@@ -207,7 +193,10 @@ def test_non_boolean_legacy_timestep_coupling_is_rejected(legacy_value: object) 
             "parallel_stream_libero_action_then_video.yaml",
             ProprioContextMode.PER_CHUNK_ADDITIVE,
         ),
-        ("parallel_stream_libero_joint_denoise.yaml", ProprioContextMode.NONE),
+        (
+            "parallel_stream_libero_joint.yaml",
+            ProprioContextMode.PER_CHUNK_ADDITIVE,
+        ),
         (
             "dual_expert_libero_video_then_action.yaml",
             ProprioContextMode.PER_CHUNK_ADDITIVE,
@@ -232,100 +221,28 @@ def test_raw_action_targets_do_not_imply_a_proprio_conditioning_mode(
     assert getattr(config.action_decoder, "recovered_osc_loss_weight", 0.0) == 0.0
 
 
-@pytest.mark.parametrize(
-    ("config_name", "action_dim"),
-    [
-        ("contract_only_libero.yaml", 7),
-        ("contract_only_libero_local.yaml", 7),
-        ("contract_only_robotwin.yaml", 30),
-    ],
-)
-def test_maintained_contract_only_configs_use_explicit_components(
-    config_name: str,
-    action_dim: int,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    config_path = REPO_ROOT / "configs" / "experiments" / config_name
-    monkeypatch.setenv(
-        "OPEN_WAM_LOCAL_PATHS",
-        str(REPO_ROOT / "configs" / "local_paths.sample.yaml"),
-    )
-    raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-    config = load_experiment_config(config_path)
+def test_implicit_legacy_policy_config_is_rejected(tmp_path: Path) -> None:
+    source_path = REPO_ROOT / "configs/examples/public_tiny_synthetic_contract.yaml"
+    raw = yaml.safe_load(source_path.read_text(encoding="utf-8"))
+    raw.pop("policy_variant")
+    raw["action_head"] = {"name": "legacy"}
+    config_path = tmp_path / "implicit_legacy_policy.yaml"
+    config_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
 
-    assert "action_head" not in raw
-    assert "policy_variant" in raw
-    assert "action_decoder" in raw
-    assert isinstance(config.policy_variant, PostLatentPolicyConfig)
-    assert config.policy_variant.pooling_mode == PoolingMode.COMPAT_GLOBAL_MEAN
-    assert config.policy_variant.compatibility_mode is True
-    assert config.action_decoder.name == ActionDecoderName.MLP
-    assert config.action_decoder.action_dim == action_dim
-    assert config.action_decoder.action_horizon == 6
-    assert not hasattr(config, "action_head")
-
-
-def test_external_legacy_action_head_maps_to_explicit_components(
-    tmp_path: Path,
-) -> None:
-    config_path = tmp_path / "legacy_action_head.yaml"
-    config_path.write_text(
-        """
-name: legacy_action_head
-data:
-  dataset_name: synthetic
-  dataset_type: synthetic_multiview
-  num_frames: 4
-  action_schema:
-    action_dim: 4
-    action_horizon: 2
-    state_dim: 3
-    state_horizon: 1
-backbone:
-  implementation: dummy
-  hidden_size: 32
-action_head:
-  name: contract_only
-  hidden_size: 32
-  action_dim: 4
-  action_horizon: 2
-  state_dim: 3
-trainer:
-  accelerator: cpu
-""",
-        encoding="utf-8",
-    )
-
-    config = load_experiment_config(config_path)
-
-    assert isinstance(config.policy_variant, PostLatentPolicyConfig)
-    assert config.policy_variant.pooling_mode == PoolingMode.COMPAT_GLOBAL_MEAN
-    assert config.policy_variant.compatibility_mode is True
-    assert config.action_decoder.name == ActionDecoderName.MLP
-    assert config.action_decoder.action_dim == 4
-    assert config.action_decoder.action_horizon == 2
+    with pytest.raises(ValueError, match="policy_variant"):
+        load_experiment_config(config_path)
 
 
 def test_new_variant_yaml_configs_load() -> None:
-    post_decoded = load_experiment_config(REPO_ROOT / "configs/experiments/post_decoded_robotwin.yaml")
-    post_latent_video_conditioned = load_experiment_config(
-        REPO_ROOT / "configs/experiments/post_latent_robotwin_video_conditioned.yaml"
-    )
-    post_decoded_video_conditioned = load_experiment_config(
-        REPO_ROOT / "configs/experiments/post_decoded_robotwin_video_conditioned.yaml"
-    )
+    causal = load_experiment_config(REPO_ROOT / "configs/experiments/causal_video_prediction_mixed_video.yaml")
     dual_expert = load_experiment_config(REPO_ROOT / "configs/experiments/dual_expert_robotwin_smoke.yaml")
     parallel = load_experiment_config(REPO_ROOT / "configs/experiments/parallel_stream_robotwin.yaml")
     smoke_parallel = load_experiment_config(REPO_ROOT / "configs/experiments/parallel_stream_robotwin_smoke.yaml")
 
-    assert isinstance(post_decoded.policy_variant, PostDecodedPolicyConfig)
-    assert isinstance(post_latent_video_conditioned.policy_variant, PostLatentPolicyConfig)
-    assert isinstance(post_decoded_video_conditioned.policy_variant, PostDecodedPolicyConfig)
+    assert isinstance(causal.policy_variant, CausalVideoPredictionPolicyConfig)
     assert isinstance(dual_expert.policy_variant, DualExpertPolicyConfig)
     assert isinstance(parallel.policy_variant, ParallelStreamPolicyConfig)
     assert isinstance(smoke_parallel.policy_variant, ParallelStreamPolicyConfig)
-    assert post_latent_video_conditioned.action_decoder.name == ActionDecoderName.VIDEO_CONDITIONED
-    assert post_decoded_video_conditioned.action_decoder.name == ActionDecoderName.VIDEO_CONDITIONED
     assert dual_expert.policy_variant.preset == DualExpertPreset.FASTWAM
     assert dual_expert.policy_variant.runtime_mode == DualExpertRuntimeMode.VIDEO_PREFILL_ACTION_DENOISE
     assert dual_expert.policy_variant.condition_mode == "first_frame"
@@ -341,8 +258,6 @@ def test_new_variant_yaml_configs_load() -> None:
     assert smoke_parallel.policy_variant.runtime_mode == "lingbot_exact"
     assert smoke_parallel.action_decoder.name == "parallel_stream_decoder"
     assert smoke_parallel.backbone.reference_model_path is None
-    assert post_latent_video_conditioned.policy_variant.video_condition_input_space == VideoConditionInputSpace.VIDEO_LATENT
-    assert post_decoded_video_conditioned.policy_variant.video_condition_input_space == VideoConditionInputSpace.RGB_VIDEO
 
 
 def test_generalist_dynamics_routing_knob_loads_from_yaml(tmp_path: Path) -> None:
@@ -942,20 +857,14 @@ trainer:
 
 
 def test_raw_libero_smoke_variant_yaml_configs_load() -> None:
-    post_latent = load_experiment_config(REPO_ROOT / "configs/experiments/post_latent_libero_smoke.yaml")
-    post_decoded = load_experiment_config(REPO_ROOT / "configs/experiments/post_decoded_libero_smoke.yaml")
     parallel = load_experiment_config(REPO_ROOT / "configs/experiments/parallel_stream_libero_raw_smoke.yaml")
     parallel_action_conditioned = load_experiment_config(
         REPO_ROOT / "configs/experiments/parallel_stream_libero_action_conditioned_smoke.yaml"
     )
 
-    assert isinstance(post_latent.policy_variant, PostLatentPolicyConfig)
-    assert isinstance(post_decoded.policy_variant, PostDecodedPolicyConfig)
     assert isinstance(parallel.policy_variant, ParallelStreamPolicyConfig)
     assert isinstance(parallel_action_conditioned.policy_variant, ParallelStreamPolicyConfig)
 
-    assert post_latent.data.dataset_name == "libero"
-    assert post_decoded.data.dataset_name == "libero"
     assert parallel.data.dataset_name == "libero"
     assert parallel_action_conditioned.data.dataset_name == "libero"
 
@@ -966,119 +875,17 @@ def test_raw_libero_smoke_variant_yaml_configs_load() -> None:
     assert parallel_action_conditioned.policy_variant.video_action_condition_source == "noisy_action"
     assert parallel_action_conditioned.policy_variant.video_action_attention_scope == "block_local"
 
-
-def test_latent_libero_local_training_yaml_configs_load() -> None:
-    post_latent = load_experiment_config(REPO_ROOT / "configs/experiments/post_latent_libero_latent_local.yaml")
-    post_decoded = load_experiment_config(REPO_ROOT / "configs/experiments/post_decoded_libero_latent_local.yaml")
-    post_latent_video_conditioned = load_experiment_config(
-        REPO_ROOT / "configs/experiments/post_latent_libero_latent_local_video_conditioned.yaml"
-    )
-    post_decoded_video_conditioned = load_experiment_config(
-        REPO_ROOT / "configs/experiments/post_decoded_libero_latent_local_video_conditioned.yaml"
-    )
-    assert post_latent.data.dataset_type == "lerobot_v2_latent_local"
-    assert post_decoded.data.dataset_type == "lerobot_v2_latent_local"
-    assert post_latent_video_conditioned.data.dataset_type == "lerobot_v2_latent_local"
-    assert post_decoded_video_conditioned.data.dataset_type == "lerobot_v2_latent_local"
-    assert Path(post_latent.data.local_root).name == "libero_10"
-    assert Path(post_decoded.data.local_root).name == "libero_10"
-    assert Path(post_latent_video_conditioned.data.local_root).name == "libero_10"
-    assert Path(post_decoded_video_conditioned.data.local_root).name == "libero_10"
-    assert post_latent.trainer.batch_adapter == BatchAdapterName.LATENTS
-    assert post_decoded.trainer.batch_adapter == BatchAdapterName.LATENTS
-    assert post_latent_video_conditioned.trainer.batch_adapter == BatchAdapterName.LATENTS
-    assert post_decoded_video_conditioned.trainer.batch_adapter == BatchAdapterName.LATENTS
-    assert post_latent.trainer.strategy == StrategyName.FSDP
-    assert post_decoded.trainer.strategy == StrategyName.FSDP
-    assert post_latent_video_conditioned.trainer.strategy == StrategyName.FSDP
-    assert post_decoded_video_conditioned.trainer.strategy == StrategyName.FSDP
-    assert post_latent.backbone.reference_core_init_mode == ReferenceCoreInitMode.VIDEO_ONLY
-    assert post_decoded.backbone.reference_core_init_mode == ReferenceCoreInitMode.VIDEO_ONLY
-    assert post_latent_video_conditioned.backbone.reference_core_init_mode == ReferenceCoreInitMode.VIDEO_ONLY
-    assert post_decoded_video_conditioned.backbone.reference_core_init_mode == ReferenceCoreInitMode.VIDEO_ONLY
-    assert post_latent.backbone.load_reference_core_weights is True
-    assert post_decoded.backbone.load_reference_core_weights is True
-    assert post_latent_video_conditioned.backbone.load_reference_core_weights is True
-    assert post_decoded_video_conditioned.backbone.load_reference_core_weights is True
-    assert post_latent.data.sample_construction.mode == WindowSamplingMode.FULL_SEGMENT
-    assert post_decoded.data.sample_construction.mode == WindowSamplingMode.FULL_SEGMENT
-    assert post_latent_video_conditioned.data.sample_construction.mode == WindowSamplingMode.FULL_SEGMENT
-    assert post_decoded_video_conditioned.data.sample_construction.mode == WindowSamplingMode.FULL_SEGMENT
-    assert post_latent.data.latent_window_profile == LatentWindowProfile.STANDARD_POLICY_WINDOW
-    assert post_decoded.data.latent_window_profile == LatentWindowProfile.STANDARD_POLICY_WINDOW
-    assert post_latent_video_conditioned.data.latent_window_profile == LatentWindowProfile.STANDARD_POLICY_WINDOW
-    assert post_decoded_video_conditioned.data.latent_window_profile == LatentWindowProfile.STANDARD_POLICY_WINDOW
-    assert post_latent_video_conditioned.action_decoder.name == ActionDecoderName.VIDEO_CONDITIONED
-    assert post_decoded_video_conditioned.action_decoder.name == ActionDecoderName.VIDEO_CONDITIONED
-    assert post_latent_video_conditioned.policy_variant.video_condition_input_space == VideoConditionInputSpace.VIDEO_LATENT
-    assert post_decoded_video_conditioned.policy_variant.video_condition_input_space == VideoConditionInputSpace.VIDEO_LATENT
-def test_method4_current_frame_regression_yaml_configs_load() -> None:
-    latent_direct = load_experiment_config(
-        REPO_ROOT / "configs/experiments/post_latent_libero_latent_local_current_frame_regression.yaml"
-    )
-    rgb_direct = load_experiment_config(
-        REPO_ROOT / "configs/experiments/post_decoded_robotwin_current_frame_regression.yaml"
-    )
-
-    assert isinstance(latent_direct.policy_variant, PostLatentPolicyConfig)
-    assert isinstance(rgb_direct.policy_variant, PostDecodedPolicyConfig)
-    assert latent_direct.action_decoder.name == ActionDecoderName.VIDEO_CONDITIONED
-    assert rgb_direct.action_decoder.name == ActionDecoderName.VIDEO_CONDITIONED
-    assert latent_direct.action_decoder.train_mode == VideoConditionTrainMode.CURRENT_FRAME_REGRESSION
-    assert rgb_direct.action_decoder.train_mode == VideoConditionTrainMode.CURRENT_FRAME_REGRESSION
-    assert latent_direct.policy_variant.video_condition_input_space == VideoConditionInputSpace.VIDEO_LATENT
-    assert rgb_direct.policy_variant.video_condition_input_space == VideoConditionInputSpace.RGB_VIDEO
-
-
-def test_method4_defaults_to_video_conditioned_decoder_when_action_decoder_is_omitted(tmp_path: Path) -> None:
-    source_path = REPO_ROOT / "configs/experiments/post_latent_robotwin.yaml"
-    with source_path.open("r", encoding="utf-8") as handle:
-        post_latent_raw = yaml.safe_load(handle)
-    post_latent_raw["name"] = "post_latent_default_video_conditioned"
-    post_latent_raw.pop("action_decoder", None)
-
-    post_latent_path = tmp_path / "post_latent_default_video_conditioned.yaml"
-    with post_latent_path.open("w", encoding="utf-8") as handle:
-        yaml.safe_dump(post_latent_raw, handle, sort_keys=False)
-
-    post_latent_config = load_experiment_config(post_latent_path)
-    assert isinstance(post_latent_config.policy_variant, PostLatentPolicyConfig)
-    assert post_latent_config.action_decoder.name == ActionDecoderName.VIDEO_CONDITIONED
-    assert post_latent_config.policy_variant.video_condition_input_space == VideoConditionInputSpace.VIDEO_LATENT
-    assert post_latent_config.policy_variant.action_chunk_anchor_mode == ActionChunkAnchorMode.CURRENT_PLUS_FUTURE
-
-    source_path = REPO_ROOT / "configs/experiments/post_decoded_robotwin.yaml"
-    with source_path.open("r", encoding="utf-8") as handle:
-        post_decoded_raw = yaml.safe_load(handle)
-    post_decoded_raw["name"] = "post_decoded_default_video_conditioned"
-    post_decoded_raw.pop("action_decoder", None)
-
-    post_decoded_path = tmp_path / "post_decoded_default_video_conditioned.yaml"
-    with post_decoded_path.open("w", encoding="utf-8") as handle:
-        yaml.safe_dump(post_decoded_raw, handle, sort_keys=False)
-
-    post_decoded_config = load_experiment_config(post_decoded_path)
-    assert isinstance(post_decoded_config.policy_variant, PostDecodedPolicyConfig)
-    assert post_decoded_config.action_decoder.name == ActionDecoderName.VIDEO_CONDITIONED
-    assert post_decoded_config.policy_variant.video_condition_input_space == VideoConditionInputSpace.RGB_VIDEO
-    assert post_decoded_config.policy_variant.action_chunk_anchor_mode == ActionChunkAnchorMode.CURRENT_PLUS_FUTURE
-
-
 def test_dual_expert_policy_yaml_config_loads(tmp_path: Path) -> None:
-    source_path = REPO_ROOT / "configs/experiments/post_latent_robotwin.yaml"
+    source_path = REPO_ROOT / "configs/experiments/dual_expert_robotwin_smoke.yaml"
     with source_path.open("r", encoding="utf-8") as handle:
         raw = yaml.safe_load(handle)
     raw["name"] = "dual_expert_robotwin"
-    raw["policy_variant"]["name"] = "dual_expert"
-    raw["policy_variant"]["attach_site"] = "post_visual_core"
-    raw["policy_variant"]["runtime_mode"] = "video_prefill_action_denoise"
     raw["policy_variant"]["video_prefix_frames"] = 1
     raw["policy_variant"]["num_action_layers"] = 4
     raw["policy_variant"]["action_hidden_size"] = 768
     raw["policy_variant"]["action_ffn_dim"] = 1024
     raw["policy_variant"]["use_state_conditioning"] = True
     raw["policy_variant"]["proprio_context_mode"] = "per_chunk_additive"
-    raw["action_decoder"]["name"] = "mlp_decoder"
 
     config_path = tmp_path / "dual_expert_robotwin.yaml"
     with config_path.open("w", encoding="utf-8") as handle:
@@ -1099,15 +906,11 @@ def test_dual_expert_policy_yaml_config_loads(tmp_path: Path) -> None:
 
 
 def test_dual_expert_policy_allows_shared_video_schedule(tmp_path: Path) -> None:
-    source_path = REPO_ROOT / "configs/experiments/post_latent_robotwin.yaml"
+    source_path = REPO_ROOT / "configs/experiments/dual_expert_robotwin_smoke.yaml"
     with source_path.open("r", encoding="utf-8") as handle:
         raw = yaml.safe_load(handle)
     raw["name"] = "dual_expert_shared_video_schedule_robotwin"
-    raw["policy_variant"]["name"] = "dual_expert"
-    raw["policy_variant"]["attach_site"] = "post_visual_core"
-    raw["policy_variant"]["runtime_mode"] = "video_prefill_action_denoise"
     raw["policy_variant"]["joint_timestep_coupling"] = "shared_video_schedule"
-    raw["action_decoder"]["name"] = "mlp_decoder"
 
     config_path = tmp_path / "dual_expert_shared_video_schedule_robotwin.yaml"
     with config_path.open("w", encoding="utf-8") as handle:
@@ -1120,14 +923,11 @@ def test_dual_expert_policy_allows_shared_video_schedule(tmp_path: Path) -> None
 
 
 def test_dual_expert_policy_preset_applies_fastwam_joint_defaults(tmp_path: Path) -> None:
-    source_path = REPO_ROOT / "configs/experiments/post_latent_robotwin.yaml"
+    source_path = REPO_ROOT / "configs/experiments/dual_expert_robotwin_smoke.yaml"
     with source_path.open("r", encoding="utf-8") as handle:
         raw = yaml.safe_load(handle)
     raw["name"] = "dual_expert_fastwam_joint_robotwin"
-    raw["policy_variant"]["name"] = "dual_expert"
-    raw["policy_variant"]["attach_site"] = "post_visual_core"
     raw["policy_variant"]["preset"] = "fastwam_joint"
-    raw["action_decoder"]["name"] = "mlp_decoder"
 
     config_path = tmp_path / "dual_expert_fastwam_joint_robotwin.yaml"
     with config_path.open("w", encoding="utf-8") as handle:
@@ -1144,17 +944,14 @@ def test_dual_expert_policy_preset_applies_fastwam_joint_defaults(tmp_path: Path
 
 
 def test_dual_expert_policy_preset_allows_explicit_overrides(tmp_path: Path) -> None:
-    source_path = REPO_ROOT / "configs/experiments/post_latent_robotwin.yaml"
+    source_path = REPO_ROOT / "configs/experiments/dual_expert_robotwin_smoke.yaml"
     with source_path.open("r", encoding="utf-8") as handle:
         raw = yaml.safe_load(handle)
     raw["name"] = "dual_expert_fastwam_override_robotwin"
-    raw["policy_variant"]["name"] = "dual_expert"
-    raw["policy_variant"]["attach_site"] = "post_visual_core"
     raw["policy_variant"]["preset"] = "fastwam"
     raw["policy_variant"]["condition_mode"] = "teacher_forcing_cond_video"
     raw["policy_variant"]["teacher_forcing_video_noise_prob"] = 0.2
     raw["policy_variant"]["video_prefix_frames"] = 3
-    raw["action_decoder"]["name"] = "mlp_decoder"
 
     config_path = tmp_path / "dual_expert_fastwam_override_robotwin.yaml"
     with config_path.open("w", encoding="utf-8") as handle:
@@ -1169,18 +966,9 @@ def test_dual_expert_policy_preset_allows_explicit_overrides(tmp_path: Path) -> 
     assert config.policy_variant.video_prefix_frames == 3
 
 
-def test_local_libero_yaml_config_loads() -> None:
-    local_libero = load_experiment_config(REPO_ROOT / "configs/experiments/contract_only_libero_local.yaml")
-    assert local_libero.data.dataset_name == "libero"
-    assert local_libero.data.dataset_type == "libero_hdf5"
-    assert local_libero.data.repo_id is None
-    assert "${" not in local_libero.data.local_root
-    assert Path(local_libero.data.local_root).name == "libero_10"
-
-
-def test_lingbot_reference_libero_yaml_config_loads() -> None:
+def test_parallel_stream_video_then_action_libero_yaml_config_loads() -> None:
     lingbot_libero = load_experiment_config(
-        REPO_ROOT / "configs/experiments/parallel_stream_libero_lingbot_exact.yaml"
+        REPO_ROOT / "configs/experiments/parallel_stream_libero_video_then_action.yaml"
     )
 
     assert isinstance(lingbot_libero.policy_variant, ParallelStreamPolicyConfig)
@@ -1198,19 +986,17 @@ def test_lingbot_reference_libero_yaml_config_loads() -> None:
     assert lingbot_libero.data.action_target.source_key == "action"
     assert lingbot_libero.data.action_target.pose_source_key == "observation.state"
     assert lingbot_libero.data.latent_window_profile == LatentWindowProfile.EXACT_CHUNKED_WINDOW
-    assert lingbot_libero.data.replay_status_policy == ReplayStatusPolicy.SUCCESSFUL_ONLY
-    assert lingbot_libero.data.val_replay_status_policy == ReplayStatusPolicy.FAILURE_ONLY
-    assert lingbot_libero.data.require_replay_status is True
-    assert lingbot_libero.data.val_require_replay_status is True
+    assert lingbot_libero.data.replay_status_policy == ReplayStatusPolicy.INCLUDE_ALL
+    assert lingbot_libero.data.val_replay_status_policy is None
+    assert lingbot_libero.data.require_replay_status is False
+    assert lingbot_libero.data.val_require_replay_status is False
     assert lingbot_libero.training.learning_rate == 1e-5
     assert lingbot_libero.training.gradient_accumulation_steps == 10
-    assert lingbot_libero.training.num_steps == 5000
+    assert lingbot_libero.training.num_steps == 10000
     assert lingbot_libero.training.enabled_objectives == ("latent", "action")
     assert lingbot_libero.training.action_loss_weight == 1.0
     assert lingbot_libero.training.trainable_components == ("visual_tower.runtime_backbone",)
-    assert lingbot_libero.training.sample_loss_weight_mode == SampleLossWeightMode.VALID_ACTION_STEPS
-    assert lingbot_libero.training.sample_loss_weight_min == 0.25
-    assert lingbot_libero.training.sample_loss_weight_max == 4.0
+    assert lingbot_libero.training.sample_loss_weight_mode == SampleLossWeightMode.NONE
     assert lingbot_libero.trainer.runtime == "composable"
     assert lingbot_libero.trainer.batch_adapter == "latents"
     assert lingbot_libero.trainer.loop_policy == "steps"
@@ -1218,67 +1004,13 @@ def test_lingbot_reference_libero_yaml_config_loads() -> None:
     assert lingbot_libero.trainer.save_interval == 100
     assert lingbot_libero.trainer.enable_wandb is True
     assert lingbot_libero.trainer.wandb_project == "openwam-parallel-stream-libero"
-
-
-def test_current_frame_action_chunk_libero_yaml_config_loads() -> None:
-    config = load_experiment_config(
-        REPO_ROOT
-        / "configs/experiments/parallel_stream_libero_current_frame_action_chunk.yaml"
-    )
-
-    assert isinstance(config.policy_variant, ParallelStreamPolicyConfig)
-    assert config.policy_variant.runtime_mode == ParallelRuntimeMode.CURRENT_FRAME_ACTION_CHUNK
-    assert config.policy_variant.proprio_context_mode == ProprioContextMode.PER_CHUNK_ADDITIVE
-    assert config.policy_variant.temporal_position_mode == TemporalPositionMode.LOCAL_ZERO_BASED
-    assert config.policy_variant.use_condition_latents is True
-    assert config.policy_variant.require_condition_latents is True
-    assert config.backbone.train_attn_mode == AttentionMode.FLEX
-    assert config.data.sample_construction.mode == "uniform_segment"
-    assert config.data.sample_construction.segment_min_frames == 4
-    assert config.data.sample_construction.segment_max_frames == 4
-    assert config.data.action_schema.state_horizon == 1
-    assert config.action_decoder.name == ActionDecoderName.PARALLEL_STREAM
-    assert config.action_decoder.action_dim == 30
-    assert config.training.enabled_objectives == (TrainingObjective.ACTION,)
-    assert config.training.latent_loss_weight == 0.0
-    assert config.training.action_loss_weight == 1.0
-    assert config.inference.use_cache is False
-    _instantiate_parallel_stream_variant(config)
-
-
-def test_fastwam_first_frame_libero_yaml_config_loads() -> None:
-    config = load_experiment_config(
-        REPO_ROOT / "configs/experiments/parallel_stream_libero_fastwam_first_frame.yaml"
-    )
-
-    assert isinstance(config.policy_variant, ParallelStreamPolicyConfig)
-    assert config.policy_variant.runtime_mode == ParallelRuntimeMode.FASTWAM_FIRST_FRAME
-    assert config.policy_variant.proprio_context_mode == ProprioContextMode.PER_CHUNK_ADDITIVE
-    assert config.policy_variant.temporal_position_mode == TemporalPositionMode.LOCAL_ZERO_BASED
-    assert config.policy_variant.use_condition_latents is True
-    assert config.policy_variant.require_condition_latents is True
-    assert config.data.sample_construction.mode == "uniform_segment"
-    assert config.data.sample_construction.state_anchor_mode == SampleStateAnchorMode.SAMPLE_START_FRAME
-    assert config.data.sample_construction.segment_min_frames == 4
-    assert config.data.sample_construction.segment_max_frames == 4
-    assert config.data.action_schema.state_horizon == 1
-    assert config.action_decoder.name == ActionDecoderName.PARALLEL_STREAM
-    assert config.action_decoder.action_dim == 30
-    assert config.training.enabled_objectives == (TrainingObjective.LATENT, TrainingObjective.ACTION)
-    assert config.training.latent_loss_weight == 1.0
-    assert config.training.action_loss_weight == 1.0
-    assert config.inference.use_cache is False
-    assert config.inference.guidance_scale == 1.0
-    _instantiate_parallel_stream_variant(config)
-
-
 def test_m1_non_generalist_configs_instantiate_reference_variant() -> None:
     config_paths = [
         REPO_ROOT / "configs/experiments" / name
         for name in PARALLEL_STREAM_PROGRAM_CONFIG_NAMES
     ]
     config_paths = [path for path in config_paths if "generalist_joint_denoising" not in path.name]
-    assert len(config_paths) == 8
+    assert len(config_paths) == 6
 
     for config_path in config_paths:
         config = load_experiment_config(config_path)
@@ -1559,11 +1291,6 @@ def test_m1_step3500_variant_yaml_configs_preserve_video_pretrain_history() -> N
         REPO_ROOT / "configs/experiments" / name
         for name in PARALLEL_STREAM_PROGRAM_CONFIG_NAMES
     ]
-    config_paths = [
-        path
-        for path in config_paths
-        if "current_frame_action_chunk" not in path.name and "fastwam_first_frame" not in path.name
-    ]
     assert len(config_paths) == 7
     for config_path in config_paths:
         config = load_experiment_config(config_path)
@@ -1643,23 +1370,22 @@ def test_local_path_registry_overrides_sample_aliases(monkeypatch, tmp_path: Pat
     with local_paths_path.open("w", encoding="utf-8") as handle:
         yaml.safe_dump(
             {
-                "paths": {
-                    "datasets": {"libero_heng_root": "/tmp/custom_libero_root"},
-                    "models": {"lingbot_va_base": "/tmp/custom_model_root"},
-                    "checkpoints": {"libero_videoonly_step_850": "/tmp/custom_videoonly_transformer"},
-                }
+                    "paths": {
+                        "datasets": {"libero_heng_root": "/tmp/custom_libero_root"},
+                        "models": {"lingbot_va_base": "/tmp/custom_model_root"},
+                    }
             },
             handle,
             sort_keys=False,
         )
     monkeypatch.setenv("OPEN_WAM_LOCAL_PATHS", str(local_paths_path))
 
-    config = load_experiment_config(REPO_ROOT / "configs/experiments/post_latent_libero_latent_local.yaml")
+    config = load_experiment_config(REPO_ROOT / "configs/experiments/dual_expert_libero_joint.yaml")
 
     assert config.data.local_root == "/tmp/custom_libero_root"
     assert config.data.empty_text_embedding_path.endswith("empty_emb.pt")
     assert config.backbone.pretrained_model_name_or_path == "/tmp/custom_model_root"
-    assert config.backbone.transformer_subdir == "/tmp/custom_videoonly_transformer"
+    assert config.backbone.transformer_subdir == "transformer"
 
 
 def test_local_path_registry_override_can_reference_sample_aliases(monkeypatch, tmp_path: Path) -> None:
@@ -1733,7 +1459,9 @@ def test_missing_local_path_alias_raises_clear_error(monkeypatch, tmp_path: Path
 
 
 def test_loaded_enum_like_fields_are_real_enum_members() -> None:
-    config = load_experiment_config(REPO_ROOT / "configs/experiments/parallel_stream_libero_lingbot_exact.yaml")
+    config = load_experiment_config(
+        REPO_ROOT / "configs/experiments/parallel_stream_libero_video_then_action.yaml"
+    )
 
     assert isinstance(config.backbone.train_attn_mode, AttentionMode)
 
@@ -1757,7 +1485,9 @@ def test_removed_window_sampling_modes_are_rejected(tmp_path: Path, removed_mode
 
 
 def test_deprecated_equal_bucket_latent_temporal_layout_is_rejected(tmp_path: Path) -> None:
-    source_path = REPO_ROOT / "configs/experiments/parallel_stream_libero_lingbot_exact.yaml"
+    source_path = (
+        REPO_ROOT / "configs/experiments/parallel_stream_libero_video_then_action.yaml"
+    )
     with source_path.open("r", encoding="utf-8") as handle:
         raw = yaml.safe_load(handle)
 
@@ -1773,7 +1503,7 @@ def test_deprecated_equal_bucket_latent_temporal_layout_is_rejected(tmp_path: Pa
 
 
 def test_backbone_exported_runtime_action_init_mode_loads_as_enum(tmp_path: Path) -> None:
-    source_path = REPO_ROOT / "configs/experiments/parallel_stream_libero_joint_denoise.yaml"
+    source_path = REPO_ROOT / "configs/experiments/parallel_stream_libero_joint.yaml"
     with source_path.open("r", encoding="utf-8") as handle:
         raw = yaml.safe_load(handle)
 
@@ -2061,21 +1791,6 @@ def test_sequence_contract_expands_dual_expert_legacy_prefix_defaults(tmp_path: 
     assert config.data.sample_construction.start_padding_frames == 0
 
 
-def test_sequence_contract_legacy_prefix_rejects_fastwam_runtime(tmp_path: Path) -> None:
-    source_path = REPO_ROOT / "configs/experiments/parallel_stream_libero_fastwam_first_frame.yaml"
-    with source_path.open("r", encoding="utf-8") as handle:
-        raw = yaml.safe_load(handle)
-
-    raw["policy_variant"]["sequence_contract"] = "legacy_prefix_single_frame_perchunk_proprio"
-
-    config_path = tmp_path / "fastwam_legacy_prefix_contract.yaml"
-    with config_path.open("w", encoding="utf-8") as handle:
-        yaml.safe_dump(raw, handle, sort_keys=False)
-
-    with pytest.raises(ValueError, match="legacy_prefix_single_frame_perchunk_proprio.*runtime_mode"):
-        load_experiment_config(config_path)
-
-
 def test_sequence_contract_legacy_prefix_preserves_explicit_noisy_condition_prob(tmp_path: Path) -> None:
     source_path = REPO_ROOT / "configs/experiments/dual_expert_libero_video_then_action.yaml"
     with source_path.open("r", encoding="utf-8") as handle:
@@ -2189,10 +1904,11 @@ def test_parallel_stream_generalist_uses_planning_sequence_contract() -> None:
 
 
 def test_sample_construction_yaml_strings_are_coerced_to_enum_members(tmp_path: Path) -> None:
-    source_path = REPO_ROOT / "configs/experiments/post_latent_libero_latent_local.yaml"
+    source_path = REPO_ROOT / "configs/experiments/dual_expert_libero_joint.yaml"
     with source_path.open("r", encoding="utf-8") as handle:
         raw = yaml.safe_load(handle)
 
+    raw["policy_variant"]["sequence_contract"] = "default"
     raw.setdefault("data", {})
     raw["data"]["sample_construction"] = {
         "mode": "uniform_segment",
@@ -2247,10 +1963,11 @@ def test_sample_construction_yaml_strings_are_coerced_to_enum_members(tmp_path: 
 
 
 def test_hierarchical_fixed_segment_sample_construction_loads_explicit_sampler_fields(tmp_path: Path) -> None:
-    source_path = REPO_ROOT / "configs/experiments/post_latent_libero_latent_local.yaml"
+    source_path = REPO_ROOT / "configs/experiments/dual_expert_libero_joint.yaml"
     with source_path.open("r", encoding="utf-8") as handle:
         raw = yaml.safe_load(handle)
 
+    raw["policy_variant"]["sequence_contract"] = "default"
     raw.setdefault("data", {})
     raw["data"]["sample_construction"] = {
         "mode": "hierarchical_fixed_segment",
@@ -2282,10 +1999,11 @@ def test_hierarchical_fixed_segment_sample_construction_loads_explicit_sampler_f
 
 
 def test_hierarchical_fixed_segment_rejects_replacement_sample_order_typed_path(tmp_path: Path) -> None:
-    source_path = REPO_ROOT / "configs/experiments/post_latent_libero_latent_local.yaml"
+    source_path = REPO_ROOT / "configs/experiments/dual_expert_libero_joint.yaml"
     with source_path.open("r", encoding="utf-8") as handle:
         raw = yaml.safe_load(handle)
 
+    raw["policy_variant"]["sequence_contract"] = "default"
     raw.setdefault("data", {})
     raw["data"]["sample_construction"] = {
         "mode": "hierarchical_fixed_segment",
@@ -2302,10 +2020,11 @@ def test_hierarchical_fixed_segment_rejects_replacement_sample_order_typed_path(
 
 
 def test_hierarchical_fixed_segment_loads_strict_rollout_parity_fields(tmp_path: Path) -> None:
-    source_path = REPO_ROOT / "configs/experiments/post_latent_libero_latent_local.yaml"
+    source_path = REPO_ROOT / "configs/experiments/dual_expert_libero_joint.yaml"
     with source_path.open("r", encoding="utf-8") as handle:
         raw = yaml.safe_load(handle)
 
+    raw["policy_variant"]["sequence_contract"] = "default"
     raw.setdefault("data", {})
     raw["data"]["sample_construction"] = {
         "mode": "hierarchical_fixed_segment",
@@ -2341,10 +2060,11 @@ def test_hierarchical_fixed_segment_loads_strict_rollout_parity_fields(tmp_path:
 
 
 def test_hierarchical_fixed_segment_rollout_parity_rejects_legacy_context_fields(tmp_path: Path) -> None:
-    source_path = REPO_ROOT / "configs/experiments/post_latent_libero_latent_local.yaml"
+    source_path = REPO_ROOT / "configs/experiments/dual_expert_libero_joint.yaml"
     with source_path.open("r", encoding="utf-8") as handle:
         raw = yaml.safe_load(handle)
 
+    raw["policy_variant"]["sequence_contract"] = "default"
     raw.setdefault("data", {})
     raw["data"]["sample_construction"] = {
         "mode": "hierarchical_fixed_segment",
@@ -2389,10 +2109,11 @@ def test_sample_construction_rollout_parity_rejects_programmatic_legacy_context_
 
 
 def test_hierarchical_fixed_segment_rollout_parity_rejects_malformed_chunk_size(tmp_path: Path) -> None:
-    source_path = REPO_ROOT / "configs/experiments/post_latent_libero_latent_local.yaml"
+    source_path = REPO_ROOT / "configs/experiments/dual_expert_libero_joint.yaml"
     with source_path.open("r", encoding="utf-8") as handle:
         raw = yaml.safe_load(handle)
 
+    raw["policy_variant"]["sequence_contract"] = "default"
     raw.setdefault("data", {})
     raw["data"]["sample_construction"] = {
         "mode": "hierarchical_fixed_segment",
@@ -2414,10 +2135,11 @@ def test_hierarchical_fixed_segment_rollout_parity_rejects_malformed_chunk_size(
 
 
 def test_hierarchical_fixed_segment_rejects_legacy_full_segment_flag(tmp_path: Path) -> None:
-    source_path = REPO_ROOT / "configs/experiments/post_latent_libero_latent_local.yaml"
+    source_path = REPO_ROOT / "configs/experiments/dual_expert_libero_joint.yaml"
     with source_path.open("r", encoding="utf-8") as handle:
         raw = yaml.safe_load(handle)
 
+    raw["policy_variant"]["sequence_contract"] = "default"
     raw.setdefault("data", {})
     raw["data"]["sample_construction"] = {
         "mode": "hierarchical_fixed_segment",
@@ -2570,21 +2292,6 @@ def test_causal_video_prediction_config_loads() -> None:
 
 def test_causal_video_prediction_mixed_video_config_loads() -> None:
     config = load_experiment_config(REPO_ROOT / "configs/experiments/causal_video_prediction_mixed_video.yaml")
-
-    assert isinstance(config.policy_variant, CausalVideoPredictionPolicyConfig)
-    assert isinstance(config.data, MixedVideoDataConfig)
-    assert config.backbone.load_wan_vae_frontend is True
-    assert config.trainer.batch_adapter == BatchAdapterName.VIEWS
-    assert config.data.sample_construction.causal_prefix_suffix_buckets[0] == CausalPrefixSuffixBucketConfig(
-        observed_frames=1,
-        future_frames=4,
-    )
-
-
-def test_causal_video_prediction_mixed_video_libero_only_config_loads() -> None:
-    config = load_experiment_config(
-        REPO_ROOT / "configs/experiments/causal_video_prediction_mixed_video_libero_only.yaml"
-    )
 
     assert isinstance(config.policy_variant, CausalVideoPredictionPolicyConfig)
     assert isinstance(config.data, MixedVideoDataConfig)

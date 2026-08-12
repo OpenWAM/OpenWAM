@@ -93,14 +93,6 @@ def test_explicit_current_block_coupling_is_preserved(
             CurrentBlockCoupling.JOINT,
         ),
         (ParallelRuntimeMode.LINGBOT_EXACT, CurrentBlockCoupling.VIDEO_THEN_ACTION),
-        (
-            ParallelRuntimeMode.CURRENT_FRAME_ACTION_CHUNK,
-            CurrentBlockCoupling.VIDEO_THEN_ACTION,
-        ),
-        (
-            ParallelRuntimeMode.FASTWAM_FIRST_FRAME,
-            CurrentBlockCoupling.VIDEO_THEN_ACTION,
-        ),
     ],
 )
 def test_current_block_coupling_resolves_runtime_compatibility_default(

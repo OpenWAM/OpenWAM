@@ -246,13 +246,6 @@ PARALLEL_TRAINING_ARTIFACT_ROLE_PATHS = {
         / "parallel_stream"
         / "training_prefix_artifacts.py"
     ),
-    "single_frame": (
-        PACKAGE_ROOT
-        / "models"
-        / "policy_variants"
-        / "parallel_stream"
-        / "training_single_frame_artifacts.py"
-    ),
 }
 PARALLEL_CACHE_EXECUTION_ROLE_PATHS = {
     "attention": (
@@ -2989,8 +2982,6 @@ def test_policy_configuration_contracts_have_role_specific_owners() -> None:
             "CausalVideoPredictionPolicyConfig",
             "ExtensionPolicyConfig",
             "PolicyVariantConfig",
-            "PostDecodedPolicyConfig",
-            "PostLatentPolicyConfig",
         },
         "policy_dual_expert.py": {"DualExpertPolicyConfig"},
         "policy_parallel_stream.py": {"ParallelStreamPolicyConfig"},
@@ -3008,12 +2999,10 @@ def test_policy_configuration_contracts_have_role_specific_owners() -> None:
         "policy_video_action.py": policy_video_action,
     }
     compatibility_names = {
-        "ActionChunkAnchorMode",
         "ActionNormMethod",
         "AttachSite",
         "CurrentBlockCoupling",
         "DataConfig",
-        "DecodeFeatureMode",
         "GeneralistTrainingParadigm",
         "InferenceConfig",
         "GeneralistDenoisingMode",
@@ -3042,19 +3031,13 @@ def test_policy_configuration_contracts_have_role_specific_owners() -> None:
         "VideoActionSequenceContract",
         "ParallelStreamVariantProfile",
         "PolicyVariantName",
-        "PoolingMode",
         "ProprioContextMode",
         "SharedVideoTransformerConfig",
         "TemporalPositionMode",
-        "TemporalProjection",
         "TrainingConfig",
-        "VideoConditionInputSpace",
-        "VideoConditionSource",
-        "VisualReadoutConfig",
         "coerce_fields",
         "coerce_probability_map",
         "default_video_action_conditioning_mode_probs",
-        "parse_visual_readout_config",
         "_coerce_joint_denoise_training_mode_probs",
         "_coerce_mot_generalist_training_mode_probs",
         "_default_joint_denoise_training_mode_probs",
@@ -3082,7 +3065,6 @@ def test_policy_configuration_contracts_have_role_specific_owners() -> None:
     assert policy_facade.SharedVideoTransformerConfig is public_configs.SharedVideoTransformerConfig
     assert policy_facade.InferenceConfig is public_configs.InferenceConfig
     assert policy_facade.TrainingConfig is public_configs.TrainingConfig
-    assert policy_facade.VisualReadoutConfig is public_configs.VisualReadoutConfig
     assert (
         policy_facade._coerce_mot_generalist_training_mode_probs
         is policy_dual_expert._coerce_mot_generalist_training_mode_probs
@@ -3533,7 +3515,6 @@ def test_typed_component_parsers_live_beside_their_contracts() -> None:
         "parse_inference_config": "inference.py",
         "parse_trainer_config": "trainer.py",
         "parse_validation_config": "validation.py",
-        "parse_visual_readout_config": "visual_readout.py",
         "parse_policy_variant_config": "policy_parsing.py",
         "parse_action_decoder_config": "action_decoder.py",
     }
@@ -4149,12 +4130,9 @@ def test_pipeline_factory_roles_have_one_owner() -> None:
             "build_variant_pipeline_from_config",
         },
         "decoder": {
-            "_build_decoded_feature_action_decoder",
             "_build_extension_action_decoder",
             "_build_parallel_stream_action_decoder",
-            "_build_mlp_action_decoder",
             "_build_dual_expert_action_decoder",
-            "_build_video_conditioned_action_decoder",
             "_build_video_only_action_decoder",
             "build_action_decoder",
         },
@@ -4163,8 +4141,6 @@ def test_pipeline_factory_roles_have_one_owner() -> None:
             "_build_extension_policy_variant",
             "_build_dual_expert_policy_variant",
             "_build_parallel_stream_policy_variant",
-            "_build_post_decoded_policy_variant",
-            "_build_post_latent_policy_variant",
             "build_policy_variant",
         },
         "validation": {
@@ -4175,7 +4151,7 @@ def test_pipeline_factory_roles_have_one_owner() -> None:
         },
     }
     all_names = set().union(*owner_names.values())
-    assert len(all_names) == 23
+    assert len(all_names) == 18
     assert all(
         sum(name in _top_level_definitions(path) for path in role_paths.values()) == 1
         for name in all_names
@@ -4216,13 +4192,11 @@ def test_pipeline_factory_roles_have_one_owner() -> None:
         "BatchAdapterName",
         "CausalVideoPredictionPolicyConfig",
         "CausalVideoPredictionPolicyVariant",
-        "DecodedFeatureActionDecoder",
         "ExperimentConfig",
         "ExtensionActionDecoderConfig",
         "ExtensionPolicyConfig",
         "LingbotExactRunner",
         "ParallelStreamActionDecoder",
-        "MLPActionDecoder",
         "DualExpertActionDecoder",
         "DualExpertPolicyConfig",
         "DualExpertPolicyVariant",
@@ -4232,16 +4206,8 @@ def test_pipeline_factory_roles_have_one_owner() -> None:
         "ParallelStreamPolicyConfig",
         "ParallelStreamPolicyVariant",
         "PolicyVariant",
-        "PostDecodedPolicyConfig",
-        "PostDecodedPolicyVariant",
-        "PostLatentPolicyConfig",
-        "PostLatentPolicyVariant",
         "ProprioContextMode",
         "VariantPipeline",
-        "VideoConditionInputSpace",
-        "VideoConditionSource",
-        "VideoConditionTrainMode",
-        "VideoConditionedActionDecoder",
         "VideoOnlyActionDecoder",
         "VisualTower",
         "annotations",
@@ -4260,7 +4226,7 @@ def test_pipeline_factory_roles_have_one_owner() -> None:
     wildcard_namespace: dict[str, object] = {}
     exec("from open_wam.pipelines.factory import *", wildcard_namespace)
     assert set(wildcard_namespace) - {"__builtins__"} == expected_wildcard_names
-    assert len(_compatibility_export_names(role_paths["composition"])) == 29
+    assert len(_compatibility_export_names(role_paths["composition"])) == 21
 
     old_globals = {
         "validate_experiment_config": factory_validation.validate_experiment_config,
@@ -4295,8 +4261,9 @@ def test_checkpoint_persistence_roles_have_one_owner() -> None:
         "manager": {
             "CheckpointManager",
             "_cpu_align_non_dtensor_state_for_full_load",
-            "_densify_optimizer_state_dict",
-            "_is_dtensor",
+                "_densify_optimizer_state_dict",
+                "_filter_unexpected_distributed_model_state",
+                "_is_dtensor",
             "_iter_model_state_tensors",
             "_load_state_dict_options",
             "_non_scalar_model_state_devices",
@@ -4317,7 +4284,7 @@ def test_checkpoint_persistence_roles_have_one_owner() -> None:
     }
     all_names = set().union(*owner_names.values())
 
-    assert len(all_names) == 19
+    assert len(all_names) == 20
     assert all(
         sum(
             name in _top_level_definitions(path)
@@ -5915,13 +5882,10 @@ def test_parallel_inference_conditioning_has_one_implementation_owner() -> None:
 
 def test_parallel_forward_execution_has_one_implementation_owner() -> None:
     execution_definitions = {
-        "build_parallel_first_frame_attention_profile",
         "run_parallel_action_conditioned_forward",
         "run_parallel_action_conditioned_train",
         "run_parallel_exact_dual_stream_forward",
         "run_parallel_exact_train",
-        "run_parallel_first_frame_conditioned_forward",
-        "run_parallel_first_frame_conditioned_train",
     }
     parallel_stream_root = (
         PACKAGE_ROOT / "models" / "policy_variants" / "parallel_stream"
@@ -5931,13 +5895,10 @@ def test_parallel_forward_execution_has_one_implementation_owner() -> None:
 
     assert execution_definitions <= _top_level_definitions(execution_path)
     assert {
-        "_build_fastwam_first_frame_attention_profile",
         "_run_parallel_action_conditioned_forward",
         "_run_parallel_exact_joint_forward_manual",
-        "_run_parallel_fastwam_first_frame_forward_manual",
         "run_parallel_action_conditioned_train",
         "run_parallel_exact_train",
-        "run_parallel_fastwam_first_frame_train",
     }.isdisjoint(_top_level_definitions(reference_runtime_path))
 
 
@@ -5981,21 +5942,6 @@ def test_parallel_packed_rollout_has_one_implementation_owner() -> None:
         "run_parallel_action_conditioned_inference_rollout",
         "run_parallel_packed_inference_rollout",
     }.isdisjoint(_top_level_definitions(reference_runtime_path))
-
-
-def test_parallel_anchored_action_rollout_has_one_implementation_owner() -> None:
-    parallel_stream_root = (
-        PACKAGE_ROOT / "models" / "policy_variants" / "parallel_stream"
-    )
-    anchored_rollout_path = parallel_stream_root / "anchored_action_rollout.py"
-    reference_runtime_path = parallel_stream_root / "reference_runtime.py"
-    owned_rollouts = {
-        "run_parallel_current_frame_action_chunk_inference_rollout",
-        "run_parallel_fastwam_first_frame_inference_rollout",
-    }
-
-    assert owned_rollouts <= _top_level_definitions(anchored_rollout_path)
-    assert owned_rollouts.isdisjoint(_top_level_definitions(reference_runtime_path))
 
 
 def test_parallel_reference_runtime_is_a_compatibility_only_facade() -> None:
@@ -6049,14 +5995,12 @@ def test_parallel_training_artifacts_have_one_implementation_owner() -> None:
         training_artifacts,
         training_exact_artifacts,
         training_prefix_artifacts,
-        training_single_frame_artifacts,
     )
 
     role_modules = {
         "contracts": training_artifact_contracts,
         "exact": training_exact_artifacts,
         "prefix": training_prefix_artifacts,
-        "single_frame": training_single_frame_artifacts,
     }
     owner_names = {
         "contracts": {"ParallelTrainArtifacts"},
@@ -6065,15 +6009,11 @@ def test_parallel_training_artifacts_have_one_implementation_owner() -> None:
             "prepare_parallel_exact_train_artifacts",
         },
         "prefix": {"prepare_parallel_prefix_condition_exact_train_artifacts"},
-        "single_frame": {
-            "prepare_parallel_current_frame_action_chunk_train_artifacts",
-            "prepare_parallel_fastwam_first_frame_train_artifacts",
-        },
     }
     all_owner_names = set().union(*owner_names.values())
     all_public_names = all_owner_names | {"LingbotParallelTrainArtifacts"}
 
-    assert len(all_owner_names) == 6
+    assert len(all_owner_names) == 4
     assert not _top_level_definitions(
         PARALLEL_TRAINING_ARTIFACT_ROLE_PATHS["facade"]
     )
@@ -6121,16 +6061,10 @@ def test_parallel_training_artifacts_have_one_implementation_owner() -> None:
             "training_exact_artifacts",
             "training_noise",
             "training_prefix_artifacts",
-            "training_single_frame_artifacts",
         },
         "prefix": {
             "generalist_training",
             "runtime_semantics",
-            "training_artifact_contracts",
-            "training_noise",
-        },
-        "single_frame": {
-            "latent_conditioning",
             "training_artifact_contracts",
             "training_noise",
         },
@@ -6143,7 +6077,6 @@ def test_parallel_training_artifacts_have_one_implementation_owner() -> None:
             "models/policy_variants/parallel_stream/training_artifacts.py",
             "models/policy_variants/parallel_stream/training_exact_artifacts.py",
             "models/policy_variants/parallel_stream/training_prefix_artifacts.py",
-            "models/policy_variants/parallel_stream/training_single_frame_artifacts.py",
         },
         "training_exact_artifacts": {
             "models/policy_variants/parallel_stream/reference_runtime.py",
@@ -6151,11 +6084,6 @@ def test_parallel_training_artifacts_have_one_implementation_owner() -> None:
             "models/policy_variants/parallel_stream/variant.py",
         },
         "training_prefix_artifacts": {
-            "models/policy_variants/parallel_stream/reference_runtime.py",
-            "models/policy_variants/parallel_stream/training_artifacts.py",
-            "models/policy_variants/parallel_stream/variant.py",
-        },
-        "training_single_frame_artifacts": {
             "models/policy_variants/parallel_stream/reference_runtime.py",
             "models/policy_variants/parallel_stream/training_artifacts.py",
             "models/policy_variants/parallel_stream/variant.py",
@@ -6232,9 +6160,7 @@ def test_parallel_training_artifacts_have_one_implementation_owner() -> None:
         "force_clean_noisy_slot",
         "preferred_reference_dtype",
         "prepare_parallel_action_conditioned_train_artifacts",
-        "prepare_parallel_current_frame_action_chunk_train_artifacts",
         "prepare_parallel_exact_train_artifacts",
-        "prepare_parallel_fastwam_first_frame_train_artifacts",
         "prepare_parallel_prefix_condition_exact_train_artifacts",
         "rearrange",
         "resolve_parallel_context_condition_latent_source",
@@ -7269,7 +7195,6 @@ def test_orphaned_diagnostics_and_duplicate_aliases_are_retired() -> None:
         REPO_ROOT / "scripts" / "run_lingbot_va_m1_proprio_finetune_libero10.sh",
         REPO_ROOT / "scripts" / "check_libero_proprio_state_alignment.py",
         REPO_ROOT / "scripts" / "smoke_parallel_stream_lingbot_replica.py",
-        REPO_ROOT / "scripts" / "run_contract_only.sh",
         REPO_ROOT / "scripts" / "run_backbone_only.sh",
     )
 
@@ -7283,19 +7208,12 @@ def test_bespoke_smoke_and_config_preset_aliases_are_retired() -> None:
             "smoke_backbone_only.py",
             "smoke_phase_two.py",
             "smoke_variant_pipeline.py",
-            "smoke_post_decoded.py",
             "smoke_parallel_stream.py",
             "smoke_lingbot_exact_runner.py",
             "run_train_backbone_only.sh",
-            "run_train_contract_only.sh",
-            "run_train_contract_only_libero.sh",
             "run_eval_causal_video_prediction_robotwin_smoke.sh",
-            "run_eval_contract_only.sh",
-            "run_eval_contract_only_libero_trajectory.sh",
             "run_eval_dual_expert_robotwin_smoke.sh",
             "run_eval_parallel_stream_robotwin_smoke.sh",
-            "run_eval_post_decoded_video_conditioned_libero_trajectory.sh",
-            "run_eval_post_latent_video_conditioned_libero_trajectory.sh",
         )
     )
 
@@ -7321,9 +7239,6 @@ def test_pre_variant_backbone_only_surface_is_retired() -> None:
         encoding="utf-8"
     )
     assert "BackboneOnlyPipeline" not in pipelines_source
-    assert (
-        REPO_ROOT / "configs" / "experiments" / "contract_only_robotwin.yaml"
-    ).is_file()
 
 
 def test_retained_pose_and_wan_diagnostics_use_owned_portable_contracts() -> None:
@@ -7390,7 +7305,6 @@ def test_retained_checkout_commands_require_machine_local_roots() -> None:
 
 def test_active_checkout_docs_and_tools_have_no_private_machine_defaults() -> None:
     excluded = {
-        REPO_ROOT / "notes/finished_roadmaps/production_core_pruning_roadmap.md",
         REPO_ROOT / "scripts/build_docs_site.py",
         REPO_ROOT / "scripts/check_release_metadata.py",
         REPO_ROOT / "scripts/ci_basic_sanity.py",
@@ -7420,7 +7334,6 @@ def test_active_checkout_docs_and_tools_have_no_private_machine_defaults() -> No
                 not path.is_file()
                 or path in excluded
                 or path.suffix not in {".md", ".py", ".sh"}
-                or "finished_roadmaps" in path.parts
                 or path.name.endswith(".tmp.md")
             ):
                 continue
@@ -7905,14 +7818,6 @@ def test_libero_integration_roles_have_one_owner() -> None:
             not in _absolute_imports_for_file(path)
         ), path
 
-    sampled_runner = REPO_ROOT / "scripts" / "run_libero_sampled_eval.py"
-    sampled_source = sampled_runner.read_text(encoding="utf-8")
-    assert "load_libero_benchmark_init_state_counts" in sampled_source
-    assert "LiberoTaskSpec(" not in sampled_source
-    assert "from libero.libero import benchmark" not in sampled_source
-    assert "import yaml" not in sampled_source
-
-
 def test_simulator_configs_preserve_frozen_definitions_and_legacy_aliases() -> None:
     import hashlib
     import importlib
@@ -8099,154 +8004,6 @@ def test_public_config_enums_are_declared_once() -> None:
     assert duplicates == []
 
 
-def test_sampled_eval_reporting_has_one_package_owner() -> None:
-    runner_path = REPO_ROOT / "scripts" / "run_libero_sampled_eval.py"
-    reporting_path = PACKAGE_ROOT / "evals" / "sampled_eval_reporting.py"
-    runner_definitions = _top_level_definitions(runner_path)
-    reporting_definitions = _top_level_definitions(reporting_path)
-    reporting_contract = {
-        "SampledEvalCaseReport",
-        "build_sampled_eval_paired_rows",
-        "build_sampled_eval_summary",
-        "collect_sampled_eval_run",
-        "find_case_summary_paths",
-        "write_json_atomic",
-        "write_sampled_eval_queue_note",
-        "write_sampled_eval_results_csv",
-        "write_sampled_eval_summary_markdown",
-    }
-
-    assert reporting_contract <= reporting_definitions
-    assert reporting_contract == _module_all_names(reporting_path)
-    assert {
-        "collect_run",
-        "build_summary_payload",
-        "build_paired_rows",
-        "write_results_csv",
-        "write_summary_md",
-        "write_status_note",
-    }.isdisjoint(runner_definitions)
-    assert _imports_qualified_name(
-        runner_path,
-        "open_wam.evals.sampled_eval_reporting",
-    )
-
-
-def test_sampled_eval_sampling_has_one_package_owner() -> None:
-    runner_path = REPO_ROOT / "scripts" / "run_libero_sampled_eval.py"
-    sampling_path = PACKAGE_ROOT / "evals" / "sampled_eval_sampling.py"
-    runner_definitions = _top_level_definitions(runner_path)
-    sampling_definitions = _top_level_definitions(sampling_path)
-    sampling_contract = {
-        "DatasetEpisode",
-        "DistributionEpisodeStrategy",
-        "SAMPLE_MODE_CHOICES",
-        "SampledEvalMode",
-        "TaskAxisInitSource",
-        "allocate_proportional_counts",
-        "attach_replay_status_to_dataset_episodes",
-        "build_dataset_episodes",
-        "build_replay_status_warnings",
-        "build_sample_warnings",
-        "evenly_spaced_indices",
-        "filter_dataset_episodes_by_replay_status",
-        "normalize_sample_mode",
-        "parse_int_selector",
-        "sample_episodes_by_task_distribution",
-        "select_distribution_task_episodes",
-        "select_full_task_init_axis",
-        "select_sampled_episodes",
-        "select_task_episode_axis",
-        "uses_replay_resolved_init_ids",
-    }
-
-    assert sampling_contract - {"SAMPLE_MODE_CHOICES"} <= sampling_definitions
-    assert sampling_contract == _module_all_names(sampling_path)
-    assert {
-        "DatasetEpisode",
-        "allocate_proportional_counts",
-        "attach_replay_status_to_dataset_episodes",
-        "build_dataset_episodes",
-        "build_replay_status_warnings",
-        "build_sample_warnings",
-        "evenly_spaced_indices",
-        "filter_dataset_episodes_by_replay_status",
-        "normalize_sample_mode",
-        "parse_int_selector",
-        "sample_episodes_by_task_distribution",
-        "select_distribution_task_episodes",
-        "select_full_task_init_axis",
-        "select_sampled_episodes",
-        "select_task_episode_axis",
-    }.isdisjoint(runner_definitions)
-    assert _imports_qualified_name(
-        runner_path,
-        "open_wam.evals.sampled_eval_sampling",
-    )
-    assert "argparse" not in _absolute_imports_for_file(sampling_path)
-    assert "open_wam.integrations.libero_tasks" not in _absolute_imports_for_file(
-        sampling_path
-    )
-
-
-def test_sampled_eval_planning_has_one_lightweight_package_owner() -> None:
-    runner_path = REPO_ROOT / "scripts" / "run_libero_sampled_eval.py"
-    planning_path = PACKAGE_ROOT / "evals" / "sampled_eval_planning.py"
-    runner_definitions = _top_level_definitions(runner_path)
-    planning_definitions = _top_level_definitions(planning_path)
-    planning_contract = {
-        "SAMPLED_EVAL_DEFAULT_CONFIG",
-        "SAMPLED_EVAL_METHODS",
-        "SAMPLED_EVAL_SCHEDULERS",
-        "SampledEvalCase",
-        "SampledEvalCaseOptions",
-        "SampledEvalCheckpointSpec",
-        "SampledEvalMethodSpec",
-        "SampledEvalPreflightOptions",
-        "SampledEvalSchedulerSpec",
-        "SampledEvalTargetRequest",
-        "build_sampled_eval_cases",
-        "parse_sampled_eval_target_requests",
-        "preflight_sampled_eval_cases",
-        "resolve_sampled_eval_checkpoint_specs",
-        "sampled_eval_scheduler_flags",
-        "sampled_eval_scheduler_suffix",
-        "sanitize_sampled_eval_label",
-        "select_sampled_eval_specs_by_key",
-    }
-
-    assert planning_contract - {
-        "SAMPLED_EVAL_DEFAULT_CONFIG",
-        "SAMPLED_EVAL_METHODS",
-        "SAMPLED_EVAL_SCHEDULERS",
-    } <= planning_definitions
-    assert planning_contract == _module_all_names(planning_path)
-    assert {
-        "MethodSpec",
-        "SchedulerSpec",
-        "TargetRequest",
-        "CheckpointSpec",
-        "EvalCase",
-        "append_optional_arg",
-        "extra_args_for_case",
-        "extra_args_for_transformer_only_input",
-        "parse_target_requests",
-        "sanitize_label",
-        "scheduler_flags_for",
-        "scheduler_suffix_for",
-        "select_by_key",
-    }.isdisjoint(runner_definitions)
-    assert _imports_qualified_name(
-        runner_path,
-        "open_wam.evals.sampled_eval_planning",
-    )
-    planning_imports = _absolute_imports_for_file(planning_path)
-    assert "argparse" not in planning_imports
-    assert "os" not in planning_imports
-    assert "torch" not in planning_imports
-    assert "numpy" not in planning_imports
-    assert "open_wam.integrations.libero_tasks" not in planning_imports
-
 
 def test_generic_evaluator_has_explicit_contract_metric_and_window_owners() -> None:
     facade_path = PACKAGE_ROOT / "evals" / "evaluate.py"
@@ -8262,7 +8019,6 @@ def test_generic_evaluator_has_explicit_contract_metric_and_window_owners() -> N
     } <= _top_level_definitions(contracts_path)
     assert {
         "_align_eval_action_tensors",
-        "_align_local_future_video_prediction",
         "_masked_action_mse",
         "_select_eval_action_prediction",
         "_select_eval_video_prediction",
@@ -8363,24 +8119,7 @@ def test_training_runtime_has_explicit_composition_owners() -> None:
 def test_checkpoint_artifact_discovery_has_one_lightweight_owner() -> None:
     artifact_path = PACKAGE_ROOT / "runtime" / "checkpoint_artifacts.py"
     loader_path = PACKAGE_ROOT / "runtime" / "checkpoints.py"
-    runner_path = REPO_ROOT / "scripts" / "run_libero_sampled_eval.py"
     artifact_definitions = _top_level_definitions(artifact_path)
-    moved_runner_definitions = {
-        "CheckpointResolution",
-        "_has_transformer_weights",
-        "checkpoint_step",
-        "find_checkpoint_file",
-        "is_transformer_only_input_dir",
-        "is_usable_transformer_dir",
-        "read_backbone_transformer_subdir",
-        "read_backbone_transformer_subdir_without_yaml",
-        "resolve_checkpoint_input",
-        "resolve_runtime_transformer_dir",
-        "resolve_transformer_only_input",
-        "sorted_checkpoint_dirs",
-        "state_file_in_dir",
-        "transformer_dir_from_resolved_config",
-    }
     artifact_contract = {
         "CHECKPOINT_FILENAMES",
         "CheckpointArtifactResolution",
@@ -8402,11 +8141,6 @@ def test_checkpoint_artifact_discovery_has_one_lightweight_owner() -> None:
 
     assert artifact_contract - {"CHECKPOINT_FILENAMES"} <= artifact_definitions
     assert artifact_contract == _module_all_names(artifact_path)
-    assert moved_runner_definitions.isdisjoint(_top_level_definitions(runner_path))
-    assert _imports_qualified_name(
-        runner_path,
-        "open_wam.runtime.checkpoint_artifacts",
-    )
     assert "open_wam.runtime.checkpoint_artifacts" in _absolute_imports_for_file(
         loader_path
     )

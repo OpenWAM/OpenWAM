@@ -49,14 +49,17 @@ result schemas, artifact manifests, and checkpoint layout expectations.
 
 ### Deprecated
 
-- Legacy `action_head` config sections remain accepted but should be migrated to
-  `policy_variant` plus `action_decoder`.
 - Legacy root scripts remain only as compatibility adapters where a maintained
   package command exists.
 
 ### Removed
 
 - Private cluster orchestration and machine-specific launch supervision.
+- Legacy `action_head`, `post_latent`, and `post_decoded` policy surfaces;
+  policies now cross the explicit `policy_variant` plus `action_decoder`
+  boundary.
+- Contract-only presets, the sampled-evaluation study, duplicate superseded
+  configs, and completed roadmap archives.
 - Superseded traditional Method 2 and experimental Method 3 implementations,
   unreachable model prototypes, and stale deployment diagnostics.
 - Duplicate launchers and research-only utilities without a maintained runtime

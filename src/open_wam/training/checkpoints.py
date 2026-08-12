@@ -228,6 +228,45 @@ def _set_model_state_dict(
     set_model_state_dict(model, model_state_dict, options=options)
 
 
+def _filter_unexpected_distributed_model_state(
+    model: nn.Module,
+    model_state_dict: dict[str, Any],
+) -> dict[str, Any]:
+    """Apply non-strict load semantics before rank-zero state broadcast.
+
+    PyTorch's full-state broadcast indexes every checkpoint key in the local
+    model state before ``strict=False`` can discard unexpected entries. This
+    raises ``KeyError`` for checkpoints that contain parameters from a removed
+    optional component. Filtering against the current parameter-and-buffer
+    contract preserves normal non-strict loading while leaving missing and
+    shape-mismatched current keys to the state-dict loader.
+    """
+
+    expected_keys = {
+        name for name, _ in model.named_parameters(remove_duplicate=False)
+    }
+    expected_keys.update(
+        name for name, _ in model.named_buffers(remove_duplicate=False)
+    )
+    unexpected_keys = sorted(set(model_state_dict) - expected_keys)
+    if not unexpected_keys:
+        return model_state_dict
+    preview = ", ".join(unexpected_keys[:8])
+    suffix = "" if len(unexpected_keys) <= 8 else ", ..."
+    warnings.warn(
+        "Ignoring "
+        f"{len(unexpected_keys)} checkpoint key(s) absent from the current model "
+        f"during non-strict distributed load: {preview}{suffix}",
+        RuntimeWarning,
+        stacklevel=2,
+    )
+    return {
+        key: value
+        for key, value in model_state_dict.items()
+        if key in expected_keys
+    }
+
+
 class CheckpointManager:
     """Own save/load/export behavior for the composable training runtime."""
 
@@ -409,6 +448,11 @@ class CheckpointManager:
             )
 
         model_state = payload.get("model_state_dict", {})
+        if distributed and is_rank_zero and isinstance(model_state, dict):
+            model_state = _filter_unexpected_distributed_model_state(
+                model,
+                model_state,
+            )
         optimizer_state = payload.get("optimizer_state_dict")
         optimizer_state_contract = (
             _optimizer_state_presence_contract(optimizer_state)

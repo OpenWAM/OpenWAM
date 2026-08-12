@@ -75,7 +75,7 @@ def expand_video_action_sequence_contract(raw: dict[str, Any]) -> dict[str, Any]
 
     policy_name = coerce_enum(
         enums.PolicyVariantName,
-        policy_variant_raw.get("name", enums.PolicyVariantName.POST_LATENT),
+        policy_variant_raw.get("name"),
     )
     if policy_name not in {
         enums.PolicyVariantName.PARALLEL_STREAM,

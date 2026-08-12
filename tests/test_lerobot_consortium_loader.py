@@ -475,7 +475,7 @@ def test_consortium_config_loader_loads_nested_data_config(tmp_path: Path) -> No
         episode_lengths=(6,),
     )
 
-    source_path = REPO_ROOT / "configs/experiments/post_latent_robotwin.yaml"
+    source_path = REPO_ROOT / "configs/experiments/dual_expert_robotwin_smoke.yaml"
     raw = yaml.safe_load(source_path.read_text(encoding="utf-8"))
     raw["name"] = "lerobot_consortium_smoke"
     raw["data"] = {

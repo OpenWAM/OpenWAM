@@ -79,6 +79,17 @@ def _numpy_safe_globals() -> tuple[Any, ...]:
         np.ndarray,
         np.dtype,
     ]
+    if hasattr(np, "_core"):
+        # LIBERO's published init states were serialized by NumPy 1.x. NumPy
+        # 2 exposes the same callables under ``numpy._core``; explicit legacy
+        # paths let PyTorch's restricted loader recognize those artifacts
+        # without enabling unrestricted pickle execution.
+        safe_values.extend(
+            (
+                (multiarray._reconstruct, "numpy.core.multiarray._reconstruct"),
+                (multiarray.scalar, "numpy.core.multiarray.scalar"),
+            )
+        )
     for dtype_name in (
         "bool",
         "int8",

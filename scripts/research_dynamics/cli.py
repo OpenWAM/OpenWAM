@@ -192,7 +192,7 @@ def main(argv: list[str] | None = None) -> None:
         checkpoint_compatibility=(
             CheckpointCompatibilityPolicy.ALLOW_PARTIAL
             if args.allow_partial_checkpoint
-            else CheckpointCompatibilityPolicy.STRICT
+            else CheckpointCompatibilityPolicy.ALLOW_CHECKPOINT_SUPERSET
         ),
     )
 
@@ -437,7 +437,7 @@ def _build_fdm_rollout_for_config(
     runtime_device: torch.device,
     runtime_dtype: torch.dtype | None,
     checkpoint_compatibility: CheckpointCompatibilityPolicy = (
-        CheckpointCompatibilityPolicy.STRICT
+        CheckpointCompatibilityPolicy.ALLOW_CHECKPOINT_SUPERSET
     ),
 ) -> JointDenoisingFdmRollout | DualExpertGeneralistDenoisingFdmRollout:
     if _is_dual_expert_policy_config(config):
@@ -546,7 +546,7 @@ def _load_pipeline_checkpoint_for_fdm_rollout(
     *,
     map_location: torch.device,
     compatibility: CheckpointCompatibilityPolicy = (
-        CheckpointCompatibilityPolicy.STRICT
+        CheckpointCompatibilityPolicy.ALLOW_CHECKPOINT_SUPERSET
     ),
 ) -> None:
     report = load_pipeline_checkpoint(
@@ -773,7 +773,11 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Run offline FDM/IDM diagnostics for a joint-denoising policy."
     )
-    parser.add_argument("--config", "--cfg", default="configs/experiments/parallel_stream_libero_joint_denoise.yaml")
+    parser.add_argument(
+        "--config",
+        "--cfg",
+        default="configs/experiments/parallel_stream_libero_generalist_joint_denoising.yaml",
+    )
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument(
         "--allow-partial-checkpoint",

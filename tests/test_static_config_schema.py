@@ -55,10 +55,10 @@ data:
 backbone:
   implementation: not_a_backbone
 policy_variant:
-  name: post_latent
+  name: dual_expert
   attach_site: post_visual_core
 action_decoder:
-  name: mlp_decoder
+  name: dual_expert_decoder
   action_dim: 4
   action_horizon: 2
 trainer:
@@ -89,10 +89,10 @@ data:
 backbone:
   implementation: shared_transformer
 policy_variant:
-  name: post_latent
+  name: dual_expert
   attach_site: post_visual_core
 action_decoder:
-  name: mlp_decoder
+  name: dual_expert_decoder
 trainer:
   accelerator: cpu
 """,
@@ -480,10 +480,10 @@ data:
 backbone:
   implementation: shared_transformer
 policy_variant:
-  name: post_latent
+  name: dual_expert
   attach_site: post_visual_core
 action_decoder:
-  name: mlp_decoder
+  name: dual_expert_decoder
   action_dim: 7
   action_horizon: 16
 trainer:
@@ -518,10 +518,10 @@ data:
 backbone:
   implementation: shared_transformer
 policy_variant:
-  name: post_latent
+  name: dual_expert
   attach_site: post_visual_core
 action_decoder:
-  name: mlp_decoder
+  name: dual_expert_decoder
   action_dim: 7
   action_horizon: 16
 trainer:
@@ -704,10 +704,10 @@ data:
 backbone:
   implementation: shared_transformer
 policy_variant:
-  name: post_latent
+  name: dual_expert
   attach_site: post_visual_core
 action_decoder:
-  name: mlp_decoder
+  name: dual_expert_decoder
   action_dim: 7
   action_horizon: 16
 trainer:
@@ -745,9 +745,9 @@ data:
 backbone:
   implementation: shared_transformer
 policy_variant:
-  name: post_latent
+  name: dual_expert
 action_decoder:
-  name: mlp_decoder
+  name: dual_expert_decoder
   action_dim: 7
   action_horizon: 16
 trainer:
@@ -787,9 +787,9 @@ data:
 backbone:
   implementation: shared_transformer
 policy_variant:
-  name: post_latent
+  name: dual_expert
 action_decoder:
-  name: mlp_decoder
+  name: dual_expert_decoder
   action_dim: 7
   action_horizon: 16
 trainer:
@@ -826,10 +826,10 @@ data:
 backbone:
   implementation: shared_transformer
 policy_variant:
-  name: post_latent
+  name: dual_expert
   attach_site: post_visual_core
 action_decoder:
-  name: mlp_decoder
+  name: dual_expert_decoder
   action_dim: 7
   action_horizon: 16
 trainer:
@@ -864,10 +864,10 @@ data:
 backbone:
   implementation: shared_transformer
 policy_variant:
-  name: post_latent
+  name: dual_expert
   attach_site: post_visual_core
 action_decoder:
-  name: mlp_decoder
+  name: dual_expert_decoder
   action_dim: 7
   action_horizon: 16
 trainer:
@@ -894,10 +894,10 @@ data:
 backbone:
   implementation: shared_transformer
 policy_variant:
-  name: post_latent
+  name: dual_expert
   attach_site: post_visual_core
 action_decoder:
-  name: mlp_decoder
+  name: dual_expert_decoder
 validation:
   auxiliary_tasks:
     - name: fdm_val
@@ -948,10 +948,10 @@ data:
 backbone:
   implementation: shared_transformer
 policy_variant:
-  name: post_latent
+  name: dual_expert
   attach_site: post_visual_core
 action_decoder:
-  name: mlp_decoder
+  name: dual_expert_decoder
   action_dim: 7
   action_horizon: 16
 trainer:
@@ -966,11 +966,11 @@ trainer:
     assert any(issue.path == "data.sample_construction.require_full_segment" for issue in report.errors)
 
 @pytest.mark.unit
-def test_static_validator_rejects_legacy_prefix_fastwam_runtime(tmp_path: Path) -> None:
-    config_path = tmp_path / "bad_legacy_prefix_fastwam.yaml"
+def test_static_validator_rejects_retired_parallel_runtime(tmp_path: Path) -> None:
+    config_path = tmp_path / "retired_parallel_runtime.yaml"
     config_path.write_text(
         """
-name: bad_legacy_prefix_fastwam
+name: retired_parallel_runtime
 data:
   dataset_name: libero
   dataset_type: synthetic_multiview
@@ -984,7 +984,6 @@ backbone:
 policy_variant:
   name: parallel_stream
   runtime_mode: fastwam_first_frame
-  sequence_contract: legacy_prefix_single_frame_perchunk_proprio
 action_decoder:
   name: parallel_stream_decoder
   action_dim: 7
@@ -998,7 +997,7 @@ trainer:
     report = validate_config_file(config_path, repo_root=tmp_path)
 
     assert not report.ok
-    assert any("legacy_prefix_single_frame_perchunk_proprio" in issue.message for issue in report.errors)
+    assert any(issue.path == "policy_variant.runtime_mode" for issue in report.errors)
 
 
 @pytest.mark.unit
@@ -1040,7 +1039,7 @@ trainer:
 
 
 @pytest.mark.unit
-def test_static_validator_warns_for_legacy_action_head(tmp_path: Path) -> None:
+def test_static_validator_rejects_removed_action_head(tmp_path: Path) -> None:
     config_path = tmp_path / "legacy_action_head.yaml"
     config_path.write_text(
         """
@@ -1057,7 +1056,7 @@ backbone:
   implementation: dummy
   hidden_size: 32
 action_head:
-  name: contract_only
+  name: legacy
   hidden_size: 32
   action_dim: 4
   action_horizon: 2
@@ -1070,8 +1069,8 @@ trainer:
 
     report = validate_config_file(config_path, repo_root=tmp_path)
 
-    assert report.ok
-    assert any(issue.path == "action_head" for issue in report.warnings)
+    assert not report.ok
+    assert any(issue.path == "action_head" for issue in report.errors)
 
 
 @pytest.mark.unit

@@ -24,9 +24,7 @@ import pytest
 import torch
 import yaml
 
-import open_wam.training.runtime as training_runtime_module
 from open_wam.configs import (
-    BatchAdapterName,
     DualExpertConditionMode,
     DualExpertRuntimeMode,
     JointTimestepCoupling,
@@ -35,17 +33,9 @@ from open_wam.configs import (
     ParallelRuntimeMode,
     TrainerAccelerator,
     TrainerPrecision,
-    VideoConditionInputSpace,
-    VideoConditionTrainMode,
     load_experiment_config,
 )
-from open_wam.data import (
-    SyntheticLatentWindowDataset,
-    build_synthetic_batch,
-    build_synthetic_latent_batch,
-    move_latent_wam_batch_to_device,
-    move_wam_batch_to_device,
-)
+from open_wam.data import build_synthetic_batch, move_wam_batch_to_device
 from open_wam.evals.evaluate import resolve_evaluation_request, run_evaluation
 from open_wam.models.policy_variants import PolicyInferContext, PolicyTrainBatch
 from open_wam.pipelines import build_variant_pipeline_from_config
@@ -111,14 +101,6 @@ def _pipeline_case_path(case_name: str, tmp_path: Path) -> Path:
             output_name="parallel_stream_robotwin_action_conditioned_gpu",
             mutate=_mutate_parallel_action_conditioned,
         )
-    if case_name == "post_latent_legacy":
-        return REPO_ROOT / "configs/experiments/post_latent_robotwin.yaml"
-    if case_name == "post_decoded_legacy":
-        return REPO_ROOT / "configs/experiments/post_decoded_robotwin.yaml"
-    if case_name == "post_latent_video_conditioned":
-        return REPO_ROOT / "configs/experiments/post_latent_robotwin_video_conditioned.yaml"
-    if case_name == "post_decoded_video_conditioned":
-        return REPO_ROOT / "configs/experiments/post_decoded_robotwin_video_conditioned.yaml"
     if case_name == "dual_expert_prefill":
         return REPO_ROOT / "configs/experiments/dual_expert_robotwin_smoke.yaml"
     if case_name == "dual_expert_joint":
@@ -136,20 +118,6 @@ def _pipeline_case_path(case_name: str, tmp_path: Path) -> Path:
             mutate=_mutate_dual_expert_non_joint_two_stream,
         )
     raise ValueError(f"Unsupported GPU sanity pipeline case {case_name!r}.")
-
-
-def _train_only_case_path(case_name: str, tmp_path: Path) -> Path:
-    if case_name == "method4_current_frame_rgb":
-        return REPO_ROOT / "configs/experiments/post_decoded_robotwin_current_frame_regression.yaml"
-    if case_name == "method4_current_frame_latent":
-        return _write_temp_config(
-            tmp_path,
-            source_name="post_latent_robotwin_video_conditioned.yaml",
-            output_name="post_latent_robotwin_current_frame_regression_gpu",
-            mutate=_mutate_post_latent_current_frame_regression,
-        )
-    raise ValueError(f"Unsupported GPU sanity train-only case {case_name!r}.")
-
 
 def _mutate_parallel_action_conditioned(raw: dict[str, Any]) -> None:
     policy_variant = raw.setdefault("policy_variant", {})
@@ -183,20 +151,6 @@ def _mutate_dual_expert_non_joint_two_stream(raw: dict[str, Any]) -> None:
     inference["video_num_inference_steps"] = 2
     inference["action_num_inference_steps"] = 2
     inference["use_cache"] = False
-
-
-def _mutate_post_latent_current_frame_regression(raw: dict[str, Any]) -> None:
-    raw.setdefault("data", {})["dataset_type"] = "lerobot_v2_latent_local"
-    raw.setdefault("trainer", {})["batch_adapter"] = BatchAdapterName.LATENTS.value
-    policy_variant = raw.setdefault("policy_variant", {})
-    policy_variant["video_condition_input_space"] = VideoConditionInputSpace.VIDEO_LATENT.value
-    raw["action_decoder"] = {
-        "name": "video_conditioned_action_decoder",
-        "input_space": VideoConditionInputSpace.VIDEO_LATENT.value,
-        "train_mode": VideoConditionTrainMode.CURRENT_FRAME_REGRESSION.value,
-        "use_text_conditioning": False,
-        "use_state_conditioning": True,
-    }
 
 
 def _prepare_pipeline_config(config_path: Path) -> Any:
@@ -281,13 +235,6 @@ def _infer_context(batch) -> PolicyInferContext:
     )
 
 
-def _synthetic_latent_train_val_pair(data_config) -> tuple[SyntheticLatentWindowDataset, SyntheticLatentWindowDataset]:
-    return (
-        SyntheticLatentWindowDataset(data_config, length=4),
-        SyntheticLatentWindowDataset(data_config, length=2),
-    )
-
-
 @pytest.fixture(autouse=True)
 def _clear_cuda_between_tests():
     torch.cuda.empty_cache()
@@ -302,10 +249,6 @@ def _clear_cuda_between_tests():
     [
         ("parallel_exact", 8),
         ("parallel_action_conditioned", 8),
-        ("post_latent_legacy", 6),
-        ("post_decoded_legacy", 6),
-        ("post_latent_video_conditioned", 6),
-        ("post_decoded_video_conditioned", 6),
         ("dual_expert_prefill", 8),
         ("dual_expert_joint", 8),
         ("dual_expert_non_joint", 8),
@@ -332,67 +275,8 @@ def test_gpu_policy_architecture_pipeline_train_and_infer_matrix(
 @pytest.mark.parametrize(
     "case_name",
     [
-        "method4_current_frame_rgb",
-        "method4_current_frame_latent",
-    ],
-)
-def test_gpu_method4_current_frame_regression_modes_train_only(
-    tmp_path: Path,
-    case_name: str,
-) -> None:
-    config_path = _train_only_case_path(case_name, tmp_path)
-    config = _prepare_pipeline_config(config_path)
-    pipeline = build_variant_pipeline_from_config(config).to(CUDA_DEVICE)
-
-    if case_name == "method4_current_frame_latent":
-        latent_batch = move_latent_wam_batch_to_device(build_synthetic_latent_batch(config.data, batch_size=1), CUDA_DEVICE)
-        train_batch = PolicyTrainBatch(
-            actions=latent_batch.actions,
-            action_mask=latent_batch.action_mask,
-            state=latent_batch.state,
-            extra={
-                "task_text": latent_batch.task_text,
-                "metadata": latent_batch.metadata,
-                "state_mask": latent_batch.state_mask,
-            },
-        )
-        train_output = pipeline.forward_train_from_latents(
-            latent_batch.video_latents,
-            train_batch,
-            canonical_video=latent_batch.canonical_video,
-            text_context=latent_batch.text_context,
-            negative_text_context=latent_batch.negative_text_context,
-        )
-        assert train_output.decoder_output.action_pred.shape == (1, 1, config.action_decoder.action_dim)
-        with pytest.raises(ValueError, match="train-only"):
-            pipeline.forward_infer_step_from_latents(
-                latent_batch.video_latents,
-                _infer_context(latent_batch),
-                canonical_video=latent_batch.canonical_video,
-                text_context=latent_batch.text_context,
-                negative_text_context=latent_batch.negative_text_context,
-            )
-        return
-
-    batch = move_wam_batch_to_device(build_synthetic_batch(config.data, batch_size=1), CUDA_DEVICE)
-    train_batch = _view_train_batch(batch)
-    train_output = pipeline.forward_train(batch.views, train_batch)
-    assert train_output.decoder_output.action_pred.shape == (1, 1, config.action_decoder.action_dim)
-    with pytest.raises(ValueError, match="train-only"):
-        pipeline.forward_infer_step(batch.views, _infer_context(batch))
-
-
-@pytest.mark.parametrize(
-    "case_name",
-    [
         "parallel_exact",
         "parallel_action_conditioned",
-        "post_latent_legacy",
-        "post_decoded_legacy",
-        "post_latent_video_conditioned",
-        "post_decoded_video_conditioned",
-        "method4_current_frame_rgb",
-        "method4_current_frame_latent",
         "dual_expert_prefill",
         "dual_expert_joint",
         "dual_expert_non_joint",
@@ -400,21 +284,10 @@ def test_gpu_method4_current_frame_regression_modes_train_only(
 )
 def test_gpu_policy_architecture_runtime_train_matrix(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
     case_name: str,
 ) -> None:
-    if case_name.startswith("method4_current_frame"):
-        config_path = _train_only_case_path(case_name, tmp_path)
-    else:
-        config_path = _pipeline_case_path(case_name, tmp_path)
+    config_path = _pipeline_case_path(case_name, tmp_path)
     config = _prepare_runtime_config(config_path, tmp_path=tmp_path)
-
-    if case_name == "method4_current_frame_latent":
-        monkeypatch.setattr(
-            training_runtime_module,
-            "build_train_val_latent_datasets",
-            _synthetic_latent_train_val_pair,
-        )
 
     runtime = TrainingRuntime.from_config(config)
     final_state = runtime.run()
@@ -427,10 +300,6 @@ def test_gpu_policy_architecture_runtime_train_matrix(
     [
         ("parallel_exact", "parallel_stream_robotwin_smoke"),
         ("parallel_action_conditioned", "parallel_stream_robotwin_action_conditioned_gpu"),
-        ("post_latent_legacy", "post_latent_robotwin"),
-        ("post_decoded_legacy", "post_decoded_robotwin"),
-        ("post_latent_video_conditioned", "post_latent_robotwin_video_conditioned"),
-        ("post_decoded_video_conditioned", "post_decoded_robotwin_video_conditioned"),
         ("dual_expert_prefill", "dual_expert_robotwin_smoke"),
         ("dual_expert_joint", "dual_expert_robotwin_joint_gpu"),
         ("dual_expert_non_joint", "dual_expert_robotwin_non_joint_gpu"),

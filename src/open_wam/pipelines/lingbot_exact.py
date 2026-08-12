@@ -107,13 +107,10 @@ class LingbotExactRunner:
         if self.pipeline.policy_variant.config.runtime_mode not in {
             ParallelRuntimeMode.LINGBOT_EXACT,
             ParallelRuntimeMode.LINGBOT_EXACT_ACTION_CONDITIONED,
-            ParallelRuntimeMode.CURRENT_FRAME_ACTION_CHUNK,
-            ParallelRuntimeMode.FASTWAM_FIRST_FRAME,
         }:
             raise ValueError(
                 "LingBot exact runner requires `parallel_stream.runtime_mode` to be "
-                "`lingbot_exact`, `lingbot_exact_action_conditioned`, or "
-                "`current_frame_action_chunk`, or `fastwam_first_frame`."
+                "`lingbot_exact` or `lingbot_exact_action_conditioned`."
             )
 
     @property

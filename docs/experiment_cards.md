@@ -22,25 +22,24 @@ checkpoint exists.
 
 | Architecture | Current programs/profiles | Public card status |
 | --- | --- | --- |
-| `parallel_stream` | exact backend; six video/action programs; GJD | layout card added; public checkpoint pending |
+| `parallel_stream` | six video/action programs; GJD | scaffolded; public checkpoint pending |
 | `dual_expert` | six video/action programs; GJD | scaffolded; public checkpoint pending |
-| `post_latent`, `post_decoded` | video-conditioned decoder | scaffolded; public checkpoint pending |
+| `causal_video_prediction` | video-only causal prediction | scaffolded; public checkpoint pending |
 | fixture | `public_tiny_synthetic_contract` | public structural fixture card added |
 
 ## Current Cards
 
 - `docs/cards/public_tiny_synthetic_contract.md`
-- `docs/cards/parallel_stream_libero_exact_step400.md`
 
 ## Template
 
 ```yaml
 architecture: parallel_stream
-variant: exact
+program: video_then_action
 benchmark: libero_10
-train_config: configs/experiments/parallel_stream_libero_lingbot_exact.yaml
-eval_config: configs/evals/parallel_stream_libero_lingbot_exact_eval.yaml
-checkpoint_artifact_id: parallel-stream-libero-exact-step400
+train_config: configs/experiments/parallel_stream_libero_video_then_action.yaml
+eval_config: null
+checkpoint_artifact_id: parallel-stream-libero-video-then-action
 dataset_artifact_id: null
 hardware:
   gpu: null

@@ -41,7 +41,6 @@ from open_wam.models.video_backbone.contracts import (
 
 from .contracts import (
     VisualCoreInput,
-    VisualIntermediateReadout,
     VisualCoreOutput,
 )
 from .checkpoint_compat import RuntimeStreamCompatibilityParameters
@@ -1230,12 +1229,6 @@ class SharedVideoTransformerCore(nn.Module):
             device=device,
         )
         cache_update_metadata = core_input.cache_update_metadata or CacheUpdateMetadata()
-        captured_readouts: list[VisualIntermediateReadout] = []
-        requested_layers = (
-            set(core_input.readout_request.capture_layer_indices)
-            if core_input.readout_request is not None
-            else set()
-        )
         cache_branch = cache_update_metadata.cache_branch
         cache_metadata = core_input.sequence_metadata.metadata if core_input.sequence_metadata is not None else {}
         cacheable_video_tokens = int(cache_metadata.get("cacheable_video_tokens", 0))
@@ -1320,16 +1313,6 @@ class SharedVideoTransformerCore(nn.Module):
                 next_cross_attention_kv.append(current_cross_cache_entry)
             else:
                 next_cross_attention_kv.append(AttentionCacheEntry())
-            if layer_index in requested_layers:
-                captured_readouts.append(
-                    VisualIntermediateReadout(
-                        layer_index=layer_index,
-                        tokens=hidden_states,
-                        token_layout=token_layout,
-                        aux={"implementation": "shared_transformer"},
-                    )
-                )
-
         output_device = self.scale_shift_table.device
         if hidden_states.device != output_device:
             hidden_states = hidden_states.to(device=output_device)
@@ -1433,7 +1416,6 @@ class SharedVideoTransformerCore(nn.Module):
             tokens=hidden_states,
             token_layout=token_layout,
             cache_state=cache_state,
-            intermediate_readouts=tuple(captured_readouts),
             aux={
                 "implementation": "shared_transformer",
                 "used_rotary": rotary_grid_ids is not None,

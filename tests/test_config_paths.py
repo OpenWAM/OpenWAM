@@ -13,7 +13,6 @@ from open_wam.configs import (
     resolve_config_path_alias,
     validate_config_file,
 )
-from open_wam.evals.evaluation_contracts import resolve_evaluation_request
 from open_wam.training import TrainCliOverrides, resolve_experiment_config_path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -71,20 +70,6 @@ def test_retired_bare_config_name_resolves_through_training_cli() -> None:
     assert resolved == EXPERIMENT_ROOT / "dual_expert_libero_video_then_action.yaml"
 
 
-def test_retired_eval_name_resolves_end_to_end() -> None:
-    old_path = EVALUATION_ROOT / "parallel_stream_libero_lingbot_exact_heng_eval.yaml"
-
-    with pytest.warns(
-        DeprecatedConfigNameWarning, match="parallel_stream_libero_lingbot_exact_eval"
-    ):
-        request = resolve_evaluation_request(old_path)
-
-    assert (
-        request.experiment_config_path
-        == EXPERIMENT_ROOT / "parallel_stream_libero_lingbot_exact.yaml"
-    )
-
-
 def test_overlapping_robotwin_alias_resolves_by_config_directory() -> None:
     experiment_path = EXPERIMENT_ROOT / "mot_robotwin_smoke.yaml"
     evaluation_path = EVALUATION_ROOT / "mot_robotwin_smoke.yaml"
@@ -104,14 +89,14 @@ def test_static_validation_accepts_retired_name_through_alias() -> None:
     )
 
     with pytest.warns(
-        DeprecatedConfigNameWarning, match="parallel_stream_libero_lingbot_exact"
+        DeprecatedConfigNameWarning, match="parallel_stream_libero_video_then_action"
     ):
         report = validate_config_file(old_path, repo_root=REPO_ROOT)
 
     assert report.ok
     assert (
         report.source_path
-        == EXPERIMENT_ROOT / "parallel_stream_libero_lingbot_exact.yaml"
+        == EXPERIMENT_ROOT / "parallel_stream_libero_video_then_action.yaml"
     )
 
 

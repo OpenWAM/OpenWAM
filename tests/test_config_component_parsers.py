@@ -41,7 +41,6 @@ def test_component_parsers_match_full_experiment_loading(config_path: Path) -> N
     assert parse_validation_config(raw.get("validation")) == config.validation
     parsed_policy = parse_policy_variant_config(
         policy_variant_raw=raw.get("policy_variant", {}),
-        action_head_raw=raw.get("action_head", {}),
         data_config=config.data,
         backbone_config=config.backbone,
         training_config=config.training,
@@ -53,7 +52,6 @@ def test_component_parsers_match_full_experiment_loading(config_path: Path) -> N
             action_decoder_raw=raw.get("action_decoder", {}),
             policy_variant_config=parsed_policy,
             data_config=config.data,
-            backbone_config=config.backbone,
         )
         == config.action_decoder
     )

@@ -17,6 +17,12 @@ _REMOVED_LIBERO_POLICY_CONFIG_REASONS = {
     "mot_libero_latent_local_full_segment_non_joint_aligned": "legacy dual-expert aligned full-segment config",
     "mot_libero_latent_local_full_segment_with_latent": "legacy dual-expert full-segment latent config",
     "parallel_stream_libero_lingbot_exact_local": "legacy local parallel-stream exact config",
+    "parallel_stream_libero_current_frame_action_chunk": (
+        "retired current-frame action-chunk experiment"
+    ),
+    "parallel_stream_libero_fastwam_first_frame": (
+        "retired first-frame FastWAM experiment"
+    ),
     "parallel_stream_libero_joint_denoise_heng_compatible_contextual_fixed_geometry": (
         "legacy contextual-subwindow parallel-stream joint config"
     ),
@@ -31,7 +37,6 @@ _REMOVED_LIBERO_POLICY_CONFIG_REASONS = {
 _REMOVED_LIBERO_SCRIPT_REPLACEMENTS = {
     "run_libero_exact_realtime_sandbox.py": "scripts/run_libero_realtime_sandbox.py",
     "run_libero_exact_visualization.py": "scripts/run_libero_realtime_sandbox.py",
-    "run_libero_realtime_ablation.py": "scripts/run_libero_sampled_eval.py",
     "run_mot_non_joint_aligned_libero_A.sh": (
         "scripts/run_dual_expert_posttrain_libero.sh with a maintained CONFIG_NAME"
     ),

@@ -91,7 +91,6 @@ def build_run_tracking_metadata(
         else None
     )
     preserve_video_pretrain_history = getattr(config.policy_variant, "preserve_video_pretrain_history", None)
-    train_video_condition_source = getattr(config.policy_variant, "train_video_condition_source", None)
     sample_construction = getattr(config.data, "sample_construction", None)
     dynamics_mixture = getattr(config.data, "generalist_dynamics_mixture", None)
     checkpoint_dir = Path(config.trainer.checkpoint_dir) if config.trainer.checkpoint_dir else output_dir / "checkpoints"
@@ -214,9 +213,6 @@ def build_run_tracking_metadata(
         "enabled_objectives": [str(value) for value in config.training.enabled_objectives],
         "trainable_components": [str(value) for value in config.training.trainable_components],
         "frozen_components": [str(value) for value in config.training.frozen_components],
-        "train_video_condition_source": (
-            str(train_video_condition_source) if train_video_condition_source is not None else None
-        ),
         "output_dir": str(output_dir),
         "checkpoint_dir": str(checkpoint_dir),
         "resume_from": config.trainer.resume_from,
@@ -280,8 +276,6 @@ def build_wandb_tags(tracking_metadata: dict[str, Any]) -> tuple[str, ...]:
         ordered_tags.append(f"program:{tracking_metadata['program']}")
     if tracking_metadata.get("git_dirty") is True:
         ordered_tags.append("dirty_worktree")
-    if tracking_metadata.get("train_video_condition_source"):
-        ordered_tags.append(f"train_video_condition:{tracking_metadata['train_video_condition_source']}")
     if tracking_metadata.get("runtime_mode"):
         ordered_tags.append(f"runtime_mode:{tracking_metadata['runtime_mode']}")
     if tracking_metadata.get("variant_profile") and tracking_metadata["variant_profile"] != "standard":

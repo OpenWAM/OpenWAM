@@ -25,7 +25,7 @@ def test_docs_site_stages_curated_public_docs_only(tmp_path: Path) -> None:
 
     summary = builder.build_docs_site(output)
 
-    assert summary["public_pages"] == len(builder.PUBLIC_MARKDOWN_PATHS) == 26
+    assert summary["public_pages"] == len(builder.PUBLIC_MARKDOWN_PATHS) == 25
     assert summary["notes_published"] is False
     assert summary["broken_local_links"] == 0
     assert summary["missing_repository_paths"] == 0

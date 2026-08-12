@@ -6,8 +6,6 @@ from open_wam.configs import ExperimentConfig
 from open_wam.configs.policy_contracts import (
     CausalVideoPredictionPolicyConfig,
     ExtensionPolicyConfig,
-    PostDecodedPolicyConfig,
-    PostLatentPolicyConfig,
 )
 from open_wam.configs.policy_dual_expert import DualExpertPolicyConfig
 from open_wam.configs.policy_parallel_stream import ParallelStreamPolicyConfig
@@ -16,38 +14,10 @@ from open_wam.models.policy_variants import (
     DualExpertPolicyVariant,
     ParallelStreamPolicyVariant,
     PolicyVariant,
-    PostDecodedPolicyVariant,
-    PostLatentPolicyVariant,
 )
 
 from .factory_validation import _resolve_parallel_stream_model_action_dim
 from .registries import _EXTENSION_POLICY_VARIANT_BUILDERS, POLICY_VARIANT_BUILDERS
-
-
-def _build_post_latent_policy_variant(config: ExperimentConfig):
-    action_schema = config.data.action_schema
-    policy_config = config.policy_variant
-    assert isinstance(policy_config, PostLatentPolicyConfig)
-    return PostLatentPolicyVariant(
-        config=policy_config,
-        training_config=config.training,
-        inference_config=config.inference,
-        action_horizon=action_schema.action_horizon,
-        state_dim=action_schema.state_dim,
-    )
-
-
-def _build_post_decoded_policy_variant(config: ExperimentConfig):
-    action_schema = config.data.action_schema
-    policy_config = config.policy_variant
-    assert isinstance(policy_config, PostDecodedPolicyConfig)
-    return PostDecodedPolicyVariant(
-        config=policy_config,
-        training_config=config.training,
-        inference_config=config.inference,
-        action_horizon=action_schema.action_horizon,
-        state_dim=action_schema.state_dim,
-    )
 
 
 def _build_causal_video_prediction_policy_variant(config: ExperimentConfig):

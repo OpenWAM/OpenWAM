@@ -34,8 +34,6 @@ POSTTRAIN_LAUNCHERS = (
     "scripts/run_causal_video_prediction_posttrain_libero.sh",
     "scripts/run_dual_expert_posttrain_libero.sh",
     "scripts/run_parallel_stream_posttrain_libero.sh",
-    "scripts/run_post_decoded_posttrain_libero.sh",
-    "scripts/run_post_latent_posttrain_libero.sh",
 )
 TOP_LEVEL_DEPRECATED_DUAL_EXPERT_WRAPPER_STUBS = (
     "scripts/run_mot_full_segment_nonjoint_libero.sh",
@@ -160,12 +158,6 @@ def test_posttrain_launchers_delegate_to_shared_process_owner() -> None:
         "scripts/run_causal_video_prediction_posttrain_libero.sh": "openwam-causal-video-libero",
         "scripts/run_parallel_stream_posttrain_libero.sh": "lingbot-va-posttrain-libero",
         "scripts/run_dual_expert_posttrain_libero.sh": "openwam-dual-expert-libero",
-        "scripts/run_post_decoded_posttrain_libero.sh": (
-            "openwam-method4-post-decoded-libero-video-conditioned"
-        ),
-        "scripts/run_post_latent_posttrain_libero.sh": (
-            "openwam-method4-post-latent-libero-video-conditioned"
-        ),
     }
     helper_source = TRAINING_HELPER_PATH.read_text(encoding="utf-8")
 
@@ -439,6 +431,7 @@ def _assert_high_success_planning_config(
     assert config.data.val_replay_status_policy is None
     assert config.data.require_replay_status is False
     assert config.data.val_require_replay_status is False
+    assert config.data.train_batch_size == 1
     assert sample.mode == WindowSamplingMode.UNIFORM_SEGMENT
     assert sample.sample_order_mode == SampleOrderMode.REPLACEMENT
     assert sample.chunk_size == 4
@@ -472,6 +465,7 @@ def _assert_high_success_planning_config(
     assert config.training.chunk_size == 4
     assert config.training.window_size == 64
     assert config.training.sample_loss_weight_mode.value == "none"
+    assert config.training.gradient_accumulation_steps == 10
     assert config.training.num_steps == expected_num_steps
     assert config.trainer.checkpoint_mode.value == "full_training_state"
 
@@ -494,6 +488,7 @@ def test_policy_program_configs_own_architecture_neutral_high_success_recipe(
     assert raw["data"]["val_replay_status_policy"] is None
     assert raw["data"]["require_replay_status"] is False
     assert raw["data"]["val_require_replay_status"] is False
+    assert raw["data"]["train_batch_size"] == 1
     assert sample["mode"] == "uniform_segment"
     assert sample["sample_order_mode"] == "replacement"
     assert sample["chunk_size"] == 4
@@ -520,6 +515,7 @@ def test_policy_program_configs_own_architecture_neutral_high_success_recipe(
     assert policy["noisy_video_condition_prob"] == pytest.approx(0.5)
     assert raw["training"]["window_size"] == 64
     assert raw["training"]["sample_loss_weight_mode"] == "none"
+    assert raw["training"]["gradient_accumulation_steps"] == 10
     assert raw["training"]["num_steps"] == 10000
 
     _assert_high_success_planning_config(load_experiment_config(config_path))
@@ -532,6 +528,7 @@ def _assert_gjd_fullseg_w64_raw_config(raw: dict) -> None:
     assert raw["data"]["val_replay_status_policy"] is None
     assert raw["data"]["require_replay_status"] is False
     assert raw["data"]["val_require_replay_status"] is False
+    assert raw["data"]["train_batch_size"] == 1
     assert sample["mode"] == "uniform_segment"
     assert sample["sample_order_mode"] == "replacement"
     assert sample["chunk_size"] == 4
@@ -554,6 +551,7 @@ def _assert_gjd_fullseg_w64_raw_config(raw: dict) -> None:
     assert "start_padding_frames" not in sample
     assert raw["training"]["window_size"] == 64
     assert raw["training"]["sample_loss_weight_mode"] == "none"
+    assert raw["training"]["gradient_accumulation_steps"] == 10
     assert raw["training"]["num_steps"] == 20000
     assert raw["policy_variant"]["joint_timestep_coupling"] == "independent"
     assert raw["policy_variant"]["generalist_training_paradigm"] == "dynamics_routed"
@@ -580,6 +578,7 @@ def _planning_recipe_snapshot(config) -> tuple:
         config.data.val_replay_status_policy,
         config.data.require_replay_status,
         config.data.val_require_replay_status,
+        config.data.train_batch_size,
         sample.mode,
         sample.sample_order_mode,
         sample.chunk_size,
@@ -609,6 +608,7 @@ def _planning_recipe_snapshot(config) -> tuple:
         config.training.chunk_size,
         config.training.window_size,
         config.training.sample_loss_weight_mode,
+        config.training.gradient_accumulation_steps,
     )
 
 
@@ -653,22 +653,6 @@ def test_sampling_geometry_is_owned_by_configs_not_launcher_name_dispatch() -> N
 
     for value in FIXED_128_VALUES:
         assert value not in helper_source
-    for launcher, config_name in (
-        (
-            "scripts/run_parallel_stream_posttrain_libero.sh",
-            "parallel_stream_libero_lingbot_exact",
-        ),
-        (
-            "scripts/run_dual_expert_posttrain_libero.sh",
-            "dual_expert_libero_latent_local_full_segment_non_joint_action_only",
-        ),
-    ):
-        argv = _launcher_train_argv(
-            launcher,
-            env_overrides={"CONFIG_NAME": config_name},
-        )
-        for value in FIXED_128_VALUES:
-            assert value not in argv
 
 
 def test_parallel_stream_gjd_uses_shared_planning_recipe() -> None:
@@ -795,10 +779,7 @@ def test_m5_gjd_mode_token_launcher_keeps_fullseg_w64_sampler() -> None:
 def test_legacy_config_name_normalization_is_isolated_from_training_launcher() -> None:
     assert _normalized_legacy_config_name(
         "parallel_stream_libero_lingbot_exact_heng_compatible.yaml"
-    ) == "parallel_stream_libero_lingbot_exact"
-    assert _normalized_legacy_config_name(
-        "configs/experiments/parallel_stream_libero_lingbot_exact.yaml"
-    ) == "parallel_stream_libero_lingbot_exact"
+    ) == "parallel_stream_libero_video_then_action"
 
 
 def test_policy_program_aliases_only_normalize_identity() -> None:
@@ -1303,31 +1284,6 @@ def test_dual_expert_visualization_deprecates_non_streaming_frontend_encode_mode
         allow_deprecated=True,
         source="test",
     )
-
-
-def test_m5_gjd_sampled_eval_wrapper_fails_closed() -> None:
-    result = subprocess.run(
-        ["bash", str(REPO_ROOT / "scripts/run_m5_gjd_libero_eval.sh")],
-        cwd=REPO_ROOT,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-
-    assert result.returncode == 2
-    assert "deprecated and now fails closed" in result.stderr
-    assert "run_gjd_libero.sh rollout --architecture dual_expert" in result.stderr
-
-    help_result = subprocess.run(
-        ["bash", str(REPO_ROOT / "scripts/run_m5_gjd_libero_eval.sh"), "--help"],
-        cwd=REPO_ROOT,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-    assert help_result.returncode == 0
-    assert "Do not use" in help_result.stdout
-    assert "run_libero_sampled_eval.py for GJD" in help_result.stdout
 
 
 def test_dual_expert_launchers_reject_legacy_configs_by_default() -> None:

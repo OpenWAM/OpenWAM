@@ -19,7 +19,7 @@ def main() -> None:
         "--config",
         dest="config",
         type=str,
-        default="configs/experiments/contract_only_libero.yaml",
+        default="configs/experiments/parallel_stream_libero_raw_smoke.yaml",
     )
     args = parser.parse_args()
 

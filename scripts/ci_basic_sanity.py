@@ -244,27 +244,24 @@ def _check_experiment_configs() -> tuple[Path, ...]:
     paths = tuple(sorted((REPO_ROOT / "configs" / "experiments").glob("*.yaml")))
     if not paths:
         raise SystemExit("No experiment configs found.")
-    required_top_level = {"data", "trainer", "backbone"}
+    required_top_level = {
+        "action_decoder",
+        "backbone",
+        "data",
+        "policy_variant",
+        "trainer",
+    }
     for path in paths:
         top_level = _top_level_keys(path)
         missing = sorted(required_top_level.difference(top_level))
         if missing:
             raise SystemExit(f"{path.relative_to(REPO_ROOT)} is missing top-level fields: {missing!r}")
-        has_policy_variant = "policy_variant" in top_level
-        has_action_decoder = "action_decoder" in top_level
-        has_legacy_action_head = "action_head" in top_level
-        if not has_policy_variant and not has_legacy_action_head:
-            raise SystemExit(
-                f"{path.relative_to(REPO_ROOT)} must define policy_variant or legacy action_head."
-            )
         if not _section_has_key(path, "data", "dataset_type") and not _section_has_key(path, "data", "dataset_name"):
             raise SystemExit(f"{path.relative_to(REPO_ROOT)} is missing data.dataset_type or data.dataset_name.")
-        if has_policy_variant and not _section_has_key(path, "policy_variant", "name"):
+        if not _section_has_key(path, "policy_variant", "name"):
             raise SystemExit(f"{path.relative_to(REPO_ROOT)} is missing policy_variant.name.")
-        if has_action_decoder and not _section_has_key(path, "action_decoder", "name"):
+        if not _section_has_key(path, "action_decoder", "name"):
             raise SystemExit(f"{path.relative_to(REPO_ROOT)} is missing action_decoder.name.")
-        if has_legacy_action_head and not _section_has_key(path, "action_head", "name"):
-            raise SystemExit(f"{path.relative_to(REPO_ROOT)} is missing action_head.name.")
     return paths
 
 

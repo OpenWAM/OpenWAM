@@ -12,15 +12,10 @@ from open_wam.configs import (
     ExtensionActionDecoderConfig,
     ParallelRuntimeMode,
     ProprioContextMode,
-    VideoConditionInputSpace,
-    VideoConditionSource,
-    VideoConditionTrainMode,
 )
 from open_wam.configs.policy_contracts import (
     CausalVideoPredictionPolicyConfig,
     ExtensionPolicyConfig,
-    PostDecodedPolicyConfig,
-    PostLatentPolicyConfig,
 )
 from open_wam.configs.policy_dual_expert import DualExpertPolicyConfig
 from open_wam.configs.policy_parallel_stream import ParallelStreamPolicyConfig
@@ -31,11 +26,8 @@ from open_wam.data.action_mapping import (
 )
 from open_wam.models.action_decoders import (
     ActionDecoder,
-    DecodedFeatureActionDecoder,
     DualExpertActionDecoder,
-    MLPActionDecoder,
     ParallelStreamActionDecoder,
-    VideoConditionedActionDecoder,
     VideoOnlyActionDecoder,
 )
 from open_wam.models.policy_variants import (
@@ -43,8 +35,6 @@ from open_wam.models.policy_variants import (
     DualExpertPolicyVariant,
     ParallelStreamPolicyVariant,
     PolicyVariant,
-    PostDecodedPolicyVariant,
-    PostLatentPolicyVariant,
 )
 from open_wam.models.policy_variants.parallel_stream.action_adapter import (
     build_action_adapter_spec,
@@ -53,12 +43,9 @@ from open_wam.models.video_backbone import normalize_backbone_implementation
 from open_wam.models.visual_tower import VisualTower
 
 from .action_decoder_factory import (
-    _build_decoded_feature_action_decoder,
     _build_dual_expert_action_decoder,
     _build_extension_action_decoder,
-    _build_mlp_action_decoder,
     _build_parallel_stream_action_decoder,
-    _build_video_conditioned_action_decoder,
     _build_video_only_action_decoder,
     build_action_decoder,
 )
@@ -75,8 +62,6 @@ from .policy_factory import (
     _build_dual_expert_policy_variant,
     _build_extension_policy_variant,
     _build_parallel_stream_policy_variant,
-    _build_post_decoded_policy_variant,
-    _build_post_latent_policy_variant,
     build_policy_variant,
 )
 from .registries import (
@@ -97,23 +82,15 @@ _COMPATIBILITY_EXPORTS = (
     DualExpertRuntimeMode,
     ParallelRuntimeMode,
     ProprioContextMode,
-    VideoConditionInputSpace,
-    VideoConditionSource,
-    VideoConditionTrainMode,
     validate_action_mapping_preflight,
     ActionDecoder,
-    DecodedFeatureActionDecoder,
     ParallelStreamActionDecoder,
-    MLPActionDecoder,
     DualExpertActionDecoder,
-    VideoConditionedActionDecoder,
     VideoOnlyActionDecoder,
     CausalVideoPredictionPolicyVariant,
     DualExpertPolicyVariant,
     ParallelStreamPolicyVariant,
     PolicyVariant,
-    PostDecodedPolicyVariant,
-    PostLatentPolicyVariant,
     build_action_adapter_spec,
     normalize_backbone_implementation,
     _EXTENSION_ACTION_DECODER_BUILDERS,
@@ -123,18 +100,6 @@ _COMPATIBILITY_EXPORTS = (
 
 
 def _register_builtin_pipeline_builders() -> None:
-    POLICY_VARIANT_BUILDERS.register(
-        PostLatentPolicyConfig,
-        _build_post_latent_policy_variant,
-        description="Post-latent policy variant.",
-        replace=True,
-    )
-    POLICY_VARIANT_BUILDERS.register(
-        PostDecodedPolicyConfig,
-        _build_post_decoded_policy_variant,
-        description="Post-decoded policy variant.",
-        replace=True,
-    )
     POLICY_VARIANT_BUILDERS.register(
         CausalVideoPredictionPolicyConfig,
         _build_causal_video_prediction_policy_variant,
@@ -160,17 +125,6 @@ def _register_builtin_pipeline_builders() -> None:
         replace=True,
     )
 
-    ACTION_DECODER_BUILDERS.register(ActionDecoderName.MLP, _build_mlp_action_decoder, replace=True)
-    ACTION_DECODER_BUILDERS.register(
-        ActionDecoderName.DECODED_FEATURE,
-        _build_decoded_feature_action_decoder,
-        replace=True,
-    )
-    ACTION_DECODER_BUILDERS.register(
-        ActionDecoderName.VIDEO_CONDITIONED,
-        _build_video_conditioned_action_decoder,
-        replace=True,
-    )
     ACTION_DECODER_BUILDERS.register(
         ActionDecoderName.PARALLEL_STREAM,
         _build_parallel_stream_action_decoder,
@@ -210,11 +164,6 @@ def build_variant_pipeline_from_config(config: ExperimentConfig) -> VariantPipel
     if hasattr(policy_variant, "attach_visual_tower"):
         policy_variant.attach_visual_tower(visual_tower)
     action_decoder = build_action_decoder(config)
-    if (
-        config.action_decoder.name == ActionDecoderName.VIDEO_CONDITIONED
-        and hasattr(action_decoder, "initialize_from_video_core")
-    ):
-        action_decoder.initialize_from_video_core(visual_tower.core)
     action_sampler_mask = build_action_sampler_mask(
         config.data.action_mapping,
         action_horizon=config.action_decoder.action_horizon,

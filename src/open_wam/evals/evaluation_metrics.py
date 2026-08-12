@@ -7,7 +7,6 @@ from typing import Any
 import torch
 
 from open_wam.configs import EvalPredictionSource
-from open_wam.models.policy_variants.contracts import DecoderSequenceContext
 
 
 def _masked_action_mse(
@@ -93,7 +92,6 @@ def _select_eval_video_prediction(
     target_video_latents: torch.Tensor,
     decoder_aux: dict[str, Any],
     policy_aux: dict[str, Any],
-    sequence_context: DecoderSequenceContext | None = None,
 ) -> tuple[EvalPredictionSource, torch.Tensor | None, torch.Tensor]:
     for source_name in ("predicted_latents", "predicted_video_latents"):
         candidate = decoder_aux.get(source_name)
@@ -105,13 +103,6 @@ def _select_eval_video_prediction(
                 candidate,
                 target_video_latents,
             )
-        aligned_target = _align_local_future_video_prediction(
-            candidate,
-            target_video_latents=target_video_latents,
-            sequence_context=sequence_context,
-        )
-        if aligned_target is not None:
-            return EvalPredictionSource.DECODER_PREDICTED_LOCAL_FUTURE_LATENTS, candidate, aligned_target
     for source_name in ("predicted_latents", "predicted_video_latents"):
         candidate = policy_aux.get(source_name)
         if isinstance(candidate, torch.Tensor) and candidate.shape == target_video_latents.shape:
@@ -122,41 +113,7 @@ def _select_eval_video_prediction(
                 candidate,
                 target_video_latents,
             )
-        aligned_target = _align_local_future_video_prediction(
-            candidate,
-            target_video_latents=target_video_latents,
-            sequence_context=sequence_context,
-        )
-        if aligned_target is not None:
-            return EvalPredictionSource.POLICY_PREDICTED_LOCAL_FUTURE_LATENTS, candidate, aligned_target
     return EvalPredictionSource.UNAVAILABLE, None, target_video_latents
-
-
-def _align_local_future_video_prediction(
-    candidate: Any,
-    *,
-    target_video_latents: torch.Tensor,
-    sequence_context: DecoderSequenceContext | None,
-) -> torch.Tensor | None:
-    if not isinstance(candidate, torch.Tensor):
-        return None
-    if candidate.ndim != target_video_latents.ndim or candidate.ndim != 5:
-        return None
-    if candidate.shape[0:2] != target_video_latents.shape[0:2] or candidate.shape[3:] != target_video_latents.shape[3:]:
-        return None
-    if sequence_context is None or sequence_context.video_condition_window is None:
-        return None
-    window = sequence_context.video_condition_window
-    metadata = window.metadata
-    if metadata.get("source_family") != "generated_future_video_tokens":
-        return None
-    observed_frames = int(metadata.get("observed_prefix_frames", window.observed_frame_count))
-    observed_start = int(metadata.get("observed_prefix_start_index", 0))
-    target_start = observed_start + observed_frames
-    target_end = target_start + int(candidate.shape[2])
-    if target_end > int(target_video_latents.shape[2]):
-        return None
-    return target_video_latents[:, :, target_start:target_end]
 
 
 __all__: list[str] = []

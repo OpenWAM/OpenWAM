@@ -6,7 +6,6 @@ import torch
 
 from open_wam.configs import (
     ContextConditionLatentSource,
-    ParallelRuntimeMode,
     ProprioContextMode,
 )
 from open_wam.configs.policy_parallel_stream import ParallelStreamPolicyConfig
@@ -16,19 +15,15 @@ from open_wam.models.policy_variants.parallel_stream.conditioning import (
 )
 
 
-def _conditioning(
-    *,
-    runtime_mode: ParallelRuntimeMode = ParallelRuntimeMode.LINGBOT_EXACT,
-) -> ParallelStreamConditioning:
+def _conditioning() -> ParallelStreamConditioning:
     return ParallelStreamConditioning(
         ParallelStreamPolicyConfig(
-            runtime_mode=runtime_mode,
             proprio_context_mode=ProprioContextMode.PER_CHUNK_ADDITIVE,
         )
     )
 
 
-def test_train_hidden_proprio_context_preserves_runtime_source_priority_and_mask() -> None:
+def test_train_hidden_proprio_context_prefers_frame_state_and_applies_mask() -> None:
     frame_state = torch.tensor([[[1.0], [2.0]]], requires_grad=True)
     frame_mask = torch.tensor([[[1.0], [0.0]]])
     chunk_state = torch.tensor([[[3.0]]], requires_grad=True)
@@ -45,14 +40,8 @@ def test_train_hidden_proprio_context_preserves_runtime_source_priority_and_mask
         batch,
         label="test",
     )
-    fastwam_payload = _conditioning(
-        runtime_mode=ParallelRuntimeMode.FASTWAM_FIRST_FRAME,
-    ).resolve_train_hidden_proprio_context(batch, label="test")
-
     assert standard_payload is not None
-    assert fastwam_payload is not None
     standard_state, standard_granularity = standard_payload
-    fastwam_state, fastwam_granularity = fastwam_payload
     torch.testing.assert_close(
         standard_state,
         torch.tensor([[[1.0], [0.0]]]),
@@ -60,8 +49,6 @@ def test_train_hidden_proprio_context_preserves_runtime_source_priority_and_mask
         atol=0.0,
     )
     assert standard_granularity == "frame"
-    assert fastwam_state is chunk_state
-    assert fastwam_granularity == "chunk"
 
     standard_state.sum().backward()
     torch.testing.assert_close(frame_state.grad, frame_mask, rtol=0.0, atol=0.0)
@@ -70,7 +57,6 @@ def test_train_hidden_proprio_context_preserves_runtime_source_priority_and_mask
 def test_rollout_state_selection_and_cache_clone_preserve_m1_semantics() -> None:
     state = torch.arange(6, dtype=torch.float32).reshape(1, 3, 2)
     standard = _conditioning()
-    fastwam = _conditioning(runtime_mode=ParallelRuntimeMode.FASTWAM_FIRST_FRAME)
 
     torch.testing.assert_close(
         standard.select_rollout_proprio_state(state),
@@ -78,13 +64,6 @@ def test_rollout_state_selection_and_cache_clone_preserve_m1_semantics() -> None
         rtol=0.0,
         atol=0.0,
     )
-    torch.testing.assert_close(
-        fastwam.select_rollout_proprio_state(state),
-        state[:, 0, :],
-        rtol=0.0,
-        atol=0.0,
-    )
-
     state.requires_grad_()
     cache: dict[str, torch.Tensor] = {}
     standard.cache_infer_proprio_state(cache, state)

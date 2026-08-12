@@ -299,19 +299,6 @@ def run_sequence_replan_job(
     dual_expert_cache_debug = policy_aux.get("dual_expert_cache_debug")
     if not isinstance(dual_expert_cache_debug, dict):
         dual_expert_cache_debug = {}
-    sequence_context = (
-        step_output.infer_output.policy_output.decoder_sequence_context
-    )
-    video_condition_window = (
-        None
-        if sequence_context is None
-        else sequence_context.video_condition_window
-    )
-    video_condition_metadata = (
-        {}
-        if video_condition_window is None
-        else dict(video_condition_window.metadata)
-    )
     predicted_latents = policy_aux.get("predicted_latents")
     action_plan = runner.build_action_rollout_plan(
         step_output.infer_output.decoder_output
@@ -391,18 +378,6 @@ def run_sequence_replan_job(
             "video_condition_source": policy_aux.get("video_condition_source"),
             "video_condition_uses_future_ground_truth": policy_aux.get(
                 "video_condition_uses_future_ground_truth"
-            ),
-            "video_condition_frame_start": video_condition_metadata.get(
-                "frame_start"
-            ),
-            "video_condition_sample_seed": video_condition_metadata.get(
-                "sample_seed"
-            ),
-            "video_condition_observed_prefix_anchor": (
-                video_condition_metadata.get("observed_prefix_anchor")
-            ),
-            "video_condition_observed_prefix_start_index": (
-                video_condition_metadata.get("observed_prefix_start_index")
             ),
             "predicted_video_latents_shape": (
                 list(predicted_latents.shape)

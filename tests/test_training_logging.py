@@ -71,7 +71,6 @@ def test_wandb_log_sink_can_use_contiguous_global_step(monkeypatch) -> None:
 def test_run_tracking_metadata_uses_policy_architectures(tmp_path: Path) -> None:
     cases = [
         ("parallel_stream_robotwin_smoke.yaml", "parallel_stream"),
-        ("post_latent_robotwin_video_conditioned.yaml", "post_latent"),
         ("dual_expert_robotwin_smoke.yaml", "dual_expert"),
         ("causal_video_prediction_robotwin_smoke.yaml", "causal_video_prediction"),
     ]
@@ -98,7 +97,7 @@ def test_run_tracking_metadata_uses_policy_architectures(tmp_path: Path) -> None
 
 
 def test_build_log_sink_passes_standardized_wandb_tracking_context(monkeypatch, tmp_path: Path) -> None:
-    config = load_experiment_config(REPO_ROOT / "configs/experiments/post_decoded_robotwin_video_conditioned.yaml")
+    config = load_experiment_config(REPO_ROOT / "configs/experiments/dual_expert_robotwin_smoke.yaml")
     config = replace(
         config,
         trainer=replace(
@@ -154,22 +153,22 @@ def test_build_log_sink_passes_standardized_wandb_tracking_context(monkeypatch, 
 
     assert captured["project"] == "open-wam"
     assert captured["mode"] == "offline"
-    assert captured["run_name"] == "robotwin · post_decoded · track-run"
-    assert captured["group"] == "robotwin/post_decoded"
+    assert captured["run_name"] == "robotwin · dual_expert · track-run"
+    assert captured["group"] == "robotwin/dual_expert"
     assert captured["job_type"] == "policy_train"
     assert "framework:open_wam" in captured["tags"]
-    assert "architecture:post_decoded" in captured["tags"]
-    assert "variant:post_decoded" in captured["tags"]
-    assert "decoder:video_conditioned_action_decoder" in captured["tags"]
+    assert "architecture:dual_expert" in captured["tags"]
+    assert "variant:dual_expert" in captured["tags"]
+    assert "decoder:dual_expert_decoder" in captured["tags"]
     assert "dataset:robotwin" in captured["tags"]
 
     config_payload = captured["config_payload"]
     assert isinstance(config_payload, dict)
-    assert config_payload["tracking"]["architecture"] == "post_decoded"
+    assert config_payload["tracking"]["architecture"] == "dual_expert"
     assert config_payload["tracking"]["program"] is None
-    assert config_payload["tracking"]["policy_variant"] == "post_decoded"
-    assert config_payload["tracking"]["action_decoder"] == "video_conditioned_action_decoder"
-    assert config_payload["tracking"]["wandb_group"] == "robotwin/post_decoded"
+    assert config_payload["tracking"]["policy_variant"] == "dual_expert"
+    assert config_payload["tracking"]["action_decoder"] == "dual_expert_decoder"
+    assert config_payload["tracking"]["wandb_group"] == "robotwin/dual_expert"
     assert config_payload["tracking"]["wandb_job_type"] == "policy_train"
     assert config_payload["tracking"]["output_dir"] == str(output_dir)
 
@@ -193,17 +192,7 @@ def test_wandb_group_job_type_and_tags_follow_tracking_metadata(tmp_path: Path) 
     assert "segment_frames:None" not in tags
 
 
-def test_generated_video_condition_source_is_tracked(tmp_path: Path) -> None:
-    config = load_experiment_config(
-        REPO_ROOT / "configs/experiments/post_latent_libero_latent_local_generated_video_conditioned.yaml"
-    )
-    metadata = build_run_tracking_metadata(config, run_name=config.name, output_dir=tmp_path / config.name)
-
-    assert metadata["train_video_condition_source"] == "generated_future"
-    assert "train_video_condition:generated_future" in build_wandb_tags(metadata)
-
-
-def test_legacy_sample_construction_does_not_emit_rollout_context_tag(tmp_path: Path) -> None:
+def test_default_sample_construction_does_not_emit_rollout_context_tag(tmp_path: Path) -> None:
     config = load_experiment_config(REPO_ROOT / "configs/experiments/parallel_stream_robotwin_smoke.yaml")
     metadata = build_run_tracking_metadata(config, run_name=config.name, output_dir=tmp_path / config.name)
 

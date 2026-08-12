@@ -8,8 +8,6 @@ from open_wam.configs import (
     ActionMappingLossMaskMode,
     ActionMappingSamplerMaskMode,
     ActionNormalizationConfig,
-    InferenceConfig,
-    TrainingConfig,
 )
 from open_wam.data.action_mapping import (
     apply_action_mapping,
@@ -27,8 +25,15 @@ from open_wam.data.action_transforms import (
     normalize_action_targets,
     reconstruct_absolute_pose_targets,
 )
-from open_wam.models.action_decoders import MLPActionDecoder
-from open_wam.models.policy_variants import PolicyInferOutput, PolicyInferState
+from open_wam.models.action_decoders import ActionDecoder
+
+
+class _MaskProbeDecoder(ActionDecoder):
+    def forward_train(self, policy_output, batch):
+        raise NotImplementedError
+
+    def forward_infer(self, policy_output, previous_state=None):
+        raise NotImplementedError
 
 
 def test_calvin_7d_sparse_30d_mapping_round_trips_active_channels() -> None:
@@ -320,22 +325,11 @@ def test_sparse_mapping_preserves_inactive_fill_and_builds_sampler_mask() -> Non
 
 
 def test_action_decoder_sampler_mask_pins_inactive_channels_during_inference() -> None:
-    decoder = MLPActionDecoder(
-        hidden_size=8,
-        action_dim=4,
-        action_horizon=2,
-        training_config=TrainingConfig(action_num_train_timesteps=8),
-        inference_config=InferenceConfig(action_num_inference_steps=2),
-    )
+    decoder = _MaskProbeDecoder()
     decoder.configure_action_sampler_mask(
         torch.tensor([[1.0, 0.0, 1.0, 0.0], [1.0, 0.0, 1.0, 0.0]]),
         inactive_value=-0.5,
     )
-    output = decoder.forward_infer(
-        PolicyInferOutput(
-            policy_features=torch.zeros(1, 2, 8),
-            next_state=PolicyInferState(),
-        )
-    )
+    action_pred = decoder._apply_action_sampler_mask(torch.randn(1, 2, 4))
 
-    assert torch.allclose(output.action_pred[:, :, [1, 3]], torch.full((1, 2, 2), -0.5))
+    assert torch.allclose(action_pred[:, :, [1, 3]], torch.full((1, 2, 2), -0.5))

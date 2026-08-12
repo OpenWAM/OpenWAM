@@ -150,13 +150,8 @@ def load_experiment_config(path: str | Path, *, checkpoint_runtime_compat: bool 
 
     inference_config = parse_inference_config(raw.get("inference", {}))
 
-    # Legacy configs may still provide an `action_head` block. The current
-    # runtime no longer instantiates a separate head stack, but we still read
-    # those fields here to derive the equivalent variant/decoder defaults.
-    action_head_raw = raw.get("action_head", {})
     policy_variant_config = parse_policy_variant_config(
         policy_variant_raw=raw.get("policy_variant", {}),
-        action_head_raw=action_head_raw,
         data_config=data_config,
         backbone_config=backbone_config,
         training_config=training_config,
@@ -170,7 +165,6 @@ def load_experiment_config(path: str | Path, *, checkpoint_runtime_compat: bool 
         action_decoder_raw=raw.get("action_decoder", {}),
         policy_variant_config=policy_variant_config,
         data_config=data_config,
-        backbone_config=backbone_config,
     )
 
     trainer_config = parse_trainer_config(raw.get("trainer", {}))

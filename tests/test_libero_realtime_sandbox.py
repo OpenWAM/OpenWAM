@@ -1390,15 +1390,6 @@ def test_apply_sequence_replan_result_records_trace_and_merges_future_steps() ->
     assert merged[3].source == "new"
 
 
-def test_realtime_sandbox_can_override_rollout_chunk_steps() -> None:
-    sandbox = _load_sandbox_module()
-    config = SimpleNamespace(action_decoder=SimpleNamespace(rollout_chunk_steps=6))
-
-    sandbox.rollout_runtime.apply_rollout_chunk_steps_override(config, 1)
-
-    assert config.action_decoder.rollout_chunk_steps == 1
-
-
 def test_initial_generation_start_matches_warmup_window() -> None:
     sandbox = _load_sandbox_module()
 
@@ -1513,7 +1504,7 @@ def test_dual_expert_non_joint_realtime_replan_preserves_observation_conditioned
     dual_expert_prefill_config = SimpleNamespace(
         policy_variant=SimpleNamespace(name="dual_expert", runtime_mode="video_prefill_action_denoise")
     )
-    method4_config = SimpleNamespace(policy_variant=SimpleNamespace(name="post_latent"))
+    parallel_config = SimpleNamespace(policy_variant=SimpleNamespace(name="parallel_stream"))
 
     resolved = sandbox.realtime_runtime.resolve_observation_conditioned_replan_session(
         runner=Runner(),
@@ -1567,7 +1558,7 @@ def test_dual_expert_non_joint_realtime_replan_preserves_observation_conditioned
         sandbox.realtime_runtime.resolve_observation_conditioned_replan_session(
             runner=Runner(),
             session=session,
-            config=method4_config,
+            config=parallel_config,
         )
         is session
     )
@@ -1662,128 +1653,11 @@ def test_dual_expert_startup_open_loop_validation_runs_before_pipeline_setup(mon
         )
 
 
-def test_method4_realtime_replan_uses_absolute_action_start_for_video_condition(monkeypatch) -> None:
+
+def test_sequence_rollout_infer_extra_matches_dual_expert_contract() -> None:
     sandbox = _load_sandbox_module()
-    captured_extra = {}
-
-    monkeypatch.setattr(
-        sandbox.libero_rollout,
-        "libero_observation_window_to_views",
-        lambda obs_window, *, device: {},
-    )
-    monkeypatch.setattr(
-        sandbox.rollout_runtime,
-        "prepare_rollout_observation_inputs",
-        lambda *args, **kwargs: {
-            "video_latents": sandbox.torch.zeros(1, 1, 1, 1, 1),
-            "text_context": None,
-            "negative_text_context": None,
-        },
-    )
-    monkeypatch.setattr(sandbox.realtime_runtime, "synchronize_devices", lambda *args, **kwargs: None)
-
-    class Runner(sandbox.VariantRolloutRunner):
-        def __init__(self) -> None:
-            super().__init__(
-                SimpleNamespace(
-                    action_decoder=_RealtimeTestActionDecoder(rollout_chunk_steps=6),
-                    visual_tower=SimpleNamespace(
-                        snapshot_runtime_state=lambda *, cache_name=None: None,
-                    ),
-                )
-            )
-
-        def infer_step(self, *, session, context, video_latents, canonical_video=None):
-            del video_latents, canonical_video
-            captured_extra.update(context.extra)
-            next_session = SimpleNamespace(policy_state=SimpleNamespace(step_index=4, decoder_state=None))
-            video_window = SimpleNamespace(
-                metadata={
-                    "frame_start": context.extra["video_condition_frame_start"],
-                    "sample_seed": context.extra["video_condition_sample_seed"],
-                }
-            )
-            policy_output = SimpleNamespace(
-                aux={
-                    "video_condition_source": "generated_future_video_tokens",
-                    "video_condition_uses_future_ground_truth": False,
-                },
-                decoder_sequence_context=SimpleNamespace(video_condition_window=video_window),
-            )
-            decoder_output = SimpleNamespace(
-                action_pred=sandbox.torch.zeros(1, 2, 7),
-                aux={},
-            )
-            infer_output = SimpleNamespace(
-                policy_output=policy_output,
-                decoder_output=decoder_output,
-            )
-            return SimpleNamespace(session=next_session, infer_output=infer_output)
-
-    config = SimpleNamespace(
-        policy_variant=SimpleNamespace(name="post_latent"),
-        data=SimpleNamespace(
-            action_schema=SimpleNamespace(state_horizon=1),
-            action_target=SimpleNamespace(
-                state_encoding="eef_pos_axisangle_gripper_2d",
-                representation=ActionTargetRepresentation.RAW,
-                rotation_representation="axis_angle",
-            ),
-        ),
-        inference=SimpleNamespace(action_num_inference_steps=20, video_num_inference_steps=20),
-    )
-    obs_window = [
-        {
-            "robot0_eef_pos": np.zeros(3, dtype=np.float32),
-            "robot0_eef_quat": np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
-            "robot0_gripper_qpos": np.zeros(2, dtype=np.float32),
-        }
-    ]
-
-    result = sandbox.realtime_runtime.run_sequence_replan_job(
-        runner=Runner(),
-        session=SimpleNamespace(text_context=None, negative_text_context=None, task_text=("task",)),
-        obs_window=obs_window,
-        config=config,
-        options=sandbox.realtime_runtime.SequenceReplanJobOptions(
-            prompt="task",
-            task_id=1,
-            episode_idx=7,
-            frontend_device=sandbox.torch.device("cpu"),
-            runtime_device=sandbox.torch.device("cpu"),
-            generation_action_start=42,
-            source="test",
-        ),
-    )
-
-    assert captured_extra["video_condition_observed_prefix_anchor"] == "end"
-    assert captured_extra["video_condition_frame_start"] == 42
-    assert captured_extra["video_condition_sample_seed"] == sandbox.rollout_runtime.derive_video_condition_sample_seed(
-        {
-            "task_index": 1,
-            "episode_index": 7,
-            "anchor_frame_index": 42,
-            "action_start_index": 42,
-        }
-    )
-    assert result.trace["video_condition_frame_start"] == 42
-    assert result.trace["video_condition_sample_seed"] == captured_extra["video_condition_sample_seed"]
-    assert [step.absolute_action_index for step in result.planned_steps] == [42, 43]
-
-
-def test_sequence_rollout_infer_extra_matches_sandbox_and_viz_contract() -> None:
-    sandbox = _load_sandbox_module()
-    method4_config = SimpleNamespace(policy_variant=SimpleNamespace(name="post_latent"))
     dual_expert_config = SimpleNamespace(policy_variant=SimpleNamespace(name="dual_expert"))
 
-    method4_extra = sandbox.rollout_runtime.build_sequence_rollout_infer_extra(
-        config=method4_config,
-        prompt="task",
-        generation_action_start=42,
-        runtime_device=sandbox.torch.device("cpu"),
-        task_id=1,
-        episode_idx=7,
-    )
     dual_expert_extra = sandbox.rollout_runtime.build_sequence_rollout_infer_extra(
         config=dual_expert_config,
         prompt="task",
@@ -1791,19 +1665,6 @@ def test_sequence_rollout_infer_extra_matches_sandbox_and_viz_contract() -> None
         runtime_device=sandbox.torch.device("cpu"),
     )
 
-    assert method4_extra == {
-        "task_text": ("task",),
-        "video_condition_frame_start": 42,
-        "video_condition_sample_seed": sandbox.rollout_runtime.derive_video_condition_sample_seed(
-            {
-                "task_index": 1,
-                "episode_index": 7,
-                "anchor_frame_index": 42,
-                "action_start_index": 42,
-            }
-        ),
-        "video_condition_observed_prefix_anchor": "end",
-    }
     assert dual_expert_extra == {
         "task_text": ("task",),
         "action_device": "cpu",
@@ -2229,7 +2090,6 @@ def test_strict_split_cache_dual_expert_startup_replan_trace_reports_origin(monk
                         "current_action_frame_start": 1,
                     },
                 },
-                decoder_sequence_context=None,
             )
             decoder_output = SimpleNamespace(
                 action_pred=sandbox.torch.zeros(1, 16, 7),

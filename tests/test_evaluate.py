@@ -13,10 +13,6 @@ import open_wam.evals.evaluate as evaluate_module
 from open_wam.configs import load_experiment_config
 from open_wam.data import WAMSample
 from open_wam.evals.evaluate import resolve_evaluation_request, run_evaluation
-from open_wam.models.policy_variants.contracts import (
-    DecoderSequenceContext,
-    VideoConditionWindowContext,
-)
 from open_wam.pipelines import build_variant_pipeline_from_config
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -33,8 +29,10 @@ def test_legacy_evaluate_pickle_globals_resolve_to_contract_owners() -> None:
 
 
 def test_eval_wrapper_resolves_experiment_config() -> None:
-    request = resolve_evaluation_request(REPO_ROOT / "configs/evals/contract_only_robotwin.yaml")
-    assert request.experiment_config_path == (REPO_ROOT / "configs/experiments/contract_only_robotwin.yaml").resolve()
+    request = resolve_evaluation_request(REPO_ROOT / "configs/evals/dual_expert_robotwin_smoke_eval.yaml")
+    assert request.experiment_config_path == (
+        REPO_ROOT / "configs/experiments/dual_expert_robotwin_smoke.yaml"
+    ).resolve()
     assert request.mode == "batch"
     assert request.split == "val"
     assert request.max_batches == 1
@@ -54,7 +52,7 @@ def test_eval_wrapper_resolves_checkpoint_path_placeholder(monkeypatch, tmp_path
     with wrapper_path.open("w", encoding="utf-8") as handle:
         yaml.safe_dump(
             {
-                "experiment_config": str(REPO_ROOT / "configs/experiments/contract_only_robotwin.yaml"),
+                "experiment_config": str(REPO_ROOT / "configs/experiments/dual_expert_robotwin_smoke.yaml"),
                 "checkpoint_path": "${paths.tests.eval_checkpoint}",
                 "mode": "batch",
                 "split": "val",
@@ -66,71 +64,6 @@ def test_eval_wrapper_resolves_checkpoint_path_placeholder(monkeypatch, tmp_path
     request = resolve_evaluation_request(wrapper_path)
 
     assert request.checkpoint_path == Path("/tmp/eval_checkpoint.ckpt")
-
-
-def test_method4_video_conditioned_eval_wrappers_resolve_experiment_configs() -> None:
-    cases = [
-        (
-            "post_latent_libero_latent_local_video_conditioned_trajectory.yaml",
-            "post_latent_libero_latent_local_video_conditioned.yaml",
-        ),
-        (
-            "post_decoded_libero_latent_local_video_conditioned_trajectory.yaml",
-            "post_decoded_libero_latent_local_video_conditioned.yaml",
-        ),
-        (
-            "post_latent_libero_latent_local_generated_video_conditioned_trajectory.yaml",
-            "post_latent_libero_latent_local_generated_video_conditioned.yaml",
-        ),
-        (
-            "post_decoded_libero_latent_local_generated_video_conditioned_trajectory.yaml",
-            "post_decoded_libero_latent_local_generated_video_conditioned.yaml",
-        ),
-    ]
-
-    for wrapper_name, experiment_name in cases:
-        request = resolve_evaluation_request(REPO_ROOT / "configs/evals" / wrapper_name)
-        assert request.experiment_config_path == (REPO_ROOT / "configs/experiments" / experiment_name).resolve()
-        assert request.mode == "trajectory"
-        assert request.split == "val"
-        assert request.batch_size == 1
-        assert request.max_trajectories == 1
-
-
-@pytest.mark.parametrize(
-    ("wrapper_name", "experiment_name", "checkpoint_alias_suffix"),
-    [
-        (
-            "parallel_stream_libero_lingbot_exact_eval.yaml",
-            "parallel_stream_libero_lingbot_exact.yaml",
-            "parallel_stream_exact_libero_step_1100_0402/full_training_state.pt",
-        ),
-        (
-            "parallel_stream_libero_joint_denoise_eval.yaml",
-            "parallel_stream_libero_joint_denoise.yaml",
-            "parallel_stream_joint_libero_step_600_0402/full_training_state.pt",
-        ),
-        (
-            "parallel_stream_libero_joint_denoise_eval_legacy.yaml",
-            "parallel_stream_libero_joint_denoise.yaml",
-            "parallel_stream_joint_libero_step_300/full_training_state.pt",
-        ),
-    ],
-)
-def test_libero_reference_eval_wrappers_resolve_experiment_configs_and_checkpoints(
-    wrapper_name: str,
-    experiment_name: str,
-    checkpoint_alias_suffix: str,
-) -> None:
-    request = resolve_evaluation_request(REPO_ROOT / "configs/evals" / wrapper_name)
-
-    assert request.experiment_config_path == (REPO_ROOT / "configs/experiments" / experiment_name).resolve()
-    assert request.mode == "batch"
-    assert request.split == "val"
-    assert request.batch_size == 1
-    assert request.max_batches == 1
-    assert request.checkpoint_path is not None
-    assert request.checkpoint_path.as_posix().endswith(checkpoint_alias_suffix)
 
 
 @pytest.mark.parametrize(
@@ -154,17 +87,17 @@ def test_robotwin_smoke_eval_wrappers_resolve_experiment_configs(
     assert request.max_batches == 1
 
 
-def test_run_evaluation_on_contract_only_robotwin() -> None:
+def test_run_evaluation_on_dual_expert_robotwin() -> None:
     request = resolve_evaluation_request(
-        REPO_ROOT / "configs/experiments/contract_only_robotwin.yaml",
+        REPO_ROOT / "configs/experiments/dual_expert_robotwin_smoke.yaml",
         max_batches_override=1,
         device_override="cpu",
     )
     summary = run_evaluation(request)
-    assert summary.experiment_name == "contract_only_robotwin"
+    assert summary.experiment_name == "dual_expert_robotwin_smoke"
     assert summary.num_batches == 1
-    assert summary.video_num_inference_steps == 25
-    assert summary.action_num_inference_steps == 50
+    assert summary.video_num_inference_steps == 4
+    assert summary.action_num_inference_steps == 4
     assert summary.action_prediction_shape == summary.target_action_shape
     assert summary.mean_action_mse is not None
     assert summary.mean_video_latent_mse is None
@@ -207,34 +140,6 @@ def test_rollout_previous_action_prefers_exact_model_space_chunk() -> None:
     assert previous_action.shape == (1, 16, 30)
 
 
-def test_select_eval_video_prediction_aligns_generated_local_future_latents() -> None:
-    target = torch.arange(1 * 2 * 6 * 1 * 1, dtype=torch.float32).view(1, 2, 6, 1, 1)
-    predicted = target[:, :, 2:5] + 0.5
-    sequence_context = DecoderSequenceContext(
-        sequence_tokens=torch.zeros(1, 1, 1),
-        video_condition_window=VideoConditionWindowContext(
-            local_window_tokens=torch.zeros(1, 4, 1, 1),
-            observed_frame_count=1,
-            metadata={
-                "source_family": "generated_future_video_tokens",
-                "observed_prefix_frames": 1,
-                "observed_prefix_start_index": 1,
-            },
-        ),
-    )
-
-    source, aligned_prediction, aligned_target = evaluate_module._select_eval_video_prediction(
-        target_video_latents=target,
-        decoder_aux={},
-        policy_aux={"predicted_latents": predicted},
-        sequence_context=sequence_context,
-    )
-
-    assert source == "policy_predicted_local_future_latents"
-    assert aligned_prediction is predicted
-    assert torch.equal(aligned_target, target[:, :, 2:5])
-
-
 def test_run_evaluation_on_parallel_stream_robotwin(tmp_path: Path) -> None:
     config_path = REPO_ROOT / "configs/experiments/parallel_stream_robotwin_smoke.yaml"
     with config_path.open("r", encoding="utf-8") as handle:
@@ -264,8 +169,6 @@ def test_run_evaluation_on_parallel_stream_robotwin(tmp_path: Path) -> None:
     [
         (REPO_ROOT / "configs/evals/parallel_stream_robotwin_smoke_eval.yaml", "parallel_stream_robotwin_smoke"),
         (REPO_ROOT / "configs/evals/dual_expert_robotwin_smoke_eval.yaml", "dual_expert_robotwin_smoke"),
-        (REPO_ROOT / "configs/experiments/post_latent_robotwin_video_conditioned.yaml", "post_latent_robotwin_video_conditioned"),
-        (REPO_ROOT / "configs/experiments/post_decoded_robotwin_video_conditioned.yaml", "post_decoded_robotwin_video_conditioned"),
     ],
 )
 def test_run_evaluation_on_action_policy_robotwin_variants(config_path: Path, expected_name: str) -> None:
@@ -338,20 +241,20 @@ class _TrajectoryEvalDataset(Dataset[WAMSample]):
 
 
 def test_run_trajectory_evaluation_carries_across_episode_windows(monkeypatch) -> None:
-    dataset = _TrajectoryEvalDataset()
+    dataset = _TrajectoryEvalDataset(action_horizon=8)
     monkeypatch.setattr(
         evaluate_module,
         "build_train_val_datasets",
         lambda data_config: (dataset, dataset),
     )
     request = resolve_evaluation_request(
-        REPO_ROOT / "configs/experiments/contract_only_robotwin.yaml",
+        REPO_ROOT / "configs/experiments/dual_expert_robotwin_smoke.yaml",
         mode_override="trajectory",
         max_trajectories_override=2,
         device_override="cpu",
     )
     summary = run_evaluation(request)
-    assert summary.experiment_name == "contract_only_robotwin"
+    assert summary.experiment_name == "dual_expert_robotwin_smoke"
     assert summary.mode == "trajectory"
     assert summary.num_trajectories == 2
     assert summary.num_batches == 4
@@ -362,20 +265,10 @@ def test_run_trajectory_evaluation_carries_across_episode_windows(monkeypatch) -
     assert summary.mean_trajectory_video_latent_mse is None
 
 
-@pytest.mark.parametrize(
-    ("config_path", "action_horizon", "expected_reset_calls"),
-    [
-        (REPO_ROOT / "configs/experiments/dual_expert_robotwin_smoke.yaml", 8, 2),
-        (REPO_ROOT / "configs/experiments/post_latent_robotwin_video_conditioned.yaml", 6, 1),
-    ],
-)
-def test_run_trajectory_evaluation_resets_only_dual_expert_observation_conditioned_sessions(
+def test_run_trajectory_evaluation_resets_dual_expert_observation_conditioned_sessions(
     monkeypatch,
-    config_path: Path,
-    action_horizon: int,
-    expected_reset_calls: int,
 ) -> None:
-    dataset = _TrajectoryEvalDataset(action_horizon=action_horizon)
+    dataset = _TrajectoryEvalDataset(action_horizon=8)
     monkeypatch.setattr(
         evaluate_module,
         "build_train_val_datasets",
@@ -392,7 +285,7 @@ def test_run_trajectory_evaluation_resets_only_dual_expert_observation_condition
     monkeypatch.setattr(evaluate_module, "VariantRolloutRunner", _RecordingRolloutRunner)
 
     request = resolve_evaluation_request(
-        config_path,
+        REPO_ROOT / "configs/experiments/dual_expert_robotwin_smoke.yaml",
         mode_override="trajectory",
         max_trajectories_override=1,
         max_steps_per_trajectory_override=2,
@@ -402,7 +295,7 @@ def test_run_trajectory_evaluation_resets_only_dual_expert_observation_condition
 
     assert summary.mode == "trajectory"
     assert summary.num_batches == 2
-    assert len(reset_calls) == expected_reset_calls
+    assert len(reset_calls) == 2
 
 
 def test_group_dataset_indices_by_episode_uses_repo_root_identity() -> None:
@@ -448,29 +341,29 @@ def test_align_rollout_window_tensor_shifts_overlap_and_seeds_new_frames() -> No
 
 def test_dual_expert_trajectory_eval_marks_session_reset_boundary() -> None:
     dual_expert_config = load_experiment_config(REPO_ROOT / "configs/experiments/dual_expert_robotwin_smoke.yaml")
-    method4_config = load_experiment_config(
-        REPO_ROOT / "configs/experiments/post_latent_robotwin_video_conditioned.yaml"
+    parallel_config = load_experiment_config(
+        REPO_ROOT / "configs/experiments/parallel_stream_robotwin_smoke.yaml"
     )
 
     assert evaluate_module._dual_expert_requires_observation_conditioned_session_reset(dual_expert_config)
-    assert not evaluate_module._dual_expert_requires_observation_conditioned_session_reset(method4_config)
+    assert not evaluate_module._dual_expert_requires_observation_conditioned_session_reset(parallel_config)
 
 
 def test_run_evaluation_loads_pipeline_prefixed_checkpoint(tmp_path: Path) -> None:
-    config = load_experiment_config(REPO_ROOT / "configs/experiments/contract_only_robotwin.yaml")
+    config = load_experiment_config(REPO_ROOT / "configs/experiments/dual_expert_robotwin_smoke.yaml")
     pipeline = build_variant_pipeline_from_config(config)
-    checkpoint_path = tmp_path / "contract_only_robotwin.ckpt"
+    checkpoint_path = tmp_path / "dual_expert_robotwin.ckpt"
     prefixed_state_dict = {f"pipeline.{key}": value for key, value in pipeline.state_dict().items()}
     torch.save({"state_dict": prefixed_state_dict}, checkpoint_path)
 
     request = resolve_evaluation_request(
-        REPO_ROOT / "configs/experiments/contract_only_robotwin.yaml",
+        REPO_ROOT / "configs/experiments/dual_expert_robotwin_smoke.yaml",
         max_batches_override=1,
         checkpoint_override=str(checkpoint_path),
         device_override="cpu",
     )
     summary = run_evaluation(request)
-    assert summary.experiment_name == "contract_only_robotwin"
+    assert summary.experiment_name == "dual_expert_robotwin_smoke"
     assert summary.checkpoint_path == str(checkpoint_path)
     assert summary.action_prediction_shape == summary.target_action_shape
     assert summary.mean_action_mse is not None
@@ -478,7 +371,7 @@ def test_run_evaluation_loads_pipeline_prefixed_checkpoint(tmp_path: Path) -> No
 
 
 def test_apply_checkpoint_runtime_override_uses_checkpoint_local_transformer(tmp_path: Path) -> None:
-    config = load_experiment_config(REPO_ROOT / "configs/experiments/post_latent_robotwin_video_conditioned.yaml")
+    config = load_experiment_config(REPO_ROOT / "configs/experiments/dual_expert_robotwin_smoke.yaml")
     checkpoint_dir = tmp_path / "checkpoint_step_42"
     transformer_dir = checkpoint_dir / "transformer"
     transformer_dir.mkdir(parents=True)
@@ -498,7 +391,7 @@ def test_apply_checkpoint_runtime_override_uses_checkpoint_local_transformer(tmp
 
 
 def test_apply_checkpoint_runtime_override_ignores_empty_transformer_export(tmp_path: Path) -> None:
-    config = load_experiment_config(REPO_ROOT / "configs/experiments/post_latent_robotwin_video_conditioned.yaml")
+    config = load_experiment_config(REPO_ROOT / "configs/experiments/dual_expert_robotwin_smoke.yaml")
     original_transformer_subdir = config.backbone.transformer_subdir
     checkpoint_dir = tmp_path / "checkpoint_step_42"
     (checkpoint_dir / "transformer").mkdir(parents=True)
@@ -516,7 +409,7 @@ def test_apply_checkpoint_runtime_override_ignores_empty_transformer_export(tmp_
 
 
 def test_run_evaluation_accepts_checkpoint_step_directory(tmp_path: Path) -> None:
-    config = load_experiment_config(REPO_ROOT / "configs/experiments/contract_only_robotwin.yaml")
+    config = load_experiment_config(REPO_ROOT / "configs/experiments/dual_expert_robotwin_smoke.yaml")
     pipeline = build_variant_pipeline_from_config(config)
     checkpoint_dir = tmp_path / "checkpoint_step_1"
     checkpoint_dir.mkdir(parents=True)
@@ -525,14 +418,14 @@ def test_run_evaluation_accepts_checkpoint_step_directory(tmp_path: Path) -> Non
     torch.save({"state_dict": prefixed_state_dict}, checkpoint_path)
 
     request = resolve_evaluation_request(
-        REPO_ROOT / "configs/experiments/contract_only_robotwin.yaml",
+        REPO_ROOT / "configs/experiments/dual_expert_robotwin_smoke.yaml",
         max_batches_override=1,
         checkpoint_override=str(checkpoint_dir),
         device_override="cpu",
     )
     summary = run_evaluation(request)
 
-    assert summary.experiment_name == "contract_only_robotwin"
+    assert summary.experiment_name == "dual_expert_robotwin_smoke"
     assert summary.checkpoint_path == str(checkpoint_path)
     assert summary.action_prediction_shape == summary.target_action_shape
     assert summary.mean_action_mse is not None

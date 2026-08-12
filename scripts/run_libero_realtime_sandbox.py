@@ -182,7 +182,7 @@ def main() -> None:
         "--config",
         dest="config",
         type=str,
-        default="configs/experiments/parallel_stream_libero_lingbot_exact.yaml",
+        default="configs/experiments/parallel_stream_libero_video_then_action.yaml",
     )
     parser.add_argument(
         "--checkpoint",
@@ -252,7 +252,7 @@ def main() -> None:
         default="debug_short",
         help=(
             "Named rollout defaults. `debug_short` preserves the historical short sandbox defaults. "
-            "`libero_10hz_full` sets the long 10 Hz LIBERO eval protocol used by sampled evals."
+            "`libero_10hz_full` sets the long 10 Hz LIBERO evaluation protocol."
         ),
     )
     parser.add_argument(
@@ -292,12 +292,6 @@ def main() -> None:
         type=int,
         default=None,
         help="Optional override for inference.action_num_inference_steps. Defaults to the experiment config.",
-    )
-    parser.add_argument(
-        "--rollout-chunk-steps",
-        type=int,
-        default=None,
-        help="Optional override for action_decoder.rollout_chunk_steps. Defaults to the experiment config.",
     )
     parser.add_argument(
         "--initial-generation-action-start",
@@ -483,10 +477,6 @@ def main() -> None:
             raise FileNotFoundError(f"--pretrained-model-root must be an existing directory: {pretrained_model_root}")
         object.__setattr__(config.backbone, "pretrained_model_name_or_path", str(pretrained_model_root))
     object.__setattr__(config.backbone, "reference_assets_device_policy", args.reference_assets_device_policy)
-    rollout_runtime.apply_rollout_chunk_steps_override(
-        config,
-        args.rollout_chunk_steps,
-    )
     require_current_libero_policy_paradigm(
         config,
         config_path=config_path,
@@ -544,43 +534,6 @@ def main() -> None:
             debug_startup_dump=args.debug_startup_dump,
             exact_startup_bootstrap_padding=exact_startup_bootstrap_padding,
         )
-    elif policy_name in {"post_latent", "post_decoded"}:
-        summary = _run_sequence_policy_realtime_rollout(
-            config=config,
-            checkpoint_path=checkpoint_path,
-            rollout_label=policy_name,
-            benchmark=args.benchmark,
-            task_id=args.task_id,
-            episode_idx=args.episode_idx,
-            max_actions=args.max_actions,
-            env_horizon=args.env_horizon,
-            target_action_hz=args.target_action_hz,
-            video_fps=args.video_fps,
-            planner_mode=args.planner_mode,
-            deadline_miss_policy=args.deadline_miss_policy,
-            deadline_tolerance_ms=args.deadline_tolerance_ms,
-            output_dir=Path(args.output_dir),
-            suffix=args.suffix,
-            seed=args.seed,
-            runtime_device=runtime_device,
-            runtime_devices=runtime_devices,
-            runtime_prep_device=runtime_prep_device,
-            runtime_output_device=runtime_output_device,
-            frontend_device=frontend_device,
-            decode_device=decode_device,
-            sequence_buffer_threshold=args.sequence_buffer_threshold,
-            sequence_empty_plan_policy=args.sequence_empty_plan_policy,
-            fallback_history_policy=fallback_history_policy,
-            startup_open_loop_chunks=args.startup_open_loop_chunks,
-            replan_low_watermark_actions=args.replan_low_watermark_actions,
-            video_num_inference_steps=args.video_num_inference_steps,
-            action_num_inference_steps=args.action_num_inference_steps,
-            guidance_scale=args.guidance_scale,
-            action_guidance_scale=args.action_guidance_scale,
-            initial_generation_action_start=args.initial_generation_action_start,
-            write_fallback_timeline_video=args.write_fallback_timeline_video,
-            artifact_profile=args.artifact_profile,
-        )
     elif policy_name == "dual_expert":
         summary = _run_sequence_policy_realtime_rollout(
             config=config,
@@ -621,7 +574,7 @@ def main() -> None:
     else:
         raise ValueError(
             "The realtime sandbox currently supports exact/joint `parallel_stream`, "
-            "`post_latent`, `post_decoded`, and `dual_expert`, "
+            "and `dual_expert`, "
             f"got policy_variant={policy_name!r}."
         )
     print(json.dumps(summary, indent=2))
@@ -1687,6 +1640,9 @@ def _run_sequence_policy_realtime_rollout(
     checkpoint_report = runtime_checkpoints.load_pipeline_checkpoint(
         pipeline,
         checkpoint_path,
+        compatibility=(
+            runtime_checkpoints.CheckpointCompatibilityPolicy.ALLOW_CHECKPOINT_SUPERSET
+        ),
     )
     if checkpoint_report.missing_keys:
         print(f"viz.checkpoint_missing_keys {len(checkpoint_report.missing_keys)}")

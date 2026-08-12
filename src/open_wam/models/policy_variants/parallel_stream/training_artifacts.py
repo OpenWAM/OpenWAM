@@ -82,11 +82,6 @@ from .training_noise import (
 from .training_prefix_artifacts import (
     prepare_parallel_prefix_condition_exact_train_artifacts,
 )
-from .training_single_frame_artifacts import (
-    prepare_parallel_current_frame_action_chunk_train_artifacts,
-    prepare_parallel_fastwam_first_frame_train_artifacts,
-)
-
 (
     CurrentBlockCoupling,
     FlowMatchScheduler,
@@ -126,8 +121,6 @@ __all__ = [
     "LingbotParallelTrainArtifacts",
     "ParallelTrainArtifacts",
     "prepare_parallel_action_conditioned_train_artifacts",
-    "prepare_parallel_current_frame_action_chunk_train_artifacts",
     "prepare_parallel_exact_train_artifacts",
-    "prepare_parallel_fastwam_first_frame_train_artifacts",
     "prepare_parallel_prefix_condition_exact_train_artifacts",
 ]

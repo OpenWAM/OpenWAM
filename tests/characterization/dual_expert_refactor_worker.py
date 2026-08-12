@@ -675,7 +675,11 @@ def _load_pipeline_checkpoint(
 ) -> dict[str, Any]:
     checkpoint, raw_state, state_dict = _load_checkpoint_state_dict(checkpoint_path)
     tensor_key_count = len(state_dict)
-    missing, unexpected = pipeline.load_state_dict(state_dict, strict=False)
+    runtime_keys = set(pipeline.state_dict())
+    loadable_state = {
+        key: value for key, value in state_dict.items() if key in runtime_keys
+    }
+    missing, unexpected = pipeline.load_state_dict(loadable_state, strict=False)
     policy_variant = getattr(pipeline, "policy_variant", None)
     has_action_weights = any(
         key.startswith("policy_variant.action_expert.") or ".action_block." in key

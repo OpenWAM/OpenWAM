@@ -3,20 +3,15 @@
 from __future__ import annotations
 
 from open_wam.configs import (
-    ActionDecoderName,
     ActionNormalizationMode,
     ExperimentConfig,
     ExtensionActionDecoderConfig,
 )
-from open_wam.configs.policy_dual_expert import DualExpertPolicyConfig
 from open_wam.configs.policy_parallel_stream import ParallelStreamPolicyConfig
 from open_wam.models.action_decoders import (
     ActionDecoder,
-    DecodedFeatureActionDecoder,
     DualExpertActionDecoder,
-    MLPActionDecoder,
     ParallelStreamActionDecoder,
-    VideoConditionedActionDecoder,
     VideoOnlyActionDecoder,
 )
 from open_wam.models.policy_variants.parallel_stream.action_adapter import (
@@ -24,74 +19,6 @@ from open_wam.models.policy_variants.parallel_stream.action_adapter import (
 )
 
 from .registries import _EXTENSION_ACTION_DECODER_BUILDERS, ACTION_DECODER_BUILDERS
-
-
-def _build_mlp_action_decoder(config: ExperimentConfig):
-    decoder_config = config.action_decoder
-    dual_expert_compat_decoder = (
-        isinstance(config.policy_variant, DualExpertPolicyConfig)
-        and decoder_config.name == ActionDecoderName.MLP
-    )
-    if dual_expert_compat_decoder:
-        return DualExpertActionDecoder(
-            hidden_size=decoder_config.hidden_size,
-            action_dim=decoder_config.action_dim,
-            action_horizon=decoder_config.action_horizon,
-            training_config=config.training,
-            inference_config=config.inference,
-            dropout=decoder_config.dropout,
-        )
-    return MLPActionDecoder(
-        hidden_size=decoder_config.hidden_size,
-        action_dim=decoder_config.action_dim,
-        action_horizon=decoder_config.action_horizon,
-        training_config=config.training,
-        inference_config=config.inference,
-        dropout=decoder_config.dropout,
-    )
-
-
-def _build_decoded_feature_action_decoder(config: ExperimentConfig):
-    decoder_config = config.action_decoder
-    return DecodedFeatureActionDecoder(
-        hidden_size=decoder_config.hidden_size,
-        action_dim=decoder_config.action_dim,
-        action_horizon=decoder_config.action_horizon,
-        training_config=config.training,
-        inference_config=config.inference,
-        dropout=decoder_config.dropout,
-    )
-
-
-def _build_video_conditioned_action_decoder(config: ExperimentConfig):
-    decoder_config = config.action_decoder
-    return VideoConditionedActionDecoder(
-        hidden_size=decoder_config.hidden_size,
-        action_dim=decoder_config.action_dim,
-        action_horizon=decoder_config.action_horizon,
-        context_dim=decoder_config.context_dim,
-        text_context_dim=decoder_config.text_context_dim,
-        state_dim=decoder_config.state_dim,
-        freq_dim=decoder_config.freq_dim,
-        num_layers=decoder_config.num_layers,
-        num_heads=decoder_config.num_heads,
-        attention_head_dim=decoder_config.attention_head_dim,
-        ffn_dim=decoder_config.ffn_dim,
-        cross_attn_norm=decoder_config.cross_attn_norm,
-        eps=decoder_config.eps,
-        input_space=decoder_config.input_space,
-        train_mode=decoder_config.train_mode,
-        action_chunk_anchor_mode=decoder_config.action_chunk_anchor_mode,
-        action_expert_init_mode=decoder_config.action_expert_init_mode,
-        rollout_chunk_steps=decoder_config.rollout_chunk_steps,
-        direct_latent_channels=decoder_config.direct_latent_channels,
-        direct_rgb_patch_size=decoder_config.direct_rgb_patch_size,
-        use_text_conditioning=decoder_config.use_text_conditioning,
-        use_state_conditioning=decoder_config.use_state_conditioning,
-        training_config=config.training,
-        inference_config=config.inference,
-        dropout=decoder_config.dropout,
-    )
 
 
 def _build_parallel_stream_action_decoder(config: ExperimentConfig):
@@ -122,10 +49,6 @@ def _build_parallel_stream_action_decoder(config: ExperimentConfig):
         source_action_mean=source_action_mean,
         source_action_std=source_action_std,
     )
-
-
-# Deprecated factory alias for direct imports.
-_build_lingbot_parallel_action_decoder = _build_parallel_stream_action_decoder
 
 
 def _build_dual_expert_action_decoder(config: ExperimentConfig):

@@ -39,9 +39,6 @@ EXPERIMENT_CONFIG_ALIASES = MappingProxyType(
             "dual_expert_libero_generalist_joint_denoising"
         ),
         "mot_libero_joint": "dual_expert_libero_joint",
-        "mot_libero_latent_local_full_segment_non_joint_action_only": (
-            "dual_expert_libero_latent_local_full_segment_non_joint_action_only"
-        ),
         "mot_libero_video_noisy_to_action": "dual_expert_libero_video_noisy_to_action",
         "mot_libero_video_then_action": "dual_expert_libero_video_then_action",
         "mot_robotwin_smoke": "dual_expert_robotwin_smoke",
@@ -65,13 +62,13 @@ EXPERIMENT_CONFIG_ALIASES = MappingProxyType(
             "dual_expert_libero_video_then_action"
         ),
         "parallel_stream_libero_lingbot_exact_heng_compatible": (
-            "parallel_stream_libero_lingbot_exact"
+            "parallel_stream_libero_video_then_action"
         ),
         "parallel_stream_libero_lingbot_joint_denoise": (
-            "parallel_stream_libero_joint_denoise"
+            "parallel_stream_libero_joint"
         ),
         "parallel_stream_libero_lingbot_joint_denoise_heng_compatible": (
-            "parallel_stream_libero_joint_denoise"
+            "parallel_stream_libero_joint"
         ),
         "parallel_stream_libero_lingbot_m1_action_noisy_to_video": (
             "parallel_stream_libero_action_noisy_to_video"
@@ -85,23 +82,11 @@ EXPERIMENT_CONFIG_ALIASES = MappingProxyType(
         "parallel_stream_libero_lingbot_m1_action_then_video_heng_compatible": (
             "parallel_stream_libero_action_then_video"
         ),
-        "parallel_stream_libero_lingbot_m1_current_frame_action_chunk": (
-            "parallel_stream_libero_current_frame_action_chunk"
-        ),
-        "parallel_stream_libero_lingbot_m1_current_frame_action_chunk_heng_compatible": (
-            "parallel_stream_libero_current_frame_action_chunk"
-        ),
         "parallel_stream_libero_lingbot_m1_decoupled_same_step": (
             "parallel_stream_libero_decoupled_same_step"
         ),
         "parallel_stream_libero_lingbot_m1_decoupled_same_step_heng_compatible": (
             "parallel_stream_libero_decoupled_same_step"
-        ),
-        "parallel_stream_libero_lingbot_m1_fastwam_first_frame": (
-            "parallel_stream_libero_fastwam_first_frame"
-        ),
-        "parallel_stream_libero_lingbot_m1_fastwam_first_frame_heng_compatible": (
-            "parallel_stream_libero_fastwam_first_frame"
         ),
         "parallel_stream_libero_lingbot_m1_generalist_joint_denoising": (
             "parallel_stream_libero_generalist_joint_denoising"
@@ -127,38 +112,14 @@ EXPERIMENT_CONFIG_ALIASES = MappingProxyType(
         "parallel_stream_libero_lingbot_m1_video_then_action_heng_compatible": (
             "parallel_stream_libero_video_then_action"
         ),
-        "parallel_stream_robotwin_lingbot_m1_joint_base": (
-            "parallel_stream_robotwin_joint_base"
-        ),
-        "parallel_stream_robotwin_lingbot_m1_video_then_action_base": (
-            "parallel_stream_robotwin_video_then_action_base"
-        ),
     }
 )
 
 EVALUATION_CONFIG_ALIASES = MappingProxyType(
     {
-        "mot_libero_full_segment_non_joint_action_only_eval": (
-            "dual_expert_libero_full_segment_non_joint_action_only_eval"
-        ),
         "mot_robotwin_smoke": "dual_expert_robotwin_smoke_eval",
         "dual_expert_robotwin_smoke": "dual_expert_robotwin_smoke_eval",
         "parallel_stream_robotwin_smoke": "parallel_stream_robotwin_smoke_eval",
-        "parallel_stream_libero_lingbot_exact_heng_eval": (
-            "parallel_stream_libero_lingbot_exact_eval"
-        ),
-        "parallel_stream_libero_lingbot_joint_denoise_eval": (
-            "parallel_stream_libero_joint_denoise_eval"
-        ),
-        "parallel_stream_libero_lingbot_joint_denoise_heng_eval": (
-            "parallel_stream_libero_joint_denoise_eval"
-        ),
-        "parallel_stream_libero_lingbot_joint_denoise_eval_legacy": (
-            "parallel_stream_libero_joint_denoise_eval_legacy"
-        ),
-        "parallel_stream_libero_lingbot_joint_denoise_heng_eval_legacy": (
-            "parallel_stream_libero_joint_denoise_eval_legacy"
-        ),
     }
 )
 

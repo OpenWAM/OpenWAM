@@ -89,17 +89,17 @@ jobs:
               resolve_experiment_config_reference,
           )
 
-          experiment = resolve_experiment_config_reference("contract_only_robotwin")
+          experiment = resolve_experiment_config_reference("dual_expert_robotwin_smoke")
           assert experiment.is_file()
           assert "site-packages/open_wam/resources" in str(experiment)
-          assert resolve_evaluation_config_reference("contract_only_robotwin").is_file()
+          assert resolve_evaluation_config_reference("dual_expert_robotwin_smoke").is_file()
           assert resolve_config_reference(
               "templates/extension_method/config.yaml"
           ).is_file()
           PY
           "$VENV/bin/open-wam-validate-config" \
-            configs/experiments/contract_only_robotwin.yaml \
-            configs/evals/contract_only_robotwin.yaml \
+            configs/experiments/dual_expert_robotwin_smoke.yaml \
+            configs/evals/dual_expert_robotwin_smoke_eval.yaml \
             configs/examples/calvin_npz_raw7_sanity.yaml
 
   semantic-contracts:

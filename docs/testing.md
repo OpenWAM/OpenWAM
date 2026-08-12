@@ -25,8 +25,8 @@ simulator checkouts.
 Tier 0 checks package metadata, entrypoint declarations, public config
 references, artifact manifest shape, local path sample hygiene, duplicate
 optional dependencies, source contracts that should remain import-safe, and
-production-core Pyflakes over `src`, `scripts`, `tests`, `baselines`, and
-`templates`. Pyflakes runs in an isolated `uv --no-project` environment; it
+production-core Pyflakes over `src`, `scripts`, `tests`, and `baselines`.
+Pyflakes runs in an isolated `uv --no-project` environment; it
 does not install Open-WAM or its runtime dependencies. The separate
 `deployment` hardware/ROS workspace is not part of the installed package or
 this model-library gate. Its own dependency-light CI job compiles the
@@ -35,7 +35,7 @@ workspace, lints the supported hardware runtime, and runs no-hardware tests.
 Run that static lint locally with the pinned development dependency:
 
 ```bash
-uv run python -m pyflakes src scripts tests baselines templates
+uv run python -m pyflakes src scripts tests baselines
 ```
 
 The default PR workflow also includes three dependency-light companion jobs:
@@ -78,9 +78,9 @@ OPEN_WAM_RUN_GPU_SANITY=1 uv run pytest -m gpu
 
 Core DualExpert/GJD refactors have a stricter, separately gated real-checkpoint
 workflow. See
-[Dual-Expert Refactor Characterization](dual_expert_refactor_characterization.md) for its
-nine-program static contract matrix, six available exact-checkpoint slots,
-frozen real-data replay, FSDP update checks, stateful inference, and
+[Dual-Expert Refactor Characterization](dual_expert_refactor_characterization.md)
+for its six non-GJD programs, five GJD ablations, six available exact-checkpoint
+slots, frozen real-data replay, FSDP update checks, stateful inference, and
 record-versus-verify commands.
 
 Run simulator tests only after configuring `configs/local_paths.yaml` or

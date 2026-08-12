@@ -135,7 +135,7 @@ class DualExpertLiberoLoadOptions:
     allow_deprecated_libero_config: bool
     allow_deprecated_frontend_encode_mode: bool
     checkpoint_load_policy: CheckpointCompatibilityPolicy = (
-        CheckpointCompatibilityPolicy.STRICT
+        CheckpointCompatibilityPolicy.ALLOW_CHECKPOINT_SUPERSET
     )
     component_report_extra: Mapping[str, object] = field(default_factory=dict)
 

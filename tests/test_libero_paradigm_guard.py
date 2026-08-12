@@ -17,7 +17,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_libero_compatibility_guard_does_not_select_a_proprio_recipe() -> None:
-    config_path = REPO_ROOT / "configs/experiments/parallel_stream_libero_lingbot_exact.yaml"
+    config_path = (
+        REPO_ROOT / "configs/experiments/parallel_stream_libero_video_then_action.yaml"
+    )
     config = load_experiment_config(config_path)
 
     issues = collect_current_libero_policy_paradigm_issues(config, config_path=config_path)
@@ -115,7 +117,9 @@ def test_libero_compatibility_guard_does_not_own_gjd_sampling_geometry() -> None
 
 
 def test_libero_paradigm_guard_prefers_resolved_config_over_legacy_wrapper_path() -> None:
-    config_path = REPO_ROOT / "configs/experiments/parallel_stream_libero_lingbot_exact.yaml"
+    config_path = (
+        REPO_ROOT / "configs/experiments/parallel_stream_libero_video_then_action.yaml"
+    )
     legacy_wrapper_path = REPO_ROOT / "configs/experiments/deprecated/parallel_stream_libero_lingbot_exact_local.yaml"
     config = load_experiment_config(config_path)
     assert collect_current_libero_policy_paradigm_issues(config, config_path=legacy_wrapper_path) == []
@@ -151,7 +155,6 @@ def test_libero_paradigm_guard_ignores_non_libero_smoke_config() -> None:
     (
         "scripts/run_libero_exact_realtime_sandbox.py",
         "scripts/run_libero_exact_visualization.py",
-        "scripts/run_libero_realtime_ablation.py",
         "scripts/run_mot_non_joint_aligned_libero_A.sh",
         "scripts/run_mot_non_joint_action_only_libero_B.sh",
         "scripts/run_mot_full_segment_nonjoint_libero.sh",

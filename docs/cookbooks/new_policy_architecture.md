@@ -70,9 +70,9 @@ Implement the policy hooks it uses:
 - `prepare_infer_state`
 - `forward_infer_step`
 
-The frontend output is always available. Return `"core"` and/or `"decode"`
-from `required_visual_stages()` only when the policy needs those shared stages.
-Use the optional `requested_visual_readout()`, `initialize_for_training()`, and
+The frontend output is always available. Include `"core"` in
+`required_visual_stages()` only when the policy needs the shared dense visual
+core. Use the optional `initialize_for_training()` and
 `reconcile_observed_history()` hooks instead of adding pipeline branches.
 
 Use `DecoderArtifactEnvelope` for architecture-specific policy-to-decoder

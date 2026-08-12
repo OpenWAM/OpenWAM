@@ -133,12 +133,10 @@ def _validate_experiment_config(raw: Mapping[str, Any], issues: _IssueBuilder, *
     trainer = _mapping(raw.get("trainer"))
     policy_variant = _mapping(raw.get("policy_variant"))
     action_decoder = _mapping(raw.get("action_decoder"))
-    action_head = _mapping(raw.get("action_head"))
-    if not relaxed and policy_variant is None and action_head is None:
-        issues.error("policy_variant", "Expected `policy_variant` or legacy `action_head`.")
-    if action_head is not None:
-        issues.warning("action_head", "Legacy compatibility section; prefer `policy_variant` + `action_decoder`.")
-        _validate_positive_ints(action_head, issues, "action_head", ("hidden_size", "action_dim", "action_horizon"))
+    if not relaxed and policy_variant is None:
+        issues.error("policy_variant", "Expected an explicit `policy_variant` section.")
+    if "action_head" in raw:
+        issues.error("action_head", "`action_head` was removed; configure `policy_variant` and `action_decoder`.")
     if policy_variant is not None:
         _validate_enum(policy_variant, "name", PolicyVariantName, issues, "policy_variant")
         _validate_enum(policy_variant, "attach_site", AttachSite, issues, "policy_variant")
@@ -258,7 +256,7 @@ def _validate_experiment_config(raw: Mapping[str, Any], issues: _IssueBuilder, *
             _validate_extension_envelope(action_decoder, issues, "action_decoder")
         _validate_positive_ints(action_decoder, issues, "action_decoder", ("hidden_size", "action_dim"))
     _validate_action_horizons(action_schema, policy_variant, action_decoder, issues)
-    _validate_action_schema_compatibility(action_schema, action_decoder, action_head, issues)
+    _validate_action_schema_compatibility(action_schema, action_decoder, issues)
 
     if trainer is not None:
         _validate_enum(trainer, "accelerator", TrainerAccelerator, issues, "trainer")

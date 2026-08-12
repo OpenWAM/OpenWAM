@@ -23,8 +23,6 @@ simulator integrations do not branch on architecture nicknames.
 | --- | --- | --- |
 | `parallel_stream` | Video and action tokens share one transformer and exact packed-stream cache lifecycle. | Six standard video/action programs and GJD; the exact LingBot backend is its primary compatibility profile. |
 | `dual_expert` | Video and action have separate transformer experts that execute paired blocks. | Six standard video/action programs, GJD, and conditional FDM/IDM. |
-| `post_latent` | A lightweight policy consumes frontend latents. | Feature-attached action baselines. |
-| `post_decoded` | A lightweight policy consumes decoded visual features. | Feature-attached action baselines. |
 | `causal_video_prediction` | The visual model runs without action supervision. | Video-only prediction. |
 
 The six standard video/action programs are:

@@ -92,8 +92,7 @@ below unless there is a strong repo-specific reason to do otherwise.
 ## Notes and Docs
 
 - Top-level `notes/` should describe the repo as it exists now.
-- Historical plans and finished roadmaps belong under
-  `notes/finished_roadmaps/`.
+- Remove superseded plans and completed roadmaps; Git history is the archive.
 - When architecture changes, update beginner-facing notes, not just deep-dive
   internals.
 - Do not leave docs describing removed paths as if they are still active.

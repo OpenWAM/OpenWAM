@@ -273,7 +273,7 @@ def main() -> None:
             checkpoint_load_policy=(
                 CheckpointCompatibilityPolicy.ALLOW_PARTIAL
                 if args.allow_partial_checkpoint
-                else CheckpointCompatibilityPolicy.STRICT
+                else CheckpointCompatibilityPolicy.ALLOW_CHECKPOINT_SUPERSET
             ),
         )
     )

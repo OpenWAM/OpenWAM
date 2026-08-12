@@ -246,7 +246,6 @@ def test_composable_runtime_trains_shared_core_method_smokes(
     final_state = runtime.run()
 
     assert final_state.optimizer_step == 1
-
 def test_step_loop_reshuffles_distributed_sampler_each_loader_pass(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -791,8 +790,6 @@ def test_composable_runtime_trains_causal_video_prediction_smoke(
     final_state = runtime.run()
 
     assert final_state.optimizer_step == 1
-
-
 def test_training_runtime_initializes_dual_expert_variant_before_strategy_wrap(
     tmp_path: Path,
 ) -> None:
@@ -831,7 +828,7 @@ def test_model_only_checkpoint_does_not_collect_optimizer_state(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     config = load_experiment_config(
-        REPO_ROOT / "configs/experiments/post_latent_robotwin.yaml"
+        REPO_ROOT / "configs/examples/public_tiny_synthetic_contract.yaml"
     )
     manager = CheckpointManager(
         root_dir=tmp_path / "checkpoints",
@@ -881,7 +878,7 @@ def test_full_state_resume_preserves_sparse_adamw_state(tmp_path: Path) -> None:
             self.later = torch.nn.Parameter(torch.tensor([2.0]))
 
     config = load_experiment_config(
-        REPO_ROOT / "configs/experiments/post_latent_robotwin.yaml"
+        REPO_ROOT / "configs/examples/public_tiny_synthetic_contract.yaml"
     )
     manager = CheckpointManager(
         root_dir=tmp_path / "checkpoints",
@@ -944,7 +941,7 @@ def test_checkpoint_manager_prunes_old_checkpoints_after_successful_save(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     config = load_experiment_config(
-        REPO_ROOT / "configs/experiments/post_latent_robotwin.yaml"
+        REPO_ROOT / "configs/examples/public_tiny_synthetic_contract.yaml"
     )
     manager = CheckpointManager(
         root_dir=tmp_path / "checkpoints",
@@ -986,7 +983,7 @@ def test_model_only_checkpoint_loads_sibling_train_state(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     config = load_experiment_config(
-        REPO_ROOT / "configs/experiments/post_latent_robotwin.yaml"
+        REPO_ROOT / "configs/examples/public_tiny_synthetic_contract.yaml"
     )
     manager = CheckpointManager(
         root_dir=tmp_path / "checkpoints",
@@ -1032,7 +1029,7 @@ def test_full_state_checkpoint_resume_prefers_sibling_full_state(
     tmp_path: Path,
 ) -> None:
     config = load_experiment_config(
-        REPO_ROOT / "configs/experiments/post_latent_robotwin.yaml"
+        REPO_ROOT / "configs/examples/public_tiny_synthetic_contract.yaml"
     )
     manager = CheckpointManager(
         root_dir=tmp_path / "checkpoints",
@@ -1066,7 +1063,7 @@ def test_checkpoint_latest_ignores_unmarked_partial_when_markers_exist(
     tmp_path: Path,
 ) -> None:
     config = load_experiment_config(
-        REPO_ROOT / "configs/experiments/post_latent_robotwin.yaml"
+        REPO_ROOT / "configs/examples/public_tiny_synthetic_contract.yaml"
     )
     manager = CheckpointManager(
         root_dir=tmp_path / "checkpoints",
@@ -1090,7 +1087,7 @@ def test_checkpoint_latest_ignores_unmarked_partial_when_markers_exist(
 
 def test_checkpoint_latest_preserves_legacy_unmarked_dirs(tmp_path: Path) -> None:
     config = load_experiment_config(
-        REPO_ROOT / "configs/experiments/post_latent_robotwin.yaml"
+        REPO_ROOT / "configs/examples/public_tiny_synthetic_contract.yaml"
     )
     manager = CheckpointManager(
         root_dir=tmp_path / "checkpoints",
@@ -1114,7 +1111,7 @@ def test_final_checkpoint_skips_when_interval_checkpoint_already_saved(
     tmp_path: Path,
 ) -> None:
     config = load_experiment_config(
-        REPO_ROOT / "configs/experiments/post_latent_robotwin.yaml"
+        REPO_ROOT / "configs/examples/public_tiny_synthetic_contract.yaml"
     )
     config = replace(
         config,
@@ -1145,7 +1142,7 @@ def test_final_checkpoint_skips_when_interval_checkpoint_already_saved(
 
 def test_save_interval_zero_disables_final_checkpoint(tmp_path: Path) -> None:
     config = load_experiment_config(
-        REPO_ROOT / "configs/experiments/post_latent_robotwin.yaml"
+        REPO_ROOT / "configs/examples/public_tiny_synthetic_contract.yaml"
     )
     config = replace(
         config,
@@ -1173,7 +1170,7 @@ def test_save_interval_zero_disables_final_checkpoint(tmp_path: Path) -> None:
 
 def test_composable_runtime_logs_checkpoints_and_resume(tmp_path: Path) -> None:
     config = load_experiment_config(
-        REPO_ROOT / "configs/experiments/post_latent_robotwin.yaml"
+        REPO_ROOT / "configs/examples/public_tiny_synthetic_contract.yaml"
     )
     config = replace(
         config,
@@ -1219,7 +1216,7 @@ def test_composable_runtime_logs_checkpoints_and_resume(tmp_path: Path) -> None:
 
 def test_composable_runtime_exports_runtime_backbone(tmp_path: Path) -> None:
     config = load_experiment_config(
-        REPO_ROOT / "configs/experiments/post_latent_robotwin.yaml"
+        REPO_ROOT / "configs/examples/public_tiny_synthetic_contract.yaml"
     )
     config = replace(
         config,
@@ -1252,7 +1249,7 @@ def test_composable_runtime_disable_checkpointing_suppresses_export_runtime_back
     tmp_path: Path,
 ) -> None:
     config = load_experiment_config(
-        REPO_ROOT / "configs/experiments/post_latent_robotwin.yaml"
+        REPO_ROOT / "configs/examples/public_tiny_synthetic_contract.yaml"
     )
     config = replace(
         config,
@@ -1282,7 +1279,7 @@ def test_composable_runtime_ddp_strategy_degrades_cleanly_to_single_process(
     tmp_path: Path,
 ) -> None:
     config = load_experiment_config(
-        REPO_ROOT / "configs/experiments/post_latent_robotwin.yaml"
+        REPO_ROOT / "configs/examples/public_tiny_synthetic_contract.yaml"
     )
     config = replace(
         config,
@@ -1296,92 +1293,6 @@ def test_composable_runtime_ddp_strategy_degrades_cleanly_to_single_process(
             default_root_dir=str(tmp_path),
         ),
     )
-
-    runtime = TrainingRuntime.from_config(config)
-    final_state = runtime.run()
-
-    assert final_state.optimizer_step == 1
-
-
-def test_composable_runtime_trains_post_latent_with_core_layer_visual_readout(
-    tmp_path: Path,
-) -> None:
-    def _mutate(raw) -> None:
-        raw["policy_variant"]["visual_readout"] = {
-            "source_family": "core_layer_tokens",
-            "layer_index": 0,
-        }
-        raw["backbone"]["num_layers"] = 2
-
-    config_path = _write_temp_config(
-        tmp_path,
-        source_name="post_latent_robotwin.yaml",
-        output_name="post_latent_core_layer_runtime",
-        mutate=_mutate,
-    )
-    config = _build_step_runtime_config(config_path, tmp_path=tmp_path)
-
-    runtime = TrainingRuntime.from_config(config)
-    final_state = runtime.run()
-
-    assert final_state.optimizer_step == 1
-
-
-def test_composable_runtime_trains_post_decoded_with_multi_layer_visual_readout(
-    tmp_path: Path,
-) -> None:
-    def _mutate(raw) -> None:
-        raw["policy_variant"]["visual_readout"] = {
-            "source_family": "core_multi_layer_tokens",
-            "layer_indices": [0, 1],
-            "fusion_mode": "concat_project",
-        }
-        raw["backbone"]["num_layers"] = 2
-
-    config_path = _write_temp_config(
-        tmp_path,
-        source_name="post_decoded_robotwin.yaml",
-        output_name="post_decoded_multi_layer_runtime",
-        mutate=_mutate,
-    )
-    config = _build_step_runtime_config(config_path, tmp_path=tmp_path)
-
-    runtime = TrainingRuntime.from_config(config)
-    final_state = runtime.run()
-
-    assert final_state.optimizer_step == 1
-
-
-def test_composable_runtime_trains_method4_with_implicit_video_conditioned_decoder(
-    tmp_path: Path,
-) -> None:
-    post_latent_path = (
-        REPO_ROOT / "configs/experiments/post_latent_robotwin_video_conditioned.yaml"
-    )
-    post_latent_config = _build_step_runtime_config(post_latent_path, tmp_path=tmp_path)
-    post_latent_runtime = TrainingRuntime.from_config(post_latent_config)
-    post_latent_state = post_latent_runtime.run()
-    assert post_latent_state.optimizer_step == 1
-
-    post_decoded_path = (
-        REPO_ROOT / "configs/experiments/post_decoded_robotwin_video_conditioned.yaml"
-    )
-    post_decoded_config = _build_step_runtime_config(
-        post_decoded_path, tmp_path=tmp_path
-    )
-    post_decoded_runtime = TrainingRuntime.from_config(post_decoded_config)
-    post_decoded_state = post_decoded_runtime.run()
-    assert post_decoded_state.optimizer_step == 1
-
-
-def test_composable_runtime_trains_method4_current_frame_regression_mode(
-    tmp_path: Path,
-) -> None:
-    config_path = (
-        REPO_ROOT
-        / "configs/experiments/post_decoded_robotwin_current_frame_regression.yaml"
-    )
-    config = _build_step_runtime_config(config_path, tmp_path=tmp_path)
 
     runtime = TrainingRuntime.from_config(config)
     final_state = runtime.run()

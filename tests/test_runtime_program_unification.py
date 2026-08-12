@@ -60,7 +60,7 @@ def test_exact_runtime_program_executes_on_shared_backbone() -> None:
 
 def test_dense_runtime_accepts_application_prepared_attention_profile() -> None:
     config = load_experiment_config(
-        REPO_ROOT / "configs/experiments/post_latent_robotwin.yaml"
+        REPO_ROOT / "configs/examples/public_tiny_synthetic_contract.yaml"
     )
     pipeline = build_variant_pipeline_from_config(config)
     profile = PreparedAttentionProfile(

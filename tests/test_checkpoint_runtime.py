@@ -159,6 +159,50 @@ def test_load_pipeline_checkpoint_allows_explicit_migration_diagnostic(
     assert report.unexpected_keys == ()
 
 
+def test_load_pipeline_checkpoint_allows_complete_checkpoint_superset(
+    tmp_path: Path,
+) -> None:
+    pipeline = nn.Linear(2, 2)
+    checkpoint_path = tmp_path / "model_state.pt"
+    state = pipeline.state_dict()
+    state["retired_component.proj.weight"] = torch.ones(1)
+    torch.save(state, checkpoint_path)
+
+    report = load_pipeline_checkpoint(
+        pipeline,
+        checkpoint_path,
+        compatibility=CheckpointCompatibilityPolicy.ALLOW_CHECKPOINT_SUPERSET,
+    )
+
+    assert report.missing_keys == ()
+    assert report.unexpected_keys == ("retired_component.proj.weight",)
+
+
+def test_complete_checkpoint_superset_policy_rejects_missing_runtime_state(
+    tmp_path: Path,
+) -> None:
+    pipeline = nn.Linear(2, 2)
+    checkpoint_path = tmp_path / "model_state.pt"
+    state = pipeline.state_dict()
+    del state["bias"]
+    state["retired_component.proj.weight"] = torch.ones(1)
+    torch.save(state, checkpoint_path)
+
+    with pytest.raises(CheckpointCompatibilityError) as exc_info:
+        load_pipeline_checkpoint(
+            pipeline,
+            checkpoint_path,
+            compatibility=(
+                CheckpointCompatibilityPolicy.ALLOW_CHECKPOINT_SUPERSET
+            ),
+        )
+
+    assert exc_info.value.report.missing_keys == ("bias",)
+    assert exc_info.value.report.unexpected_keys == (
+        "retired_component.proj.weight",
+    )
+
+
 def test_find_checkpoint_resolved_config_uses_checkpoint_dir(tmp_path: Path) -> None:
     checkpoint_dir = tmp_path / "checkpoint_step_123"
     checkpoint_dir.mkdir()
@@ -171,7 +215,9 @@ def test_find_checkpoint_resolved_config_uses_checkpoint_dir(tmp_path: Path) -> 
 
 
 def test_merge_runtime_config_from_checkpoint_keeps_data_sources_but_restores_runtime_contract(tmp_path: Path) -> None:
-    base_config_path = REPO_ROOT / "configs/experiments/parallel_stream_libero_lingbot_exact.yaml"
+    base_config_path = (
+        REPO_ROOT / "configs/experiments/parallel_stream_libero_video_then_action.yaml"
+    )
     base_config = load_experiment_config(base_config_path)
     base_config = replace(
         base_config,
@@ -208,21 +254,25 @@ def test_merge_runtime_config_from_checkpoint_keeps_data_sources_but_restores_ru
 
 
 def test_merge_runtime_config_from_checkpoint_accepts_legacy_resolved_sample_fields(tmp_path: Path) -> None:
-    base_config_path = REPO_ROOT / "configs/experiments/dual_expert_libero_latent_local_full_segment_non_joint_action_only.yaml"
+    base_config_path = REPO_ROOT / "configs/experiments/dual_expert_libero_joint.yaml"
     base_config = load_experiment_config(base_config_path)
     checkpoint_dir = tmp_path / "checkpoint_step_1000"
     checkpoint_dir.mkdir(parents=True)
     (checkpoint_dir / "model_state.pt").write_bytes(b"")
 
     checkpoint_config = yaml.safe_load(base_config_path.read_text(encoding="utf-8"))
+    checkpoint_config["policy_variant"]["sequence_contract"] = "default"
     sample_config = checkpoint_config["data"]["sample_construction"]
     sample_config.update(
         {
             "mode": "hierarchical_fixed_segment",
+            "sample_order_mode": "epoch_order",
+            "randomize_geometry": False,
             "target_alignment": "next_after_context",
             "rollout_context_policy": "one_frame",
             "context_prefix_policy": "none",
             "context_prefix_frames": 0,
+            "start_padding_frames": 0,
             "segment_frames": 128,
             "segment_min_frames": None,
             "segment_max_frames": None,
@@ -248,7 +298,7 @@ def test_merge_runtime_config_from_checkpoint_accepts_legacy_resolved_sample_fie
 
 
 def test_merge_runtime_config_from_checkpoint_rehomes_nonportable_backbone_paths(tmp_path: Path) -> None:
-    base_config_path = REPO_ROOT / "configs/experiments/dual_expert_libero_latent_local_full_segment_non_joint_action_only.yaml"
+    base_config_path = REPO_ROOT / "configs/experiments/dual_expert_libero_joint.yaml"
     base_config = load_experiment_config(base_config_path)
     base_pretrained = tmp_path / "local_lingbot_va_base"
     base_pretrained.mkdir()

@@ -23,9 +23,6 @@ TransformFieldMap: TypeAlias = Mapping[str, FieldTransform]
 class ActionDecoderName(StrEnum):
     """Final action-decoder family selected by experiment config."""
 
-    MLP = "mlp_decoder"
-    DECODED_FEATURE = "decoded_feature_decoder"
-    VIDEO_CONDITIONED = "video_conditioned_action_decoder"
     PARALLEL_STREAM = "parallel_stream_decoder"
     # Deprecated Python/value compatibility. Raw legacy values are normalized
     # to PARALLEL_STREAM at the config boundary.
@@ -36,42 +33,6 @@ class ActionDecoderName(StrEnum):
     MOT = "dual_expert_decoder"
     VIDEO_ONLY = "video_only_decoder"
     EXTENSION = "extension"
-
-
-class ActionChunkAnchorMode(StrEnum):
-    """How an action chunk is anchored relative to the local video window."""
-
-    FUTURE_ONLY = "future_only"
-    CURRENT_PLUS_FUTURE = "current_plus_future"
-
-
-class ActionExpertInitMode(StrEnum):
-    """How a reusable action expert should initialize from the shared video core."""
-
-    RANDOM = "random"
-    VIDEO_WEIGHT_COPY = "video_weight_copy"
-    VIDEO_WEIGHT_INTERPOLATE = "video_weight_interpolate"
-
-
-class VideoConditionInputSpace(StrEnum):
-    """Which video-space family a video-conditioned decoder treats as input."""
-
-    VIDEO_LATENT = "video_latent"
-    RGB_VIDEO = "rgb_video"
-
-
-class VideoConditionSource(StrEnum):
-    """Source used to build local video-conditioning windows."""
-
-    LOCAL_WINDOW = "local_window"
-    GENERATED_FUTURE = "generated_future"
-
-
-class VideoConditionTrainMode(StrEnum):
-    """How a video-conditioned decoder is trained."""
-
-    ROLLOUT_WINDOW_DIFFUSION = "rollout_window_diffusion"
-    CURRENT_FRAME_REGRESSION = "current_frame_regression"
 
 
 class DataSplit(StrEnum):
@@ -465,8 +426,6 @@ class WarmupAnchor(StrEnum):
 class PolicyVariantName(StrEnum):
     """Top-level policy family supported by the repo."""
 
-    POST_LATENT = "post_latent"
-    POST_DECODED = "post_decoded"
     CAUSAL_VIDEO_PREDICTION = "causal_video_prediction"
     DUAL_EXPERT = "dual_expert"
     # Deprecated Python symbol alias. Raw `mot` config values are normalized
@@ -539,45 +498,7 @@ class AttachSite(StrEnum):
 
     POST_FRONTEND_LATENTS = "post_frontend_latents"
     POST_VISUAL_CORE = "post_visual_core"
-    POST_VISUAL_DECODE = "post_visual_decode"
     WITHIN_VISUAL_CORE = "within_visual_core"
-
-
-class PoolingMode(StrEnum):
-    """How frame/token features are pooled into policy features."""
-
-    PER_FRAME_MEAN = "per_frame_mean"
-    COMPAT_GLOBAL_MEAN = "compat_global_mean"
-
-
-class TemporalProjection(StrEnum):
-    """How feature sequences are aligned to the action horizon."""
-
-    INTERPOLATE = "interpolate"
-
-
-class VisualReadoutSourceFamily(StrEnum):
-    """Which shared visual readout family a post-visual variant should consume."""
-
-    FINAL_CORE_TOKENS = "final_core_tokens"
-    CORE_LAYER_TOKENS = "core_layer_tokens"
-    CORE_MULTI_LAYER_TOKENS = "core_multi_layer_tokens"
-    DIFFUSION_FEATURE_TOKENS = "diffusion_feature_tokens"
-
-
-class VisualReadoutFusionMode(StrEnum):
-    """How multiple shared-core readouts should be fused."""
-
-    NONE = "none"
-    CONCAT_PROJECT = "concat_project"
-    LEARNED_WEIGHTED_SUM = "learned_weighted_sum"
-    MEAN = "mean"
-
-
-class DecodeFeatureMode(StrEnum):
-    """How decoded visual features are surfaced to a decoder."""
-
-    FRAME_TOKEN_SEQUENCE = "frame_token_sequence"
 
 
 class ParallelRuntimeMode(StrEnum):
@@ -585,10 +506,6 @@ class ParallelRuntimeMode(StrEnum):
 
     LINGBOT_EXACT = "lingbot_exact"
     LINGBOT_EXACT_ACTION_CONDITIONED = "lingbot_exact_action_conditioned"
-    # Current observation + text plus hidden-state proprio -> action chunk, without exact history cache.
-    CURRENT_FRAME_ACTION_CHUNK = "current_frame_action_chunk"
-    # FastWAM-style first-frame video/action training with action-only rollout.
-    FASTWAM_FIRST_FRAME = "fastwam_first_frame"
 
 
 class ParallelStreamVariantProfile(StrEnum):
@@ -949,11 +866,9 @@ class TrainingComponentSelector(StrEnum):
     VISUAL_TOWER_SHARED_VIDEO_BACKBONE = "visual_tower.shared_video_backbone"
     VISUAL_TOWER_SHARED_ACTION_RUNTIME = "visual_tower.shared_action_runtime"
     VISUAL_TOWER_SHARED_RUNTIME_ADAPTERS = "visual_tower.shared_runtime_adapters"
-    VISUAL_TOWER_DECODER = "visual_tower.decoder"
     POLICY_VARIANT = "policy_variant"
     POLICY_VARIANT_ACTION_EXPERT = "policy_variant.action_expert"
     ACTION_DECODER = "action_decoder"
-    ACTION_DECODER_ADAPTERS = "action_decoder.adapters"
 
 
 # Backbone/evaluation enums.
@@ -1012,10 +927,8 @@ class EvalPredictionSource(StrEnum):
     DECODER_ACTION_PRED_UNMATCHED = "decoder_action_pred_unmatched"
     DECODER_PREDICTED_LATENTS = "decoder_predicted_latents"
     DECODER_PREDICTED_VIDEO_LATENTS = "decoder_predicted_video_latents"
-    DECODER_PREDICTED_LOCAL_FUTURE_LATENTS = "decoder_predicted_local_future_latents"
     POLICY_PREDICTED_LATENTS = "policy_predicted_latents"
     POLICY_PREDICTED_VIDEO_LATENTS = "policy_predicted_video_latents"
-    POLICY_PREDICTED_LOCAL_FUTURE_LATENTS = "policy_predicted_local_future_latents"
 
 
 def coerce_enum_value(enum_cls: type[EnumT], value: EnumT | str) -> EnumT:

@@ -600,7 +600,11 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Encode LIBERO FDM counterfactual RGB dataset into Wan latents.")
     parser.add_argument("--dataset-root", required=True)
     parser.add_argument("--output-dir", default=None)
-    parser.add_argument("--config", "--cfg", default="configs/experiments/parallel_stream_libero_joint_denoise.yaml")
+    parser.add_argument(
+        "--config",
+        "--cfg",
+        default="configs/experiments/parallel_stream_libero_generalist_joint_denoising.yaml",
+    )
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--reference-assets-device-policy", default="runtime")

@@ -851,7 +851,11 @@ def _summarize_counterfactual_metric_rows(rows: list[dict[str, Any]]) -> list[di
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run simulator-counterfactual FDM evaluation on LIBERO.")
-    parser.add_argument("--config", "--cfg", default="configs/experiments/parallel_stream_libero_joint_denoise.yaml")
+    parser.add_argument(
+        "--config",
+        "--cfg",
+        default="configs/experiments/parallel_stream_libero_generalist_joint_denoising.yaml",
+    )
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--benchmark", default="libero_10")
     parser.add_argument("--replay-status-path", required=True)

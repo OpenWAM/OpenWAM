@@ -26,7 +26,7 @@ def _manager(
     checkpoint_mode: CheckpointMode = CheckpointMode.MODEL_ONLY,
 ) -> CheckpointManager:
     config = load_experiment_config(
-        REPO_ROOT / "configs/experiments/post_latent_robotwin.yaml"
+        REPO_ROOT / "configs/examples/public_tiny_synthetic_contract.yaml"
     )
     config = replace(
         config,
@@ -253,3 +253,43 @@ def test_optimizer_resume_does_not_retry_out_of_memory(
             model=resumed_model,
             optimizer=resumed_optimizer,
         )
+
+
+def test_distributed_non_strict_load_filters_retired_checkpoint_keys(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = _manager(tmp_path)
+    checkpoint_path = tmp_path / "model_state.pt"
+    checkpoint_path.touch()
+    model = torch.nn.Linear(2, 2)
+    loaded_keys: list[str] = []
+
+    monkeypatch.setattr(checkpoints_module, "_is_rank_zero", lambda: True)
+    monkeypatch.setattr(checkpoints_module.dist, "is_initialized", lambda: True)
+    monkeypatch.setattr(
+        checkpoints_module.dist,
+        "broadcast_object_list",
+        lambda values, src: None,
+    )
+    monkeypatch.setattr(
+        checkpoints_module,
+        "_load_tensor_artifact",
+        lambda path, map_location: {
+            "model_state_dict": {
+                "weight": torch.ones_like(model.weight),
+                "bias": torch.ones_like(model.bias),
+                "retired_component.proj.weight": torch.ones(1),
+            }
+        },
+    )
+    monkeypatch.setattr(
+        checkpoints_module,
+        "set_model_state_dict",
+        lambda model, state_dict, options: loaded_keys.extend(state_dict),
+    )
+
+    with pytest.warns(RuntimeWarning, match="retired_component.proj.weight"):
+        manager.load(path=checkpoint_path, model=model)
+
+    assert loaded_keys == ["weight", "bias"]

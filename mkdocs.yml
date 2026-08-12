@@ -27,7 +27,6 @@ nav:
       - Cards:
           - Card Index: cards/index.md
           - Public Tiny Synthetic: cards/public_tiny_synthetic_contract.md
-          - Parallel Stream LIBERO Exact Step 400: cards/parallel_stream_libero_exact_step400.md
   - Extending:
       - Extension SDK: extension_sdk.md
       - Add A Policy Architecture: cookbooks/new_policy_architecture.md

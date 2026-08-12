@@ -34,25 +34,6 @@ from open_wam.training import apply_training_component_controls
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_apply_training_component_controls_can_train_decoder_only() -> None:
-    config = load_experiment_config(REPO_ROOT / "configs/experiments/post_latent_robotwin.yaml")
-    config = replace(
-        config,
-        training=replace(
-            config.training,
-            trainable_components=("action_decoder",),
-        ),
-    )
-    pipeline = build_variant_pipeline_from_config(config)
-
-    report = apply_training_component_controls(pipeline, config.training)
-
-    assert report.trainable_components == ("action_decoder",)
-    assert report.trainable_parameters > 0
-    assert all(not parameter.requires_grad for parameter in pipeline.visual_tower.frontend.parameters())
-    assert all(not parameter.requires_grad for parameter in pipeline.visual_tower.core.parameters())
-    assert all(parameter.requires_grad for parameter in pipeline.action_decoder.parameters())
-
 
 def test_parallel_stream_enabled_objectives_can_disable_action_loss() -> None:
     config = load_experiment_config(REPO_ROOT / "configs/experiments/parallel_stream_robotwin_smoke.yaml")
@@ -281,28 +262,6 @@ def test_packed_legacy_restore_transfers_block_ownership_once() -> None:
     assert not any("packed_block_stack" in key for key in pipeline.state_dict())
     assert pipeline.policy_variant.restore_packed_blocks_for_legacy_inference(pipeline.visual_tower) is False
 
-
-def test_apply_training_component_controls_supports_action_decoder_adapter_selector() -> None:
-    config = load_experiment_config(REPO_ROOT / "configs/experiments/post_latent_robotwin_video_conditioned.yaml")
-    config = replace(
-        config,
-        training=replace(
-            config.training,
-            trainable_components=("action_decoder.adapters",),
-        ),
-    )
-    pipeline = build_variant_pipeline_from_config(config)
-
-    report = apply_training_component_controls(pipeline, config.training)
-
-    assert report.trainable_components == ("action_decoder.adapters",)
-    assert report.trainable_parameters > 0
-    assert report.trainable_parameters < report.total_parameters
-    assert all(not parameter.requires_grad for parameter in pipeline.visual_tower.core.parameters())
-    assert all(not parameter.requires_grad for parameter in pipeline.action_decoder.action_expert.blocks.parameters())
-    assert all(parameter.requires_grad for parameter in pipeline.action_decoder.action_expert.action_embedder.parameters())
-    assert all(parameter.requires_grad for parameter in pipeline.action_decoder.action_expert.context_proj.parameters())
-    assert all(parameter.requires_grad for parameter in pipeline.action_decoder.action_expert.action_proj_out.parameters())
 
 
 def test_additive_proprio_context_encoder_trains_with_action_only_selector() -> None:

@@ -15,6 +15,7 @@ from torch.utils.data import DataLoader
 
 from open_wam.configs import (
     DataSplit,
+    LatentWindowProfile,
     ReplayStatusPolicy,
     RolloutContextPolicy,
     SampleOrderMode,
@@ -2213,7 +2214,9 @@ def test_lingbot_exact_actions_use_wan_causal_latent_anchors(tmp_path: Path) -> 
         payload["frame_ids"] = list(range(15))
         torch.save(payload, latent_path)
 
-    config = load_experiment_config(REPO_ROOT / "configs/experiments/parallel_stream_libero_lingbot_exact.yaml")
+    config = load_experiment_config(
+        REPO_ROOT / "configs/experiments/parallel_stream_libero_video_then_action.yaml"
+    )
     config = replace(
         config,
         data=replace(
@@ -2259,7 +2262,9 @@ def test_hierarchical_exact_actions_use_wan_causal_latent_anchors(tmp_path: Path
         payload["frame_ids"] = list(range(31))
         torch.save(payload, latent_path)
 
-    config = load_experiment_config(REPO_ROOT / "configs/experiments/parallel_stream_libero_lingbot_exact.yaml")
+    config = load_experiment_config(
+        REPO_ROOT / "configs/experiments/parallel_stream_libero_video_then_action.yaml"
+    )
     config = replace(
         config,
         data=replace(
@@ -2275,8 +2280,14 @@ def test_hierarchical_exact_actions_use_wan_causal_latent_anchors(tmp_path: Path
                 config.data.sample_construction,
                 mode=WindowSamplingMode.HIERARCHICAL_FIXED_SEGMENT,
                 segment_frames=4,
+                segment_min_frames=None,
+                segment_max_frames=None,
                 chunk_size=2,
                 randomize_geometry=False,
+                randomize_segment_length=False,
+                randomize_segment_start=False,
+                require_full_segment=False,
+                sample_order_mode=SampleOrderMode.EPOCH_ORDER,
                 start_padding_frames=0,
                 target_alignment=SampleTargetAlignment.LEGACY,
             ),
@@ -2636,7 +2647,7 @@ def test_hierarchical_fixed_segment_dataloader_samples_stepwise_valid_keys(tmp_p
     assert len(train_dataset) == 18
 
 
-def test_standard_policy_full_segment_latent_profile_uses_schema_horizon(tmp_path: Path) -> None:
+def test_full_segment_latent_profile_uses_schema_horizon(tmp_path: Path) -> None:
     repo_root = tmp_path / "libero_local_latent_full_segment"
     _build_local_robotwin_latent_repo(
         repo_root,
@@ -2648,7 +2659,7 @@ def test_standard_policy_full_segment_latent_profile_uses_schema_horizon(tmp_pat
         latent_num_frames=4,
     )
 
-    config = load_experiment_config(REPO_ROOT / "configs/experiments/post_latent_libero_latent_local.yaml")
+    config = load_experiment_config(REPO_ROOT / "configs/experiments/dual_expert_libero_joint.yaml")
     config = replace(
         config,
         data=replace(
@@ -2659,6 +2670,12 @@ def test_standard_policy_full_segment_latent_profile_uses_schema_horizon(tmp_pat
             num_workers=0,
             train_batch_size=1,
             val_batch_size=1,
+            latent_window_profile=LatentWindowProfile.STANDARD_POLICY_WINDOW,
+            action_schema=replace(config.data.action_schema, action_horizon=6),
+            sample_construction=replace(
+                config.data.sample_construction,
+                mode=WindowSamplingMode.FULL_SEGMENT,
+            ),
         ),
     )
 
@@ -2737,7 +2754,9 @@ def test_local_lerobot_latent_dataset_uses_pose_source_key_for_state(tmp_path: P
         camera_names=("observation.images.agentview_rgb", "observation.images.eye_in_hand_rgb"),
     )
 
-    config = load_experiment_config(REPO_ROOT / "configs/experiments/parallel_stream_libero_lingbot_exact.yaml")
+    config = load_experiment_config(
+        REPO_ROOT / "configs/experiments/parallel_stream_libero_video_then_action.yaml"
+    )
     config = replace(
         config,
         data=replace(

@@ -25,12 +25,10 @@ from open_wam.models.video_backbone.contracts import (
 from .cache_lifecycle import _MAX_CACHED_FRAMES_UNSET, RuntimeCacheLifecycle
 from .contracts import (
     VisualCoreInput,
-    VisualReadoutRequest,
     VisualRuntimeStateSnapshot,
     VisualStageOutputs,
 )
 from .core import PackedSequenceVisualCore
-from .decoder import VisualFeatureDecoder
 from .exact_runtime import (
     prepare_exact_single_stream_input,
     resolve_runtime_module_dtype,
@@ -104,7 +102,6 @@ class VisualTower(nn.Module):
                 f"Unsupported backbone implementation '{self.config.implementation}'. "
                 "Expected 'dummy' or 'shared_transformer'."
             )
-        self.decoder = VisualFeatureDecoder(self.config.hidden_size)
         self.reference_core_load_report: BackboneLoadReport | None = None
         if self.config.load_reference_core_weights:
             if implementation != BackboneImplementation.SHARED_TRANSFORMER:
@@ -850,8 +847,6 @@ class VisualTower(nn.Module):
     def run_default_core(
         self,
         frontend_output,
-        *,
-        readout_request: VisualReadoutRequest | None = None,
     ):
         batch_size, seq_len, _ = frontend_output.video_tokens.shape
         step_output = self.execute_runtime_step(
@@ -874,29 +869,12 @@ class VisualTower(nn.Module):
                     ).long(),
                     text_context=frontend_output.conditioning.text_context,
                     conditioning=frontend_output.conditioning,
-                    readout_request=readout_request,
                 ),
             )
         )
         if step_output.core_output is None:
             raise ValueError("Default dense runtime execution did not return a `core_output`.")
         return step_output.core_output
-
-    def run_decode(self, frontend_output, core_output):
-        return self.decoder(frontend_output=frontend_output, core_output=core_output)
-
-    def decode_tokens(
-        self,
-        frontend_output,
-        *,
-        tokens: torch.Tensor,
-        token_layout,
-    ):
-        return self.decoder.forward_tokens(
-            frontend_output=frontend_output,
-            tokens=tokens,
-            token_layout=token_layout,
-        )
 
     def _ensure_runtime_backbone_initialized(self) -> None:
         self.reference_core_load_report = initialize_runtime_backbone(
@@ -954,9 +932,7 @@ class VisualTower(nn.Module):
         *,
         placements: tuple[ViewPlacement, ...] | None = None,
         task_text: tuple[str | None, ...] | None = None,
-        include_decode: bool = False,
     ) -> VisualStageOutputs:
         frontend_output = self.run_frontend(canonical_video, placements=placements, task_text=task_text)
         core_output = self.run_default_core(frontend_output)
-        decode_output = self.run_decode(frontend_output, core_output) if include_decode else None
-        return VisualStageOutputs(frontend=frontend_output, core=core_output, decode=decode_output)
+        return VisualStageOutputs(frontend=frontend_output, core=core_output)

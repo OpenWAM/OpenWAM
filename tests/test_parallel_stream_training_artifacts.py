@@ -5,9 +5,7 @@ from open_wam.models.policy_variants.parallel_stream.training_artifacts import (
     LingbotParallelTrainArtifacts,
     ParallelTrainArtifacts,
     prepare_parallel_action_conditioned_train_artifacts,
-    prepare_parallel_current_frame_action_chunk_train_artifacts,
     prepare_parallel_exact_train_artifacts,
-    prepare_parallel_fastwam_first_frame_train_artifacts,
     prepare_parallel_prefix_condition_exact_train_artifacts,
 )
 
@@ -26,16 +24,8 @@ def test_reference_runtime_training_artifact_names_alias_canonical_owner() -> No
         is prepare_parallel_action_conditioned_train_artifacts
     )
     assert (
-        reference_runtime.prepare_parallel_current_frame_action_chunk_train_artifacts
-        is prepare_parallel_current_frame_action_chunk_train_artifacts
-    )
-    assert (
         reference_runtime.prepare_parallel_exact_train_artifacts
         is prepare_parallel_exact_train_artifacts
-    )
-    assert (
-        reference_runtime.prepare_parallel_fastwam_first_frame_train_artifacts
-        is prepare_parallel_fastwam_first_frame_train_artifacts
     )
     assert (
         reference_runtime.prepare_parallel_prefix_condition_exact_train_artifacts

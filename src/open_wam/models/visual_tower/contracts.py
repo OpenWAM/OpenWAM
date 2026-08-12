@@ -16,13 +16,6 @@ from open_wam.models.video_backbone.contracts import (
 
 
 @dataclass(frozen=True)
-class VisualReadoutRequest:
-    """Opt-in intermediate readout capture requested from the visual core."""
-
-    capture_layer_indices: tuple[int, ...] = field(default_factory=tuple)
-
-
-@dataclass(frozen=True)
 class VisualRuntimeStateSnapshot:
     """Copied frontend and named-backbone state for speculative execution."""
 
@@ -30,26 +23,6 @@ class VisualRuntimeStateSnapshot:
     runtime_cache_name: str | None = None
     runtime_cache_existed: bool = False
     runtime_cache_state: CacheState | None = None
-
-
-@dataclass
-class VisualIntermediateReadout:
-    """One captured intermediate visual-core layer output."""
-
-    layer_index: int
-    tokens: torch.Tensor
-    token_layout: Any | None = None
-    aux: dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass(frozen=True)
-class DecodedFeatureLayout:
-    """Layout metadata for decoded visual features."""
-
-    kind: str
-    num_frames: int
-    tokens_per_frame: int
-    hidden_size: int
 
 
 @dataclass
@@ -89,7 +62,6 @@ class VisualCoreInput:
     cache_state: CacheState | None = None
     cache_update_metadata: CacheUpdateMetadata | None = None
     conditioning: ConditioningState | None = None
-    readout_request: VisualReadoutRequest | None = None
     sequence_metadata: VisualSequenceMetadata | None = None
 
 
@@ -100,16 +72,6 @@ class VisualCoreOutput:
     tokens: torch.Tensor
     token_layout: Any | None
     cache_state: CacheState
-    intermediate_readouts: tuple[VisualIntermediateReadout, ...] = field(default_factory=tuple)
-    aux: dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass
-class VisualDecodeOutput:
-    """Decoded visual features exposed to post-decoded policies."""
-
-    decoded_features: torch.Tensor
-    feature_layout: DecodedFeatureLayout
     aux: dict[str, Any] = field(default_factory=dict)
 
 
@@ -119,4 +81,3 @@ class VisualStageOutputs:
 
     frontend: VisualFrontendOutput
     core: VisualCoreOutput | None = None
-    decode: VisualDecodeOutput | None = None

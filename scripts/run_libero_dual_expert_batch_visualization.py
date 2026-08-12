@@ -282,7 +282,7 @@ def _load_batch_resources(args: argparse.Namespace) -> SimpleNamespace:
             checkpoint_load_policy=(
                 CheckpointCompatibilityPolicy.ALLOW_PARTIAL
                 if args.allow_partial_checkpoint
-                else CheckpointCompatibilityPolicy.STRICT
+                else CheckpointCompatibilityPolicy.ALLOW_CHECKPOINT_SUPERSET
             ),
             component_report_extra={
                 "batch_driver": "run_libero_dual_expert_batch_visualization.py"

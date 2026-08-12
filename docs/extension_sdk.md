@@ -160,9 +160,9 @@ inference coverage for every maintained architecture.
 
 ### VisualTower
 
-The tower owns the shared frontend, visual core, decode stage, runtime
-execution, and cache lifecycle. Policies receive frontend output and may
-request `"core"` and/or `"decode"` from `required_visual_stages()`.
+The tower owns the shared frontend, visual core, runtime execution, and cache
+lifecycle. Policies always receive frontend output and may additionally
+request `"core"` from `required_visual_stages()`.
 
 Use the dense runtime plus `PreparedAttentionProfile` for custom visibility.
 Adding a `RuntimeProgramSpec` name does not register an executor: a new exact

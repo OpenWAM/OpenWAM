@@ -30,16 +30,12 @@ COMPONENT_ALIASES = {
     "visual_tower.proprio_context_encoder": TrainingComponentSelector.VISUAL_TOWER_PROPRIO_CONTEXT_ENCODER,
     "generalist_mode_context_encoder": TrainingComponentSelector.VISUAL_TOWER_GENERALIST_MODE_CONTEXT_ENCODER,
     "visual_tower.generalist_mode_context_encoder": TrainingComponentSelector.VISUAL_TOWER_GENERALIST_MODE_CONTEXT_ENCODER,
-    "decoder": TrainingComponentSelector.VISUAL_TOWER_DECODER,
-    "visual_tower.decoder": TrainingComponentSelector.VISUAL_TOWER_DECODER,
     "policy": TrainingComponentSelector.POLICY_VARIANT,
     "variant": TrainingComponentSelector.POLICY_VARIANT,
     "policy_variant": TrainingComponentSelector.POLICY_VARIANT,
     "policy_variant.action_expert": TrainingComponentSelector.POLICY_VARIANT_ACTION_EXPERT,
     "head": TrainingComponentSelector.ACTION_DECODER,
     "action_decoder": TrainingComponentSelector.ACTION_DECODER,
-    "action_decoder.adapters": TrainingComponentSelector.ACTION_DECODER_ADAPTERS,
-    "decoder.adapters": TrainingComponentSelector.ACTION_DECODER_ADAPTERS,
 }
 
 
@@ -232,18 +228,6 @@ def _resolve_component_modules(pipeline: nn.Module, selector: TrainingComponentS
                     resolved.append(video_block)
         return resolved
 
-    def _resolve_action_decoder_adapters(module: nn.Module) -> list[nn.Module]:
-        adapter_modules = getattr(module.action_decoder, "trainable_adapter_modules", None)
-        if not callable(adapter_modules):
-            raise ValueError(
-                "Training component selector `action_decoder.adapters` requires "
-                "`pipeline.action_decoder.trainable_adapter_modules()`."
-            )
-        resolved = list(adapter_modules())
-        if not resolved:
-            raise ValueError("`pipeline.action_decoder.trainable_adapter_modules()` returned no modules.")
-        return resolved
-
     resolvers: dict[TrainingComponentSelector, ComponentResolver] = {
         TrainingComponentSelector.VISUAL_TOWER: lambda module: [module.visual_tower],
         TrainingComponentSelector.VISUAL_TOWER_FRONTEND: lambda module: [module.visual_tower.frontend],
@@ -251,11 +235,9 @@ def _resolve_component_modules(pipeline: nn.Module, selector: TrainingComponentS
         TrainingComponentSelector.VISUAL_TOWER_RUNTIME_BACKBONE: _resolve_visual_tower_runtime_backbone,
         TrainingComponentSelector.VISUAL_TOWER_PROPRIO_CONTEXT_ENCODER: _resolve_proprio_context_encoder,
         TrainingComponentSelector.VISUAL_TOWER_GENERALIST_MODE_CONTEXT_ENCODER: _resolve_generalist_mode_context_encoder,
-        TrainingComponentSelector.VISUAL_TOWER_DECODER: lambda module: [module.visual_tower.decoder],
         TrainingComponentSelector.POLICY_VARIANT: lambda module: [module.policy_variant],
         TrainingComponentSelector.POLICY_VARIANT_ACTION_EXPERT: _resolve_policy_action_expert,
         TrainingComponentSelector.ACTION_DECODER: lambda module: [module.action_decoder],
-        TrainingComponentSelector.ACTION_DECODER_ADAPTERS: _resolve_action_decoder_adapters,
     }
     if selector == TrainingComponentSelector.ALL:
         return (

@@ -2,12 +2,10 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-import pytest
 import torch
 
-from open_wam.configs import PolicyVariantName, VideoConditionSource
+from open_wam.configs import PolicyVariantName
 from open_wam.runtime.rollout import (
-    apply_rollout_chunk_steps_override,
     build_sequence_rollout_infer_extra,
     prepare_rollout_observation_inputs,
     resolve_initial_generation_action_start,
@@ -75,23 +73,10 @@ def test_prepare_rollout_observation_inputs_uses_reset_cache_encoding() -> None:
 
 
 def test_sequence_rollout_metadata_uses_typed_policy_choices() -> None:
-    method4 = SimpleNamespace(
-        policy_variant=SimpleNamespace(
-            name=PolicyVariantName.POST_LATENT,
-            train_video_condition_source=VideoConditionSource.GENERATED_FUTURE,
-        )
-    )
     dual_expert = SimpleNamespace(
         policy_variant=SimpleNamespace(name=PolicyVariantName.DUAL_EXPERT)
     )
 
-    method4_extra = build_sequence_rollout_infer_extra(
-        config=method4,
-        prompt="task",
-        generation_action_start=9,
-        task_id=1,
-        episode_idx=2,
-    )
     dual_expert_extra = build_sequence_rollout_infer_extra(
         config=dual_expert,
         prompt="task",
@@ -99,14 +84,10 @@ def test_sequence_rollout_metadata_uses_typed_policy_choices() -> None:
         runtime_device=torch.device("cpu"),
     )
 
-    assert method4_extra["video_condition_frame_start"] == 9
-    assert method4_extra["video_condition_observed_prefix_anchor"] == "end"
-    assert "video_condition_sample_seed" in method4_extra
     assert dual_expert_extra == {
         "task_text": ("task",),
         "action_device": "cpu",
     }
-    assert uses_zero_based_generation_start(method4) is True
     assert uses_zero_based_generation_start(dual_expert) is True
 
 
@@ -130,22 +111,10 @@ def test_initial_generation_start_defaults_to_observation_count() -> None:
     )
 
 
-def test_runtime_device_and_chunk_overrides_validate_operator_input() -> None:
+def test_runtime_device_resolution_validates_operator_input() -> None:
     fallback = torch.device("cpu")
     assert resolve_runtime_devices(None, fallback=fallback) == (fallback,)
     assert resolve_runtime_devices(" cpu, cuda:1 ", fallback=fallback) == (
         torch.device("cpu"),
         torch.device("cuda:1"),
     )
-
-    config = SimpleNamespace(
-        action_decoder=SimpleNamespace(rollout_chunk_steps=4)
-    )
-    apply_rollout_chunk_steps_override(config, 2)
-    assert config.action_decoder.rollout_chunk_steps == 2
-
-    with pytest.raises(ValueError, match="has no rollout chunk steps"):
-        apply_rollout_chunk_steps_override(
-            SimpleNamespace(action_decoder=SimpleNamespace()),
-            2,
-        )

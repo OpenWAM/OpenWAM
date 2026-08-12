@@ -26,40 +26,31 @@ from .policy_contracts import (
     CausalVideoPredictionPolicyConfig,
     ExtensionPolicyConfig,
     PolicyVariantConfig,
-    PostDecodedPolicyConfig,
-    PostLatentPolicyConfig,
 )
 from .policy_dual_expert import DualExpertPolicyConfig
 from .policy_parallel_stream import ParallelStreamPolicyConfig
 from .policy_video_action import resolve_video_action_program_semantics
 from .training import TrainingConfig
-from .visual_readout import parse_visual_readout_config
 
 
 def parse_policy_variant_config(
     policy_variant_raw: Mapping[str, Any],
-    action_head_raw: Mapping[str, Any],
     data_config: DataConfig,
     backbone_config: SharedVideoTransformerConfig,
     training_config: TrainingConfig,
     inference_config: InferenceConfig,
 ) -> PolicyVariantConfig:
     resolved_raw = normalize_video_action_policy_fields(policy_variant_raw)
-    compatibility_mode = False
     if not resolved_raw:
-        compatibility_mode = True
-        resolved_raw = {
-            "name": config_enums.PolicyVariantName.POST_LATENT,
-            "hidden_size": action_head_raw.get("hidden_size", backbone_config.hidden_size),
-            "attach_site": config_enums.AttachSite.POST_VISUAL_CORE,
-            "pooling_mode": config_enums.PoolingMode.COMPAT_GLOBAL_MEAN,
-            "use_state_projection": True,
-            "compatibility_mode": True,
-        }
+        raise ValueError(
+            "Experiment config requires an explicit `policy_variant` mapping. "
+            "Choose `parallel_stream`, `dual_expert`, `causal_video_prediction`, "
+            "or a registered `extension`."
+        )
 
     name = _coerce_enum(
         config_enums.PolicyVariantName,
-        resolved_raw.get("name", config_enums.PolicyVariantName.POST_LATENT),
+        resolved_raw.get("name"),
     )
     hidden_size = resolved_raw.get("hidden_size", backbone_config.hidden_size)
     if name == config_enums.PolicyVariantName.EXTENSION:
@@ -71,85 +62,6 @@ def parse_policy_variant_config(
             ),
             extension_type=resolved_raw.get("extension_type", ""),
             options=resolved_raw.get("options", {}),
-        )
-    if name == config_enums.PolicyVariantName.POST_LATENT:
-        return PostLatentPolicyConfig(
-            hidden_size=hidden_size,
-            attach_site=_coerce_enum(
-                config_enums.AttachSite,
-                resolved_raw.get("attach_site", config_enums.AttachSite.POST_VISUAL_CORE),
-            ),
-            pooling_mode=_coerce_enum(
-                config_enums.PoolingMode,
-                resolved_raw.get(
-                    "pooling_mode",
-                    (
-                        config_enums.PoolingMode.COMPAT_GLOBAL_MEAN
-                        if compatibility_mode
-                        else config_enums.PoolingMode.PER_FRAME_MEAN
-                    ),
-                ),
-            ),
-            query_count=resolved_raw.get("query_count", 0),
-            temporal_projection=_coerce_enum(
-                config_enums.TemporalProjection,
-                resolved_raw.get("temporal_projection", config_enums.TemporalProjection.INTERPOLATE),
-            ),
-            use_state_projection=resolved_raw.get("use_state_projection", True),
-            compatibility_mode=resolved_raw.get("compatibility_mode", compatibility_mode),
-            video_condition_input_space=_coerce_enum(
-                config_enums.VideoConditionInputSpace,
-                resolved_raw.get("video_condition_input_space", config_enums.VideoConditionInputSpace.VIDEO_LATENT),
-            ),
-            train_video_condition_source=_coerce_enum(
-                config_enums.VideoConditionSource,
-                resolved_raw.get("train_video_condition_source", config_enums.VideoConditionSource.LOCAL_WINDOW),
-            ),
-            action_chunk_anchor_mode=_coerce_enum(
-                config_enums.ActionChunkAnchorMode,
-                resolved_raw.get(
-                    "action_chunk_anchor_mode",
-                    config_enums.ActionChunkAnchorMode.CURRENT_PLUS_FUTURE,
-                ),
-            ),
-            local_video_window_frames=resolved_raw.get("local_video_window_frames", 4),
-            current_video_frame_index=resolved_raw.get("current_video_frame_index", 0),
-            visual_readout=parse_visual_readout_config(resolved_raw.get("visual_readout")),
-        )
-    if name == config_enums.PolicyVariantName.POST_DECODED:
-        return PostDecodedPolicyConfig(
-            hidden_size=hidden_size,
-            decode_feature_mode=_coerce_enum(
-                config_enums.DecodeFeatureMode,
-                resolved_raw.get("decode_feature_mode", config_enums.DecodeFeatureMode.FRAME_TOKEN_SEQUENCE),
-            ),
-            pooling_mode=_coerce_enum(
-                config_enums.PoolingMode,
-                resolved_raw.get("pooling_mode", config_enums.PoolingMode.PER_FRAME_MEAN),
-            ),
-            temporal_projection=_coerce_enum(
-                config_enums.TemporalProjection,
-                resolved_raw.get("temporal_projection", config_enums.TemporalProjection.INTERPOLATE),
-            ),
-            use_state_projection=resolved_raw.get("use_state_projection", True),
-            video_condition_input_space=_coerce_enum(
-                config_enums.VideoConditionInputSpace,
-                resolved_raw.get("video_condition_input_space", config_enums.VideoConditionInputSpace.RGB_VIDEO),
-            ),
-            train_video_condition_source=_coerce_enum(
-                config_enums.VideoConditionSource,
-                resolved_raw.get("train_video_condition_source", config_enums.VideoConditionSource.LOCAL_WINDOW),
-            ),
-            action_chunk_anchor_mode=_coerce_enum(
-                config_enums.ActionChunkAnchorMode,
-                resolved_raw.get(
-                    "action_chunk_anchor_mode",
-                    config_enums.ActionChunkAnchorMode.CURRENT_PLUS_FUTURE,
-                ),
-            ),
-            local_video_window_frames=resolved_raw.get("local_video_window_frames", 4),
-            current_video_frame_index=resolved_raw.get("current_video_frame_index", 0),
-            visual_readout=parse_visual_readout_config(resolved_raw.get("visual_readout")),
         )
     if name == config_enums.PolicyVariantName.CAUSAL_VIDEO_PREDICTION:
         return CausalVideoPredictionPolicyConfig(
@@ -361,19 +273,15 @@ def parse_policy_variant_config(
                 config_enums.ParallelRuntimeMode.LINGBOT_EXACT,
                 config_enums.ParallelRuntimeMode.LINGBOT_EXACT_ACTION_CONDITIONED,
             }
-            compact_runtime_mode = runtime_mode in {
-                config_enums.ParallelRuntimeMode.CURRENT_FRAME_ACTION_CHUNK,
-                config_enums.ParallelRuntimeMode.FASTWAM_FIRST_FRAME,
-            }
             if exact_runtime_mode and current_block_coupling is None:
                 raise ValueError(
                     "proprio_context_mode=per_chunk_additive requires "
                     "a video/action program with explicit chunk semantics."
                 )
-            if not exact_runtime_mode and not compact_runtime_mode:
+            if not exact_runtime_mode:
                 raise ValueError(
                     "proprio_context_mode=per_chunk_additive is only supported for "
-                    "exact and compact current-frame parallel-stream runtime modes."
+                    "exact parallel-stream runtime modes."
                 )
         use_condition_latents = (
             True

@@ -101,12 +101,7 @@ def apply_parallel_chunk_proprio_context(
     action_shape = tuple(int(dim) for dim in action_dict["noisy_latents"].shape)
     batch_size, _, latent_frames, latent_height, latent_width = latent_shape
     action_batch, _, action_frames, action_height, action_width = action_shape
-    fastwam_action_only = (
-        bool(input_dict.get("fastwam_first_frame"))
-        and latent_frames == 1
-        and action_frames > 1
-    )
-    context_frame_count = action_frames if fastwam_action_only else latent_frames
+    context_frame_count = latent_frames
     if batch_size != action_batch:
         raise ValueError(
             "Per-chunk proprio context expects matching video/action batches, "
@@ -235,26 +230,19 @@ def apply_parallel_chunk_proprio_context(
     )
     action_tokens_per_frame = action_height * action_width
     expected_video_frames = action_frames + prefix_condition_frames
-    if not fastwam_action_only and video_frames != expected_video_frames:
+    if video_frames != expected_video_frames:
         raise ValueError(
             "Per-chunk proprio context expects patchified video frames to equal action frames plus "
             "prefix condition frames, "
             f"got video_frames={video_frames}, action_frames={action_frames}, "
             f"prefix_condition_frames={prefix_condition_frames}."
         )
-    if fastwam_action_only:
-        video_context = chunk_context[:, :video_frames, :].repeat_interleave(
-            video_tokens_per_frame,
-            dim=1,
-        )
-        action_chunk_context = chunk_context
-    else:
-        video_context = chunk_context.repeat_interleave(video_tokens_per_frame, dim=1)
-        action_chunk_context = (
-            chunk_context[:, prefix_condition_frames:, :]
-            if prefix_condition_frames > 0
-            else chunk_context
-        )
+    video_context = chunk_context.repeat_interleave(video_tokens_per_frame, dim=1)
+    action_chunk_context = (
+        chunk_context[:, prefix_condition_frames:, :]
+        if prefix_condition_frames > 0
+        else chunk_context
+    )
     action_context = action_chunk_context.repeat_interleave(
         action_tokens_per_frame,
         dim=1,

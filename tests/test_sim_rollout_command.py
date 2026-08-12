@@ -163,7 +163,7 @@ def test_sim_rollout_command_preserves_controls_cleanup_and_result_envelope(
         "video_path": None,
     }
     assert summary["action_commit_mode"] == "full_chunk"
-    assert summary["checkpoint_compatibility"] == "strict"
+    assert summary["checkpoint_compatibility"] == "allow_checkpoint_superset"
     assert summary["checkpoint_missing_keys"] == []
     assert summary["checkpoint_unexpected_keys"] == []
     assert summary["zero_policy"] is True

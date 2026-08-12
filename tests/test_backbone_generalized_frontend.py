@@ -130,8 +130,8 @@ def test_backbone_forward_preserves_frontend_context_inputs() -> None:
 
 def test_all_policy_variants_consume_shared_frontend_video_latents() -> None:
     config_names = (
-        "post_latent_robotwin.yaml",
-        "post_decoded_robotwin.yaml",
+        "causal_video_prediction_robotwin_smoke.yaml",
+        "dual_expert_robotwin_smoke.yaml",
         "parallel_stream_robotwin_smoke.yaml",
     )
 
@@ -140,12 +140,12 @@ def test_all_policy_variants_consume_shared_frontend_video_latents() -> None:
         if config.backbone.implementation != "lingbot_replica":
             config = replace(config, backbone=replace(config.backbone, implementation="lingbot_replica"))
         pipeline = build_variant_pipeline_from_config(config)
-        batch = build_synthetic_batch(config.data, batch_size=2)
+        batch = build_synthetic_batch(config.data, batch_size=1)
         train_batch = PolicyTrainBatch(
             actions=batch.actions,
             action_mask=batch.action_mask,
             state=batch.state,
-            extra={"task_text": batch.task_text},
+            extra={"task_text": batch.task_text, "metadata": batch.metadata},
         )
         frontend = pipeline.visual_tower.frontend
         original_encode_video = frontend.encode_video
@@ -172,7 +172,10 @@ def test_all_policy_variants_consume_shared_frontend_video_latents() -> None:
         train_output = pipeline.forward_train(batch.views, train_batch)
         infer_output = pipeline.forward_infer_step(
             batch.views,
-            PolicyInferContext(state=batch.state, extra={"task_text": batch.task_text}),
+            PolicyInferContext(
+                state=batch.state,
+                extra={"task_text": batch.task_text, "metadata": batch.metadata},
+            ),
         )
 
         assert torch.equal(train_output.visual_outputs.frontend.video_latents, expected_latents), config_name

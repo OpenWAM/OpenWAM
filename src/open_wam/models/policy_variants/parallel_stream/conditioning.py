@@ -8,7 +8,6 @@ import torch
 from open_wam.configs import (
     ContextConditionLatentSource,
     GeneralistDenoisingMode,
-    ParallelRuntimeMode,
     ProprioContextMode,
 )
 from open_wam.configs.policy_parallel_stream import ParallelStreamPolicyConfig
@@ -78,12 +77,6 @@ class ParallelStreamConditioning:
         self,
         state: torch.Tensor | None,
     ) -> torch.Tensor | None:
-        if (
-            self.config.runtime_mode == ParallelRuntimeMode.FASTWAM_FIRST_FRAME
-            and state is not None
-            and state.ndim == 3
-        ):
-            return state[:, 0, :]
         return self.select_anchor_state(state)
 
     def resolve_required_proprio_state(
@@ -138,26 +131,13 @@ class ParallelStreamConditioning:
     ) -> tuple[torch.Tensor, str] | None:
         if not self.uses_per_chunk_proprio_context():
             return None
-        prefer_chunk_state = self.config.runtime_mode in {
-            ParallelRuntimeMode.CURRENT_FRAME_ACTION_CHUNK,
-            ParallelRuntimeMode.FASTWAM_FIRST_FRAME,
-        }
-        if prefer_chunk_state:
+        value = batch.extra.get("proprio_context_frames")
+        mask = batch.extra.get("proprio_context_frames_mask")
+        granularity = self._FRAME_GRANULARITY
+        if not isinstance(value, torch.Tensor):
             value = batch.extra.get("proprio_context_state")
             mask = batch.extra.get("proprio_context_state_mask")
             granularity = self._CHUNK_GRANULARITY
-            if not isinstance(value, torch.Tensor):
-                value = batch.extra.get("proprio_context_frames")
-                mask = batch.extra.get("proprio_context_frames_mask")
-                granularity = self._FRAME_GRANULARITY
-        else:
-            value = batch.extra.get("proprio_context_frames")
-            mask = batch.extra.get("proprio_context_frames_mask")
-            granularity = self._FRAME_GRANULARITY
-            if not isinstance(value, torch.Tensor):
-                value = batch.extra.get("proprio_context_state")
-                mask = batch.extra.get("proprio_context_state_mask")
-                granularity = self._CHUNK_GRANULARITY
         if not isinstance(value, torch.Tensor):
             raise ValueError(f"proprio_context_mode=per_chunk_additive requires proprio additive context for {label}.")
         if value.ndim != 3:

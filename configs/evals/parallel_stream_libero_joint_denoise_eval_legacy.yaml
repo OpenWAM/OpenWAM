@@ -1,7 +1,0 @@
-name: parallel_stream_libero_joint_denoise_eval_legacy
-experiment_config: configs/experiments/parallel_stream_libero_joint_denoise.yaml
-checkpoint_path: "${paths.checkpoints.parallel_stream_joint_libero_step_300}/full_training_state.pt"
-mode: batch
-split: val
-batch_size: 1
-max_batches: 1

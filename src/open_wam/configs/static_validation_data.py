@@ -63,29 +63,26 @@ def _validate_action_mapping(
 def _validate_action_schema_compatibility(
     action_schema: Mapping[str, Any] | None,
     action_decoder: Mapping[str, Any] | None,
-    action_head: Mapping[str, Any] | None,
     issues: "_IssueBuilder",
 ) -> None:
     if action_schema is None:
         return
     schema_dim = _optional_int(action_schema.get("action_dim"))
     schema_horizon = _optional_int(action_schema.get("action_horizon"))
-    for section_name, section in (("action_decoder", action_decoder), ("action_head", action_head)):
-        if section is None:
-            continue
-        decoder_dim = _optional_int(section.get("action_dim"))
-        decoder_horizon = _optional_int(section.get("action_horizon"))
+    if action_decoder is not None:
+        decoder_dim = _optional_int(action_decoder.get("action_dim"))
+        decoder_horizon = _optional_int(action_decoder.get("action_horizon"))
         if schema_dim is not None and decoder_dim is not None and decoder_dim != schema_dim:
             issues.warning(
-                f"{section_name}.action_dim",
-                f"Expected {section_name}.action_dim={decoder_dim} to match "
+                "action_decoder.action_dim",
+                f"Expected action_decoder.action_dim={decoder_dim} to match "
                 f"data.action_schema.action_dim={schema_dim}.",
             )
         if schema_horizon is not None and decoder_horizon is not None and decoder_horizon != schema_horizon:
             issues.error(
-                f"{section_name}.action_horizon",
+                "action_decoder.action_horizon",
                 "Expected "
-                f"{section_name}.action_horizon={decoder_horizon} to match "
+                f"action_decoder.action_horizon={decoder_horizon} to match "
                 f"data.action_schema.action_horizon={schema_horizon}.",
             )
 

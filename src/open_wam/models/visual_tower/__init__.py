@@ -2,13 +2,9 @@
 
 from .cache_lifecycle import RuntimeCacheLifecycle
 from .contracts import (
-    DecodedFeatureLayout,
     VisualCoreInput,
     VisualCoreOutput,
-    VisualDecodeOutput,
     VisualFrontendOutput,
-    VisualIntermediateReadout,
-    VisualReadoutRequest,
     VisualRuntimeStateSnapshot,
     VisualSequenceMetadata,
     VisualStageOutputs,
@@ -58,7 +54,6 @@ from .shared_transformer_support import (
 from .tower import VisualTower
 
 __all__ = [
-    "DecodedFeatureLayout",
     "RuntimeCacheLifecycle",
     "RuntimeProgramSpec",
     "RuntimeStepInput",
@@ -69,10 +64,7 @@ __all__ = [
     "SharedTransformerTimeEmbedding",
     "VisualCoreInput",
     "VisualCoreOutput",
-    "VisualDecodeOutput",
     "VisualFrontendOutput",
-    "VisualIntermediateReadout",
-    "VisualReadoutRequest",
     "VisualRuntimeStateSnapshot",
     "VisualSequenceMetadata",
     "VisualStageOutputs",

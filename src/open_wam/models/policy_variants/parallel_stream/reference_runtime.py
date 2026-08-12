@@ -36,10 +36,6 @@ from open_wam.models.visual_tower.exact_runtime import (
     run_exact_single_stream_forward as run_reference_single_stream_forward,
 )
 
-from .anchored_action_rollout import (
-    run_parallel_current_frame_action_chunk_inference_rollout,
-    run_parallel_fastwam_first_frame_inference_rollout,
-)
 from .cache_attention import (
     build_joint_clean_cache_attention_mask as _build_joint_clean_cache_attention_mask,
 )
@@ -126,9 +122,6 @@ from .exact_cache import (
     validate_existing_exact_cache_attention_window as _validate_existing_exact_cache_attn_window,
 )
 from .forward_execution import (
-    build_parallel_first_frame_attention_profile as _build_fastwam_first_frame_attention_profile,
-)
-from .forward_execution import (
     run_parallel_action_conditioned_forward as _run_parallel_action_conditioned_forward,
 )
 from .forward_execution import (
@@ -137,12 +130,6 @@ from .forward_execution import (
 )
 from .forward_execution import (
     run_parallel_exact_dual_stream_forward as _run_parallel_exact_joint_forward_manual,
-)
-from .forward_execution import (
-    run_parallel_first_frame_conditioned_forward as _run_parallel_fastwam_first_frame_forward_manual,
-)
-from .forward_execution import (
-    run_parallel_first_frame_conditioned_train as run_parallel_fastwam_first_frame_train,
 )
 from .generalist_training import (
     apply_generalist_joint_denoise_training_mode as _apply_generalist_joint_denoise_training_mode,
@@ -234,10 +221,6 @@ from .training_noise import (
 from .training_prefix_artifacts import (
     prepare_parallel_prefix_condition_exact_train_artifacts,
 )
-from .training_single_frame_artifacts import (
-    prepare_parallel_current_frame_action_chunk_train_artifacts,
-    prepare_parallel_fastwam_first_frame_train_artifacts,
-)
 
 _COMPATIBILITY_EXPORTS = (
     FlowMatchScheduler,
@@ -251,8 +234,6 @@ _COMPATIBILITY_EXPORTS = (
     repeat_input_for_cfg,
     reference_runtime_dtype,
     run_reference_single_stream_forward,
-    run_parallel_current_frame_action_chunk_inference_rollout,
-    run_parallel_fastwam_first_frame_inference_rollout,
     _build_joint_clean_cache_attention_mask,
     _build_joint_clean_cache_attention_profile,
     _summarize_slot_pool_cache_state,
@@ -282,13 +263,10 @@ _COMPATIBILITY_EXPORTS = (
     _resolve_exact_cache_context,
     _set_slot_pool_layer_metadata,
     _validate_existing_exact_cache_attn_window,
-    _build_fastwam_first_frame_attention_profile,
     _run_parallel_action_conditioned_forward,
     run_parallel_action_conditioned_train,
     _run_parallel_exact_joint_forward_manual,
     run_parallel_exact_train,
-    _run_parallel_fastwam_first_frame_forward_manual,
-    run_parallel_fastwam_first_frame_train,
     _apply_generalist_joint_denoise_training_mode,
     _apply_generalist_legacy_prefix_joint_training_mode,
     _sample_joint_denoise_training_mode,
@@ -316,9 +294,7 @@ _COMPATIBILITY_EXPORTS = (
     LingbotParallelTrainArtifacts,
     ParallelTrainArtifacts,
     prepare_parallel_action_conditioned_train_artifacts,
-    prepare_parallel_current_frame_action_chunk_train_artifacts,
     prepare_parallel_exact_train_artifacts,
-    prepare_parallel_fastwam_first_frame_train_artifacts,
     prepare_parallel_prefix_condition_exact_train_artifacts,
     _add_noise,
     _sample_coupled_timestep_values,

@@ -46,7 +46,6 @@ Open-WAM provides:
 | --- | --- | --- |
 | `parallel_stream` | Video and action tokens share one transformer. | Six standard programs and GJD; includes the exact LingBot-compatible runtime. |
 | `dual_expert` | Video and action use separate transformer experts. | Six standard programs, GJD, and standalone conditional FDM/IDM. |
-| `post_latent` / `post_decoded` | A lightweight policy consumes latent or decoded visual features. | Video-conditioned action baselines. |
 | `causal_video_prediction` | The visual model runs without action supervision. | Video-only prediction. |
 
 The six standard program selectors are `video_then_action`,
@@ -281,7 +280,7 @@ docs/          public guides, experiment cards, and extension cookbooks
 scripts/       thin benchmark adapters and checkout-only research tools
 src/open_wam/  installable library and role-scoped SDK
 tests/         unit, integration, simulator, and numerical parity gates
-notes/         current engineering contracts and archived roadmaps
+notes/         current engineering contracts and operational references
 deployment/    separately tested hardware operations workspace
 ```
 

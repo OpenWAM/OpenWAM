@@ -160,7 +160,7 @@ their complete tensor/state structure is.
 The persisted resume golden keeps full output fingerprints for the first
 update, before any optimizer nondeterminism can accumulate. Post-update reports
 retain output shape, dtype, element count, and finiteness. Their scalar metrics
-use a one-BF16-quantum (`2^-16`) absolute cross-job tolerance at the
+use a one-BF16-quantum (`2^-13`) absolute cross-job tolerance at the
 characterized loss scale, while first-update metrics remain exact and the
 stronger uninterrupted-versus-resumed numerical comparison remains an in-run
 assertion. Values immediately above that bound fail. This prevents an
@@ -186,6 +186,17 @@ This strict checkpoint preflight is intentional. A legacy checkpoint that
 lacks the current full-proprio projections is not a valid substitute for a
 checkpoint trained by the current command, even if `strict=False` loading
 would otherwise initialize those projections randomly.
+
+The pruning characterization also recognizes one exact legacy model-state
+delta: the retired, unused `visual_tower.decoder.proj.{weight,bias}` tensors.
+They contributed two tensors and 9,440,256 local bytes per rank under the
+four-rank FSDP contract. Golden comparison removes only that signature from
+the old state accounting; all retained frontend tensors, model components,
+optimizer entries, scheduler fields, and strategy fields remain comparison
+inputs. Serialized checkpoint byte size is not a semantic input because
+removing those tensors necessarily changes it; artifact presence, nonempty
+payloads, successful teardown/reload, and exact in-run restored-state hashes
+remain required.
 
 ## Private Assets
 

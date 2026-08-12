@@ -8,7 +8,6 @@ from open_wam.models.action_decoders.base import (
 from open_wam.models.policy_variants.base import PolicyVariant
 from open_wam.models.policy_variants.contracts import (
     DecoderArtifactEnvelope,
-    DecoderSequenceContext,
     PolicyInferContext,
     PolicyInferOutput,
     PolicyInferState,
@@ -17,7 +16,6 @@ from open_wam.models.policy_variants.contracts import (
     PolicyPreparedInputs,
     PolicyTrainBatch,
     PolicyTrainOutput,
-    VideoConditionWindowContext,
 )
 from open_wam.models.common.attention_contracts import (
     AttentionProfileSpec,
@@ -48,7 +46,6 @@ __all__ = [
     "ActionDecoderTrainOutput",
     "AttentionProfileSpec",
     "DecoderArtifactEnvelope",
-    "DecoderSequenceContext",
     "PolicyInferContext",
     "PolicyInferOutput",
     "PolicyInferState",
@@ -62,7 +59,6 @@ __all__ = [
     "RuntimeProgramSpec",
     "RuntimeStepInput",
     "RuntimeStepOutput",
-    "VideoConditionWindowContext",
     "VisualCoreInput",
     "VisualCoreOutput",
     "VisualStageOutputs",

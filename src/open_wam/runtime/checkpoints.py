@@ -54,6 +54,7 @@ class CheckpointCompatibilityPolicy(StrEnum):
     """How runtime loading handles model/checkpoint key mismatches."""
 
     STRICT = "strict"
+    ALLOW_CHECKPOINT_SUPERSET = "allow_checkpoint_superset"
     ALLOW_PARTIAL = "allow_partial"
 
 
@@ -181,18 +182,31 @@ def load_pipeline_checkpoint(
         shape_mismatches=shape_mismatches,
     )
     resolved_compatibility = CheckpointCompatibilityPolicy(compatibility)
-    if shape_mismatches or (
-        resolved_compatibility is CheckpointCompatibilityPolicy.STRICT
-        and (missing_keys or unexpected_keys)
+    if resolved_compatibility is CheckpointCompatibilityPolicy.STRICT:
+        incompatible_keys = missing_keys or unexpected_keys
+    elif (
+        resolved_compatibility
+        is CheckpointCompatibilityPolicy.ALLOW_CHECKPOINT_SUPERSET
     ):
+        incompatible_keys = missing_keys
+    else:
+        incompatible_keys = ()
+    if shape_mismatches or incompatible_keys:
         raise CheckpointCompatibilityError(report)
+    loadable_state = (
+        {key: value for key, value in state_dict.items() if key in runtime_state}
+        if resolved_compatibility
+        is CheckpointCompatibilityPolicy.ALLOW_CHECKPOINT_SUPERSET
+        else state_dict
+    )
     pipeline.load_state_dict(
-        state_dict,
-        strict=resolved_compatibility is CheckpointCompatibilityPolicy.STRICT,
+        loadable_state,
+        strict=resolved_compatibility
+        is not CheckpointCompatibilityPolicy.ALLOW_PARTIAL,
     )
     _mark_loaded_lazy_components_initialized(
         pipeline,
-        state_dict,
+        loadable_state,
         missing_keys=missing_keys,
     )
     return report

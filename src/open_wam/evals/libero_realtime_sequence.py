@@ -263,11 +263,6 @@ def collect_decoder_runtime_metadata(
             if generation_backend is None
             else int(getattr(generation_backend, "num_sampling_steps", 0) or 0)
         ),
-        "decoder_rollout_chunk_steps": (
-            None
-            if decoder is None or not hasattr(decoder, "rollout_chunk_steps")
-            else int(decoder.rollout_chunk_steps)
-        ),
     }
 
 

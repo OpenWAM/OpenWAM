@@ -5,8 +5,7 @@ from typing import TYPE_CHECKING, Any, TypedDict
 
 import torch
 
-from open_wam.configs import ExperimentConfig, PolicyVariantName, VideoConditionSource
-from open_wam.models.policy_variants.common import derive_video_condition_sample_seed
+from open_wam.configs import ExperimentConfig, PolicyVariantName
 
 if TYPE_CHECKING:
     from open_wam.pipelines import VariantPipeline
@@ -18,21 +17,6 @@ class RolloutObservationInputs(TypedDict):
     video_latents: torch.Tensor
     text_context: torch.Tensor | None
     negative_text_context: torch.Tensor | None
-
-
-def apply_rollout_chunk_steps_override(
-    config: ExperimentConfig,
-    rollout_chunk_steps: int | None,
-) -> None:
-    if rollout_chunk_steps is None:
-        return
-    decoder = getattr(config, "action_decoder", None)
-    if decoder is None or not hasattr(decoder, "rollout_chunk_steps"):
-        raise ValueError(
-            "Requested rollout chunk override, but the config action decoder "
-            "has no rollout chunk steps."
-        )
-    object.__setattr__(decoder, "rollout_chunk_steps", int(rollout_chunk_steps))
 
 
 def resolve_runtime_devices(
@@ -55,8 +39,7 @@ def uses_zero_based_generation_start(config: ExperimentConfig) -> bool:
     policy_name = getattr(policy_variant, "name", None)
     if policy_name == PolicyVariantName.DUAL_EXPERT:
         return True
-    train_source = getattr(policy_variant, "train_video_condition_source", None)
-    return train_source == VideoConditionSource.GENERATED_FUTURE
+    return False
 
 
 def resolve_initial_generation_action_start(
@@ -83,22 +66,6 @@ def build_sequence_rollout_infer_extra(
 ) -> dict[str, object]:
     extra: dict[str, object] = {"task_text": (prompt,)}
     policy_name = getattr(config.policy_variant, "name", None)
-    if policy_name in {
-        PolicyVariantName.POST_LATENT,
-        PolicyVariantName.POST_DECODED,
-    }:
-        extra["video_condition_frame_start"] = int(generation_action_start)
-        extra["video_condition_observed_prefix_anchor"] = "end"
-        sample_seed = derive_video_condition_sample_seed(
-            {
-                "task_index": task_id,
-                "episode_index": episode_idx,
-                "anchor_frame_index": int(generation_action_start),
-                "action_start_index": int(generation_action_start),
-            }
-        )
-        if sample_seed is not None:
-            extra["video_condition_sample_seed"] = int(sample_seed)
     if policy_name == PolicyVariantName.DUAL_EXPERT and runtime_device is not None:
         extra["action_device"] = str(runtime_device)
     return extra

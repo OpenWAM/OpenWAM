@@ -31,9 +31,6 @@ The generic runtime covers these representative maintained families:
 | Architecture / program | Experiment config |
 | --- | --- |
 | Parallel stream six video/action programs | `parallel_stream_libero_<program>.yaml` |
-| Parallel stream exact compatibility profiles | `parallel_stream_libero_lingbot_exact.yaml`, `parallel_stream_libero_joint_denoise.yaml` |
-| Post-latent video-conditioned | `post_latent_libero_latent_local_video_conditioned.yaml` |
-| Post-decoded video-conditioned | `post_decoded_libero_latent_local_video_conditioned.yaml` |
 | Dual expert six video/action programs | `dual_expert_libero_<program>.yaml` |
 | GJD, either architecture | `<architecture>_libero_generalist_joint_denoising.yaml` |
 | Dual expert conditional FDM/IDM | `dual_expert_libero_conditional_dynamics.yaml` |

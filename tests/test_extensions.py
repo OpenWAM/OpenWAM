@@ -257,36 +257,22 @@ def test_out_of_tree_policy_and_decoder_run_full_pipeline(
     decoder_type = f"external_runtime_decoder_{uuid4().hex}"
     module_name = _write_extension(
         tmp_path,
-        "from open_wam.configs import PostLatentPolicyConfig\n"
-        "from open_wam.models.action_decoders import MLPActionDecoder\n"
-        "from open_wam.models.policy_variants import PostLatentPolicyVariant\n"
-        "from open_wam.pipelines import register_action_decoder, register_policy_variant\n"
+        "from open_wam.sdk.config import ExtensionActionDecoderConfig, ExtensionPolicyConfig\n"
+        "from open_wam.sdk.policy import register_action_decoder, register_policy_variant\n"
+        "from open_wam.templates.extension_method.action_decoder import TemplateActionDecoder\n"
+        "from open_wam.templates.extension_method.policy_variant import TemplatePolicyVariant\n"
         "\n"
         "def build_policy(experiment):\n"
-        "    extension = experiment.policy_variant\n"
-        "    policy_config = PostLatentPolicyConfig(\n"
-        "        hidden_size=extension.hidden_size,\n"
-        "        attach_site=extension.attach_site,\n"
-        "        use_state_projection=bool(extension.options['use_state_projection']),\n"
-        "    )\n"
-        "    return PostLatentPolicyVariant(\n"
-        "        config=policy_config,\n"
-        "        training_config=experiment.training,\n"
-        "        inference_config=experiment.inference,\n"
-        "        action_horizon=experiment.data.action_schema.action_horizon,\n"
-        "        state_dim=experiment.data.action_schema.state_dim,\n"
-        "    )\n"
+        "    config = experiment.policy_variant\n"
+        "    if not isinstance(config, ExtensionPolicyConfig):\n"
+        "        raise TypeError('expected ExtensionPolicyConfig')\n"
+        "    return TemplatePolicyVariant(config)\n"
         "\n"
         "def build_decoder(experiment):\n"
         "    config = experiment.action_decoder\n"
-        "    return MLPActionDecoder(\n"
-        "        hidden_size=config.hidden_size,\n"
-        "        action_dim=config.action_dim,\n"
-        "        action_horizon=config.action_horizon,\n"
-        "        training_config=experiment.training,\n"
-        "        inference_config=experiment.inference,\n"
-        "        dropout=config.dropout,\n"
-        "    )\n"
+        "    if not isinstance(config, ExtensionActionDecoderConfig):\n"
+        "        raise TypeError('expected ExtensionActionDecoderConfig')\n"
+        "    return TemplateActionDecoder(config)\n"
         "\n"
         "def register_open_wam():\n"
         f"    register_policy_variant({policy_type!r}, build_policy)\n"
@@ -295,21 +281,21 @@ def test_out_of_tree_policy_and_decoder_run_full_pipeline(
     monkeypatch.syspath_prepend(str(tmp_path))
 
     raw = yaml.safe_load(
-        (REPO_ROOT / "configs/experiments/post_latent_robotwin.yaml").read_text(encoding="utf-8")
+        (REPO_ROOT / "src/open_wam/templates/extension_method/config.yaml").read_text(encoding="utf-8")
     )
     raw["policy_variant"] = {
         "name": "extension",
         "extension_type": policy_type,
-        "hidden_size": 256,
+        "hidden_size": 32,
         "attach_site": "post_visual_core",
-        "options": {"use_state_projection": True},
+        "options": {},
     }
     raw["action_decoder"] = {
         "name": "extension",
         "extension_type": decoder_type,
-        "hidden_size": 256,
-        "action_dim": 30,
-        "action_horizon": 6,
+        "hidden_size": 32,
+        "action_dim": 4,
+        "action_horizon": 2,
     }
     raw["inference"]["video_num_inference_steps"] = 1
     raw["inference"]["action_num_inference_steps"] = 1
@@ -334,7 +320,7 @@ def test_out_of_tree_policy_and_decoder_run_full_pipeline(
         PolicyInferContext(state=batch.state, extra={"task_text": batch.task_text}),
     )
 
-    assert train_output.decoder_output.action_pred.shape == (1, 6, 30)
-    assert infer_output.decoder_output.action_pred.shape == (1, 6, 30)
+    assert train_output.decoder_output.action_pred.shape == (1, 2, 4)
+    assert infer_output.decoder_output.action_pred.shape == (1, 2, 4)
     assert any(parameter.grad is not None for parameter in pipeline.policy_variant.parameters())
     assert any(parameter.grad is not None for parameter in pipeline.action_decoder.parameters())

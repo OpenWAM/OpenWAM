@@ -5,19 +5,13 @@ from __future__ import annotations
 from open_wam.configs import (
     ActionDecoderName,
     BackboneImplementation,
-    BatchAdapterName,
     DualExpertRuntimeMode,
     ExperimentConfig,
     ParallelRuntimeMode,
     ProprioContextMode,
-    VideoConditionInputSpace,
-    VideoConditionSource,
-    VideoConditionTrainMode,
 )
 from open_wam.configs.policy_contracts import (
     CausalVideoPredictionPolicyConfig,
-    PostDecodedPolicyConfig,
-    PostLatentPolicyConfig,
 )
 from open_wam.configs.policy_dual_expert import DualExpertPolicyConfig
 from open_wam.configs.policy_parallel_stream import ParallelStreamPolicyConfig
@@ -30,8 +24,6 @@ from open_wam.models.video_backbone import normalize_backbone_implementation
 _PARALLEL_STREAM_EXACT_MODEL_ACTION_MODES = {
     ParallelRuntimeMode.LINGBOT_EXACT,
     ParallelRuntimeMode.LINGBOT_EXACT_ACTION_CONDITIONED,
-    ParallelRuntimeMode.CURRENT_FRAME_ACTION_CHUNK,
-    ParallelRuntimeMode.FASTWAM_FIRST_FRAME,
 }
 
 
@@ -81,8 +73,6 @@ def validate_experiment_config(config: ExperimentConfig) -> None:
             config.policy_variant,
             (
                 ParallelStreamPolicyConfig,
-                PostLatentPolicyConfig,
-                PostDecodedPolicyConfig,
                 CausalVideoPredictionPolicyConfig,
                 DualExpertPolicyConfig,
             ),
@@ -157,81 +147,4 @@ def validate_experiment_config(config: ExperimentConfig) -> None:
                 f"got num_action_layers={config.policy_variant.num_action_layers}, "
                 f"backbone.num_layers={config.backbone.num_layers}."
             )
-    if (
-        isinstance(config.policy_variant, (PostLatentPolicyConfig, PostDecodedPolicyConfig))
-        and config.action_decoder.name == ActionDecoderName.VIDEO_CONDITIONED
-    ):
-        direct_train_mode = config.action_decoder.train_mode == VideoConditionTrainMode.CURRENT_FRAME_REGRESSION
-        if config.policy_variant.local_video_window_frames > config.data.num_frames:
-            raise ValueError(
-                "Method-4 video-conditioned decoding requires `policy_variant.local_video_window_frames <= data.num_frames`, "
-                f"got local_video_window_frames={config.policy_variant.local_video_window_frames}, "
-                f"data.num_frames={config.data.num_frames}."
-            )
-        if config.action_decoder.action_horizon <= 0:
-            raise ValueError("Method-4 video-conditioned decoding requires `action_horizon > 0`.")
-        if not direct_train_mode and int(config.policy_variant.current_video_frame_index) != 0:
-            raise ValueError(
-                "Method-4 rollout-window decoding currently supports only `current_video_frame_index = 0`. "
-                "Non-zero sliding-window alignment is not implemented yet."
-            )
-        if (
-            direct_train_mode
-            and config.policy_variant.train_video_condition_source == VideoConditionSource.GENERATED_FUTURE
-        ):
-            raise ValueError(
-                "Method-4 generated-future video conditioning is only supported for rollout-window diffusion "
-                "training. `current_frame_regression` bypasses the policy-variant window builder."
-            )
-        if direct_train_mode:
-            if config.policy_variant.video_condition_input_space == VideoConditionInputSpace.VIDEO_LATENT:
-                if config.trainer.batch_adapter != BatchAdapterName.LATENTS:
-                    raise ValueError(
-                        "Method-4 `current_frame_regression` with `video_latent` input requires the latent batch "
-                        "adapter so training sees dataset video latents directly, "
-                        f"got trainer.batch_adapter={config.trainer.batch_adapter!r}."
-                    )
-                if config.data.dataset_type != "lerobot_v2_latent_local":
-                    raise ValueError(
-                        "Method-4 `current_frame_regression` with `video_latent` input is currently maintained "
-                        "only for latent-local datasets, "
-                        f"got data.dataset_type={config.data.dataset_type!r}."
-                    )
-            if config.policy_variant.video_condition_input_space == VideoConditionInputSpace.RGB_VIDEO:
-                if config.trainer.batch_adapter != BatchAdapterName.VIEWS:
-                    raise ValueError(
-                        "Method-4 `current_frame_regression` with `rgb_video` input requires the view batch "
-                        "adapter so training sees raw RGB frames directly, "
-                        f"got trainer.batch_adapter={config.trainer.batch_adapter!r}."
-                    )
-                if config.data.dataset_type == "lerobot_v2_latent_local":
-                    raise ValueError(
-                        "Method-4 `current_frame_regression` with `rgb_video` input requires raw RGB dataset "
-                        "windows. Latent-local datasets enter through precomputed latents, so use "
-                        "`video_latent` there."
-                    )
-                if config.action_decoder.use_text_conditioning:
-                    raise ValueError(
-                        "Method-4 `current_frame_regression` with `rgb_video` input and the view batch adapter "
-                        "does not currently provide text embeddings. Set `action_decoder.use_text_conditioning=false` "
-                        "for this mode."
-                    )
-        elif (
-            config.policy_variant.video_condition_input_space == VideoConditionInputSpace.RGB_VIDEO
-            and config.data.dataset_type == "lerobot_v2_latent_local"
-        ):
-            raise ValueError(
-                "Method-4 `rgb_video` conditioning requires raw RGB to enter through the shared frontend/VAE path. "
-                "Latent-local datasets enter from precomputed latents, so use `video_latent` conditioning there."
-            )
-        if not direct_train_mode and config.data.dataset_type in {"lerobot_v2", "libero_hdf5"}:
-            raise ValueError(
-                "Method-4 video-conditioned current-action decoding is currently aligned only for latent-local "
-                "`standard_policy_window` style data. Raw LIBERO / raw LeRobot adapters anchor actions at the "
-                "last observed frame, so apples-to-apples current-action method-4 runs need a deliberate raw-data "
-                "alignment pass first. Use the latent-local method-4 configs or keep the explicit legacy "
-                "method-4 decoders on raw LIBERO for now."
-            )
-
-
 __all__ = ["validate_experiment_config"]

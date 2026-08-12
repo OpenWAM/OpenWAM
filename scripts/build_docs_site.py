@@ -18,7 +18,6 @@ PUBLIC_MARKDOWN_PATHS = (
     Path("artifacts.md"),
     Path("benchmarks.md"),
     Path("cards/README.md"),
-    Path("cards/parallel_stream_libero_exact_step400.md"),
     Path("cards/public_tiny_synthetic_contract.md"),
     Path("cli.md"),
     Path("compatibility.md"),

@@ -46,7 +46,6 @@ from open_wam.evals.evaluation_contracts import (
 )
 from open_wam.evals.evaluation_metrics import (
     _align_eval_action_tensors,
-    _align_local_future_video_prediction,
     _masked_action_mse,
     _select_eval_action_prediction,
     _select_eval_video_prediction,
@@ -77,7 +76,6 @@ __all__ = ["EvaluationRequest", "EvaluationSummary", "resolve_evaluation_request
 # implementations live with their reusable metric and window contracts.
 _EVALUATION_COMPATIBILITY_EXPORTS = (
     _align_eval_action_tensors,
-    _align_local_future_video_prediction,
     _align_rollout_window_tensor,
     _coerce_optional_positive_int,
     _group_dataset_indices_by_episode,
@@ -216,7 +214,7 @@ def run_evaluation(
             compatibility=(
                 CheckpointCompatibilityPolicy.ALLOW_PARTIAL
                 if request.allow_partial_checkpoint
-                else CheckpointCompatibilityPolicy.STRICT
+                else CheckpointCompatibilityPolicy.ALLOW_CHECKPOINT_SUPERSET
             ),
         )
         if checkpoint_report.missing_keys:
@@ -293,7 +291,6 @@ def run_evaluation(
                     target_video_latents=output.visual_outputs.frontend.video_latents,
                     decoder_aux=output.decoder_output.aux,
                     policy_aux=output.policy_output.aux,
-                    sequence_context=output.policy_output.decoder_sequence_context,
                 )
                 action_prediction_shape = tuple(action_prediction.shape)
                 target_action_shape = tuple(aligned_target_actions.shape)
@@ -497,7 +494,6 @@ def run_evaluation(
                         target_video_latents=target_video_latents,
                         decoder_aux=output.decoder_output.aux,
                         policy_aux=output.policy_output.aux,
-                        sequence_context=output.policy_output.decoder_sequence_context,
                     )
                     action_prediction_shape = tuple(action_prediction.shape)
                     target_action_shape = tuple(aligned_target_actions.shape)
@@ -597,7 +593,7 @@ def run_evaluation(
         checkpoint_compatibility=(
             CheckpointCompatibilityPolicy.ALLOW_PARTIAL.value
             if request.allow_partial_checkpoint
-            else CheckpointCompatibilityPolicy.STRICT.value
+            else CheckpointCompatibilityPolicy.ALLOW_CHECKPOINT_SUPERSET.value
         ),
         checkpoint_missing_keys=(
             () if checkpoint_report is None else checkpoint_report.missing_keys

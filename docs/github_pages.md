@@ -39,8 +39,8 @@ engineering notes. Publish durable docs under `docs/` and keep raw notes under
 
 If a note becomes useful for outside users, distill it into a public doc page
 with stable commands, placeholders, and current repo paths. Do not publish raw
-run logs, local machine paths, private checkpoint locations, or obsolete
-roadmaps.
+run logs, local machine paths, private checkpoint locations, or superseded
+planning records.
 
 The build fails if a page under `docs/` has not been classified in the public
 allowlist, if a local link is missing or escapes the generated site, or if known

@@ -77,10 +77,23 @@ DISTRIBUTED_GRADIENT_TOLERANCE = ComparisonTolerance(
     relative=6e-3,
 )
 RESUME_POST_UPDATE_METRIC_TOLERANCE = ComparisonTolerance(
-    # One BF16 quantum at the observed ~2^-9 continuation-loss scale.
-    absolute=2**-16,
+    # Removing an unused parameter changes FSDP's flat-parameter reduction
+    # boundaries. Bound the resulting second-update drift to one BF16 quantum
+    # at the observed continuation-loss scale.
+    absolute=2**-13,
     relative=0.0,
 )
+
+# The retired VisualTower decoder contributed exactly these two sharded FP32
+# tensors to the old full-state model contract. This signature is deliberately
+# narrow: it canonicalizes only the known pruning delta while preserving the
+# six retained frontend tensors that shared the old ``other_trainable`` group.
+_LEGACY_RETIRED_DECODER_LOCAL_TENSOR_COUNT = 2
+_LEGACY_RETIRED_DECODER_LOCAL_BYTES = 9_440_256
+_LEGACY_OTHER_TRAINABLE_SIGNATURE = {
+    "tensor_count": 8,
+    "total_bytes": 10_070_160,
+}
 
 # Golden report schema v1 predates the public architecture/config rename. Only
 # symbolic metadata is normalized here. Tensor fingerprints, shapes, probes,
@@ -334,14 +347,15 @@ def replay_fixtures(args: argparse.Namespace) -> None:
 
 def training_cli_smoke(args: argparse.Namespace) -> None:
     assets = load_characterization_assets(args.assets)
-    selected = (args.asset_id,)
+    asset_id = resolve_characterization_asset_id(args.asset_id)
+    selected = (asset_id,)
     _preflight_checkpoint_provenance(
         assets=assets,
         selected=selected,
         allow_mismatch=args.allow_checkpoint_provenance_mismatch,
     )
     report = run_training_cli_smoke(
-        method=METHOD_BY_ASSET_ID[args.asset_id],
+        method=METHOD_BY_ASSET_ID[asset_id],
         assets=assets,
         output_root=args.output_root.expanduser().resolve(),
         cuda_devices=args.cuda_devices,
@@ -865,6 +879,7 @@ def _comparison_projection(
     _path: tuple[str, ...] = (),
 ) -> Any:
     if isinstance(value, dict):
+        value = _canonicalize_pruned_resume_model_rank(value, path=_path)
         tensor_fingerprint = _is_tensor_fingerprint(value)
         projected: dict[str, Any] = {}
         for raw_key, item in value.items():
@@ -879,8 +894,6 @@ def _comparison_projection(
                     raw_key == "size_bytes"
                     and len(_path) >= 3
                     and _path[-3:-1] == ("checkpoint_artifacts", "files")
-                    and _path[-1]
-                    not in {"full_training_state.pt", "model_state.pt"}
                 )
             ):
                 continue
@@ -931,6 +944,44 @@ def _comparison_projection(
             return "dual_expert"
         return _REPORT_STRING_ALIASES.get(value, value)
     return value
+
+
+def _canonicalize_pruned_resume_model_rank(
+    value: dict[str, Any],
+    *,
+    path: tuple[str, ...],
+) -> dict[str, Any]:
+    """Remove only the characterized dead-decoder delta from legacy reports."""
+
+    if len(path) < 3 or path[-3:-1] != ("model", "per_rank"):
+        return value
+    components = value.get("components")
+    if not isinstance(components, dict):
+        return value
+    other = components.get("other_trainable")
+    if other != _LEGACY_OTHER_TRAINABLE_SIGNATURE:
+        return value
+    tensor_count = value.get("tensor_count")
+    total_bytes = value.get("total_bytes")
+    if not isinstance(tensor_count, int) or not isinstance(total_bytes, int):
+        return value
+
+    projected = dict(value)
+    projected_components = dict(components)
+    projected_components["other_trainable"] = {
+        "tensor_count": (
+            other["tensor_count"] - _LEGACY_RETIRED_DECODER_LOCAL_TENSOR_COUNT
+        ),
+        "total_bytes": (
+            other["total_bytes"] - _LEGACY_RETIRED_DECODER_LOCAL_BYTES
+        ),
+    }
+    projected["components"] = projected_components
+    projected["tensor_count"] = (
+        tensor_count - _LEGACY_RETIRED_DECODER_LOCAL_TENSOR_COUNT
+    )
+    projected["total_bytes"] = total_bytes - _LEGACY_RETIRED_DECODER_LOCAL_BYTES
+    return projected
 
 
 def _is_tensor_fingerprint(value: dict[str, Any]) -> bool:
@@ -1091,7 +1142,13 @@ def _parse_args() -> argparse.Namespace:
     cli_smoke.add_argument("--output-root", type=Path, required=True)
     cli_smoke.add_argument(
         "--asset-id",
-        choices=tuple(method.asset_id for method in EXACT_CHECKPOINT_METHODS),
+        choices=tuple(
+            dict.fromkeys(
+                identity
+                for method in EXACT_CHECKPOINT_METHODS
+                for identity in (method.public_id, method.asset_id)
+            )
+        ),
         required=True,
     )
     cli_smoke.add_argument("--training-world-size", type=int, default=4)

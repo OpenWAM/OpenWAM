@@ -51,10 +51,13 @@ by the CPU suite.
 ## Compatibility Policy
 
 Typed config fields, checkpoint compatibility, result schemas, and SDK exports
-are fail-closed. A checkpoint key mismatch is an error by default;
-`--allow-partial-checkpoint` is only an explicit migration diagnostic. New
-finite config choices use enums, while extension identifiers and source names
-remain open strings.
+are fail-closed. The low-level checkpoint loader is strict by default. Standard
+evaluation accepts a checkpoint superset: every current runtime tensor must be
+present with the exact shape, while checkpoint-only tensors from a removed
+optional component are reported and ignored. This is distinct from
+`--allow-partial-checkpoint`, which may leave current runtime tensors missing
+and is only an explicit migration diagnostic. New finite config choices use
+enums, while extension identifiers and source names remain open strings.
 
 Historical broad package facades remain available during the pre-1.0
 migration. They are not a guarantee that every implementation helper is a

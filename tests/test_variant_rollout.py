@@ -319,10 +319,3 @@ def test_variant_rollout_runner_delegates_custom_decoder_plan_and_commit() -> No
     assert plan.source == "custom_decoder"
     assert plan.actions.item() == 42.0
     assert decoder_state.committed_source == "custom_decoder"
-
-
-def test_base_action_decoder_rejects_unsupported_direct_train_inputs() -> None:
-    decoder = _RolloutPlanDecoder()
-
-    with pytest.raises(NotImplementedError, match="does not implement direct train-time"):
-        decoder.forward_train_direct(None, None)  # type: ignore[arg-type]
