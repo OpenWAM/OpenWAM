@@ -8,6 +8,7 @@ import numpy as np
 import pytest
 import torch
 
+import open_wam.artifacts.serialization as artifact_serialization
 from open_wam.artifacts import (
     UnsafeArtifactError,
     load_numpy_compatible_torch_artifact,
@@ -87,3 +88,14 @@ def test_numpy_compatible_loader_accepts_numpy_1_module_path(
     actual = load_numpy_compatible_torch_artifact(legacy_path)
 
     assert np.array_equal(actual, expected)
+
+
+def test_numpy_safe_globals_ignore_import_order_and_support_torch_24(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(np, "_core", object(), raising=False)
+
+    safe_globals = artifact_serialization._numpy_safe_globals()
+
+    # PyTorch 2.4 and 2.5 require every safe-global entry to be a callable.
+    assert safe_globals and all(callable(value) for value in safe_globals)

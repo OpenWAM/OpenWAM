@@ -9,6 +9,8 @@ LIBERO init-state files while retaining the weights-only restrictions.
 from __future__ import annotations
 
 import pickle
+from collections.abc import Callable
+from functools import wraps
 from pathlib import Path
 from typing import Any
 
@@ -70,25 +72,35 @@ def load_trusted_numpy_pickle_artifact(
     return np.load(Path(path).expanduser(), allow_pickle=True)
 
 
+def _legacy_numpy_global_alias(
+    value: Callable[..., Any],
+) -> Callable[..., Any]:
+    @wraps(value)
+    def alias(*args: Any, **kwargs: Any) -> Any:
+        return value(*args, **kwargs)
+
+    alias.__module__ = "numpy.core.multiarray"
+    return alias
+
+
 def _numpy_safe_globals() -> tuple[Any, ...]:
-    numpy_core = np._core if hasattr(np, "_core") else np.core
-    multiarray = numpy_core.multiarray
-    safe_values: list[Any] = [
-        multiarray._reconstruct,
-        multiarray.scalar,
-        np.ndarray,
-        np.dtype,
-    ]
-    if hasattr(np, "_core"):
-        # LIBERO's published init states were serialized by NumPy 1.x. NumPy
-        # 2 exposes the same callables under ``numpy._core``; explicit legacy
-        # paths let PyTorch's restricted loader recognize those artifacts
-        # without enabling unrestricted pickle execution.
+    # ``hasattr(np, "_core")`` is not a usable NumPy-2 test: under NumPy 1.26
+    # the ``numpy._core`` shim only becomes an attribute of ``numpy`` once some
+    # other import has pulled in a ``numpy._core`` submodule, so the branch
+    # taken depends on import order. Import the module directly instead.
+    try:
+        from numpy._core import multiarray
+    except ImportError:  # NumPy without the ``_core`` shim.
+        from numpy.core import multiarray
+    numpy_globals = (multiarray._reconstruct, multiarray.scalar)
+    safe_values: list[Any] = [*numpy_globals, np.ndarray, np.dtype]
+    # LIBERO published its init states under NumPy 1.x, so those pickles name
+    # ``numpy.core.multiarray``. NumPy 2 moved the callables to ``numpy._core``;
+    # callable aliases preserve the old names without relying on named
+    # safe-global tuples, which PyTorch only supports starting in 2.6.
+    if multiarray._reconstruct.__module__ != "numpy.core.multiarray":
         safe_values.extend(
-            (
-                (multiarray._reconstruct, "numpy.core.multiarray._reconstruct"),
-                (multiarray.scalar, "numpy.core.multiarray.scalar"),
-            )
+            _legacy_numpy_global_alias(value) for value in numpy_globals
         )
     for dtype_name in (
         "bool",
