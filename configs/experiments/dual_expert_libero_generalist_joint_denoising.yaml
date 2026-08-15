@@ -125,9 +125,7 @@ policy_variant:
   attach_site: post_visual_core
   preset: fastwam_joint
   generalist_training_paradigm: dynamics_routed
-  runtime_mode: non_joint_two_stream
-  # JOINT visibility is required for the A1 conditional sub-modes; validated
-  # by `DualExpertPolicyConfig.__post_init__` when generalist probs are set.
+  # Generalist training derives joint same-chunk visibility from the program.
   program: generalist_joint_denoising
   condition_mode: teacher_forcing_cond_video
   video_prefix_frames: 1
@@ -136,7 +134,6 @@ policy_variant:
   num_action_layers: 30
   action_hidden_size: 2048
   action_ffn_dim: 8192
-  video_can_attend_action: false
   use_text_conditioning: true
   use_state_conditioning: false
   use_activation_checkpointing: true

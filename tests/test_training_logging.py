@@ -153,11 +153,14 @@ def test_build_log_sink_passes_standardized_wandb_tracking_context(monkeypatch, 
 
     assert captured["project"] == "open-wam"
     assert captured["mode"] == "offline"
-    assert captured["run_name"] == "robotwin · dual_expert · track-run"
-    assert captured["group"] == "robotwin/dual_expert"
+    assert captured["run_name"] == (
+        "robotwin · dual_expert · video_then_action · track-run"
+    )
+    assert captured["group"] == "robotwin/dual_expert/video_then_action"
     assert captured["job_type"] == "policy_train"
     assert "framework:open_wam" in captured["tags"]
     assert "architecture:dual_expert" in captured["tags"]
+    assert "program:video_then_action" in captured["tags"]
     assert "variant:dual_expert" in captured["tags"]
     assert "decoder:dual_expert_decoder" in captured["tags"]
     assert "dataset:robotwin" in captured["tags"]
@@ -165,10 +168,12 @@ def test_build_log_sink_passes_standardized_wandb_tracking_context(monkeypatch, 
     config_payload = captured["config_payload"]
     assert isinstance(config_payload, dict)
     assert config_payload["tracking"]["architecture"] == "dual_expert"
-    assert config_payload["tracking"]["program"] is None
+    assert config_payload["tracking"]["program"] == "video_then_action"
     assert config_payload["tracking"]["policy_variant"] == "dual_expert"
     assert config_payload["tracking"]["action_decoder"] == "dual_expert_decoder"
-    assert config_payload["tracking"]["wandb_group"] == "robotwin/dual_expert"
+    assert config_payload["tracking"]["wandb_group"] == (
+        "robotwin/dual_expert/video_then_action"
+    )
     assert config_payload["tracking"]["wandb_job_type"] == "policy_train"
     assert config_payload["tracking"]["output_dir"] == str(output_dir)
 
@@ -177,9 +182,11 @@ def test_wandb_group_job_type_and_tags_follow_tracking_metadata(tmp_path: Path) 
     config = load_experiment_config(REPO_ROOT / "configs/experiments/dual_expert_robotwin_smoke.yaml")
     metadata = build_run_tracking_metadata(config, run_name="dual_expert-run", output_dir=tmp_path / "dual_expert-run")
 
-    assert build_wandb_group(metadata) == "robotwin/dual_expert"
+    assert build_wandb_group(metadata) == "robotwin/dual_expert/video_then_action"
     assert build_wandb_job_type(metadata) == "policy_train"
-    assert build_run_title(metadata) == "robotwin · dual_expert · dual_expert-run"
+    assert build_run_title(metadata) == (
+        "robotwin · dual_expert · video_then_action · dual_expert-run"
+    )
     tags = build_wandb_tags(metadata)
     assert tags[:4] == (
         "framework:open_wam",
@@ -189,6 +196,7 @@ def test_wandb_group_job_type_and_tags_follow_tracking_metadata(tmp_path: Path) 
     )
     assert "decoder:dual_expert_decoder" in tags
     assert "architecture:dual_expert" in tags
+    assert "program:video_then_action" in tags
     assert "segment_frames:None" not in tags
 
 

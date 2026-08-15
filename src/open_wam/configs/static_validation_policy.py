@@ -9,7 +9,6 @@ from .enums import (
     ActionDecoderName,
     ContextConditionLatentSource,
     CurrentBlockCoupling,
-    DualExpertRuntimeMode,
     GeneralistDenoisingMode,
     HistoryStreamVisibility,
     ParallelRuntimeMode,
@@ -226,15 +225,6 @@ def _validate_video_action_sequence_contract_static(
                 "policy_variant.runtime_mode",
                 "legacy_prefix_single_frame_perchunk_proprio requires runtime_mode "
                 "lingbot_exact or lingbot_exact_action_conditioned for parallel_stream.",
-            )
-        if policy_name == PolicyVariantName.DUAL_EXPERT.value and runtime_mode not in (
-            None,
-            DualExpertRuntimeMode.NON_JOINT_TWO_STREAM.value,
-        ):
-            issues.error(
-                "policy_variant.runtime_mode",
-                "legacy_prefix_single_frame_perchunk_proprio requires "
-                "runtime_mode=non_joint_two_stream for dual_expert.",
             )
 
     expected_policy = {

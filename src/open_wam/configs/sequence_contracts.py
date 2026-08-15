@@ -104,19 +104,6 @@ def expand_video_action_sequence_contract(raw: dict[str, Any]) -> dict[str, Any]
                     "`policy_variant.sequence_contract=legacy_prefix_single_frame_perchunk_proprio` only "
                     f"supports `policy_variant.runtime_mode` in {{{allowed}}}, got {runtime_mode.value!r}."
                 )
-        else:
-            runtime_mode = coerce_enum(
-                enums.DualExpertRuntimeMode,
-                policy_variant_raw.get(
-                    "runtime_mode",
-                    enums.DualExpertRuntimeMode.NON_JOINT_TWO_STREAM,
-                ),
-            )
-            if runtime_mode != enums.DualExpertRuntimeMode.NON_JOINT_TWO_STREAM:
-                raise ValueError(
-                    "`policy_variant.sequence_contract=legacy_prefix_single_frame_perchunk_proprio` "
-                    "requires `policy_variant.runtime_mode=non_joint_two_stream` for dual-expert."
-                )
 
     if contract not in {
         enums.VideoActionSequenceContract.ROLLOUT_PARITY_SINGLE_FRAME_PERCHUNK_PROPRIO,
@@ -352,20 +339,6 @@ def apply_video_action_sequence_contract(
                 raise ValueError(
                     "`policy_variant.sequence_contract=legacy_prefix_single_frame_perchunk_proprio` only "
                     f"supports `policy_variant.runtime_mode` in {{{allowed}}}, got {runtime_mode.value!r}."
-                )
-        else:
-            runtime_mode = coerce_enum(
-                enums.DualExpertRuntimeMode,
-                getattr(
-                    policy_variant,
-                    "runtime_mode",
-                    enums.DualExpertRuntimeMode.NON_JOINT_TWO_STREAM,
-                ),
-            )
-            if runtime_mode != enums.DualExpertRuntimeMode.NON_JOINT_TWO_STREAM:
-                raise ValueError(
-                    "`policy_variant.sequence_contract=legacy_prefix_single_frame_perchunk_proprio` "
-                    "requires `policy_variant.runtime_mode=non_joint_two_stream` for dual-expert."
                 )
 
     if contract not in {

@@ -124,7 +124,6 @@ policy_variant:
   # `dynamics_routed` selects the real/optional-CF source adapter. It does not
   # require counterfactual samples when the matching CF weight is zero.
   generalist_training_paradigm: dynamics_routed
-  runtime_mode: non_joint_two_stream
   program: forward_dynamics
   condition_mode: teacher_forcing_cond_video
   video_prefix_frames: 1
@@ -133,7 +132,6 @@ policy_variant:
   num_action_layers: 30
   action_hidden_size: 2048
   action_ffn_dim: 8192
-  video_can_attend_action: false
   use_text_conditioning: true
   use_state_conditioning: false
   use_activation_checkpointing: true

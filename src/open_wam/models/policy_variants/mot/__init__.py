@@ -33,7 +33,6 @@ _SUBMODULES = (
     "generalist_modes",
     "inference_backend",
     "inference_layout",
-    "joint_denoise_inference",
     "modules",
     "observed_history",
     "packed_block",
@@ -42,10 +41,8 @@ _SUBMODULES = (
     "rollout_geometry",
     "runtime",
     "runtime_routes",
-    "runtime_routing",
     "sequence_layout",
     "split_cache_inference",
-    "unpacked_training",
     "variant",
 )
 

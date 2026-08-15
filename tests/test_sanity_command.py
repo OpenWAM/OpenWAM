@@ -133,7 +133,7 @@ def test_sanity_command_public_tiny_numerical_contract(tmp_path: Path, capsys) -
     assert summary["seed"] == 17
     assert summary["metrics"]["rollout_steps"] == 1
     assert summary["metrics"]["train_loss"] == pytest.approx(
-        2.5530142784118652,
+        5.558737754821777,
         rel=0.0,
         abs=1e-6,
     )
@@ -152,30 +152,30 @@ def test_sanity_command_public_tiny_numerical_contract(tmp_path: Path, capsys) -
         "view_shapes": {"camera_0": [1, 2, 64, 64, 3]},
     }
     assert summary["train_forward"]["loss"] == pytest.approx(
-        2.5530142784118652,
+        5.558737754821777,
         rel=0.0,
         abs=1e-6,
     )
     train_metrics = summary["train_forward"]["metrics"]
     assert train_metrics["action_diffusion_loss"] == pytest.approx(
-        2.5530142784118652,
+        5.558737754821777,
         rel=0.0,
         abs=1e-6,
     )
     assert train_metrics["weighted_action_diffusion_loss"] == pytest.approx(
-        2.5530142784118652,
+        5.558737754821777,
         rel=0.0,
         abs=1e-6,
     )
     assert train_metrics["action_mse"] == pytest.approx(
-        0.16568462550640106,
+        0.39484402537345886,
         rel=0.0,
         abs=1e-7,
     )
     assert summary["batch_infer"]["action_pred_shape"] == [1, 2, 4]
     assert summary["batch_infer"]["target_action_shape"] == [1, 2, 4]
     assert summary["batch_infer"]["masked_action_mse"] == pytest.approx(
-        5.424690246582031,
+        3.55587100982666,
         rel=0.0,
         # Supported Python 3.11/3.12 CPU wheels differ by one float32 ULP for
         # this reduction. Real-checkpoint parity uses the stricter GPU gate.

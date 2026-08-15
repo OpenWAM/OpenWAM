@@ -17,59 +17,59 @@ def ensure_dual_expert_policy_variant_inference_backend(
     """Route dual-expert inference to the backend implied by the config.
 
     Packed training transfers video/action blocks into a packed owner for FSDP.
-    Some rollout modes intentionally run the older split-cache backend instead.
+    Two programs intentionally run the split-cache backend instead.
     This helper is safe to call from scripts and from the policy variant itself,
     so generic eval paths cannot silently keep the packed backend for those
-    legacy split-cache rollout contracts.
+    split-cache rollout contracts.
     """
 
     route = resolve_dual_expert_runtime_route(policy_config)
-    if not route.requires_legacy_block_restore:
+    if not route.requires_block_restore:
         return {
             "policy_variant": "dual_expert",
             "backend": "split_cache"
             if route.uses_split_cache_rollout
             else "packed_coupling",
             "route": route.to_report(),
-            "legacy_split_cache_required": False,
-            "legacy_split_cache_ready": False,
-            "legacy_split_cache_restored_this_call": False,
+            "block_restore_required": False,
+            "block_restore_ready": False,
+            "block_restore_performed": False,
         }
 
     restore = getattr(
-        policy_variant, "restore_packed_blocks_for_legacy_inference", None
+        policy_variant, "restore_packed_blocks_for_split_cache_inference", None
     )
     if not callable(restore):
         raise RuntimeError(
-            "dual-expert config requires legacy split-cache inference, but the policy variant "
-            "does not expose `restore_packed_blocks_for_legacy_inference`."
+            "Dual Expert program requires split-cache inference, but the policy variant "
+            "does not expose `restore_packed_blocks_for_split_cache_inference`."
         )
 
     already_restored_before = bool(
-        getattr(policy_variant, "_legacy_inference_blocks_restored", False)
+        getattr(policy_variant, "_split_cache_inference_blocks_restored", False)
     )
     if not already_restored_before and not allow_module_mutation:
         raise RuntimeError(
-            "dual-expert legacy split-cache inference requires a one-way module ownership restore, "
+            "Dual Expert split-cache inference requires a one-way module ownership restore, "
             "but this call disallows module mutation. Run rollout/eval with a dedicated "
             "inference-only pipeline, or skip inference validation for this packed dual-expert mode."
         )
     restored = False if already_restored_before else bool(restore(visual_tower))
     already_restored = bool(
-        getattr(policy_variant, "_legacy_inference_blocks_restored", False)
+        getattr(policy_variant, "_split_cache_inference_blocks_restored", False)
     )
     if not restored and not already_restored:
         raise RuntimeError(
-            "dual-expert legacy split-cache inference was requested, but packed block ownership "
+            "Dual Expert split-cache inference was requested, but packed block ownership "
             "was not restored. Refusing to run a different inference backend silently."
         )
     return {
         "policy_variant": "dual_expert",
-        "backend": "legacy_split_cache",
+        "backend": "split_cache",
         "route": route.to_report(),
-        "legacy_split_cache_required": True,
-        "legacy_split_cache_ready": bool(already_restored),
-        "legacy_split_cache_restored_this_call": bool(restored),
+        "block_restore_required": True,
+        "block_restore_ready": bool(already_restored),
+        "block_restore_performed": bool(restored),
     }
 
 

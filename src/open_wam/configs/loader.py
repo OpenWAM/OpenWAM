@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +23,7 @@ from .local_paths import read_yaml_with_local_paths
 from .policy_compatibility import normalize_video_action_config_fields
 from .policy_contracts import CausalVideoPredictionPolicyConfig, PolicyVariantConfig
 from .policy_parsing import parse_policy_variant_config
+from .policy_video_action import resolve_video_action_program_semantics
 from .sequence_contracts import (
     apply_video_action_sequence_contract,
     expand_video_action_sequence_contract,
@@ -49,9 +51,62 @@ def _read_yaml(path: str | Path) -> dict[str, Any]:
 
 
 def _apply_checkpoint_runtime_compat(raw: dict[str, Any]) -> dict[str, Any]:
-    """Drop stale resolved-config fields that are invalid in authored YAML."""
+    """Migrate immutable checkpoint metadata into the current typed contract."""
 
     normalized = dict(raw)
+    policy_raw = normalized.get("policy_variant")
+    if isinstance(policy_raw, Mapping):
+        policy_raw = dict(policy_raw)
+        normalized["policy_variant"] = policy_raw
+        policy_name = _raw_enum_value(policy_raw.get("name"))
+        if policy_name in {
+            config_enums.PolicyVariantName.DUAL_EXPERT.value,
+            "mot",
+        }:
+            legacy_runtime_mode = policy_raw.pop("runtime_mode", None)
+            legacy_coupling = policy_raw.pop("current_block_coupling", None)
+            policy_raw.pop("video_can_attend_action", None)
+            program = policy_raw.get("program")
+            if program is None:
+                if legacy_coupling is None:
+                    detail = (
+                        f" runtime_mode={legacy_runtime_mode!r}"
+                        if legacy_runtime_mode is not None
+                        else ""
+                    )
+                    raise ValueError(
+                        "Cannot migrate Dual Expert checkpoint config without an explicit "
+                        "`program` or `current_block_coupling`; the old runtime mode does not "
+                        f"uniquely define attention semantics.{detail}"
+                    )
+                coupling = config_enums.CurrentBlockCoupling(
+                    _raw_enum_value(legacy_coupling)
+                )
+                has_generalist_distribution = any(
+                    policy_raw.get(field_name) is not None
+                    for field_name in (
+                        "generalist_denoising_mode_probs",
+                        "mot_generalist_training_mode_probs",
+                    )
+                )
+                program = (
+                    config_enums.VideoActionProgram.GENERALIST_JOINT_DENOISING
+                    if coupling == config_enums.CurrentBlockCoupling.JOINT
+                    and has_generalist_distribution
+                    else config_enums.VideoActionProgram(coupling.value)
+                )
+                policy_raw["program"] = program.value
+            else:
+                # Validate redundant checkpoint metadata before discarding it.
+                resolve_video_action_program_semantics(
+                    program=_raw_enum_value(program),
+                    current_block_coupling=(
+                        None
+                        if legacy_coupling is None
+                        else _raw_enum_value(legacy_coupling)
+                    ),
+                )
+
     data_raw = normalized.get("data")
     if not isinstance(data_raw, dict):
         return normalized
