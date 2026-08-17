@@ -1945,52 +1945,6 @@ def test_comparison_projection_normalizes_only_schema_v1_metadata() -> None:
     assert _comparison_projection(legacy) != _comparison_projection(canonical)
 
 
-def test_comparison_projection_normalizes_retired_dual_expert_route_metadata() -> None:
-    legacy = {
-        "backend": {
-            "backend": "legacy_split_cache",
-            "legacy_split_cache_ready": True,
-            "legacy_split_cache_required": True,
-            "legacy_split_cache_restored_this_call": True,
-            "policy_variant": "dual_expert",
-            "route": {
-                "current_block_coupling": "video_then_action",
-                "kind": "split_cache_non_joint",
-                "requires_legacy_block_restore": True,
-                "resolved_current_block_coupling": "video_then_action",
-                "runtime_mode": "non_joint_two_stream",
-                "supports_realtime_history_controls": True,
-                "uses_split_cache_rollout": True,
-                "uses_stateful_realtime_session": True,
-            },
-        },
-        "action": [1.0, 2.0],
-    }
-    canonical = {
-        "backend": {
-            "backend": "split_cache",
-            "block_restore_ready": True,
-            "block_restore_required": True,
-            "block_restore_performed": True,
-            "policy_variant": "dual_expert",
-            "route": {
-                "program": "video_then_action",
-                "current_block_coupling": "video_then_action",
-                "kind": "split_cache",
-                "requires_block_restore": True,
-                "supports_realtime_history_controls": True,
-                "uses_split_cache_rollout": True,
-                "uses_stateful_realtime_session": True,
-            },
-        },
-        "action": [1.0, 2.0],
-    }
-
-    assert _comparison_projection(legacy) == _comparison_projection(canonical)
-    canonical["action"][0] = 1.000001
-    assert _comparison_projection(legacy) != _comparison_projection(canonical)
-
-
 def test_comparison_projection_ignores_serialized_checkpoint_sizes() -> None:
     first = {
         "checkpoint_artifacts": {

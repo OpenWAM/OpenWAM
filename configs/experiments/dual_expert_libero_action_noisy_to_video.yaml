@@ -97,6 +97,7 @@ policy_variant:
   hidden_size: 3072
   attach_site: post_visual_core
   preset: fastwam_joint
+  runtime_mode: non_joint_two_stream
   program: action_noisy_to_video
   sequence_contract: legacy_prefix_single_frame_perchunk_proprio
   joint_timestep_coupling: match_sigma
@@ -106,6 +107,7 @@ policy_variant:
   num_action_layers: 30
   action_hidden_size: 2048
   action_ffn_dim: 8192
+  video_can_attend_action: false
   noisy_video_condition_prob: 0.5
   use_text_conditioning: true
   use_state_conditioning: false

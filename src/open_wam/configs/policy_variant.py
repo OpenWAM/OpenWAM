@@ -15,6 +15,7 @@ from .enums import (
     DualExpertActionExpertInitMode,
     DualExpertConditionMode,
     DualExpertPreset,
+    DualExpertRuntimeMode,
     GeneralistDenoisingMode,
     GeneralistTrainingParadigm,
     HistoryStreamVisibility,
@@ -24,6 +25,7 @@ from .enums import (
     MoTConditionMode,
     MoTGeneralistTrainingMode,
     MoTPreset,
+    MoTRuntimeMode,
     ParallelActionAttentionScope,
     ParallelActionConditionSource,
     ParallelCacheMode,
@@ -58,7 +60,6 @@ from .policy_parallel_stream import (
 from .policy_parsing import parse_policy_variant_config
 from .policy_video_action import (
     VideoActionPolicyConfig,
-    current_block_coupling_for_program,
     resolve_video_action_program_semantics,
 )
 from .training import TrainingConfig
@@ -85,10 +86,12 @@ _POLICY_COMPATIBILITY_EXPORTS = (
     DualExpertConditionMode,
     GeneralistDenoisingMode,
     DualExpertPreset,
+    DualExpertRuntimeMode,
     MoTActionExpertInitMode,
     MoTConditionMode,
     MoTGeneralistTrainingMode,
     MoTPreset,
+    MoTRuntimeMode,
     ParallelActionAttentionScope,
     ParallelActionConditionSource,
     ParallelCacheMode,
@@ -120,7 +123,6 @@ __all__ = [
     "ParallelStreamPolicyConfig",
     "PolicyVariantConfig",
     "VideoActionPolicyConfig",
-    "current_block_coupling_for_program",
     "parse_policy_variant_config",
     "resolve_video_action_program_semantics",
 ]

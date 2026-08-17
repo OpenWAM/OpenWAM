@@ -91,7 +91,7 @@ def visual_runtime_cache_name_for_session(
         if cache_name is not None:
             return str(cache_name)
     if resolve_dual_expert_runtime_route(config).uses_split_cache_rollout:
-        return "dual_expert_split_cache"
+        return "dual_expert_non_joint_two_stream_cache"
     return None
 
 

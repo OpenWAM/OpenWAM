@@ -38,7 +38,7 @@ policy_variant:
   hidden_size: 256
   attach_site: post_visual_core
   preset: fastwam
-  program: video_then_action
+  runtime_mode: video_prefill_action_denoise
   action_expert_init_mode: random
   num_action_layers: 1
   action_hidden_size: 256

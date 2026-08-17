@@ -4,16 +4,19 @@ from __future__ import annotations
 
 from open_wam.configs import (
     CurrentBlockCoupling,
+    DualExpertRuntimeMode,
     JointTimestepCoupling,
 )
 from open_wam.configs.policy_dual_expert import DualExpertPolicyConfig
 
 
-def resolve_dual_expert_current_block_coupling(
-    config: DualExpertPolicyConfig,
-) -> CurrentBlockCoupling:
-    """Return the coupling derived by the Dual Expert program contract."""
+def resolve_dual_expert_current_block_coupling(config: DualExpertPolicyConfig) -> CurrentBlockCoupling:
+    """Resolve dual-expert current-block coupling, defaulting to current behavior."""
 
+    if config.current_block_coupling is None:
+        if config.runtime_mode == DualExpertRuntimeMode.JOINT_DENOISE:
+            return CurrentBlockCoupling.JOINT
+        return CurrentBlockCoupling.VIDEO_THEN_ACTION
     return CurrentBlockCoupling(config.current_block_coupling)
 
 

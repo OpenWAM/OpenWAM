@@ -5,6 +5,7 @@ from __future__ import annotations
 from open_wam.configs import (
     ActionDecoderName,
     BackboneImplementation,
+    DualExpertRuntimeMode,
     ExperimentConfig,
     ParallelRuntimeMode,
     ProprioContextMode,
@@ -127,14 +128,17 @@ def validate_experiment_config(config: ExperimentConfig) -> None:
             )
     if isinstance(config.policy_variant, DualExpertPolicyConfig):
         if action_schema.action_horizon <= 0:
+            raise ValueError("Dual-expert policies require `data.action_schema.action_horizon > 0`.")
+        if (
+            config.policy_variant.runtime_mode
+            in {DualExpertRuntimeMode.JOINT_DENOISE, DualExpertRuntimeMode.NON_JOINT_TWO_STREAM}
+            and config.policy_variant.video_prefix_frames >= config.data.num_frames
+        ):
             raise ValueError(
-                "Dual-expert policies require `data.action_schema.action_horizon > 0`."
-            )
-        if config.policy_variant.video_prefix_frames >= config.data.num_frames:
-            raise ValueError(
-                "Dual-expert policies require `video_prefix_frames < data.num_frames`, "
+                "Dual-expert two-stream policies require `video_prefix_frames < data.num_frames`, "
                 f"got video_prefix_frames={config.policy_variant.video_prefix_frames}, "
-                f"data.num_frames={config.data.num_frames}."
+                f"data.num_frames={config.data.num_frames}, "
+                f"runtime_mode={config.policy_variant.runtime_mode!r}."
             )
         if config.policy_variant.num_action_layers != config.backbone.num_layers:
             raise ValueError(

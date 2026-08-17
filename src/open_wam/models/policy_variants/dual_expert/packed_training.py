@@ -162,12 +162,12 @@ class DualExpertPackedTrainingProgram:
 
         if action_tokens_per_frame is None:
             raise ValueError(
-                "Dual Expert packed training requires "
+                "DualExpert non_joint_two_stream packed training requires "
                 "`action_tokens_per_frame` resolvable from the batch, got None."
             )
         if sampled_chunk_size is None:
             raise ValueError(
-                "Dual Expert packed training requires "
+                "DualExpert non_joint_two_stream packed training requires "
                 "`sampled_chunk_size` resolvable from the batch metadata or full-segment fallback, got None."
             )
         history_stream_visibility = self._resolve_history_stream_visibility()
@@ -527,7 +527,7 @@ class DualExpertPackedTrainingProgram:
             ),
             video=video_rollout,
             condition_mode=str(self.config.condition_mode),
-            program=self.config.program.value,
+            runtime_mode=str(self.config.runtime_mode),
             history_frames=int(history_frames),
         )
 
@@ -546,7 +546,7 @@ class DualExpertPackedTrainingProgram:
                 "variant": self.config.name,
                 "architecture": "dual_expert",
                 "condition_mode": str(self.config.condition_mode),
-                "program": self.config.program.value,
+                "runtime_mode": str(self.config.runtime_mode),
                 "current_block_coupling": current_block_coupling.value,
                 "sampled_chunk_size": sampled_chunk_size,
                 "sampled_window_size": sampled_window_size,

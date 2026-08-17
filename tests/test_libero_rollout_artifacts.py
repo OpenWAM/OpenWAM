@@ -350,7 +350,7 @@ def test_persist_rollout_artifacts_preserves_legacy_schema_and_paths(
         "comparison_video_path": None,
         "rollout_video_path": None,
         "pipeline": "open_wam_dual_expert",
-        "program": "video_then_action",
+        "runtime_mode": "non_joint_two_stream",
         "condition_mode": "teacher_forcing_cond_video",
         "startup_model_obs_frames": 1,
         "startup_env_init_steps": 5,

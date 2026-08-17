@@ -15,11 +15,11 @@ from open_wam.configs import (
 from open_wam.configs.enums import (
     AttachSite,
     CurrentBlockCoupling,
+    DualExpertRuntimeMode,
     GeneralistDenoisingMode,
     GeneralistTrainingParadigm,
     ParallelRuntimeMode,
     TrainingComponentSelector,
-    VideoActionProgram,
 )
 from open_wam.data import build_synthetic_latent_batch
 from open_wam.models.policy_variants import PolicyTrainBatch
@@ -97,11 +97,17 @@ def _build_dual_expert_packed_smoke_pipeline():
 
     from dataclasses import replace as _replace
 
-    from open_wam.configs.enums import ProprioContextMode
+    from open_wam.configs.enums import (
+        CurrentBlockCoupling,
+        DualExpertRuntimeMode,
+        ProprioContextMode,
+    )
 
     config = load_experiment_config(REPO_ROOT / "configs/experiments/dual_expert_robotwin_smoke.yaml")
     policy_variant_config = _replace(
         config.policy_variant,
+        current_block_coupling=CurrentBlockCoupling.VIDEO_THEN_ACTION,
+        runtime_mode=DualExpertRuntimeMode.NON_JOINT_TWO_STREAM,
         proprio_context_mode=ProprioContextMode.PER_CHUNK_ADDITIVE,
     )
     config = _replace(config, policy_variant=policy_variant_config)
@@ -237,7 +243,7 @@ def test_packed_coupling_freeze_video_train_action() -> None:
     )
 
 
-def test_split_cache_restore_transfers_block_ownership_once() -> None:
+def test_packed_legacy_restore_transfers_block_ownership_once() -> None:
     _, pipeline = _build_dual_expert_packed_smoke_pipeline()
     packed_stack = pipeline.policy_variant.packed_block_stack
     assert packed_stack is not None
@@ -246,9 +252,7 @@ def test_split_cache_restore_transfers_block_ownership_once() -> None:
     assert len(pipeline.visual_tower.core.blocks) == 0
     assert len(pipeline.policy_variant.action_expert.blocks) == 0
 
-    restored = pipeline.policy_variant.restore_packed_blocks_for_split_cache_inference(
-        pipeline.visual_tower
-    )
+    restored = pipeline.policy_variant.restore_packed_blocks_for_legacy_inference(pipeline.visual_tower)
 
     assert restored is True
     assert pipeline.policy_variant.packed_block_stack is None
@@ -256,12 +260,8 @@ def test_split_cache_restore_transfers_block_ownership_once() -> None:
     assert [id(block) for block in pipeline.policy_variant.action_expert.blocks] == action_block_ids
     assert not any(isinstance(module, DualExpertPackedBlockStack) for module in pipeline.modules())
     assert not any("packed_block_stack" in key for key in pipeline.state_dict())
-    assert (
-        pipeline.policy_variant.restore_packed_blocks_for_split_cache_inference(
-            pipeline.visual_tower
-        )
-        is False
-    )
+    assert pipeline.policy_variant.restore_packed_blocks_for_legacy_inference(pipeline.visual_tower) is False
+
 
 
 def test_additive_proprio_context_encoder_trains_with_action_only_selector() -> None:
@@ -373,7 +373,8 @@ def test_dual_expert_generalist_mode_context_encoder_trains_with_frozen_backbone
     pipeline.policy_variant.config = DualExpertPolicyConfig(
         hidden_size=16,
         attach_site=AttachSite.POST_VISUAL_CORE,
-        program=VideoActionProgram.GENERALIST_JOINT_DENOISING,
+        runtime_mode=DualExpertRuntimeMode.NON_JOINT_TWO_STREAM,
+        current_block_coupling=CurrentBlockCoupling.JOINT,
         generalist_denoising_mode_probs={GeneralistDenoisingMode.JOINT: 1.0},
         generalist_mode_text_token=True,
     )

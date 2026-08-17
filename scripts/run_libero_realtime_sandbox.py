@@ -69,7 +69,7 @@ from open_wam.integrations.realtime_scheduling import (
     should_submit_frame_grouped_planner,
     should_submit_sequence_planner,
 )
-from open_wam.models.policy_variants.dual_expert.inference_backend import (
+from open_wam.models.policy_variants.dual_expert.runtime_routing import (
     ensure_dual_expert_inference_backend,
 )
 from open_wam.models.visual_tower import VisualRuntimeStateSnapshot

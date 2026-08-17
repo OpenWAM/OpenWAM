@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any
 
 from .enums import (
     AttachSite,
@@ -12,16 +10,15 @@ from .enums import (
     DualExpertActionExpertInitMode,
     DualExpertConditionMode,
     DualExpertPreset,
+    DualExpertRuntimeMode,
     GeneralistDenoisingMode,
     GeneralistTrainingParadigm,
     PolicyVariantName,
-    VideoActionProgram,
     coerce_fields,
 )
 from .policy_compatibility import resolve_legacy_policy_field
 from .policy_video_action import (
     VideoActionPolicyConfig,
-    current_block_coupling_for_program,
     fixed_conditioning_mode_for_program,
     one_hot_conditioning_mode_probabilities,
     validate_conditional_denoising_data_paradigm,
@@ -34,8 +31,9 @@ def _coerce_generalist_denoising_mode_probs(
 ) -> dict[GeneralistDenoisingMode, float] | None:
     """Coerce an optional generalist denoising distribution.
 
-    When a mapping is provided, missing modes default to 0 and probabilities
-    are normalized to sum to one.
+    ``None`` keeps the existing fixed ``current_block_coupling`` path. When a
+    mapping is provided, missing modes default to 0 and probabilities are
+    normalized to sum to one.
     """
 
     if raw_value is None:
@@ -53,16 +51,13 @@ _coerce_mot_generalist_training_mode_probs = _coerce_generalist_denoising_mode_p
 
 @dataclass(frozen=True)
 class DualExpertPolicyConfig(VideoActionPolicyConfig):
-    """Configuration for separate video and action transformer experts.
-
-    ``program`` is the sole authored execution semantic. The low-level
-    same-chunk coupling is derived and cannot conflict with it.
-    """
+    """Configuration for separate video and action transformer experts."""
 
     name: PolicyVariantName = PolicyVariantName.DUAL_EXPERT
     hidden_size: int = 256
     attach_site: AttachSite = AttachSite.POST_VISUAL_CORE
     preset: DualExpertPreset | None = None
+    runtime_mode: DualExpertRuntimeMode = DualExpertRuntimeMode.VIDEO_PREFILL_ACTION_DENOISE
     condition_mode: DualExpertConditionMode = DualExpertConditionMode.FIRST_FRAME
     action_expert_init_mode: DualExpertActionExpertInitMode = DualExpertActionExpertInitMode.VIDEO_WEIGHT_COPY
     video_prefix_frames: int = 1
@@ -70,6 +65,7 @@ class DualExpertPolicyConfig(VideoActionPolicyConfig):
     num_action_layers: int = 30
     action_hidden_size: int | None = None
     action_ffn_dim: int | None = None
+    video_can_attend_action: bool = True
     use_text_conditioning: bool = True
     use_state_conditioning: bool = False
     # Trade forward compute for activation memory by recomputing each
@@ -88,39 +84,8 @@ class DualExpertPolicyConfig(VideoActionPolicyConfig):
         compare=False,
     )
 
-    @property
-    def current_block_coupling(self) -> CurrentBlockCoupling:
-        """Low-level attention coupling derived from the public program."""
-
-        if self.program is None:  # guarded by ``__post_init__``
-            raise RuntimeError("DualExpert program has not been resolved.")
-        return current_block_coupling_for_program(self.program)
-
-    def normalize_config_override_values(
-        self, values: Mapping[str, Any]
-    ) -> dict[str, Any]:
-        """Reject removed Dual Expert controls at the typed override boundary."""
-
-        removed = {
-            "runtime_mode",
-            "current_block_coupling",
-            "video_can_attend_action",
-        }.intersection(values)
-        if removed:
-            fields = ", ".join(f"policy_variant.{name}" for name in sorted(removed))
-            raise ValueError(
-                f"{fields} cannot be set for Dual Expert; select "
-                "`policy_variant.program` instead."
-            )
-        return super().normalize_config_override_values(values)
-
     def __post_init__(self) -> None:
         super().__post_init__()
-        if self.program is None:
-            raise ValueError(
-                "DualExpert policy requires an explicit `policy_variant.program`; "
-                "runtime modes and direct coupling controls are not part of the public contract."
-            )
         resolved_generalist_probs = resolve_legacy_policy_field(
             canonical_value=self.generalist_denoising_mode_probs,
             legacy_value=self.mot_generalist_training_mode_probs,
@@ -171,6 +136,7 @@ class DualExpertPolicyConfig(VideoActionPolicyConfig):
         coerce_fields(
             self,
             enum_fields={
+                "runtime_mode": DualExpertRuntimeMode,
                 "condition_mode": DualExpertConditionMode,
                 "action_expert_init_mode": DualExpertActionExpertInitMode,
             },
@@ -189,25 +155,11 @@ class DualExpertPolicyConfig(VideoActionPolicyConfig):
             paradigm=self.generalist_training_paradigm,
         )
         if self.generalist_denoising_mode_probs is not None:
-            if (
-                self.program != VideoActionProgram.GENERALIST_JOINT_DENOISING
-                and fixed_conditioning_mode is None
-            ):
-                raise ValueError(
-                    "`generalist_denoising_mode_probs` is owned by "
-                    "`program = generalist_joint_denoising`; standard programs "
-                    "cannot opt into GJD implicitly."
-                )
             if self.current_block_coupling != CurrentBlockCoupling.JOINT:
                 raise ValueError(
                     "`generalist_denoising_mode_probs` requires `current_block_coupling = joint`, "
                     f"got current_block_coupling={self.current_block_coupling!r}."
                 )
-        elif self.program == VideoActionProgram.GENERALIST_JOINT_DENOISING:
-            raise ValueError(
-                "`program = generalist_joint_denoising` requires "
-                "`generalist_denoising_mode_probs`."
-            )
         if fixed_conditioning_mode is not None:
             expected_probs = one_hot_conditioning_mode_probabilities(
                 fixed_conditioning_mode

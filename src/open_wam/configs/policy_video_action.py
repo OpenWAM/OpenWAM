@@ -149,17 +149,6 @@ def _program_requires_joint_coupling(program: VideoActionProgram) -> bool:
     }
 
 
-def current_block_coupling_for_program(
-    program: VideoActionProgram | str,
-) -> CurrentBlockCoupling:
-    """Return the low-level same-chunk coupling owned by one public program."""
-
-    resolved_program = VideoActionProgram(program)
-    if _program_requires_joint_coupling(resolved_program):
-        return CurrentBlockCoupling.JOINT
-    return CurrentBlockCoupling(resolved_program.value)
-
-
 def resolve_video_action_program_semantics(
     *,
     program: VideoActionProgram | str | None,
@@ -176,7 +165,11 @@ def resolve_video_action_program_semantics(
     if resolved_program is None and resolved_coupling is not None:
         resolved_program = VideoActionProgram(resolved_coupling.value)
     if resolved_program is not None:
-        expected_coupling = current_block_coupling_for_program(resolved_program)
+        expected_coupling = (
+            CurrentBlockCoupling.JOINT
+            if _program_requires_joint_coupling(resolved_program)
+            else CurrentBlockCoupling(resolved_program.value)
+        )
         if resolved_coupling is not None and resolved_coupling != expected_coupling:
             raise ValueError(
                 "`policy_variant.program` conflicts with "
@@ -199,6 +192,7 @@ class VideoActionPolicyConfig(PolicyVariantConfig):
 
     noisy_video_condition_prob: float = 0.5
     program: VideoActionProgram | None = None
+    current_block_coupling: CurrentBlockCoupling | None = None
     joint_timestep_coupling: JointTimestepCoupling = JointTimestepCoupling.MATCH_SIGMA
     # Deprecated boolean alias retained for old checkpoint-era configs.
     couple_action_to_video_timesteps: bool | None = field(default=None, repr=False, compare=False)
@@ -223,20 +217,32 @@ class VideoActionPolicyConfig(PolicyVariantConfig):
         self,
         values: Mapping[str, Any],
     ) -> dict[str, Any]:
-        """Clear program-owned conditional defaults during config overrides."""
+        """Keep the public program and its derived coupling override-safe.
+
+        Loaded configs retain the resolved low-level coupling because runtime
+        consumers need it. Replacing only ``program`` must therefore clear the
+        old derived value before dataclass validation runs. A legacy
+        coupling-only override similarly clears the old public program so it
+        can be derived from the replacement coupling.
+        """
 
         normalized = dict(values)
-        if (
-            "program" in normalized
-            and "generalist_denoising_mode_probs" not in normalized
-            and (
-                fixed_conditioning_mode_for_program(normalized["program"]) is not None
-                or fixed_conditioning_mode_for_program(self.program) is not None
-            )
-        ):
-            # A fixed program owns its one-hot distribution. Clear any derived
-            # value when entering, leaving, or switching fixed programs.
-            normalized["generalist_denoising_mode_probs"] = None
+        if "program" in normalized and "current_block_coupling" not in normalized:
+            normalized["current_block_coupling"] = None
+            if (
+                "generalist_denoising_mode_probs" not in normalized
+                and (
+                    fixed_conditioning_mode_for_program(normalized["program"])
+                    is not None
+                    or fixed_conditioning_mode_for_program(self.program) is not None
+                )
+            ):
+                # A fixed program owns its one-hot distribution. Clear any
+                # derived value when entering, leaving, or switching fixed
+                # programs so an override cannot retain stale semantics.
+                normalized["generalist_denoising_mode_probs"] = None
+        elif "current_block_coupling" in normalized and "program" not in normalized:
+            normalized["program"] = None
         return normalized
 
     def __post_init__(self) -> None:
@@ -259,8 +265,17 @@ class VideoActionPolicyConfig(PolicyVariantConfig):
                 "sequence_contract": VideoActionSequenceContract,
                 "joint_timestep_coupling": JointTimestepCoupling,
             },
-            optional_enum_fields={"program": VideoActionProgram},
+            optional_enum_fields={
+                "program": VideoActionProgram,
+                "current_block_coupling": CurrentBlockCoupling,
+            },
         )
+        resolved_program, resolved_coupling = resolve_video_action_program_semantics(
+            program=self.program,
+            current_block_coupling=self.current_block_coupling,
+        )
+        object.__setattr__(self, "program", resolved_program)
+        object.__setattr__(self, "current_block_coupling", resolved_coupling)
         # Constructor aliases are input-only. Clearing them prevents
         # `dataclasses.replace()` from replaying stale aliases over a canonical
         # CLI override.
@@ -287,6 +302,5 @@ class VideoActionPolicyConfig(PolicyVariantConfig):
 
 __all__ = [
     "VideoActionPolicyConfig",
-    "current_block_coupling_for_program",
     "resolve_video_action_program_semantics",
 ]

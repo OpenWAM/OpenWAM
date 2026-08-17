@@ -42,9 +42,9 @@ contract, `noisy_video_condition_prob=0.5`, include-all replay, uniform sample
 weighting, no sample loss reweighting, and the supplied model-only checkpoint
 policy with interval 500 and retention 3. The characterization worker disables
 checkpoint writes and experiment logging after validating that source contract.
-For each geometry, a whole-config test verifies that the six cases differ only
-in experiment name and `program`; coupling is derived deterministically, and
-the real-data fixture is intentionally shared. The phase-1 oracle explicitly preserves W30,
+For each geometry, a whole-config test verifies that the six programs differ
+only in experiment name and `current_block_coupling`; their real-data fixture is
+therefore intentionally shared. The phase-1 oracle explicitly preserves W30,
 matching the config default in force when the supplied command was recorded;
 phase 2 explicitly resolves W64. Current public configs default to the later
 validated full-segment W64 recipe, but that default change does not rewrite the

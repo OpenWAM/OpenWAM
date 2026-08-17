@@ -65,7 +65,7 @@ def test_load_dual_expert_libero_runtime_preserves_composition_order_and_contrac
     config_path = tmp_path / "resolved_config.yaml"
     checkpoint_path = tmp_path / "checkpoint_step_10" / "model_state.pt"
     config = SimpleNamespace(
-        policy_variant=SimpleNamespace(name="dual_expert", program="video_then_action"),
+        policy_variant=SimpleNamespace(name="dual_expert"),
         backbone=SimpleNamespace(transformer_subdir="/unused/transformer"),
         data=SimpleNamespace(
             num_frames=4,
@@ -75,8 +75,8 @@ def test_load_dual_expert_libero_runtime_preserves_composition_order_and_contrac
     pipeline = _FakePipeline(calls)
     runner = object()
 
-    def _load_config(path: Path, **kwargs):
-        calls.append(("load_config", path, kwargs))
+    def _load_config(path: Path):
+        calls.append(("load_config", path))
         return config
 
     def _resolve_checkpoint(**kwargs):
@@ -97,8 +97,8 @@ def test_load_dual_expert_libero_runtime_preserves_composition_order_and_contrac
     def _ensure_backend(value, cfg):
         calls.append(("ensure_backend", value, cfg))
         return {
-            "block_restore_performed": False,
-            "route": "split_cache",
+            "legacy_split_cache_restored_this_call": False,
+            "route": "packed",
         }
 
     def _build_runner(value):
@@ -167,8 +167,8 @@ def test_load_dual_expert_libero_runtime_preserves_composition_order_and_contrac
     assert loaded.component_report == {
         "base": "report",
         "dual_expert_inference_backend": {
-            "block_restore_performed": False,
-            "route": "split_cache",
+            "legacy_split_cache_restored_this_call": False,
+            "route": "packed",
         },
         "checkpoint_file": str(checkpoint_path.resolve()),
         "checkpoint_runtime_config_path": None,
@@ -198,8 +198,3 @@ def test_load_dual_expert_libero_runtime_preserves_composition_order_and_contrac
     ]
     assert calls[-1][1] == "load_report"
     assert calls[-1][2] == loaded.component_report
-    assert calls[0] == (
-        "load_config",
-        config_path,
-        {"checkpoint_runtime_compat": True},
-    )

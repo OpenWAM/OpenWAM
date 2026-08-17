@@ -149,10 +149,7 @@ def load_dual_expert_libero_runtime(options: DualExpertLiberoLoadOptions) -> Dua
     config_path = Path(options.config)
     if not config_path.is_absolute():
         config_path = (REPO_ROOT / config_path).resolve()
-    config = load_experiment_config(
-        config_path,
-        checkpoint_runtime_compat=config_path.name == "resolved_config.yaml",
-    )
+    config = load_experiment_config(config_path)
     _validate_dual_expert_config(config)
     checkpoint_path = _resolve_dual_expert_checkpoint_path(
         config_path=config_path,
@@ -301,14 +298,14 @@ def load_dual_expert_libero_runtime(options: DualExpertLiberoLoadOptions) -> Dua
         )
     pipeline.to(device=runtime_device)
     if hasattr(pipeline.policy_variant, "_maybe_initialize_action_expert"):
-        pipeline.policy_variant._maybe_initialize_action_expert(pipeline.visual_tower)
-    dual_expert_inference_backend = ensure_dual_expert_inference_backend(
-        pipeline, config
-    )
-    if dual_expert_inference_backend["block_restore_performed"]:
+        pipeline.policy_variant._maybe_initialize_action_expert(
+            pipeline.visual_tower
+        )
+    dual_expert_inference_backend = ensure_dual_expert_inference_backend(pipeline, config)
+    if dual_expert_inference_backend["legacy_split_cache_restored_this_call"]:
         _print_log(
             "stage",
-            {"name": "dual_expert_split_cache_inference_blocks_restored"},
+            {"name": "dual_expert_legacy_cache_inference_blocks_restored"},
         )
     if hasattr(pipeline.policy_variant, "action_expert"):
         pipeline.policy_variant.action_expert.to(device=action_device)
@@ -517,10 +514,10 @@ def _build_component_report(
         "dual_expert_gjd_action_route": str(dual_expert_gjd_action_route),
         "config_name": config.name,
         "policy_variant_class": policy_variant.__class__.__name__,
-        "program": policy_variant.config.program.value,
+        "runtime_mode": str(policy_variant.config.runtime_mode),
         "condition_mode": str(policy_variant.config.condition_mode),
         "video_prefix_frames": int(policy_variant.config.video_prefix_frames),
-        "current_block_coupling": policy_variant.config.current_block_coupling.value,
+        "video_can_attend_action": bool(getattr(policy_variant.config, "video_can_attend_action", False)),
         "backbone_hidden_size": int(backbone.hidden_size),
         "backbone_num_layers": int(backbone.num_layers),
         "action_hidden_size": (

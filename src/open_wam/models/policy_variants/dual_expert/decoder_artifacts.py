@@ -36,7 +36,7 @@ class DualExpertTrainArtifacts:
     action: DualExpertActionTrainArtifacts
     video: DualExpertVideoTrainArtifacts | None
     condition_mode: str
-    program: str
+    runtime_mode: str
     history_frames: int
     video_cache_seq_len: int | None = None
 
@@ -46,7 +46,7 @@ class DualExpertInferArtifacts:
     action_pred: torch.Tensor
     predicted_latents: torch.Tensor | None
     condition_mode: str
-    program: str
+    runtime_mode: str
 
 
 __all__ = [

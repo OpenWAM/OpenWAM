@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any
 
 from .enums import (
     ActionNormMethod,
@@ -27,7 +25,6 @@ from .policy_compatibility import resolve_legacy_policy_field
 from .policy_video_action import (
     VideoActionPolicyConfig,
     fixed_conditioning_mode_for_program,
-    resolve_video_action_program_semantics,
     validate_conditional_denoising_data_paradigm,
 )
 from .variant_semantics import (
@@ -73,10 +70,7 @@ class ParallelStreamPolicyConfig(VideoActionPolicyConfig):
     hidden_size: int = 256
     attach_site: AttachSite = AttachSite.WITHIN_VISUAL_CORE
     runtime_mode: ParallelRuntimeMode = ParallelRuntimeMode.LINGBOT_EXACT
-    current_block_coupling: CurrentBlockCoupling | None = None
-    variant_profile: ParallelStreamVariantProfile = (
-        ParallelStreamVariantProfile.STANDARD
-    )
+    variant_profile: ParallelStreamVariantProfile = ParallelStreamVariantProfile.STANDARD
     reference_profile: str | None = None
     frame_chunk_size: int = 2
     action_per_frame: int = 1
@@ -118,27 +112,8 @@ class ParallelStreamPolicyConfig(VideoActionPolicyConfig):
     norm_q01: tuple[float, ...] = field(default_factory=tuple)
     norm_q99: tuple[float, ...] = field(default_factory=tuple)
 
-    def normalize_config_override_values(
-        self,
-        values: Mapping[str, Any],
-    ) -> dict[str, Any]:
-        """Keep Parallel Stream's program and explicit coupling consistent."""
-
-        normalized = super().normalize_config_override_values(values)
-        if "program" in normalized and "current_block_coupling" not in normalized:
-            normalized["current_block_coupling"] = None
-        elif "current_block_coupling" in normalized and "program" not in normalized:
-            normalized["program"] = None
-        return normalized
-
     def __post_init__(self) -> None:
         super().__post_init__()
-        resolved_program, resolved_coupling = resolve_video_action_program_semantics(
-            program=self.program,
-            current_block_coupling=self.current_block_coupling,
-        )
-        object.__setattr__(self, "program", resolved_program)
-        object.__setattr__(self, "current_block_coupling", resolved_coupling)
         if fixed_conditioning_mode_for_program(self.program) is not None:
             raise ValueError(
                 f"`program = {self.program.value}` is currently supported only by the "
@@ -170,7 +145,6 @@ class ParallelStreamPolicyConfig(VideoActionPolicyConfig):
                 "action_norm_method": ActionNormMethod,
             },
             enum_tuple_fields={"sequence_order": ParallelSequenceComponent},
-            optional_enum_fields={"current_block_coupling": CurrentBlockCoupling},
             transforms={
                 "generalist_denoising_mode_probs": lambda value: _coerce_generalist_denoising_mode_probs(
                     value,

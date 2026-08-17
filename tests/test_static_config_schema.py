@@ -56,7 +56,6 @@ backbone:
   implementation: not_a_backbone
 policy_variant:
   name: dual_expert
-  program: video_then_action
   attach_site: post_visual_core
 action_decoder:
   name: dual_expert_decoder
@@ -91,7 +90,6 @@ backbone:
   implementation: shared_transformer
 policy_variant:
   name: dual_expert
-  program: video_then_action
   attach_site: post_visual_core
 action_decoder:
   name: dual_expert_decoder
@@ -353,7 +351,8 @@ backbone:
   implementation: shared_transformer
 policy_variant:
   name: dual_expert
-  program: decoupled_same_step
+  runtime_mode: non_joint_two_stream
+  current_block_coupling: decoupled_same_step
   proprio_context_mode: per_chunk_additive
   context_condition_latent_source: single_frame_condition_latent
   history_stream_visibility: video_only
@@ -392,7 +391,8 @@ backbone:
   implementation: shared_transformer
 policy_variant:
   name: dual_expert
-  program: decoupled_same_step
+  runtime_mode: non_joint_two_stream
+  current_block_coupling: decoupled_same_step
   proprio_context_mode: per_chunk_additive
   context_condition_latent_source: single_frame_condition_latent
   history_stream_visibility: video_only
@@ -434,7 +434,7 @@ backbone:
   implementation: shared_transformer
 policy_variant:
   name: dual_expert
-  program: video_then_action
+  runtime_mode: video_prefill_action_denoise
   proprio_context_mode: text_context_typo
 action_decoder:
   name: dual_expert_decoder
@@ -481,7 +481,6 @@ backbone:
   implementation: shared_transformer
 policy_variant:
   name: dual_expert
-  program: video_then_action
   attach_site: post_visual_core
 action_decoder:
   name: dual_expert_decoder
@@ -520,7 +519,6 @@ backbone:
   implementation: shared_transformer
 policy_variant:
   name: dual_expert
-  program: video_then_action
   attach_site: post_visual_core
 action_decoder:
   name: dual_expert_decoder
@@ -707,7 +705,6 @@ backbone:
   implementation: shared_transformer
 policy_variant:
   name: dual_expert
-  program: video_then_action
   attach_site: post_visual_core
 action_decoder:
   name: dual_expert_decoder
@@ -749,7 +746,6 @@ backbone:
   implementation: shared_transformer
 policy_variant:
   name: dual_expert
-  program: video_then_action
 action_decoder:
   name: dual_expert_decoder
   action_dim: 7
@@ -792,7 +788,6 @@ backbone:
   implementation: shared_transformer
 policy_variant:
   name: dual_expert
-  program: video_then_action
 action_decoder:
   name: dual_expert_decoder
   action_dim: 7
@@ -832,7 +827,6 @@ backbone:
   implementation: shared_transformer
 policy_variant:
   name: dual_expert
-  program: video_then_action
   attach_site: post_visual_core
 action_decoder:
   name: dual_expert_decoder
@@ -871,7 +865,6 @@ backbone:
   implementation: shared_transformer
 policy_variant:
   name: dual_expert
-  program: video_then_action
   attach_site: post_visual_core
 action_decoder:
   name: dual_expert_decoder
@@ -902,7 +895,6 @@ backbone:
   implementation: shared_transformer
 policy_variant:
   name: dual_expert
-  program: video_then_action
   attach_site: post_visual_core
 action_decoder:
   name: dual_expert_decoder
@@ -957,7 +949,6 @@ backbone:
   implementation: shared_transformer
 policy_variant:
   name: dual_expert
-  program: video_then_action
   attach_site: post_visual_core
 action_decoder:
   name: dual_expert_decoder
@@ -1182,7 +1173,8 @@ backbone:
 policy_variant:
   name: dual_expert
   attach_site: post_visual_core
-  program: joint
+  runtime_mode: non_joint_two_stream
+  current_block_coupling: joint
   joint_timestep_coupling: shared_video_schedule
 action_decoder:
   name: dual_expert_decoder
@@ -1218,7 +1210,8 @@ backbone:
 policy_variant:
   name: dual_expert
   attach_site: post_visual_core
-  program: generalist_joint_denoising
+  runtime_mode: non_joint_two_stream
+  current_block_coupling: video_then_action
   generalist_denoising_mode_probs:
     joint: 0.0
     typo_mode: 1.0
@@ -1237,16 +1230,10 @@ trainer:
     report = validate_config_file(config_path, repo_root=tmp_path)
 
     assert not report.ok
-    assert any(
-        "Invalid GeneralistDenoisingMode" in issue.message for issue in report.errors
-    )
-    assert any(
-        issue.path.endswith("action_conditioned_video") for issue in report.errors
-    )
-    assert any(
-        issue.path.endswith("video_conditioned_action") and "finite" in issue.message
-        for issue in report.errors
-    )
+    assert any("current_block_coupling: joint" in issue.message for issue in report.errors)
+    assert any("Invalid GeneralistDenoisingMode" in issue.message for issue in report.errors)
+    assert any(issue.path.endswith("action_conditioned_video") for issue in report.errors)
+    assert any(issue.path.endswith("video_conditioned_action") and "finite" in issue.message for issue in report.errors)
     assert any(issue.path == "data.train_batch_size" for issue in report.errors)
     assert any(issue.path == "data.val_batch_size" for issue in report.errors)
 
@@ -1272,7 +1259,8 @@ backbone:
 policy_variant:
   name: dual_expert
   attach_site: post_visual_core
-  program: generalist_joint_denoising
+  runtime_mode: non_joint_two_stream
+  current_block_coupling: joint
   generalist_denoising_mode_probs:
     joint: 1.0
 action_decoder:
@@ -1312,7 +1300,8 @@ backbone:
 policy_variant:
   name: dual_expert
   attach_site: post_visual_core
-  program: joint
+  runtime_mode: non_joint_two_stream
+  current_block_coupling: joint
   generalist_mode_text_token: true
 action_decoder:
   name: dual_expert_decoder

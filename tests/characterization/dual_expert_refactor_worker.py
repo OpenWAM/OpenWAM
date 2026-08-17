@@ -19,10 +19,8 @@ import torch.distributed as dist
 from open_wam.configs import load_experiment_config
 from open_wam.models.common.rollout_history import resolve_execute_action_steps
 from open_wam.models.policy_variants import PolicyInferContext
-from open_wam.models.policy_variants.dual_expert.inference_backend import (
+from open_wam.models.policy_variants.dual_expert.runtime_routing import (
     ensure_dual_expert_inference_backend,
-)
-from open_wam.models.policy_variants.dual_expert.rollout_geometry import (
     resolve_dual_expert_rollout_cache_window_frames,
 )
 from open_wam.pipelines import build_variant_pipeline_from_config

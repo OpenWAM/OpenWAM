@@ -26,6 +26,7 @@ from open_wam.configs.enums import (
     AttachSite,
     ContextConditionLatentSource,
     CurrentBlockCoupling,
+    DualExpertRuntimeMode,
     GeneralistDenoisingMode,
     GeneralistTrainingParadigm,
     HistoryStreamVisibility,
@@ -65,7 +66,7 @@ from open_wam.models.policy_variants.dual_expert.generalist_modes import (
     resolve_generalist_training_mode,
     sample_generalist_training_mode,
 )
-from open_wam.models.policy_variants.dual_expert.coupling_semantics import (
+from open_wam.models.policy_variants.dual_expert.runtime_routing import (
     should_couple_dual_expert_action_to_video_sigmas,
 )
 from open_wam.models.policy_variants.dual_expert.variant import (
@@ -88,7 +89,6 @@ def _make_dual_expert_policy_config(**overrides) -> DualExpertPolicyConfig:
         name=PolicyVariantName.DUAL_EXPERT,
         hidden_size=256,
         attach_site=AttachSite.POST_VISUAL_CORE,
-        program=VideoActionProgram.VIDEO_THEN_ACTION,
     )
     base.update(overrides)
     return DualExpertPolicyConfig(**base)
@@ -106,7 +106,7 @@ def test_default_opt_out_keeps_existing_six_mode_path() -> None:
 
 def test_opt_in_dict_normalizes_and_keeps_joint_coupling() -> None:
     cfg = _make_dual_expert_policy_config(
-        program=VideoActionProgram.GENERALIST_JOINT_DENOISING,
+        current_block_coupling=CurrentBlockCoupling.JOINT,
         generalist_training_paradigm=GeneralistTrainingParadigm.DYNAMICS_ROUTED,
         generalist_denoising_mode_probs={
             "joint": 6.0,
@@ -215,35 +215,33 @@ def test_one_hot_gjd_rejects_conflicting_sample_mode() -> None:
 
 def test_generalist_sigma_coupling_is_explicitly_configurable() -> None:
     cfg = _make_dual_expert_policy_config(
-        program=VideoActionProgram.GENERALIST_JOINT_DENOISING,
+        current_block_coupling=CurrentBlockCoupling.JOINT,
         generalist_denoising_mode_probs={"joint": 1.0},
     )
     assert should_couple_dual_expert_action_to_video_sigmas(cfg, CurrentBlockCoupling.JOINT) is True
 
     cfg = _make_dual_expert_policy_config(
-        program=VideoActionProgram.GENERALIST_JOINT_DENOISING,
+        current_block_coupling=CurrentBlockCoupling.JOINT,
         generalist_denoising_mode_probs={"joint": 1.0},
         joint_timestep_coupling=JointTimestepCoupling.SHARED_VIDEO_SCHEDULE,
     )
     assert should_couple_dual_expert_action_to_video_sigmas(cfg, CurrentBlockCoupling.JOINT) is True
 
     cfg = _make_dual_expert_policy_config(
-        program=VideoActionProgram.GENERALIST_JOINT_DENOISING,
+        current_block_coupling=CurrentBlockCoupling.JOINT,
         generalist_denoising_mode_probs={"joint": 1.0},
         joint_timestep_coupling=JointTimestepCoupling.INDEPENDENT,
     )
     assert should_couple_dual_expert_action_to_video_sigmas(cfg, CurrentBlockCoupling.JOINT) is False
 
     cfg = _make_dual_expert_policy_config(
-        program=VideoActionProgram.GENERALIST_JOINT_DENOISING,
+        current_block_coupling=CurrentBlockCoupling.JOINT,
         generalist_denoising_mode_probs={"joint": 1.0},
         joint_timestep_coupling=JointTimestepCoupling.MATCH_INDEX,
     )
     assert should_couple_dual_expert_action_to_video_sigmas(cfg, CurrentBlockCoupling.JOINT) is False
 
-    cfg = _make_dual_expert_policy_config(
-        program=VideoActionProgram.DECOUPLED_SAME_STEP
-    )
+    cfg = _make_dual_expert_policy_config(current_block_coupling=CurrentBlockCoupling.DECOUPLED_SAME_STEP)
     assert (
         should_couple_dual_expert_action_to_video_sigmas(
             cfg,
@@ -253,22 +251,21 @@ def test_generalist_sigma_coupling_is_explicitly_configurable() -> None:
     )
 
 
-def test_gjd_probabilities_require_the_generalist_program() -> None:
-    with pytest.raises(ValueError, match=r"owned by.*generalist_joint_denoising"):
+def test_opt_in_without_explicit_joint_coupling_is_rejected() -> None:
+    with pytest.raises(ValueError, match=r"current_block_coupling"):
         _make_dual_expert_policy_config(
             generalist_denoising_mode_probs={"joint": 1.0},
         )
 
-
-def test_standard_programs_cannot_implicitly_enable_gjd() -> None:
-    with pytest.raises(ValueError, match=r"owned by.*generalist_joint_denoising"):
+def test_opt_in_with_directional_coupling_is_rejected() -> None:
+    with pytest.raises(ValueError, match=r"current_block_coupling"):
         _make_dual_expert_policy_config(
-            program=VideoActionProgram.VIDEO_NOISY_TO_ACTION,
+            current_block_coupling=CurrentBlockCoupling.VIDEO_NOISY_TO_ACTION,
             generalist_denoising_mode_probs={"joint": 1.0},
         )
-    with pytest.raises(ValueError, match=r"owned by.*generalist_joint_denoising"):
+    with pytest.raises(ValueError, match=r"current_block_coupling"):
         _make_dual_expert_policy_config(
-            program=VideoActionProgram.ACTION_THEN_VIDEO,
+            current_block_coupling=CurrentBlockCoupling.ACTION_THEN_VIDEO,
             generalist_denoising_mode_probs={"joint": 1.0},
         )
 
@@ -297,27 +294,22 @@ def test_existing_six_mode_yamls_are_not_disturbed() -> None:
     """Sanity: any of the 6 fixed couplings keeps loading without generalist probs."""
 
     for coupling in CurrentBlockCoupling:
-        cfg = _make_dual_expert_policy_config(
-            program=VideoActionProgram(coupling.value)
-        )
+        cfg = _make_dual_expert_policy_config(current_block_coupling=coupling)
         assert cfg.generalist_denoising_mode_probs is None
         assert cfg.current_block_coupling == coupling
 
 
 def test_dual_expert_generalist_mode_text_token_requires_gjd_probs() -> None:
     cfg = _make_dual_expert_policy_config(
-        program=VideoActionProgram.GENERALIST_JOINT_DENOISING,
+        current_block_coupling=CurrentBlockCoupling.JOINT,
         generalist_denoising_mode_probs={"joint": 1.0},
         generalist_mode_text_token=True,
     )
     assert cfg.generalist_mode_text_token is True
 
-    with pytest.raises(
-        ValueError,
-        match=r"program = generalist_joint_denoising.*requires.*generalist_denoising_mode_probs",
-    ):
+    with pytest.raises(ValueError, match="generalist_mode_text_token"):
         _make_dual_expert_policy_config(
-            program=VideoActionProgram.GENERALIST_JOINT_DENOISING,
+            current_block_coupling=CurrentBlockCoupling.JOINT,
             generalist_mode_text_token=True,
         )
 
@@ -606,6 +598,7 @@ def _build_tiny_generalist_pipeline(
         ActionSchemaConfig,
         DualExpertActionDecoderConfig,
         DualExpertActionExpertInitMode,
+        DualExpertRuntimeMode,
         ExperimentConfig,
         InferenceConfig,
         RobotWinDataConfig,
@@ -649,7 +642,9 @@ def _build_tiny_generalist_pipeline(
         ),
         policy_variant=TopLevelDualExpertPolicyConfig(
             hidden_size=32,
-            program=program or VideoActionProgram.GENERALIST_JOINT_DENOISING,
+            runtime_mode=DualExpertRuntimeMode.NON_JOINT_TWO_STREAM,
+            program=program,
+            current_block_coupling=CurrentBlockCoupling.JOINT,
             video_prefix_frames=1,
             num_action_layers=1,
             action_hidden_size=action_hidden_size,
@@ -1606,7 +1601,8 @@ def test_dual_expert_legacy_prefix_contract_prepends_video_only_condition(
         ),
         policy_variant=TopLevelDualExpertPolicyConfig(
             hidden_size=32,
-            program=VideoActionProgram.VIDEO_THEN_ACTION,
+            runtime_mode=DualExpertRuntimeMode.NON_JOINT_TWO_STREAM,
+            current_block_coupling=CurrentBlockCoupling.VIDEO_THEN_ACTION,
             video_prefix_frames=1,
             num_action_layers=1,
             sequence_contract=VideoActionSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO,
@@ -1717,7 +1713,8 @@ def test_dual_expert_legacy_prefix_fdm_shifts_explicit_video_loss_range(
         ),
         policy_variant=TopLevelDualExpertPolicyConfig(
             hidden_size=32,
-            program=VideoActionProgram.GENERALIST_JOINT_DENOISING,
+            runtime_mode=DualExpertRuntimeMode.NON_JOINT_TWO_STREAM,
+            current_block_coupling=CurrentBlockCoupling.JOINT,
             video_prefix_frames=1,
             num_action_layers=1,
             action_expert_init_mode=DualExpertActionExpertInitMode.VIDEO_WEIGHT_COPY,
@@ -1818,6 +1815,7 @@ def test_no_generalist_metrics_when_probs_unset() -> None:
     from open_wam.configs import (
         ActionSchemaConfig,
         DualExpertActionDecoderConfig,
+        DualExpertRuntimeMode,
         ExperimentConfig,
         InferenceConfig,
         RobotWinDataConfig,
@@ -1850,7 +1848,8 @@ def test_no_generalist_metrics_when_probs_unset() -> None:
         ),
         policy_variant=TopLevelDualExpertPolicyConfig(
             hidden_size=32,
-            program=VideoActionProgram.VIDEO_THEN_ACTION,
+            runtime_mode=DualExpertRuntimeMode.NON_JOINT_TWO_STREAM,
+            current_block_coupling=CurrentBlockCoupling.VIDEO_THEN_ACTION,
             video_prefix_frames=1,
             num_action_layers=1,
             # generalist_denoising_mode_probs left as default None

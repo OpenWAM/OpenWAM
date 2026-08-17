@@ -458,10 +458,11 @@ Built-in DualExpert runtime controls are also split by parameter-free role:
 - `open_wam.models.policy_variants.dual_expert.inference_backend` validates and
   restores the inference backend selected by a route.
 
-These modules document the fixed built-in checkpoint contract; they are not a
-registration API. A custom policy should express its behavior through its
-`PolicyVariant`, runtime program, prepared attention profile, and decoder
-rather than adding architecture-specific branches to these Dual Expert owners.
+`open_wam.models.policy_variants.dual_expert.runtime_routing` is a compatibility
+facade. These modules document the fixed built-in checkpoint contract; they
+are not a registration API. A custom policy should express its behavior through
+its `PolicyVariant`, runtime program, prepared attention profile, and decoder
+rather than adding architecture-specific branches to these DualExpert owners.
 
 ### Shared Transformer Primitives
 

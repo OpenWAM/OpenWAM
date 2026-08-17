@@ -18,7 +18,6 @@ from open_wam.configs import (
     ParallelStreamPolicyConfig,
     RobotWinDataConfig,
     TrainingConfig,
-    VideoActionProgram,
     VideoOnlyActionDecoderConfig,
     load_experiment_config,
 )
@@ -281,15 +280,8 @@ def test_dual_expert_policy_builds_with_shared_transformer_backbone() -> None:
             freq_dim=8,
             load_reference_core_weights=False,
         ),
-        policy_variant=DualExpertPolicyConfig(
-            hidden_size=32,
-            program=VideoActionProgram.VIDEO_THEN_ACTION,
-            video_prefix_frames=1,
-            num_action_layers=2,
-        ),
-        action_decoder=DualExpertActionDecoderConfig(
-            hidden_size=32, action_dim=4, action_horizon=4
-        ),
+        policy_variant=DualExpertPolicyConfig(hidden_size=32, video_prefix_frames=1, num_action_layers=2),
+        action_decoder=DualExpertActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
         training=TrainingConfig(chunk_size=2, window_size=8),
         inference=InferenceConfig(frame_chunk_size=2),
     )
@@ -297,9 +289,7 @@ def test_dual_expert_policy_builds_with_shared_transformer_backbone() -> None:
     pipeline = build_variant_pipeline_from_config(config)
     assert isinstance(pipeline.policy_variant, DualExpertPolicyVariant)
     assert isinstance(pipeline.action_decoder, DualExpertActionDecoder)
-    assert (
-        pipeline.policy_variant.config.program == VideoActionProgram.VIDEO_THEN_ACTION
-    )
+    assert pipeline.policy_variant.config.runtime_mode == "video_prefill_action_denoise"
     assert pipeline.policy_variant.action_expert.num_layers == 2
     assert pipeline.policy_variant.action_expert.action_dim == 4
 
@@ -311,15 +301,8 @@ def test_dual_expert_policy_requires_shared_transformer_backbone() -> None:
             action_schema=ActionSchemaConfig(action_dim=4, action_horizon=4, state_dim=4, state_horizon=1),
         ),
         backbone=LingbotCompatibleVideoBackboneConfig(implementation="dummy"),
-        policy_variant=DualExpertPolicyConfig(
-            hidden_size=32,
-            program=VideoActionProgram.VIDEO_THEN_ACTION,
-            video_prefix_frames=1,
-            num_action_layers=2,
-        ),
-        action_decoder=DualExpertActionDecoderConfig(
-            hidden_size=32, action_dim=4, action_horizon=4
-        ),
+        policy_variant=DualExpertPolicyConfig(hidden_size=32, video_prefix_frames=1, num_action_layers=2),
+        action_decoder=DualExpertActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
         training=TrainingConfig(chunk_size=2, window_size=8),
         inference=InferenceConfig(frame_chunk_size=2),
     )

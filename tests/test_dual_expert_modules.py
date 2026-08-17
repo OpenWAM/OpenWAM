@@ -12,6 +12,7 @@ from open_wam.configs import (
     DualExpertActionExpertInitMode,
     DualExpertConditionMode,
     DualExpertPolicyConfig,
+    DualExpertRuntimeMode,
     ExperimentConfig,
     GeneralistDenoisingMode,
     InferenceConfig,
@@ -20,7 +21,6 @@ from open_wam.configs import (
     ProprioContextMode,
     RobotWinDataConfig,
     TrainingConfig,
-    VideoActionProgram,
     VideoActionSequenceContract,
 )
 from open_wam.models.common import (
@@ -42,6 +42,9 @@ from open_wam.models.policy_variants import (
     RolloutCursor,
 )
 from open_wam.models.policy_variants.dual_expert import runtime as dual_expert_runtime
+from open_wam.models.policy_variants.dual_expert import (
+    unpacked_training as dual_expert_unpacked_training,
+)
 from open_wam.models.policy_variants.dual_expert.attention import (
     build_chunk_causal_video_mask,
     build_dual_expert_attention_mask,
@@ -93,10 +96,8 @@ from open_wam.models.policy_variants.dual_expert.runtime import (
     expand_dual_expert_scalar_timestep,
     step_dual_expert_flow_with_sigmas,
 )
-from open_wam.models.policy_variants.dual_expert.coupling_semantics import (
+from open_wam.models.policy_variants.dual_expert.runtime_routing import (
     is_dual_expert_same_step_coupling,
-)
-from open_wam.models.policy_variants.dual_expert.rollout_geometry import (
     resolve_dual_expert_rollout_cache_window_frames,
     resolve_dual_expert_rollout_history_frames,
 )
@@ -169,7 +170,14 @@ def test_dual_expert_runtime_dual_stream_exports_are_compatibility_aliases() -> 
         dual_expert_runtime.forward_dual_expert_packed_coupling_denoise
         is forward_dual_expert_packed_coupling_denoise
     )
-    assert is_dual_expert_same_step_coupling(CurrentBlockCoupling.JOINT)
+    assert (
+        dual_expert_unpacked_training.forward_joint_video_action_denoise
+        is forward_joint_video_action_denoise
+    )
+    assert (
+        dual_expert_unpacked_training.is_dual_expert_same_step_coupling
+        is is_dual_expert_same_step_coupling
+    )
 
 
 def test_dual_expert_action_expert_pre_and_post_shapes() -> None:
@@ -356,7 +364,7 @@ def test_build_dual_expert_inference_action_mask_decouples_same_step_video() -> 
         device=torch.device("cpu"),
         video_frame_start=0,
         current_action_frame_start=2,
-        current_block_coupling=CurrentBlockCoupling.DECOUPLED_SAME_STEP,
+        current_block_coupling="decoupled_same_step",
     )
 
     current_action_query = 8
@@ -899,7 +907,7 @@ def test_runtime_action_cache_rewind_clears_cache_before_window() -> None:
 
 def test_dual_expert_train_loss_masks_use_objective_specific_metadata() -> None:
     variant = DualExpertPolicyVariant(
-        config=DualExpertPolicyConfig(program=VideoActionProgram.VIDEO_THEN_ACTION),
+        config=DualExpertPolicyConfig(),
         backbone_config=SharedVideoTransformerConfig(
             hidden_size=32,
             num_layers=1,
@@ -949,7 +957,7 @@ def test_dual_expert_train_loss_masks_use_objective_specific_metadata() -> None:
 
 def test_dual_expert_role_contracts_do_not_register_model_state() -> None:
     variant = DualExpertPolicyVariant(
-        config=DualExpertPolicyConfig(program=VideoActionProgram.VIDEO_THEN_ACTION),
+        config=DualExpertPolicyConfig(),
         backbone_config=SharedVideoTransformerConfig(
             hidden_size=32,
             num_layers=1,
@@ -972,6 +980,42 @@ def test_dual_expert_role_contracts_do_not_register_model_state() -> None:
         not key.startswith(("conditioning.", "training_layout."))
         for key in variant.state_dict()
     )
+
+
+def test_dual_expert_train_video_cache_detach_decision_is_cached_per_core() -> None:
+    class CountingCore:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.parameter = torch.nn.Parameter(torch.zeros(1), requires_grad=False)
+
+        def parameters(self):
+            self.calls += 1
+            return iter((self.parameter,))
+
+    variant = DualExpertPolicyVariant(
+        config=DualExpertPolicyConfig(),
+        backbone_config=SharedVideoTransformerConfig(
+            hidden_size=32,
+            num_layers=1,
+            num_heads=4,
+            attention_head_dim=8,
+            ffn_dim=64,
+            text_dim=16,
+            freq_dim=8,
+        ),
+        training_config=TrainingConfig(),
+        inference_config=InferenceConfig(),
+        action_dim=4,
+        action_horizon=4,
+        state_dim=4,
+    )
+    core = CountingCore()
+    visual_tower = SimpleNamespace(core=core)
+
+    assert variant._should_detach_train_video_cache(visual_tower)
+    core.parameter.requires_grad_(True)
+    assert variant._should_detach_train_video_cache(visual_tower)
+    assert core.calls == 1
 
 
 @pytest.mark.parametrize(
@@ -1007,7 +1051,6 @@ def test_dual_expert_variant_train_forward_from_latents_smoke(
         ),
         policy_variant=DualExpertPolicyConfig(
             hidden_size=32,
-            program=VideoActionProgram.VIDEO_THEN_ACTION,
             condition_mode=condition_mode,
             video_prefix_frames=video_prefix_frames,
             teacher_forcing_video_noise_prob=teacher_forcing_video_noise_prob,
@@ -1053,7 +1096,6 @@ def test_dual_expert_prefers_condition_latents_by_default() -> None:
         ),
         policy_variant=DualExpertPolicyConfig(
             hidden_size=32,
-            program=VideoActionProgram.VIDEO_THEN_ACTION,
             condition_mode=DualExpertConditionMode.FIRST_FRAME,
             video_prefix_frames=1,
             teacher_forcing_video_noise_prob=0.0,
@@ -1102,7 +1144,6 @@ def test_dual_expert_accepts_time_first_train_condition_latents() -> None:
         ),
         policy_variant=DualExpertPolicyConfig(
             hidden_size=32,
-            program=VideoActionProgram.VIDEO_THEN_ACTION,
             condition_mode=DualExpertConditionMode.FIRST_FRAME,
             video_prefix_frames=1,
             teacher_forcing_video_noise_prob=0.0,
@@ -1151,7 +1192,6 @@ def test_dual_expert_condition_latents_can_be_disabled() -> None:
         ),
         policy_variant=DualExpertPolicyConfig(
             hidden_size=32,
-            program=VideoActionProgram.VIDEO_THEN_ACTION,
             condition_mode=DualExpertConditionMode.FIRST_FRAME,
             video_prefix_frames=1,
             teacher_forcing_video_noise_prob=0.0,
@@ -1200,7 +1240,6 @@ def test_dual_expert_deprecated_text_token_proprio_context_uses_shared_batch_con
         ),
         policy_variant=DualExpertPolicyConfig(
             hidden_size=32,
-            program=VideoActionProgram.VIDEO_THEN_ACTION,
             condition_mode=DualExpertConditionMode.FIRST_FRAME,
             video_prefix_frames=1,
             teacher_forcing_video_noise_prob=0.0,
@@ -1276,7 +1315,8 @@ def test_dual_expert_per_chunk_additive_does_not_build_text_proprio_mask() -> No
         ),
         policy_variant=DualExpertPolicyConfig(
             hidden_size=32,
-            program=VideoActionProgram.JOINT,
+            runtime_mode=DualExpertRuntimeMode.NON_JOINT_TWO_STREAM,
+            current_block_coupling=CurrentBlockCoupling.JOINT,
             num_action_layers=1,
             proprio_context_mode=ProprioContextMode.PER_CHUNK_ADDITIVE,
         ),
@@ -1343,7 +1383,6 @@ def test_dual_expert_deprecated_text_token_proprio_mask_exposes_matching_chunk_t
         ),
         policy_variant=DualExpertPolicyConfig(
             hidden_size=32,
-            program=VideoActionProgram.VIDEO_THEN_ACTION,
             condition_mode=DualExpertConditionMode.FIRST_FRAME,
             video_prefix_frames=1,
             teacher_forcing_video_noise_prob=0.0,
@@ -1419,7 +1458,6 @@ def test_dual_expert_chunk_origin_aligns_one_frame_context_with_first_target_chu
         ),
         policy_variant=DualExpertPolicyConfig(
             hidden_size=32,
-            program=VideoActionProgram.VIDEO_THEN_ACTION,
             condition_mode=DualExpertConditionMode.FIRST_FRAME,
             video_prefix_frames=1,
             teacher_forcing_video_noise_prob=0.0,
@@ -1524,7 +1562,6 @@ def test_dual_expert_prepare_infer_state_appends_deprecated_proprio_context_toke
         ),
         policy_variant=DualExpertPolicyConfig(
             hidden_size=32,
-            program=VideoActionProgram.VIDEO_THEN_ACTION,
             condition_mode=DualExpertConditionMode.FIRST_FRAME,
             video_prefix_frames=1,
             teacher_forcing_video_noise_prob=0.0,
@@ -1597,7 +1634,6 @@ def test_dual_expert_variant_infer_from_latents_smoke(
         ),
         policy_variant=DualExpertPolicyConfig(
             hidden_size=32,
-            program=VideoActionProgram.VIDEO_THEN_ACTION,
             condition_mode=condition_mode,
             video_prefix_frames=video_prefix_frames,
             teacher_forcing_video_noise_prob=0.0,
@@ -1624,7 +1660,7 @@ def test_dual_expert_variant_infer_from_latents_smoke(
     assert isinstance(output.policy_output.next_state.variant_state, DualExpertRuntimeState)
 
 
-def test_dual_expert_packed_joint_infer_uses_actual_rollout_video_length() -> None:
+def test_dual_expert_legacy_joint_infer_uses_actual_rollout_video_length() -> None:
     config = ExperimentConfig(
         data=RobotWinDataConfig(
             num_frames=4,
@@ -1650,7 +1686,7 @@ def test_dual_expert_packed_joint_infer_uses_actual_rollout_video_length() -> No
         ),
         policy_variant=DualExpertPolicyConfig(
             hidden_size=32,
-            program=VideoActionProgram.JOINT,
+            runtime_mode=DualExpertRuntimeMode.JOINT_DENOISE,
             video_prefix_frames=1,
             num_action_layers=1,
         ),
@@ -1709,7 +1745,6 @@ def test_dual_expert_variant_train_from_latents_supports_joint_action_and_video_
         ),
         policy_variant=DualExpertPolicyConfig(
             hidden_size=32,
-            program=VideoActionProgram.JOINT,
             condition_mode=DualExpertConditionMode.FIRST_FRAME,
             video_prefix_frames=1,
             num_action_layers=2,
@@ -1775,7 +1810,8 @@ def test_dual_expert_joint_denoise_train_supports_same_step_couplings(
         ),
         policy_variant=DualExpertPolicyConfig(
             hidden_size=32,
-            program=VideoActionProgram(current_block_coupling.value),
+            runtime_mode=DualExpertRuntimeMode.NON_JOINT_TWO_STREAM,
+            current_block_coupling=current_block_coupling,
             video_prefix_frames=1,
             num_action_layers=1,
         ),
@@ -1834,7 +1870,8 @@ def test_dual_expert_joint_denoise_infer_supports_same_step_couplings(
         ),
         policy_variant=DualExpertPolicyConfig(
             hidden_size=32,
-            program=VideoActionProgram(current_block_coupling.value),
+            runtime_mode=DualExpertRuntimeMode.NON_JOINT_TWO_STREAM,
+            current_block_coupling=current_block_coupling,
             video_prefix_frames=1,
             num_action_layers=1,
         ),
@@ -1858,9 +1895,9 @@ def test_dual_expert_joint_denoise_infer_supports_same_step_couplings(
         CurrentBlockCoupling.VIDEO_THEN_ACTION,
         CurrentBlockCoupling.DECOUPLED_SAME_STEP,
     }:
-        assert pipeline.policy_variant._split_cache_inference_blocks_restored is True
+        assert pipeline.policy_variant._legacy_inference_blocks_restored is True
     else:
-        assert pipeline.policy_variant._split_cache_inference_blocks_restored is False
+        assert pipeline.policy_variant._legacy_inference_blocks_restored is False
 
 
 @pytest.mark.parametrize(
@@ -1870,7 +1907,7 @@ def test_dual_expert_joint_denoise_infer_supports_same_step_couplings(
         CurrentBlockCoupling.DECOUPLED_SAME_STEP,
     ],
 )
-def test_dual_expert_split_cache_infer_threads_per_chunk_action_proprio(
+def test_dual_expert_legacy_split_cache_infer_threads_per_chunk_action_proprio(
     current_block_coupling: CurrentBlockCoupling,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1894,7 +1931,8 @@ def test_dual_expert_split_cache_infer_threads_per_chunk_action_proprio(
         ),
         policy_variant=DualExpertPolicyConfig(
             hidden_size=32,
-            program=VideoActionProgram(current_block_coupling.value),
+            runtime_mode=DualExpertRuntimeMode.NON_JOINT_TWO_STREAM,
+            current_block_coupling=current_block_coupling,
             video_prefix_frames=1,
             num_action_layers=1,
             proprio_context_mode=ProprioContextMode.PER_CHUNK_ADDITIVE,
@@ -1921,7 +1959,7 @@ def test_dual_expert_split_cache_infer_threads_per_chunk_action_proprio(
     )
 
     assert output.decoder_output.action_pred.shape == (1, 4, 4)
-    assert pipeline.policy_variant._split_cache_inference_blocks_restored is True
+    assert pipeline.policy_variant._legacy_inference_blocks_restored is True
     assert len(captured_hidden_contexts) == 3
     for hidden_context in captured_hidden_contexts:
         assert hidden_context is not None
@@ -1951,7 +1989,8 @@ def test_dual_expert_generalist_packed_infer_couples_action_to_video_sigma_sched
         ),
         policy_variant=DualExpertPolicyConfig(
             hidden_size=32,
-            program=VideoActionProgram.GENERALIST_JOINT_DENOISING,
+            runtime_mode=DualExpertRuntimeMode.NON_JOINT_TWO_STREAM,
+            current_block_coupling=CurrentBlockCoupling.JOINT,
             generalist_denoising_mode_probs={GeneralistDenoisingMode.JOINT: 1.0},
             video_prefix_frames=1,
             num_action_layers=1,
@@ -2057,7 +2096,8 @@ def test_dual_expert_packed_infer_modes_keep_two_chunk_history(
         ),
         policy_variant=DualExpertPolicyConfig(
             hidden_size=32,
-            program=VideoActionProgram(current_block_coupling.value),
+            runtime_mode=DualExpertRuntimeMode.NON_JOINT_TWO_STREAM,
+            current_block_coupling=current_block_coupling,
             video_prefix_frames=1,
             num_action_layers=1,
         ),
@@ -2120,7 +2160,8 @@ def test_dual_expert_packed_infer_chunk0_uses_one_frame_startup_bootstrap() -> N
         ),
         policy_variant=DualExpertPolicyConfig(
             hidden_size=32,
-            program=VideoActionProgram.ACTION_THEN_VIDEO,
+            runtime_mode=DualExpertRuntimeMode.NON_JOINT_TWO_STREAM,
+            current_block_coupling=CurrentBlockCoupling.ACTION_THEN_VIDEO,
             video_prefix_frames=1,
             num_action_layers=1,
         ),
@@ -2190,7 +2231,8 @@ def test_dual_expert_action_then_video_action_only_rollout_skips_predicted_video
         ),
         policy_variant=DualExpertPolicyConfig(
             hidden_size=32,
-            program=VideoActionProgram.ACTION_THEN_VIDEO,
+            runtime_mode=DualExpertRuntimeMode.NON_JOINT_TWO_STREAM,
+            current_block_coupling=CurrentBlockCoupling.ACTION_THEN_VIDEO,
             video_prefix_frames=1,
             num_action_layers=1,
         ),
@@ -2247,7 +2289,8 @@ def test_dual_expert_action_then_video_action_only_rollout_preserves_hidden_prop
         ),
         policy_variant=DualExpertPolicyConfig(
             hidden_size=32,
-            program=VideoActionProgram.ACTION_THEN_VIDEO,
+            runtime_mode=DualExpertRuntimeMode.NON_JOINT_TWO_STREAM,
+            current_block_coupling=CurrentBlockCoupling.ACTION_THEN_VIDEO,
             video_prefix_frames=1,
             num_action_layers=1,
             proprio_context_mode=ProprioContextMode.PER_CHUNK_ADDITIVE,
@@ -2337,7 +2380,8 @@ def test_dual_expert_action_only_rollout_rejects_video_then_action() -> None:
         ),
         policy_variant=DualExpertPolicyConfig(
             hidden_size=32,
-            program=VideoActionProgram.VIDEO_THEN_ACTION,
+            runtime_mode=DualExpertRuntimeMode.NON_JOINT_TWO_STREAM,
+            current_block_coupling=CurrentBlockCoupling.VIDEO_THEN_ACTION,
             video_prefix_frames=1,
             num_action_layers=1,
         ),
@@ -2376,7 +2420,8 @@ def test_dual_expert_decoupled_action_only_rollout_skips_split_cache_video_denoi
         ),
         policy_variant=DualExpertPolicyConfig(
             hidden_size=32,
-            program=VideoActionProgram.DECOUPLED_SAME_STEP,
+            runtime_mode=DualExpertRuntimeMode.NON_JOINT_TWO_STREAM,
+            current_block_coupling=CurrentBlockCoupling.DECOUPLED_SAME_STEP,
             video_prefix_frames=1,
             num_action_layers=1,
         ),
@@ -2427,7 +2472,8 @@ def test_dual_expert_action_then_video_rollout_frame_chunk_override_shortens_int
         ),
         policy_variant=DualExpertPolicyConfig(
             hidden_size=32,
-            program=VideoActionProgram.ACTION_THEN_VIDEO,
+            runtime_mode=DualExpertRuntimeMode.NON_JOINT_TWO_STREAM,
+            current_block_coupling=CurrentBlockCoupling.ACTION_THEN_VIDEO,
             video_prefix_frames=1,
             num_action_layers=1,
         ),
@@ -2479,7 +2525,8 @@ def test_dual_expert_decoupled_rollout_frame_chunk_override_shortens_split_cache
         ),
         policy_variant=DualExpertPolicyConfig(
             hidden_size=32,
-            program=VideoActionProgram.DECOUPLED_SAME_STEP,
+            runtime_mode=DualExpertRuntimeMode.NON_JOINT_TWO_STREAM,
+            current_block_coupling=CurrentBlockCoupling.DECOUPLED_SAME_STEP,
             video_prefix_frames=1,
             num_action_layers=1,
         ),
@@ -2543,7 +2590,8 @@ def test_dual_expert_packed_infer_uses_rollout_history_contract_for_cached_conte
         ),
         policy_variant=DualExpertPolicyConfig(
             hidden_size=32,
-            program=VideoActionProgram.JOINT,
+            runtime_mode=DualExpertRuntimeMode.NON_JOINT_TWO_STREAM,
+            current_block_coupling=CurrentBlockCoupling.JOINT,
             video_prefix_frames=1,
             num_action_layers=1,
         ),
@@ -2603,7 +2651,8 @@ def test_dual_expert_legacy_prefix_prepends_current_state_to_hidden_proprio() ->
         ),
         policy_variant=DualExpertPolicyConfig(
             hidden_size=32,
-            program=VideoActionProgram.JOINT,
+            runtime_mode=DualExpertRuntimeMode.NON_JOINT_TWO_STREAM,
+            current_block_coupling=CurrentBlockCoupling.JOINT,
             num_action_layers=1,
             proprio_context_mode=ProprioContextMode.PER_CHUNK_ADDITIVE,
             sequence_contract=VideoActionSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO,
@@ -2686,7 +2735,8 @@ def test_dual_expert_legacy_prefix_requires_frame_level_hidden_proprio() -> None
         ),
         policy_variant=DualExpertPolicyConfig(
             hidden_size=32,
-            program=VideoActionProgram.JOINT,
+            runtime_mode=DualExpertRuntimeMode.NON_JOINT_TWO_STREAM,
+            current_block_coupling=CurrentBlockCoupling.JOINT,
             num_action_layers=1,
             proprio_context_mode=ProprioContextMode.PER_CHUNK_ADDITIVE,
             sequence_contract=VideoActionSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO,
@@ -2729,7 +2779,8 @@ def test_dual_expert_packed_strict_old_infer_skips_video_hidden_proprio(
         ),
         policy_variant=DualExpertPolicyConfig(
             hidden_size=32,
-            program=VideoActionProgram.JOINT,
+            runtime_mode=DualExpertRuntimeMode.NON_JOINT_TWO_STREAM,
+            current_block_coupling=CurrentBlockCoupling.JOINT,
             video_prefix_frames=1,
             num_action_layers=1,
             proprio_context_mode=ProprioContextMode.PER_CHUNK_ADDITIVE,
@@ -2799,7 +2850,8 @@ def test_dual_expert_packed_infer_tracks_per_chunk_hidden_proprio_history() -> N
         ),
         policy_variant=DualExpertPolicyConfig(
             hidden_size=32,
-            program=VideoActionProgram.JOINT,
+            runtime_mode=DualExpertRuntimeMode.NON_JOINT_TWO_STREAM,
+            current_block_coupling=CurrentBlockCoupling.JOINT,
             video_prefix_frames=1,
             num_action_layers=1,
             proprio_context_mode=ProprioContextMode.PER_CHUNK_ADDITIVE,
@@ -2852,7 +2904,6 @@ def test_dual_expert_variant_builds_with_interpolated_action_expert_ffn() -> Non
         ),
         policy_variant=DualExpertPolicyConfig(
             hidden_size=32,
-            program=VideoActionProgram.JOINT,
             action_expert_init_mode=DualExpertActionExpertInitMode.VIDEO_WEIGHT_INTERPOLATE,
             action_hidden_size=24,
             action_ffn_dim=32,
@@ -2863,12 +2914,22 @@ def test_dual_expert_variant_builds_with_interpolated_action_expert_ffn() -> Non
         inference=InferenceConfig(frame_chunk_size=2),
     )
     pipeline = build_variant_pipeline_from_config(config)
+    video_latents = torch.randn(1, 48, 4, 8, 8)
+    text_context = torch.randn(1, 5, 16)
+    visual_outputs = pipeline.prepare_visual_outputs_from_latents(
+        video_latents,
+        text_context=text_context,
+    )
+
+    pipeline.policy_variant.prepare_infer_state(
+        visual_tower=pipeline.visual_tower,
+        visual_outputs=visual_outputs,
+        context=PolicyInferContext(),
+    )
+
     assert pipeline.policy_variant.action_expert.hidden_size == 24
-    packed_block_stack = pipeline.policy_variant.packed_block_stack
-    assert packed_block_stack is not None
-    action_block = packed_block_stack.packed_blocks[0].action_block
-    first_ffn_proj = action_block.ffn.net[0].proj.weight
-    second_ffn_proj = action_block.ffn.net[2].weight
+    first_ffn_proj = pipeline.policy_variant.action_expert.blocks[0].ffn.net[0].proj.weight
+    second_ffn_proj = pipeline.policy_variant.action_expert.blocks[0].ffn.net[2].weight
     assert first_ffn_proj.shape[0] == 32
     assert second_ffn_proj.shape[-1] == 32
     assert torch.isfinite(first_ffn_proj).all()

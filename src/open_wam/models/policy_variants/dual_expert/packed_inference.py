@@ -766,7 +766,7 @@ class DualExpertPackedInferenceProgram:
             action_pred=action_sample,
             predicted_latents=predicted_chunk_latents.detach(),
             condition_mode=str(self.config.condition_mode),
-            program=self.config.program.value,
+            runtime_mode=str(self.config.runtime_mode),
         )
         return PolicyInferOutput(
             policy_features=action_sample.new_zeros(batch_size, 0, self.action_expert.hidden_size),

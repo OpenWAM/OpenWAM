@@ -27,10 +27,8 @@ Video-action experiments are described by independent choices:
 | Decoder | Final predictions, supervised losses, and rollout plan | `parallel_stream_decoder`, `dual_expert_decoder` |
 
 `policy_variant.program` is the public switch for the six standard
-video-action programs. Dual Expert derives its lower-level
-`current_block_coupling` and rejects attempts to set it directly. Parallel
-Stream keeps an explicit coupling field for its exact-runtime compatibility
-surface, but a supplied program and coupling must agree. For example:
+video-action programs. The loader derives the lower-level
+`current_block_coupling`; users do not need to set both. For example:
 
 ```bash
 open-wam-train \

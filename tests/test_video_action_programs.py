@@ -85,25 +85,15 @@ def test_standalone_conditional_program_override_rederives_mode_and_coupling() -
 
 
 @pytest.mark.parametrize(
-    ("program", "error_match"),
+    "program",
     (
-        (
-            VideoActionProgram.JOINT,
-            "dynamics_routed.*generalist_denoising_mode_probs",
-        ),
-        (
-            VideoActionProgram.GENERALIST_JOINT_DENOISING,
-            "generalist_joint_denoising.*requires.*generalist_denoising_mode_probs",
-        ),
-        (
-            VideoActionProgram.VIDEO_THEN_ACTION,
-            "dynamics_routed.*generalist_denoising_mode_probs",
-        ),
+        VideoActionProgram.JOINT,
+        VideoActionProgram.GENERALIST_JOINT_DENOISING,
+        VideoActionProgram.VIDEO_THEN_ACTION,
     ),
 )
 def test_leaving_standalone_conditional_program_does_not_retain_derived_mode(
     program: VideoActionProgram,
-    error_match: str,
 ) -> None:
     config = load_experiment_config(
         REPO_ROOT / "configs/experiments/dual_expert_libero_conditional_dynamics.yaml"
@@ -111,7 +101,7 @@ def test_leaving_standalone_conditional_program_does_not_retain_derived_mode(
 
     with pytest.raises(
         ValueError,
-        match=error_match,
+        match="dynamics_routed.*generalist_denoising_mode_probs",
     ):
         apply_config_overrides(
             config,
@@ -167,9 +157,12 @@ def test_program_only_override_replaces_previously_derived_coupling(
     )
 
 
-def test_parallel_stream_coupling_only_override_replaces_derived_program() -> None:
+@pytest.mark.parametrize("architecture", ("parallel_stream", "dual_expert"))
+def test_legacy_coupling_only_override_replaces_previously_derived_program(
+    architecture: str,
+) -> None:
     config = load_experiment_config(
-        REPO_ROOT / "configs/experiments/parallel_stream_libero_joint.yaml"
+        REPO_ROOT / "configs" / "experiments" / f"{architecture}_libero_joint.yaml"
     )
 
     updated = apply_config_overrides(
@@ -184,9 +177,12 @@ def test_parallel_stream_coupling_only_override_replaces_derived_program() -> No
     )
 
 
-def test_parallel_stream_conflicting_program_and_coupling_overrides_fail() -> None:
+@pytest.mark.parametrize("architecture", ("parallel_stream", "dual_expert"))
+def test_conflicting_program_and_coupling_overrides_still_fail(
+    architecture: str,
+) -> None:
     config = load_experiment_config(
-        REPO_ROOT / "configs/experiments/parallel_stream_libero_joint.yaml"
+        REPO_ROOT / "configs" / "experiments" / f"{architecture}_libero_joint.yaml"
     )
 
     with pytest.raises(ValueError, match="program.*conflicts"):
@@ -197,39 +193,6 @@ def test_parallel_stream_conflicting_program_and_coupling_overrides_fail() -> No
                 "policy_variant.current_block_coupling": "joint",
             },
         )
-
-
-@pytest.mark.parametrize(
-    "field",
-    ("runtime_mode", "current_block_coupling", "video_can_attend_action"),
-)
-def test_dual_expert_rejects_removed_execution_controls(field: str) -> None:
-    config = load_experiment_config(
-        REPO_ROOT / "configs/experiments/dual_expert_libero_joint.yaml"
-    )
-
-    with pytest.raises(ValueError, match=r"select `policy_variant.program`"):
-        apply_config_overrides(config, {f"policy_variant.{field}": "joint"})
-
-
-@pytest.mark.parametrize(
-    "field",
-    ("runtime_mode", "current_block_coupling", "video_can_attend_action"),
-)
-def test_static_validation_rejects_removed_dual_expert_controls(
-    tmp_path: Path,
-    field: str,
-) -> None:
-    source_path = REPO_ROOT / "configs/experiments/dual_expert_libero_joint.yaml"
-    raw = yaml.safe_load(source_path.read_text(encoding="utf-8"))
-    raw["policy_variant"][field] = "joint"
-    config_path = tmp_path / f"dual_expert_with_{field}.yaml"
-    config_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
-
-    report = validate_config_file(config_path, repo_root=REPO_ROOT)
-
-    assert not report.ok
-    assert any(issue.path == f"policy_variant.{field}" for issue in report.errors)
 
 
 def test_static_validation_rejects_unknown_video_action_program(

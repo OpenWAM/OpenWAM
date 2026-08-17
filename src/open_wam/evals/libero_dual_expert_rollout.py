@@ -609,7 +609,7 @@ def run_dual_expert_libero_episode(
             "comparison_video_path": None,
             "rollout_video_path": None,
             "pipeline": "open_wam_dual_expert",
-            "program": config.policy_variant.program.value,
+            "runtime_mode": str(config.policy_variant.runtime_mode),
             "condition_mode": str(config.policy_variant.condition_mode),
             "startup_model_obs_frames": int(resources.startup_model_obs_frames),
             "startup_env_init_steps": int(resources.startup_env_init_steps),
@@ -715,6 +715,6 @@ def _summarize_policy_debug(policy_output: PolicyInferOutput) -> dict[str, objec
                 else None
             ),
             "condition_mode": str(artifacts.condition_mode),
-            "program": str(artifacts.program),
+            "runtime_mode": str(artifacts.runtime_mode),
         }
     return summary
