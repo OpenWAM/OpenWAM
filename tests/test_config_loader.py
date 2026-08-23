@@ -21,7 +21,6 @@ from open_wam.configs import (
     DeprecatedPolicyConfigFieldWarning,
     DualExpertPolicyConfig,
     DualExpertPreset,
-    DualExpertRuntimeMode,
     ExportedRuntimeActionInitMode,
     GeneralistDenoisingMode,
     GeneralistTrainingParadigm,
@@ -244,7 +243,7 @@ def test_new_variant_yaml_configs_load() -> None:
     assert isinstance(parallel.policy_variant, ParallelStreamPolicyConfig)
     assert isinstance(smoke_parallel.policy_variant, ParallelStreamPolicyConfig)
     assert dual_expert.policy_variant.preset == DualExpertPreset.FASTWAM
-    assert dual_expert.policy_variant.runtime_mode == DualExpertRuntimeMode.VIDEO_PREFILL_ACTION_DENOISE
+    assert dual_expert.policy_variant.program == VideoActionProgram.VIDEO_THEN_ACTION
     assert dual_expert.policy_variant.condition_mode == "first_frame"
     assert dual_expert.policy_variant.use_condition_latents is True
     assert dual_expert.training.trainable_components == (TrainingComponentSelector.POLICY_VARIANT_ACTION_EXPERT,)
@@ -895,7 +894,7 @@ def test_dual_expert_policy_yaml_config_loads(tmp_path: Path) -> None:
 
     assert isinstance(config.policy_variant, DualExpertPolicyConfig)
     assert config.policy_variant.name == "dual_expert"
-    assert config.policy_variant.runtime_mode == DualExpertRuntimeMode.VIDEO_PREFILL_ACTION_DENOISE
+    assert config.policy_variant.program == VideoActionProgram.VIDEO_THEN_ACTION
     assert config.policy_variant.video_prefix_frames == 1
     assert config.policy_variant.num_action_layers == 4
     assert config.policy_variant.action_hidden_size == 768
@@ -903,6 +902,172 @@ def test_dual_expert_policy_yaml_config_loads(tmp_path: Path) -> None:
     assert config.policy_variant.use_state_conditioning is True
     assert config.policy_variant.proprio_context_mode == ProprioContextMode.PER_CHUNK_ADDITIVE
     assert config.action_decoder.name == ActionDecoderName.DUAL_EXPERT
+
+
+def test_checkpoint_loader_migrates_explicit_dual_expert_coupling_to_program(
+    tmp_path: Path,
+) -> None:
+    source_path = REPO_ROOT / "configs/experiments/dual_expert_robotwin_smoke.yaml"
+    raw = yaml.safe_load(source_path.read_text(encoding="utf-8"))
+    raw["policy_variant"].pop("program")
+    raw["policy_variant"]["runtime_mode"] = "non_joint_two_stream"
+    raw["policy_variant"]["current_block_coupling"] = "action_then_video"
+    raw["policy_variant"]["video_can_attend_action"] = False
+    config_path = tmp_path / "resolved_config.yaml"
+    config_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+
+    config = load_experiment_config(config_path, checkpoint_runtime_compat=True)
+
+    assert config.policy_variant.program == VideoActionProgram.ACTION_THEN_VIDEO
+    assert (
+        config.policy_variant.current_block_coupling
+        == CurrentBlockCoupling.ACTION_THEN_VIDEO
+    )
+    assert not hasattr(config.policy_variant, "runtime_mode")
+    assert not hasattr(config.policy_variant, "video_can_attend_action")
+
+
+def test_checkpoint_loader_preserves_generalist_program_during_legacy_migration(
+    tmp_path: Path,
+) -> None:
+    source_path = (
+        REPO_ROOT
+        / "configs/experiments/dual_expert_libero_generalist_joint_denoising.yaml"
+    )
+    raw = yaml.safe_load(source_path.read_text(encoding="utf-8"))
+    raw["policy_variant"].pop("program")
+    raw["policy_variant"]["runtime_mode"] = "non_joint_two_stream"
+    raw["policy_variant"]["current_block_coupling"] = "joint"
+    config_path = tmp_path / "resolved_config.yaml"
+    config_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+
+    config = load_experiment_config(config_path, checkpoint_runtime_compat=True)
+
+    assert (
+        config.policy_variant.program == VideoActionProgram.GENERALIST_JOINT_DENOISING
+    )
+
+
+@pytest.mark.parametrize("stored_paradigm", [None, "demo_only"])
+def test_checkpoint_loader_normalizes_stale_mixed_gjd_routing_metadata(
+    tmp_path: Path,
+    stored_paradigm: str | None,
+) -> None:
+    source_path = (
+        REPO_ROOT
+        / "configs/experiments/dual_expert_libero_generalist_joint_denoising.yaml"
+    )
+    canonical_raw = yaml.safe_load(source_path.read_text(encoding="utf-8"))
+    stale_raw = yaml.safe_load(source_path.read_text(encoding="utf-8"))
+    stale_policy = stale_raw["policy_variant"]
+    stale_policy["name"] = "mot"
+    stale_policy.pop("program")
+    stale_policy["runtime_mode"] = "non_joint_two_stream"
+    stale_policy["current_block_coupling"] = "joint"
+    stale_policy["video_can_attend_action"] = False
+    stale_policy["mot_generalist_training_mode_probs"] = stale_policy.pop(
+        "generalist_denoising_mode_probs"
+    )
+    if stored_paradigm is None:
+        stale_policy.pop("generalist_training_paradigm")
+    else:
+        stale_policy["generalist_training_paradigm"] = stored_paradigm
+
+    canonical_path = tmp_path / "canonical.yaml"
+    canonical_path.write_text(
+        yaml.safe_dump(canonical_raw, sort_keys=False), encoding="utf-8"
+    )
+    stale_path = tmp_path / "resolved_config.yaml"
+    stale_path.write_text(yaml.safe_dump(stale_raw, sort_keys=False), encoding="utf-8")
+
+    canonical = load_experiment_config(canonical_path)
+    with pytest.warns(Warning) as emitted:
+        migrated = load_experiment_config(
+            stale_path,
+            checkpoint_runtime_compat=True,
+        )
+
+    assert [warning.category for warning in emitted] == [
+        DeprecatedPolicyConfigFieldWarning,
+        DeprecatedPolicyConfigFieldWarning,
+        UserWarning,
+    ]
+    assert "normalized stale GJD training-data" in str(emitted[-1].message)
+    assert migrated == canonical
+
+
+def test_checkpoint_loader_does_not_rewrite_unknown_gjd_routing_metadata(
+    tmp_path: Path,
+) -> None:
+    source_path = (
+        REPO_ROOT
+        / "configs/experiments/dual_expert_libero_generalist_joint_denoising.yaml"
+    )
+    raw = yaml.safe_load(source_path.read_text(encoding="utf-8"))
+    raw["policy_variant"]["generalist_training_paradigm"] = "unsupported"
+    config_path = tmp_path / "resolved_config.yaml"
+    config_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="unsupported"):
+        load_experiment_config(config_path, checkpoint_runtime_compat=True)
+
+
+def test_authored_mixed_gjd_config_rejects_demo_only_routing(tmp_path: Path) -> None:
+    source_path = (
+        REPO_ROOT
+        / "configs/experiments/dual_expert_libero_generalist_joint_denoising.yaml"
+    )
+    raw = yaml.safe_load(source_path.read_text(encoding="utf-8"))
+    raw["policy_variant"]["generalist_training_paradigm"] = "demo_only"
+    config_path = tmp_path / "authored.yaml"
+    config_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+
+    with pytest.raises(
+        ValueError,
+        match="Positive FDM/IDM.*require.*dynamics_routed",
+    ):
+        load_experiment_config(config_path)
+
+
+def test_checkpoint_loader_preserves_pure_joint_demo_only_routing(
+    tmp_path: Path,
+) -> None:
+    source_path = (
+        REPO_ROOT
+        / "configs/experiments/dual_expert_libero_generalist_joint_denoising.yaml"
+    )
+    raw = yaml.safe_load(source_path.read_text(encoding="utf-8"))
+    raw["policy_variant"]["generalist_training_paradigm"] = "demo_only"
+    raw["policy_variant"]["generalist_denoising_mode_probs"] = {
+        "joint": 1.0,
+        "action_conditioned_video": 0.0,
+        "video_conditioned_action": 0.0,
+    }
+    config_path = tmp_path / "resolved_config.yaml"
+    config_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+
+    config = load_experiment_config(config_path, checkpoint_runtime_compat=True)
+
+    assert (
+        config.policy_variant.generalist_training_paradigm
+        == GeneralistTrainingParadigm.DEMO_ONLY
+    )
+
+
+def test_checkpoint_loader_rejects_runtime_only_dual_expert_metadata(
+    tmp_path: Path,
+) -> None:
+    source_path = REPO_ROOT / "configs/experiments/dual_expert_robotwin_smoke.yaml"
+    raw = yaml.safe_load(source_path.read_text(encoding="utf-8"))
+    raw["policy_variant"].pop("program")
+    raw["policy_variant"]["runtime_mode"] = "non_joint_two_stream"
+    config_path = tmp_path / "resolved_config.yaml"
+    config_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+
+    with pytest.raises(
+        ValueError, match="does not uniquely define attention semantics"
+    ):
+        load_experiment_config(config_path, checkpoint_runtime_compat=True)
 
 
 def test_dual_expert_policy_allows_shared_video_schedule(tmp_path: Path) -> None:

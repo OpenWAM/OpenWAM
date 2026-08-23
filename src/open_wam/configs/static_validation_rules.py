@@ -23,7 +23,6 @@ from .enums import (
     DataSplit,
     DualExpertActionExpertInitMode,
     DualExpertConditionMode,
-    DualExpertRuntimeMode,
     EvalMode,
     GeneralistDenoisingMode,
     GeneralistTrainingParadigm,
@@ -187,15 +186,60 @@ def _validate_experiment_config(raw: Mapping[str, Any], issues: _IssueBuilder, *
                 require_batch_size_one=False,
             )
         if policy_variant.get("name") == PolicyVariantName.DUAL_EXPERT.value:
-            _validate_enum(policy_variant, "program", VideoActionProgram, issues, "policy_variant")
-            _validate_video_action_program_coupling(policy_variant, issues)
-            _validate_enum(policy_variant, "runtime_mode", DualExpertRuntimeMode, issues, "policy_variant")
-            _validate_enum(policy_variant, "condition_mode", DualExpertConditionMode, issues, "policy_variant")
-            _validate_enum(policy_variant, "action_expert_init_mode", DualExpertActionExpertInitMode, issues, "policy_variant")
-            _validate_enum(policy_variant, "current_block_coupling", CurrentBlockCoupling, issues, "policy_variant")
-            _validate_enum(policy_variant, "joint_timestep_coupling", JointTimestepCoupling, issues, "policy_variant")
-            _validate_enum(policy_variant, "sequence_contract", VideoActionSequenceContract, issues, "policy_variant")
-            _validate_enum(policy_variant, "proprio_context_mode", ProprioContextMode, issues, "policy_variant")
+            _validate_enum(
+                policy_variant, "program", VideoActionProgram, issues, "policy_variant"
+            )
+            if policy_variant.get("program") is None:
+                issues.error(
+                    "policy_variant.program",
+                    "Dual Expert requires an explicit program.",
+                )
+            for removed_field in (
+                "runtime_mode",
+                "current_block_coupling",
+                "video_can_attend_action",
+            ):
+                if removed_field in policy_variant:
+                    issues.error(
+                        f"policy_variant.{removed_field}",
+                        "Dual Expert derives execution and attention semantics from "
+                        "`policy_variant.program`; remove this field.",
+                    )
+            _validate_enum(
+                policy_variant,
+                "condition_mode",
+                DualExpertConditionMode,
+                issues,
+                "policy_variant",
+            )
+            _validate_enum(
+                policy_variant,
+                "action_expert_init_mode",
+                DualExpertActionExpertInitMode,
+                issues,
+                "policy_variant",
+            )
+            _validate_enum(
+                policy_variant,
+                "joint_timestep_coupling",
+                JointTimestepCoupling,
+                issues,
+                "policy_variant",
+            )
+            _validate_enum(
+                policy_variant,
+                "sequence_contract",
+                VideoActionSequenceContract,
+                issues,
+                "policy_variant",
+            )
+            _validate_enum(
+                policy_variant,
+                "proprio_context_mode",
+                ProprioContextMode,
+                issues,
+                "policy_variant",
+            )
             _warn_deprecated_text_proprio_context(policy_variant, issues)
             _validate_enum(
                 policy_variant,

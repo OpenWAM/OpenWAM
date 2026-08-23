@@ -3,7 +3,6 @@ from __future__ import annotations
 import torch
 
 from open_wam.configs import (
-    DualExpertRuntimeMode,
     GeneralistDenoisingMode,
     InferenceConfig,
     TrainingConfig,
@@ -28,7 +27,6 @@ from ..contracts import (
 )
 from .conditioning import DualExpertConditioning
 from .contracts import DualExpertRuntimeState
-from .coupling_semantics import resolve_dual_expert_current_block_coupling
 from .generalist_modes import (
     apply_generalist_training_mode as _apply_dual_expert_generalist_training_mode,
 )
@@ -45,18 +43,13 @@ from .generalist_modes import (
     sample_generalist_training_mode as _sample_dual_expert_generalist_training_mode,
 )
 from .inference_backend import ensure_dual_expert_policy_variant_inference_backend
-from .joint_denoise_inference import DualExpertJointDenoiseInferenceProgram
 from .modules import DualExpertActionExpert, init_action_expert_from_video_core
 from .observed_history import reconcile_dual_expert_observed_history
 from .packed_block import DualExpertPackedBlockStack
 from .packed_inference import DualExpertPackedInferenceProgram
 from .packed_training import DualExpertPackedTrainingProgram
-from .runtime_routes import (
-    DUAL_EXPERT_LEGACY_SPLIT_CACHE_INFERENCE_COUPLINGS,
-)
 from .sequence_layout import DualExpertTrainingLayout
 from .split_cache_inference import DualExpertSplitCacheInferenceProgram
-from .unpacked_training import DualExpertUnpackedTrainingProgram
 
 _GENERALIST_MODE_COMPATIBILITY_EXPORTS = (
     _apply_dual_expert_generalist_training_mode,
@@ -111,13 +104,12 @@ class DualExpertPolicyVariant(PolicyVariant):
             eps=backbone_config.latent_norm_eps,
         )
         self._action_expert_initialized = False
-        self._train_video_cache_detach_by_core_id: dict[int, bool] = {}
-        # Lazy-initialized at pipeline assembly time when current_block_coupling
-        # is set. Owns video_block + action_block pairs after ownership transfer
-        # so FSDP can wrap the packed unit cleanly without aliasing.
+        # Lazy-initialized at pipeline assembly time. Owns video_block +
+        # action_block pairs after ownership transfer so FSDP can wrap the
+        # packed unit cleanly without aliasing.
         self.packed_block_stack: DualExpertPackedBlockStack | None = None
         self._packed_block_stack_attached = False
-        self._legacy_inference_blocks_restored = False
+        self._split_cache_inference_blocks_restored = False
 
     def attach_visual_tower(self, visual_tower: VisualTower) -> None:
         """Pipeline-time hook: build the packed-coupling block stack.
@@ -126,8 +118,6 @@ class DualExpertPolicyVariant(PolicyVariant):
         but BEFORE FSDP sharding. Transfers ownership of video core blocks and
         action expert blocks into ``self.packed_block_stack`` so FSDP only
         sees a single owner per nn.Parameter (no shared-module aliasing).
-        Non-packed runtime modes are no-ops.
-
         ``_maybe_initialize_action_expert`` runs BEFORE the transfer because
         the init helper reads from ``visual_tower.core.blocks`` and writes to
         ``self.action_expert.blocks``; after transfer both ModuleLists are
@@ -148,8 +138,6 @@ class DualExpertPolicyVariant(PolicyVariant):
         if self._packed_block_stack_attached:
             return
         self._packed_block_stack_attached = True
-        if self.config.current_block_coupling is None:
-            return
         # Run lazy action-expert init now, while blocks still live under
         # visual_tower.core / self.action_expert.
         self._maybe_initialize_action_expert(visual_tower)
@@ -164,12 +152,14 @@ class DualExpertPolicyVariant(PolicyVariant):
         visual_tower.core.blocks = torch.nn.ModuleList()
         self.action_expert.blocks = torch.nn.ModuleList()
 
-    def restore_packed_blocks_for_legacy_inference(self, visual_tower: VisualTower) -> bool:
-        """Move packed-owned blocks back for inference-only legacy cache rollout.
+    def restore_packed_blocks_for_split_cache_inference(
+        self, visual_tower: VisualTower
+    ) -> bool:
+        """Move packed-owned blocks back for inference-only split-cache rollout.
 
         Packed training transfers block ownership into ``packed_block_stack`` so
-        FSDP can shard paired video/action blocks cleanly. Legacy split-cache
-        inference needs the pre-packed module lists, so this performs a
+        FSDP can shard paired video/action blocks cleanly. Split-cache inference
+        needs the pre-packed module lists, so this performs a
         one-way ownership transfer back to ``visual_tower.core.blocks`` and
         ``action_expert.blocks``. ``packed_block_stack`` is cleared afterward
         so the module tree has a single owner for each block.
@@ -184,16 +174,8 @@ class DualExpertPolicyVariant(PolicyVariant):
         visual_tower.core.blocks = torch.nn.ModuleList(video_blocks)
         self.action_expert.blocks = torch.nn.ModuleList(action_blocks)
         self.packed_block_stack = None
-        self._legacy_inference_blocks_restored = True
+        self._split_cache_inference_blocks_restored = True
         return True
-
-    def _should_detach_train_video_cache(self, visual_tower: VisualTower) -> bool:
-        core_id = id(visual_tower.core)
-        detach_cache = self._train_video_cache_detach_by_core_id.get(core_id)
-        if detach_cache is None:
-            detach_cache = not any(parameter.requires_grad for parameter in visual_tower.core.parameters())
-            self._train_video_cache_detach_by_core_id[core_id] = detach_cache
-        return bool(detach_cache)
 
     def _maybe_initialize_action_expert(self, visual_tower: VisualTower) -> None:
         if self._action_expert_initialized:
@@ -258,34 +240,7 @@ class DualExpertPolicyVariant(PolicyVariant):
         prepared_inputs: PolicyPreparedInputs,
     ) -> PolicyTrainOutput:
         self._maybe_initialize_action_expert(visual_tower)
-        if self.config.current_block_coupling is not None:
-            return self._forward_train_packed_coupling(
-                visual_tower=visual_tower,
-                visual_outputs=visual_outputs,
-                prepared_inputs=prepared_inputs,
-            )
-        unpacked_program = DualExpertUnpackedTrainingProgram(
-            config=self.config,
-            training_config=self.training_config,
-            conditioning=self.conditioning,
-            training_layout=self.training_layout,
-            action_expert=self.action_expert,
-            initialize_action_expert=self._maybe_initialize_action_expert,
-            should_detach_video_cache=self._should_detach_train_video_cache,
-        )
-        if self.config.runtime_mode == DualExpertRuntimeMode.JOINT_DENOISE:
-            return unpacked_program.run_joint_denoise(
-                visual_tower=visual_tower,
-                visual_outputs=visual_outputs,
-                prepared_inputs=prepared_inputs,
-            )
-        if self.config.runtime_mode == DualExpertRuntimeMode.NON_JOINT_TWO_STREAM:
-            return self._forward_train_non_joint_two_stream(
-                visual_tower=visual_tower,
-                visual_outputs=visual_outputs,
-                prepared_inputs=prepared_inputs,
-            )
-        return unpacked_program.run_prefill_action_denoise(
+        return self._forward_train_packed_coupling(
             visual_tower=visual_tower,
             visual_outputs=visual_outputs,
             prepared_inputs=prepared_inputs,
@@ -306,18 +261,6 @@ class DualExpertPolicyVariant(PolicyVariant):
             packed_block_stack=self.packed_block_stack,
             initialize_action_expert=self._maybe_initialize_action_expert,
         ).run(
-            visual_tower=visual_tower,
-            visual_outputs=visual_outputs,
-            prepared_inputs=prepared_inputs,
-        )
-
-    def _forward_train_non_joint_two_stream(
-        self,
-        visual_tower: VisualTower,
-        visual_outputs: VisualStageOutputs,
-        prepared_inputs: PolicyPreparedInputs,
-    ) -> PolicyTrainOutput:
-        return self._forward_train_packed_coupling(
             visual_tower=visual_tower,
             visual_outputs=visual_outputs,
             prepared_inputs=prepared_inputs,
@@ -413,24 +356,9 @@ class DualExpertPolicyVariant(PolicyVariant):
                 resolved_text_context,
                 generalist_rollout_mode,
             )
-        runtime_state.generalist_mode_text_token_count = int(generalist_mode_text_token_count)
-        # Only `joint_denoise` stays on the simultaneous video+action denoise
-        # path. `non_joint_two_stream` falls through to the parallel-stream-aligned
-        # default path below (video fully denoised first, then action attends
-        # clean video K/V via `forward_action_with_video_cache`).
-        if self.config.runtime_mode == DualExpertRuntimeMode.JOINT_DENOISE:
-            runtime_device = next(visual_tower.core.parameters()).device
-            if action_device != runtime_device:
-                raise ValueError(
-                    "DualExpert joint_denoise inference currently requires video and action to run on the same device, "
-                    f"got runtime_device={runtime_device}, action_device={action_device}, "
-                    f"runtime_mode={self.config.runtime_mode!r}."
-                )
-            runtime_state.text_context = resolved_text_context
-            runtime_state.action_device = str(action_device)
-            state.variant_state = runtime_state
-            del context
-            return state
+        runtime_state.generalist_mode_text_token_count = int(
+            generalist_mode_text_token_count
+        )
         condition_latents = visual_outputs.frontend.video_latents
         current_condition_frame_start = int(state.cursor.current_start_frame)
         # Note: `runtime_state.video_cache` is populated inside
@@ -473,36 +401,21 @@ class DualExpertPolicyVariant(PolicyVariant):
             infer_state.variant_state if isinstance(infer_state.variant_state, DualExpertRuntimeState) else DualExpertRuntimeState()
         )
         self._maybe_initialize_action_expert(visual_tower)
-        current_block_coupling_for_infer = resolve_dual_expert_current_block_coupling(self.config)
-        dual_expert_inference_backend = ensure_dual_expert_policy_variant_inference_backend(
-            policy_variant=self,
-            visual_tower=visual_tower,
-            policy_config=self.config,
-            allow_module_mutation=bool(context.extra.get("allow_dual_expert_legacy_backend_restore", True)),
-        )
-        use_legacy_cache_infer = (
-            self.config.current_block_coupling is not None
-            and dual_expert_inference_backend["backend"] == "legacy_split_cache"
-            and current_block_coupling_for_infer in DUAL_EXPERT_LEGACY_SPLIT_CACHE_INFERENCE_COUPLINGS
-        )
-        if self.config.current_block_coupling is not None and not use_legacy_cache_infer:
-            return self._forward_infer_packed_coupling(
+        dual_expert_inference_backend = (
+            ensure_dual_expert_policy_variant_inference_backend(
+                policy_variant=self,
                 visual_tower=visual_tower,
-                visual_outputs=visual_outputs,
-                context=context,
-                infer_state=infer_state,
-                runtime_state=runtime_state,
+                policy_config=self.config,
+                allow_module_mutation=bool(
+                    context.extra.get("allow_dual_expert_backend_restore", True)
+                ),
             )
-        if self.config.runtime_mode == DualExpertRuntimeMode.JOINT_DENOISE:
-            return DualExpertJointDenoiseInferenceProgram(
-                config=self.config,
-                training_config=self.training_config,
-                inference_config=self.inference_config,
-                conditioning=self.conditioning,
-                action_expert=self.action_expert,
-                action_dim=self.action_dim,
-                action_horizon=self.action_horizon,
-            ).run(
+        )
+        use_split_cache_infer = (
+            dual_expert_inference_backend["backend"] == "split_cache"
+        )
+        if not use_split_cache_infer:
+            return self._forward_infer_packed_coupling(
                 visual_tower=visual_tower,
                 visual_outputs=visual_outputs,
                 context=context,

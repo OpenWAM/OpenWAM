@@ -25,6 +25,15 @@ def build_packed_action_attention_mask(
 ) -> torch.Tensor:
     """Packed action-expert attention mask (parallel-stream-style).
 
+    .. warning::
+       This is **not** the mask used by dual-expert packed-coupling inference.
+       That path calls :func:`build_dual_expert_packed_coupling_attention_profile`
+       below, whose key layout is the four-segment
+       ``[V_noisy | V_clean | A_noisy | A_clean]`` and whose action queries *do*
+       attend ``V_noisy`` for the current chunk. The two builders live in this
+       module under similar names and describe incompatible layouts; read the
+       call site before trusting either docstring.
+
     Key/Value layout: ``[V_clean (T_v*ppF_v) | A_noisy (T_a*ppF_a) | A_clean (T_a*ppF_a)]``.
     Query layout: ``[A_noisy (T_a*ppF_a) | A_clean (T_a*ppF_a)]``. The video
     side contributes only its clean copy -- per parallel-stream, action queries

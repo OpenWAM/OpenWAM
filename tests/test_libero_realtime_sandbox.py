@@ -72,13 +72,12 @@ def _strict_split_cache_dual_expert_config(
     *,
     action_horizon: int = 16,
     frame_chunk_size: int = 4,
-    current_block_coupling: str = "video_then_action",
+    program: str = "video_then_action",
 ):
     return SimpleNamespace(
         policy_variant=SimpleNamespace(
             name="dual_expert",
-            runtime_mode="non_joint_two_stream",
-            current_block_coupling=str(current_block_coupling),
+            program=str(program),
         ),
         data=SimpleNamespace(
             sample_construction=SimpleNamespace(
@@ -420,9 +419,13 @@ def test_fallback_model_timeline_advancement_is_policy_driven() -> None:
 
 def test_sequence_buffer_tail_promotes_after_prebuffer_actions_are_consumed() -> None:
     sandbox = _load_sandbox_module()
-    config = SimpleNamespace(policy_variant=SimpleNamespace(name="dual_expert"), data=SimpleNamespace(
-        action_schema=SimpleNamespace(action_horizon=16),
-    ), inference=SimpleNamespace(frame_chunk_size=4))
+    config = SimpleNamespace(
+        policy_variant=SimpleNamespace(name="dual_expert", program="video_then_action"),
+        data=SimpleNamespace(
+            action_schema=SimpleNamespace(action_horizon=16),
+        ),
+        inference=SimpleNamespace(frame_chunk_size=4),
+    )
 
     assert not sandbox.realtime_runtime.sequence_buffer_tail_ready_for_history_promotion(
         config=config,
@@ -447,7 +450,7 @@ def test_sequence_buffer_tail_promotes_after_prebuffer_actions_are_consumed() ->
 def test_dual_expert_async_history_submit_rewinds_speculative_action_tail_only() -> None:
     sandbox = _load_sandbox_module()
     dual_expert_config = SimpleNamespace(
-        policy_variant=SimpleNamespace(name="dual_expert", runtime_mode="non_joint_two_stream"),
+        policy_variant=SimpleNamespace(name="dual_expert", program="video_then_action"),
     )
     non_dual_expert_config = SimpleNamespace(
         policy_variant=SimpleNamespace(name="parallel_stream", runtime_mode="lingbot_exact"),
@@ -1453,8 +1456,12 @@ def test_generated_future_rollout_defaults_initial_generation_start_to_zero() ->
 def test_dual_expert_rollout_defaults_initial_generation_start_to_zero() -> None:
     sandbox = _load_sandbox_module()
 
-    config = SimpleNamespace(policy_variant=SimpleNamespace(name="dual_expert"))
-    initial_obs_window = [{"image": np.zeros((2, 2, 3), dtype=np.uint8)} for _ in range(15)]
+    config = SimpleNamespace(
+        policy_variant=SimpleNamespace(name="dual_expert", program="video_then_action")
+    )
+    initial_obs_window = [
+        {"image": np.zeros((2, 2, 3), dtype=np.uint8)} for _ in range(15)
+    ]
 
     assert sandbox.rollout_runtime.uses_zero_based_generation_start(config) is True
     assert (
@@ -1469,7 +1476,7 @@ def test_dual_expert_rollout_defaults_initial_generation_start_to_zero() -> None
     )
 
 
-def test_dual_expert_non_joint_realtime_replan_preserves_observation_conditioned_session() -> None:
+def test_dual_expert_program_routes_preserve_observation_conditioned_session() -> None:
     sandbox = _load_sandbox_module()
     calls = []
 
@@ -1493,16 +1500,17 @@ def test_dual_expert_non_joint_realtime_replan_preserves_observation_conditioned
         text_context="text",
         negative_text_context="negative",
     )
-    dual_expert_config = SimpleNamespace(policy_variant=SimpleNamespace(name="dual_expert", runtime_mode="non_joint_two_stream"))
+    dual_expert_config = SimpleNamespace(
+        policy_variant=SimpleNamespace(name="dual_expert", program="video_then_action")
+    )
     dual_expert_native_packed_config = SimpleNamespace(
         policy_variant=SimpleNamespace(
             name="dual_expert",
-            runtime_mode="non_joint_two_stream",
-            current_block_coupling="joint",
+            program="joint",
         )
     )
-    dual_expert_prefill_config = SimpleNamespace(
-        policy_variant=SimpleNamespace(name="dual_expert", runtime_mode="video_prefill_action_denoise")
+    parallel_config = SimpleNamespace(
+        policy_variant=SimpleNamespace(name="parallel_stream")
     )
     parallel_config = SimpleNamespace(policy_variant=SimpleNamespace(name="parallel_stream"))
 
@@ -1540,20 +1548,6 @@ def test_dual_expert_non_joint_realtime_replan_preserves_observation_conditioned
     assert resolved_native is session
     assert calls == []
 
-    resolved_prefill = sandbox.realtime_runtime.resolve_observation_conditioned_replan_session(
-        runner=Runner(),
-        session=session,
-        config=dual_expert_prefill_config,
-    )
-
-    assert resolved_prefill is not session
-    assert calls == [
-        {
-            "task_text": ("task",),
-            "text_context": "text",
-            "negative_text_context": "negative",
-        }
-    ]
     assert (
         sandbox.realtime_runtime.resolve_observation_conditioned_replan_session(
             runner=Runner(),
@@ -1567,17 +1561,13 @@ def test_dual_expert_non_joint_realtime_replan_preserves_observation_conditioned
 def test_dual_expert_startup_open_loop_requires_history_control_route() -> None:
     sandbox = _load_sandbox_module()
     dual_expert_split_cache_config = SimpleNamespace(
-        policy_variant=SimpleNamespace(name="dual_expert", runtime_mode="non_joint_two_stream")
+        policy_variant=SimpleNamespace(name="dual_expert", program="video_then_action")
     )
     dual_expert_native_packed_config = SimpleNamespace(
         policy_variant=SimpleNamespace(
             name="dual_expert",
-            runtime_mode="non_joint_two_stream",
-            current_block_coupling="joint",
+            program="joint",
         )
-    )
-    dual_expert_prefill_config = SimpleNamespace(
-        policy_variant=SimpleNamespace(name="dual_expert", runtime_mode="video_prefill_action_denoise")
     )
 
     assert (
@@ -1592,12 +1582,13 @@ def test_dual_expert_startup_open_loop_requires_history_control_route() -> None:
         startup_open_loop_chunks=0,
     )
 
-    for config in (dual_expert_native_packed_config, dual_expert_prefill_config):
-        with pytest.raises(ValueError, match="does not support startup open-loop extension"):
-            sandbox.realtime_runtime.validate_sequence_startup_open_loop_support(
-                config=config,
-                startup_open_loop_chunks=1,
-            )
+    with pytest.raises(
+        ValueError, match="does not support startup open-loop extension"
+    ):
+        sandbox.realtime_runtime.validate_sequence_startup_open_loop_support(
+            config=dual_expert_native_packed_config,
+            startup_open_loop_chunks=1,
+        )
 
 
 def test_dual_expert_startup_open_loop_validation_runs_before_pipeline_setup(monkeypatch) -> None:
@@ -1605,7 +1596,7 @@ def test_dual_expert_startup_open_loop_validation_runs_before_pipeline_setup(mon
     config = SimpleNamespace(
         policy_variant=SimpleNamespace(
             name="dual_expert",
-            runtime_mode="video_prefill_action_denoise",
+            program="joint",
         )
     )
 
@@ -1656,7 +1647,9 @@ def test_dual_expert_startup_open_loop_validation_runs_before_pipeline_setup(mon
 
 def test_sequence_rollout_infer_extra_matches_dual_expert_contract() -> None:
     sandbox = _load_sandbox_module()
-    dual_expert_config = SimpleNamespace(policy_variant=SimpleNamespace(name="dual_expert"))
+    dual_expert_config = SimpleNamespace(
+        policy_variant=SimpleNamespace(name="dual_expert", program="video_then_action")
+    )
 
     dual_expert_extra = sandbox.rollout_runtime.build_sequence_rollout_infer_extra(
         config=dual_expert_config,
@@ -1711,8 +1704,7 @@ def test_native_packed_dual_expert_realtime_does_not_drop_startup_actions() -> N
     config = SimpleNamespace(
         policy_variant=SimpleNamespace(
             name="dual_expert",
-            runtime_mode="non_joint_two_stream",
-            current_block_coupling="action_then_video",
+            program="action_then_video",
         ),
         data=SimpleNamespace(action_schema=SimpleNamespace(action_horizon=4)),
         inference=SimpleNamespace(frame_chunk_size=2),
@@ -1771,13 +1763,14 @@ def test_strict_split_cache_dual_expert_realtime_does_not_drop_startup_actions()
     assert sorted(merged) == list(range(16))
 
 
-def test_legacy_split_cache_dual_expert_realtime_keeps_one_frame_execution_offset() -> None:
+def test_default_contract_split_cache_realtime_keeps_one_frame_execution_offset() -> (
+    None
+):
     sandbox = _load_sandbox_module()
     config = SimpleNamespace(
         policy_variant=SimpleNamespace(
             name="dual_expert",
-            runtime_mode="non_joint_two_stream",
-            current_block_coupling="video_then_action",
+            program="video_then_action",
         ),
         data=SimpleNamespace(action_schema=SimpleNamespace(action_horizon=4)),
         inference=SimpleNamespace(frame_chunk_size=2),
@@ -1812,7 +1805,7 @@ def test_strict_split_cache_dual_expert_startup_env_init_uses_single_frame() -> 
 
 def test_strict_native_packed_dual_expert_startup_env_init_uses_single_frame() -> None:
     sandbox = _load_sandbox_module()
-    config = _strict_split_cache_dual_expert_config(sandbox, current_block_coupling="joint")
+    config = _strict_split_cache_dual_expert_config(sandbox, program="joint")
     initial_obs_window = [_minimal_obs_record(float(index)) for index in range(13)]
 
     assert not sandbox.realtime_runtime.uses_strict_dual_expert_split_cache_startup(config)
@@ -2017,13 +2010,14 @@ def test_strict_split_cache_dual_expert_realtime_init_calls_env_with_single_fram
     assert summary["startup_env_init_frames"] == 1
 
 
-def test_legacy_split_cache_dual_expert_startup_keeps_full_model_observation_window() -> None:
+def test_default_contract_split_cache_startup_keeps_full_model_observation_window() -> (
+    None
+):
     sandbox = _load_sandbox_module()
     config = SimpleNamespace(
         policy_variant=SimpleNamespace(
             name="dual_expert",
-            runtime_mode="non_joint_two_stream",
-            current_block_coupling="video_then_action",
+            program="video_then_action",
         )
     )
     initial_obs_window = [_minimal_obs_record(float(index)) for index in range(13)]

@@ -71,10 +71,10 @@ DISTRIBUTED_AGGREGATE_DELTA_TOLERANCE = ComparisonTolerance(
 )
 # Forward tensors and losses remain exact, but changing NCCL host transport can
 # shift BF16 FSDP gradient aggregates slightly through reduction order. Keep
-# this bound just above the characterized 0.54% transport delta.
+# this bound just above the characterized 0.66% repeated-run delta.
 DISTRIBUTED_GRADIENT_TOLERANCE = ComparisonTolerance(
     absolute=5e-4,
-    relative=6e-3,
+    relative=7e-3,
 )
 RESUME_POST_UPDATE_METRIC_TOLERANCE = ComparisonTolerance(
     # Removing an unused parameter changes FSDP's flat-parameter reduction
@@ -99,6 +99,10 @@ _LEGACY_OTHER_TRAINABLE_SIGNATURE = {
 # symbolic metadata is normalized here. Tensor fingerprints, shapes, probes,
 # losses, gradients, optimizer deltas, and rollout values remain unchanged.
 _REPORT_KEY_ALIASES = {
+    "legacy_split_cache_ready": "block_restore_ready",
+    "legacy_split_cache_required": "block_restore_required",
+    "legacy_split_cache_restored_this_call": "block_restore_performed",
+    "requires_legacy_block_restore": "requires_block_restore",
     "method_family": "architecture",
     "mot_action_cond_tokens": "dual_expert_action_cond_tokens",
     "mot_action_context_invalid_tokens": (
@@ -138,6 +142,9 @@ _REPORT_KEY_ALIASES = {
     ),
 }
 _REPORT_STRING_ALIASES = {
+    "legacy_split_cache": "split_cache",
+    "native_packed_coupling": "packed_coupling",
+    "split_cache_non_joint": "split_cache",
     "MoTRuntimeState": "DualExpertRuntimeState",
     "MoTActionCache": "DualExpertActionCache",
     "MoTActionLayerCache": "DualExpertActionLayerCache",
@@ -887,9 +894,19 @@ def _comparison_projection(
                 raw_key in VOLATILE_REPORT_KEYS
                 or raw_key == "nonzero_elements"
                 or (
-                    tensor_fingerprint
-                    and raw_key in TENSOR_FINGERPRINT_REDUCTION_KEYS
+                    _path == ("backend", "route")
+                    and raw_key
+                    in {
+                        # Schema v1 serialized the retired runtime selector and
+                        # duplicated its effective coupling. Schema v2 reports
+                        # the public program instead. Coupling + route kind are
+                        # the common behavioral contract compared below.
+                        "program",
+                        "resolved_current_block_coupling",
+                        "runtime_mode",
+                    }
                 )
+                or (tensor_fingerprint and raw_key in TENSOR_FINGERPRINT_REDUCTION_KEYS)
                 or (
                     raw_key == "size_bytes"
                     and len(_path) >= 3

@@ -43,8 +43,7 @@ def _split_cache_config() -> SimpleNamespace:
     return SimpleNamespace(
         policy_variant=SimpleNamespace(
             name="dual_expert",
-            runtime_mode="non_joint_two_stream",
-            current_block_coupling="video_then_action",
+            program="video_then_action",
         )
     )
 
@@ -61,10 +60,13 @@ def test_visual_runtime_cache_name_prefers_session_owned_name() -> None:
 
 
 def test_visual_runtime_cache_name_uses_split_cache_fallback() -> None:
-    assert realtime_speculation.visual_runtime_cache_name_for_session(
-        config=_split_cache_config(),
-        session=SimpleNamespace(policy_state=None),
-    ) == "dual_expert_non_joint_two_stream_cache"
+    assert (
+        realtime_speculation.visual_runtime_cache_name_for_session(
+            config=_split_cache_config(),
+            session=SimpleNamespace(policy_state=None),
+        )
+        == "dual_expert_split_cache"
+    )
 
 
 def test_visual_runtime_snapshot_delegates_through_tower_contract() -> None:

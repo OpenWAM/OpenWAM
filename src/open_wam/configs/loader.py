@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import warnings
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +24,10 @@ from .local_paths import read_yaml_with_local_paths
 from .policy_compatibility import normalize_video_action_config_fields
 from .policy_contracts import CausalVideoPredictionPolicyConfig, PolicyVariantConfig
 from .policy_parsing import parse_policy_variant_config
+from .policy_video_action import (
+    conditional_denoising_modes_enabled,
+    resolve_video_action_program_semantics,
+)
 from .sequence_contracts import (
     apply_video_action_sequence_contract,
     expand_video_action_sequence_contract,
@@ -49,9 +55,62 @@ def _read_yaml(path: str | Path) -> dict[str, Any]:
 
 
 def _apply_checkpoint_runtime_compat(raw: dict[str, Any]) -> dict[str, Any]:
-    """Drop stale resolved-config fields that are invalid in authored YAML."""
+    """Migrate immutable checkpoint metadata into the current typed contract."""
 
     normalized = dict(raw)
+    policy_raw = normalized.get("policy_variant")
+    if isinstance(policy_raw, Mapping):
+        policy_raw = dict(policy_raw)
+        normalized["policy_variant"] = policy_raw
+        policy_name = _raw_enum_value(policy_raw.get("name"))
+        if policy_name in {
+            config_enums.PolicyVariantName.DUAL_EXPERT.value,
+            "mot",
+        }:
+            legacy_runtime_mode = policy_raw.pop("runtime_mode", None)
+            legacy_coupling = policy_raw.pop("current_block_coupling", None)
+            policy_raw.pop("video_can_attend_action", None)
+            program = policy_raw.get("program")
+            if program is None:
+                if legacy_coupling is None:
+                    detail = (
+                        f" runtime_mode={legacy_runtime_mode!r}"
+                        if legacy_runtime_mode is not None
+                        else ""
+                    )
+                    raise ValueError(
+                        "Cannot migrate Dual Expert checkpoint config without an explicit "
+                        "`program` or `current_block_coupling`; the old runtime mode does not "
+                        f"uniquely define attention semantics.{detail}"
+                    )
+                coupling = config_enums.CurrentBlockCoupling(
+                    _raw_enum_value(legacy_coupling)
+                )
+                has_generalist_distribution = any(
+                    policy_raw.get(field_name) is not None
+                    for field_name in (
+                        "generalist_denoising_mode_probs",
+                        "mot_generalist_training_mode_probs",
+                    )
+                )
+                program = (
+                    config_enums.VideoActionProgram.GENERALIST_JOINT_DENOISING
+                    if coupling == config_enums.CurrentBlockCoupling.JOINT
+                    and has_generalist_distribution
+                    else config_enums.VideoActionProgram(coupling.value)
+                )
+                policy_raw["program"] = program.value
+            else:
+                # Validate redundant checkpoint metadata before discarding it.
+                resolve_video_action_program_semantics(
+                    program=_raw_enum_value(program),
+                    current_block_coupling=(
+                        None
+                        if legacy_coupling is None
+                        else _raw_enum_value(legacy_coupling)
+                    ),
+                )
+
     data_raw = normalized.get("data")
     if not isinstance(data_raw, dict):
         return normalized
@@ -82,6 +141,50 @@ def _apply_checkpoint_runtime_compat(raw: dict[str, Any]) -> dict[str, Any]:
         ):
             sample_construction_raw.pop(key, None)
 
+    return normalized
+
+
+def _normalize_checkpoint_runtime_generalist_data_metadata(
+    raw: dict[str, Any],
+) -> dict[str, Any]:
+    """Reconcile stale GJD data-routing metadata for checkpoint evaluation."""
+
+    normalized = dict(raw)
+    policy_raw = normalized.get("policy_variant")
+    if not isinstance(policy_raw, Mapping):
+        return normalized
+    if (
+        _raw_enum_value(policy_raw.get("program"))
+        != config_enums.VideoActionProgram.GENERALIST_JOINT_DENOISING.value
+    ):
+        return normalized
+    if not conditional_denoising_modes_enabled(
+        policy_raw.get("generalist_denoising_mode_probs")
+    ):
+        return normalized
+
+    raw_paradigm = _raw_enum_value(
+        policy_raw.get(
+            "generalist_training_paradigm",
+            config_enums.GeneralistTrainingParadigm.DEMO_ONLY.value,
+        )
+    )
+    if raw_paradigm != config_enums.GeneralistTrainingParadigm.DEMO_ONLY.value:
+        return normalized
+
+    policy_raw = dict(policy_raw)
+    normalized["policy_variant"] = policy_raw
+    policy_raw["generalist_training_paradigm"] = (
+        config_enums.GeneralistTrainingParadigm.DYNAMICS_ROUTED.value
+    )
+    warnings.warn(
+        "Checkpoint runtime compatibility normalized stale GJD training-data "
+        "routing metadata from `demo_only` to `dynamics_routed`. This field is "
+        "not consumed by checkpoint evaluation; use an authored current config "
+        "when resuming training.",
+        UserWarning,
+        stacklevel=3,
+    )
     return normalized
 
 
@@ -142,6 +245,8 @@ def load_experiment_config(path: str | Path, *, checkpoint_runtime_compat: bool 
     if checkpoint_runtime_compat:
         raw = _apply_checkpoint_runtime_compat(raw)
     raw = normalize_video_action_config_fields(raw)
+    if checkpoint_runtime_compat:
+        raw = _normalize_checkpoint_runtime_generalist_data_metadata(raw)
     raw = expand_video_action_sequence_contract(raw)
     data_config = parse_data_config(raw.get("data", {}))
     backbone_config = parse_shared_video_transformer_config(raw.get("backbone", {}))

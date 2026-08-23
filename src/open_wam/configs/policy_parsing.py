@@ -72,9 +72,27 @@ def parse_policy_variant_config(
             ),
         )
     if name == config_enums.PolicyVariantName.DUAL_EXPERT:
-        program, current_block_coupling = resolve_video_action_program_semantics(
-            program=resolved_raw.get("program"),
-            current_block_coupling=resolved_raw.get("current_block_coupling"),
+        removed_fields = {
+            "runtime_mode",
+            "current_block_coupling",
+            "video_can_attend_action",
+        }.intersection(resolved_raw)
+        if removed_fields:
+            fields = ", ".join(
+                f"policy_variant.{field}" for field in sorted(removed_fields)
+            )
+            raise ValueError(
+                f"{fields} cannot be authored for Dual Expert; select "
+                "`policy_variant.program` instead. Legacy checkpoint metadata is "
+                "migrated only by the checkpoint loader."
+            )
+        if resolved_raw.get("program") is None:
+            raise ValueError(
+                "DualExpert policy requires an explicit `policy_variant.program`."
+            )
+        program = _coerce_enum(
+            config_enums.VideoActionProgram,
+            resolved_raw["program"],
         )
         preset = _coerce_optional_enum(
             config_enums.DualExpertPreset,
@@ -91,31 +109,24 @@ def parse_policy_variant_config(
         dual_expert_defaults: dict[str, Any] = {}
         if preset == config_enums.DualExpertPreset.FASTWAM:
             dual_expert_defaults = {
-                "runtime_mode": config_enums.DualExpertRuntimeMode.VIDEO_PREFILL_ACTION_DENOISE,
                 "condition_mode": config_enums.DualExpertConditionMode.FIRST_FRAME,
                 "teacher_forcing_video_noise_prob": 0.0,
                 "video_prefix_frames": 1,
             }
         elif preset == config_enums.DualExpertPreset.FASTWAM_JOINT:
             dual_expert_defaults = {
-                "runtime_mode": config_enums.DualExpertRuntimeMode.JOINT_DENOISE,
                 "condition_mode": config_enums.DualExpertConditionMode.FULL_VIDEO,
                 "teacher_forcing_video_noise_prob": 0.0,
                 "video_prefix_frames": 1,
             }
         elif preset == config_enums.DualExpertPreset.FASTWAM_IDM:
             dual_expert_defaults = {
-                "runtime_mode": config_enums.DualExpertRuntimeMode.VIDEO_PREFILL_ACTION_DENOISE,
                 "condition_mode": config_enums.DualExpertConditionMode.TEACHER_FORCING_COND_VIDEO,
                 "teacher_forcing_video_noise_prob": 0.5,
                 "video_prefix_frames": 1,
             }
         elif preset == config_enums.DualExpertPreset.FASTWAM_NON_JOINT:
-            # Split-stream dual-expert execution: both video and action
-            # run through a history-clean / current-noisy split, and the mask
-            # disallows same-chunk noisy-to-noisy cross-stream attention.
             dual_expert_defaults = {
-                "runtime_mode": config_enums.DualExpertRuntimeMode.NON_JOINT_TWO_STREAM,
                 "condition_mode": config_enums.DualExpertConditionMode.TEACHER_FORCING_COND_VIDEO,
                 "teacher_forcing_video_noise_prob": 0.0,
                 "video_prefix_frames": 1,
@@ -134,16 +145,6 @@ def parse_policy_variant_config(
                 resolved_raw.get("attach_site", config_enums.AttachSite.POST_VISUAL_CORE),
             ),
             preset=preset,
-            runtime_mode=_coerce_enum(
-                config_enums.DualExpertRuntimeMode,
-                resolved_raw.get(
-                    "runtime_mode",
-                    dual_expert_defaults.get(
-                        "runtime_mode",
-                        config_enums.DualExpertRuntimeMode.VIDEO_PREFILL_ACTION_DENOISE,
-                    ),
-                ),
-            ),
             condition_mode=_coerce_enum(
                 config_enums.DualExpertConditionMode,
                 resolved_raw.get(
@@ -173,9 +174,7 @@ def parse_policy_variant_config(
             num_action_layers=resolved_raw.get("num_action_layers", backbone_config.num_layers),
             action_hidden_size=resolved_raw.get("action_hidden_size"),
             action_ffn_dim=resolved_raw.get("action_ffn_dim"),
-            video_can_attend_action=resolved_raw.get("video_can_attend_action", True),
             program=program,
-            current_block_coupling=current_block_coupling,
             use_text_conditioning=resolved_raw.get("use_text_conditioning", True),
             use_state_conditioning=resolved_raw.get("use_state_conditioning", False),
             proprio_context_mode=_coerce_enum(

@@ -308,13 +308,6 @@ DUAL_EXPERT_RUNTIME_CONTROL_ROLE_PATHS = {
         / "dual_expert"
         / "coupling_semantics.py"
     ),
-    "facade": (
-        PACKAGE_ROOT
-        / "models"
-        / "policy_variants"
-        / "dual_expert"
-        / "runtime_routing.py"
-    ),
     "geometry": (
         PACKAGE_ROOT
         / "models"
@@ -2988,6 +2981,7 @@ def test_policy_configuration_contracts_have_role_specific_owners() -> None:
         "policy_parsing.py": {"parse_policy_variant_config"},
         "policy_video_action.py": {
             "VideoActionPolicyConfig",
+            "current_block_coupling_for_program",
             "resolve_video_action_program_semantics",
         },
     }
@@ -3011,12 +3005,10 @@ def test_policy_configuration_contracts_have_role_specific_owners() -> None:
         "DualExpertActionExpertInitMode",
         "DualExpertConditionMode",
         "DualExpertPreset",
-        "DualExpertRuntimeMode",
         "MoTActionExpertInitMode",
         "MoTConditionMode",
         "MoTGeneralistTrainingMode",
         "MoTPreset",
-        "MoTRuntimeMode",
         "ParallelActionAttentionScope",
         "ParallelActionConditionSource",
         "ParallelCacheMode",
@@ -3230,7 +3222,6 @@ def test_static_configuration_validation_has_role_specific_owners() -> None:
         "LatentTemporalLayout",
         "DualExpertActionExpertInitMode",
         "DualExpertConditionMode",
-        "DualExpertRuntimeMode",
         "PaddedTargetPolicy",
         "ContextConditionLatentSource",
         "HistoryStreamVisibility",
@@ -3686,16 +3677,13 @@ def test_dual_expert_flow_runtime_controls_have_role_owners() -> None:
     )
 
 
-def test_dual_expert_runtime_control_roles_have_one_owner_and_a_stable_facade() -> None:
-    import pickle
-
+def test_dual_expert_runtime_control_roles_have_one_owner() -> None:
     from open_wam.models.policy_variants import dual_expert as dual_expert_api
     from open_wam.models.policy_variants.dual_expert import (
         coupling_semantics,
         inference_backend,
         rollout_geometry,
         runtime_routes,
-        runtime_routing,
     )
 
     role_modules = {
@@ -3729,15 +3717,12 @@ def test_dual_expert_runtime_control_roles_have_one_owner_and_a_stable_facade() 
         "routes": {
             "DualExpertRuntimeRoute",
             "DualExpertRuntimeRouteKind",
-            "_coerce_current_block_coupling",
-            "_coerce_runtime_mode",
             "_enum_value",
             "_looks_like_dual_expert_policy_config",
             "_policy_config",
-            "_resolve_current_block_coupling",
-            "dual_expert_policy_requires_legacy_split_cache_inference",
+            "dual_expert_policy_requires_split_cache_inference",
             "resolve_dual_expert_runtime_route",
-            "should_use_dual_expert_legacy_split_cache_inference",
+            "should_use_dual_expert_split_cache_inference",
         },
     }
     exported_names = {
@@ -3749,21 +3734,19 @@ def test_dual_expert_runtime_control_roles_have_one_owner_and_a_stable_facade() 
         | {"DUAL_EXPERT_ACTION_ONLY_ROLLOUT_COUPLINGS"},
         "routes": (
             owner_names["routes"]
-            - {
-                "_coerce_current_block_coupling",
-                "_coerce_runtime_mode",
-                "_enum_value",
-                "_looks_like_dual_expert_policy_config",
-                "_policy_config",
-                "_resolve_current_block_coupling",
-            }
+            - {"_enum_value", "_looks_like_dual_expert_policy_config", "_policy_config"}
         )
-        | {"DUAL_EXPERT_LEGACY_SPLIT_CACHE_INFERENCE_COUPLINGS"},
+        | {
+            "DUAL_EXPERT_SPLIT_CACHE_INFERENCE_COUPLINGS",
+            "DUAL_EXPERT_SPLIT_CACHE_INFERENCE_PROGRAMS",
+        },
     }
     all_names = set().union(*owner_names.values())
 
-    assert len(all_names) == 26
-    assert not _top_level_definitions(DUAL_EXPERT_RUNTIME_CONTROL_ROLE_PATHS["facade"])
+    for role, module in role_modules.items():
+        assert Path(module.__file__).resolve() == (
+            DUAL_EXPERT_RUNTIME_CONTROL_ROLE_PATHS[role].resolve()
+        )
     assert all(
         sum(
             name in _top_level_definitions(path)
@@ -3773,9 +3756,14 @@ def test_dual_expert_runtime_control_roles_have_one_owner_and_a_stable_facade() 
         for name in all_names
     )
     for role, names in owner_names.items():
-        assert _top_level_definitions(DUAL_EXPERT_RUNTIME_CONTROL_ROLE_PATHS[role]) == names
-        assert _module_all_names(DUAL_EXPERT_RUNTIME_CONTROL_ROLE_PATHS[role]) == exported_names[role]
-    assert _module_all_names(DUAL_EXPERT_RUNTIME_CONTROL_ROLE_PATHS["facade"]) == set()
+        assert (
+            _top_level_definitions(DUAL_EXPERT_RUNTIME_CONTROL_ROLE_PATHS[role])
+            == names
+        )
+        assert (
+            _module_all_names(DUAL_EXPERT_RUNTIME_CONTROL_ROLE_PATHS[role])
+            == exported_names[role]
+        )
 
     relative_imports: dict[str, set[str]] = {}
     for role, path in DUAL_EXPERT_RUNTIME_CONTROL_ROLE_PATHS.items():
@@ -3788,57 +3776,28 @@ def test_dual_expert_runtime_control_roles_have_one_owner_and_a_stable_facade() 
     assert relative_imports == {
         "backend": {"runtime_routes"},
         "coupling": set(),
-        "facade": {
-            "coupling_semantics",
-            "inference_backend",
-            "rollout_geometry",
-            "runtime_routes",
-        },
         "geometry": {"runtime_routes"},
         "routes": set(),
     }
 
-    facade_consumers = []
-    facade_module = "open_wam.models.policy_variants.dual_expert.runtime_routing"
-    for path in PACKAGE_ROOT.rglob("*.py"):
-        if path == DUAL_EXPERT_RUNTIME_CONTROL_ROLE_PATHS["facade"]:
-            continue
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        imports_facade = any(
-            (
-                isinstance(node, ast.Import)
-                and any(alias.name == facade_module for alias in node.names)
-            )
-            or (
-                isinstance(node, ast.ImportFrom)
-                and (
-                    node.module == facade_module
-                    or (node.level and node.module == "runtime_routing")
-                )
-            )
-            for node in ast.walk(tree)
-        )
-        if imports_facade:
-            facade_consumers.append(path.relative_to(PACKAGE_ROOT).as_posix())
-    assert facade_consumers == []
-
     expected_consumers = {
         "coupling_semantics": {
-            "joint_denoise_inference.py",
             "packed_inference.py",
             "packed_training.py",
             "split_cache_inference.py",
-            "unpacked_training.py",
-            "variant.py",
         },
         "inference_backend": {"variant.py"},
         "rollout_geometry": {
-            "joint_denoise_inference.py",
             "observed_history.py",
             "packed_inference.py",
             "split_cache_inference.py",
         },
-        "runtime_routes": {"__init__.py", "split_cache_inference.py", "variant.py"},
+        "runtime_routes": {
+            "__init__.py",
+            "inference_backend.py",
+            "rollout_geometry.py",
+            "split_cache_inference.py",
+        },
     }
     dual_expert_root = PACKAGE_ROOT / "models" / "policy_variants" / "dual_expert"
     for role_module, filenames in expected_consumers.items():
@@ -3848,6 +3807,7 @@ def test_dual_expert_runtime_control_roles_have_one_owner_and_a_stable_facade() 
 
     external_consumers = {
         "evals/libero_dual_expert_runtime.py": "inference_backend",
+        "evals/libero_realtime_runtime.py": "runtime_routes",
         "evals/libero_realtime_sequence.py": "rollout_geometry",
         "evals/realtime_speculation.py": "runtime_routes",
     }
@@ -3858,95 +3818,21 @@ def test_dual_expert_runtime_control_roles_have_one_owner_and_a_stable_facade() 
             in source
         )
 
-    for role, names in owner_names.items():
-        for name in names:
-            owner_value = getattr(role_modules[role], name)
-            assert getattr(runtime_routing, name) is owner_value
-            payload = f"c{facade_module}\n{name}\n.".encode()
-            assert pickle.loads(payload) is owner_value
-
-    for name in ("DualExpertRuntimeRoute", "DualExpertRuntimeRouteKind", "resolve_dual_expert_runtime_route"):
-        assert getattr(dual_expert_api, name) is getattr(runtime_routes, name)
-
-    expected_direct_names = {
-        "Any",
-        "CurrentBlockCoupling",
-        "Enum",
-        "JointTimestepCoupling",
-        "DUAL_EXPERT_ACTION_ONLY_ROLLOUT_COUPLINGS",
-        "DUAL_EXPERT_LEGACY_SPLIT_CACHE_INFERENCE_COUPLINGS",
-        "Mapping",
-        "DualExpertPolicyConfig",
-        "DualExpertRuntimeMode",
+    for name in (
         "DualExpertRuntimeRoute",
         "DualExpertRuntimeRouteKind",
-        "PolicyVariantName",
-        "Protocol",
-        "RolloutContextPolicy",
-        "SampleTargetAlignment",
-        "_InferenceContextLike",
-        "_coerce_current_block_coupling",
-        "_coerce_runtime_mode",
-        "_enum_value",
-        "_looks_like_dual_expert_policy_config",
-        "_policy_config",
-        "_resolve_current_block_coupling",
-        "annotations",
-        "dataclass",
-        "ensure_dual_expert_inference_backend",
-        "ensure_dual_expert_policy_variant_inference_backend",
-        "is_dual_expert_same_step_coupling",
-        "dual_expert_config_uses_strict_rollout_parity",
-        "dual_expert_policy_requires_legacy_split_cache_inference",
-        "resolve_dual_expert_action_only_rollout",
-        "resolve_dual_expert_current_block_coupling",
-        "resolve_dual_expert_inference_window_size",
-        "resolve_dual_expert_joint_timestep_coupling",
-        "resolve_dual_expert_rollout_cache_window_frames",
-        "resolve_dual_expert_rollout_frame_chunk_size",
-        "resolve_dual_expert_rollout_history_frames",
         "resolve_dual_expert_runtime_route",
-        "resolve_dual_expert_sequence_actions_per_frame",
-        "resolve_dual_expert_sequence_execution_action_offset",
-        "should_couple_dual_expert_action_to_video_sigmas",
-        "should_use_dual_expert_legacy_split_cache_inference",
-    }
-    assert {
-        name for name in vars(runtime_routing) if not name.startswith("__")
-    } == expected_direct_names
-    assert _top_level_import_names(DUAL_EXPERT_RUNTIME_CONTROL_ROLE_PATHS["facade"]) == (
-        expected_direct_names - {"annotations"}
-    )
+    ):
+        assert getattr(dual_expert_api, name) is getattr(runtime_routes, name)
 
-    expected_wildcard_names = {
-        name for name in expected_direct_names if not name.startswith("_")
-    }
-    wildcard_namespace: dict[str, object] = {}
-    exec(
-        "from open_wam.models.policy_variants.dual_expert.runtime_routing import *",
-        wildcard_namespace,
+    retired_path = (
+        PACKAGE_ROOT
+        / "models"
+        / "policy_variants"
+        / "dual_expert"
+        / "runtime_routing.py"
     )
-    assert set(wildcard_namespace) - {"__builtins__"} == expected_wildcard_names
-
-    route = runtime_routes.DualExpertRuntimeRoute(
-        kind=runtime_routes.DualExpertRuntimeRouteKind.SPLIT_CACHE_NON_JOINT,
-        runtime_mode=runtime_routing.DualExpertRuntimeMode.NON_JOINT_TWO_STREAM,
-        current_block_coupling=runtime_routing.CurrentBlockCoupling.VIDEO_THEN_ACTION,
-        resolved_current_block_coupling=(
-            runtime_routing.CurrentBlockCoupling.VIDEO_THEN_ACTION
-        ),
-        requires_legacy_block_restore=True,
-        uses_split_cache_rollout=True,
-        uses_stateful_realtime_session=True,
-        supports_realtime_history_controls=True,
-    )
-    legacy_payload = pickle.dumps(route, protocol=0).replace(
-        b"open_wam.models.policy_variants.dual_expert.runtime_routes\n",
-        b"open_wam.models.policy_variants.dual_expert.runtime_routing\n",
-    )
-    restored_route = pickle.loads(legacy_payload)
-    assert restored_route == route
-    assert type(restored_route) is runtime_routes.DualExpertRuntimeRoute
+    assert not retired_path.exists()
 
 
 def test_flow_matching_roles_have_one_owner() -> None:
@@ -4200,7 +4086,6 @@ def test_pipeline_factory_roles_have_one_owner() -> None:
         "DualExpertActionDecoder",
         "DualExpertPolicyConfig",
         "DualExpertPolicyVariant",
-        "DualExpertRuntimeMode",
         "POLICY_VARIANT_BUILDERS",
         "ParallelRuntimeMode",
         "ParallelStreamPolicyConfig",
@@ -4226,7 +4111,7 @@ def test_pipeline_factory_roles_have_one_owner() -> None:
     wildcard_namespace: dict[str, object] = {}
     exec("from open_wam.pipelines.factory import *", wildcard_namespace)
     assert set(wildcard_namespace) - {"__builtins__"} == expected_wildcard_names
-    assert len(_compatibility_export_names(role_paths["composition"])) == 21
+    assert len(_compatibility_export_names(role_paths["composition"])) == 20
 
     old_globals = {
         "validate_experiment_config": factory_validation.validate_experiment_config,
@@ -4676,7 +4561,7 @@ def test_dual_expert_cache_execution_has_one_owner() -> None:
     assert cache_execution_functions.isdisjoint(
         _top_level_definitions(dual_expert_root / "runtime.py")
     )
-    for consumer_name in ("split_cache_inference.py", "unpacked_training.py"):
+    for consumer_name in ("split_cache_inference.py",):
         assert "from .cache_execution import" in (
             dual_expert_root / consumer_name
         ).read_text(encoding="utf-8")
@@ -4695,35 +4580,24 @@ def test_dual_expert_dual_stream_execution_has_one_owner() -> None:
     assert execution_functions.isdisjoint(
         _top_level_definitions(dual_expert_root / "runtime.py")
     )
-    for consumer_name in (
-        "joint_denoise_inference.py",
-        "packed_inference.py",
-        "packed_training.py",
-        "unpacked_training.py",
-    ):
+    for consumer_name in ("packed_inference.py", "packed_training.py"):
         assert "from .dual_stream_execution import" in (
             dual_expert_root / consumer_name
         ).read_text(encoding="utf-8")
 
 
-def test_dual_expert_unpacked_training_has_one_program_owner() -> None:
+def test_retired_dual_expert_execution_programs_are_absent() -> None:
     dual_expert_root = PACKAGE_ROOT / "models" / "policy_variants" / "dual_expert"
     variant_path = dual_expert_root / "variant.py"
-    unpacked_path = dual_expert_root / "unpacked_training.py"
+    retired_paths = {
+        dual_expert_root / "joint_denoise_inference.py",
+        dual_expert_root / "unpacked_training.py",
+    }
 
-    assert {
-        "_build_video_train_rollout",
-        "run_joint_denoise",
-        "run_prefill_action_denoise",
-    } <= _class_method_definitions(unpacked_path, "DualExpertUnpackedTrainingProgram")
-    assert {
-        "_build_video_train_rollout",
-        "_forward_train_joint_denoise",
-        "_forward_train_prefill_action_denoise",
-    }.isdisjoint(_class_method_definitions(variant_path, "DualExpertPolicyVariant"))
-    assert "from .unpacked_training import" in variant_path.read_text(
-        encoding="utf-8"
-    )
+    assert all(not path.exists() for path in retired_paths)
+    source = variant_path.read_text(encoding="utf-8")
+    assert "unpacked_training" not in source
+    assert "joint_denoise_inference" not in source
 
 
 def test_dual_expert_attention_layout_roles_have_one_owner_and_a_stable_facade() -> None:
@@ -4816,10 +4690,7 @@ def test_dual_expert_attention_layout_roles_have_one_owner_and_a_stable_facade()
     expected_consumers = {
         "attention_cached": {"split_cache_inference.py"},
         "attention_packed": {"packed_inference.py", "packed_training.py"},
-        "attention_unpacked": {
-            "joint_denoise_inference.py",
-            "unpacked_training.py",
-        },
+        "attention_unpacked": set(),
     }
     dual_expert_root = PACKAGE_ROOT / "models" / "policy_variants" / "dual_expert"
     for role_module, filenames in expected_consumers.items():
@@ -4985,16 +4856,13 @@ def test_dual_expert_packed_training_program_has_one_execution_owner() -> None:
     assert run_call.func.value.func.id == "DualExpertPackedTrainingProgram"
 
 
-def test_dual_expert_non_packed_inference_programs_have_one_execution_owner() -> None:
+def test_dual_expert_split_cache_inference_has_one_execution_owner() -> None:
     dual_expert_root = PACKAGE_ROOT / "models" / "policy_variants" / "dual_expert"
     variant_path = dual_expert_root / "variant.py"
-    program_owners = {
-        "DualExpertJointDenoiseInferenceProgram": dual_expert_root / "joint_denoise_inference.py",
-        "DualExpertSplitCacheInferenceProgram": dual_expert_root / "split_cache_inference.py",
-    }
-    for class_name, owner_path in program_owners.items():
-        assert class_name in _top_level_definitions(owner_path)
-        assert "run" in _class_method_definitions(owner_path, class_name)
+    owner_path = dual_expert_root / "split_cache_inference.py"
+    class_name = "DualExpertSplitCacheInferenceProgram"
+    assert class_name in _top_level_definitions(owner_path)
+    assert "run" in _class_method_definitions(owner_path, class_name)
 
     dispatcher = _class_method(
         variant_path,
@@ -5010,10 +4878,7 @@ def test_dual_expert_non_packed_inference_programs_have_one_execution_owner() ->
         and isinstance(node.func.value, ast.Call)
         and isinstance(node.func.value.func, ast.Name)
     }
-    assert constructed_programs == {
-        "DualExpertJointDenoiseInferenceProgram",
-        "DualExpertSplitCacheInferenceProgram",
-    }
+    assert constructed_programs == {"DualExpertSplitCacheInferenceProgram"}
     assert any(
         isinstance(node, ast.Call)
         and isinstance(node.func, ast.Attribute)

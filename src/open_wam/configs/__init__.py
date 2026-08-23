@@ -98,7 +98,6 @@ from .enums import (
     DualExpertActionExpertInitMode,
     DualExpertConditionMode,
     DualExpertPreset,
-    DualExpertRuntimeMode,
     EvalMode,
     EvalPredictionSource,
     ExportedRuntimeActionInitMode,
@@ -129,7 +128,6 @@ from .enums import (
     MoTConditionMode,
     MoTGeneralistTrainingMode,
     MoTPreset,
-    MoTRuntimeMode,
     OptimizerName,
     PaddedTargetPolicy,
     ParallelActionAttentionScope,
@@ -199,6 +197,7 @@ from .policy_variant import (
 )
 from .policy_video_action import (
     VideoActionPolicyConfig,
+    current_block_coupling_for_program,
     resolve_video_action_program_semantics,
 )
 from .sequence_contracts import (
@@ -283,7 +282,6 @@ __all__ = [
     "DualExpertConditionMode",
     "DualExpertPolicyConfig",
     "DualExpertPreset",
-    "DualExpertRuntimeMode",
     "EvalMode",
     "EvalPredictionSource",
     "ExperimentConfig",
@@ -330,7 +328,6 @@ __all__ = [
     "MoTGeneralistTrainingMode",
     "MoTPolicyConfig",
     "MoTPreset",
-    "MoTRuntimeMode",
     "OptimizerName",
     "PaddedTargetPolicy",
     "ParallelActionAttentionScope",
@@ -399,6 +396,7 @@ __all__ = [
     "coerce_enum_tuple",
     "coerce_optional_enum",
     "coerce_strict_chunk_size",
+    "current_block_coupling_for_program",
     "default_mixed_video_resize_bins",
     "expand_parallel_sequence_contract",
     "expand_video_action_sequence_contract",

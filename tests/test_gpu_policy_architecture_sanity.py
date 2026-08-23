@@ -26,13 +26,13 @@ import yaml
 
 from open_wam.configs import (
     DualExpertConditionMode,
-    DualExpertRuntimeMode,
     JointTimestepCoupling,
     ParallelActionAttentionScope,
     ParallelActionConditionSource,
     ParallelRuntimeMode,
     TrainerAccelerator,
     TrainerPrecision,
+    VideoActionProgram,
     load_experiment_config,
 )
 from open_wam.data import build_synthetic_batch, move_wam_batch_to_device
@@ -101,21 +101,21 @@ def _pipeline_case_path(case_name: str, tmp_path: Path) -> Path:
             output_name="parallel_stream_robotwin_action_conditioned_gpu",
             mutate=_mutate_parallel_action_conditioned,
         )
-    if case_name == "dual_expert_prefill":
+    if case_name == "dual_expert_vta":
         return REPO_ROOT / "configs/experiments/dual_expert_robotwin_smoke.yaml"
     if case_name == "dual_expert_joint":
         return _write_temp_config(
             tmp_path,
             source_name="dual_expert_robotwin_smoke.yaml",
             output_name="dual_expert_robotwin_joint_gpu",
-            mutate=_mutate_dual_expert_joint_denoise,
+            mutate=_mutate_dual_expert_joint,
         )
-    if case_name == "dual_expert_non_joint":
+    if case_name == "dual_expert_decoupled":
         return _write_temp_config(
             tmp_path,
             source_name="dual_expert_robotwin_smoke.yaml",
-            output_name="dual_expert_robotwin_non_joint_gpu",
-            mutate=_mutate_dual_expert_non_joint_two_stream,
+            output_name="dual_expert_robotwin_decoupled_gpu",
+            mutate=_mutate_dual_expert_decoupled,
         )
     raise ValueError(f"Unsupported GPU sanity pipeline case {case_name!r}.")
 
@@ -130,9 +130,9 @@ def _mutate_parallel_action_conditioned(raw: dict[str, Any]) -> None:
     raw.setdefault("inference", {})["use_cache"] = False
 
 
-def _mutate_dual_expert_joint_denoise(raw: dict[str, Any]) -> None:
+def _mutate_dual_expert_joint(raw: dict[str, Any]) -> None:
     policy_variant = raw.setdefault("policy_variant", {})
-    policy_variant["runtime_mode"] = DualExpertRuntimeMode.JOINT_DENOISE.value
+    policy_variant["program"] = VideoActionProgram.JOINT.value
     policy_variant["condition_mode"] = DualExpertConditionMode.FULL_VIDEO.value
     _cap_inference_steps(raw, steps=2)
     inference = raw.setdefault("inference", {})
@@ -141,11 +141,12 @@ def _mutate_dual_expert_joint_denoise(raw: dict[str, Any]) -> None:
     inference["use_cache"] = False
 
 
-def _mutate_dual_expert_non_joint_two_stream(raw: dict[str, Any]) -> None:
+def _mutate_dual_expert_decoupled(raw: dict[str, Any]) -> None:
     policy_variant = raw.setdefault("policy_variant", {})
-    policy_variant["runtime_mode"] = DualExpertRuntimeMode.NON_JOINT_TWO_STREAM.value
-    policy_variant["condition_mode"] = DualExpertConditionMode.TEACHER_FORCING_COND_VIDEO.value
-    policy_variant["video_can_attend_action"] = False
+    policy_variant["program"] = VideoActionProgram.DECOUPLED_SAME_STEP.value
+    policy_variant["condition_mode"] = (
+        DualExpertConditionMode.TEACHER_FORCING_COND_VIDEO.value
+    )
     _cap_inference_steps(raw, steps=2)
     inference = raw.setdefault("inference", {})
     inference["video_num_inference_steps"] = 2
@@ -249,9 +250,9 @@ def _clear_cuda_between_tests():
     [
         ("parallel_exact", 8),
         ("parallel_action_conditioned", 8),
-        ("dual_expert_prefill", 8),
+        ("dual_expert_vta", 8),
         ("dual_expert_joint", 8),
-        ("dual_expert_non_joint", 8),
+        ("dual_expert_decoupled", 8),
     ],
 )
 def test_gpu_policy_architecture_pipeline_train_and_infer_matrix(
@@ -277,9 +278,9 @@ def test_gpu_policy_architecture_pipeline_train_and_infer_matrix(
     [
         "parallel_exact",
         "parallel_action_conditioned",
-        "dual_expert_prefill",
+        "dual_expert_vta",
         "dual_expert_joint",
-        "dual_expert_non_joint",
+        "dual_expert_decoupled",
     ],
 )
 def test_gpu_policy_architecture_runtime_train_matrix(
@@ -299,10 +300,13 @@ def test_gpu_policy_architecture_runtime_train_matrix(
     ("case_name", "expected_name"),
     [
         ("parallel_exact", "parallel_stream_robotwin_smoke"),
-        ("parallel_action_conditioned", "parallel_stream_robotwin_action_conditioned_gpu"),
-        ("dual_expert_prefill", "dual_expert_robotwin_smoke"),
+        (
+            "parallel_action_conditioned",
+            "parallel_stream_robotwin_action_conditioned_gpu",
+        ),
+        ("dual_expert_vta", "dual_expert_robotwin_smoke"),
         ("dual_expert_joint", "dual_expert_robotwin_joint_gpu"),
-        ("dual_expert_non_joint", "dual_expert_robotwin_non_joint_gpu"),
+        ("dual_expert_decoupled", "dual_expert_robotwin_non_joint_gpu"),
     ],
 )
 def test_gpu_policy_architecture_eval_matrix(

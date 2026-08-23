@@ -78,7 +78,7 @@ from .rollout_geometry import (
     resolve_dual_expert_rollout_frame_chunk_size,
 )
 from .runtime_routes import (
-    DUAL_EXPERT_LEGACY_SPLIT_CACHE_INFERENCE_COUPLINGS,
+    DUAL_EXPERT_SPLIT_CACHE_INFERENCE_COUPLINGS,
 )
 from .sequence_layout import build_action_grid_ids_for_sequence
 
@@ -140,9 +140,10 @@ class DualExpertSplitCacheInferenceProgram:
             context,
             current_block_coupling=current_block_coupling,
         )
-        if current_block_coupling not in DUAL_EXPERT_LEGACY_SPLIT_CACHE_INFERENCE_COUPLINGS:
+        if current_block_coupling not in DUAL_EXPERT_SPLIT_CACHE_INFERENCE_COUPLINGS:
             raise NotImplementedError(
-                "dual-expert legacy split-cache inference only supports staged video_then_action and decoupled_same_step; "
+                "Dual Expert split-cache inference only supports video_then_action "
+                "and decoupled_same_step; "
                 f"got current_block_coupling={current_block_coupling.value!r}."
             )
         generalist_rollout_mode = (
@@ -218,7 +219,7 @@ class DualExpertSplitCacheInferenceProgram:
             and bool(self.inference_config.use_cache)
         )
 
-        cache_name = "dual_expert_non_joint_two_stream_cache"
+        cache_name = "dual_expert_split_cache"
         latent_channels = int(visual_tower.config.latent_channels)
         latent_height = int(video_latents.shape[-2])
         latent_width = int(video_latents.shape[-1])
@@ -394,14 +395,14 @@ class DualExpertSplitCacheInferenceProgram:
             cache_state = visual_tower.core._resolve_exact_cache_state(cache_name)
             if cache_state is None:
                 raise RuntimeError(
-                    f"DualExpert non_joint_two_stream expected cache state at `{cache_name}` "
+                    f"Dual Expert split-cache inference expected cache state at `{cache_name}` "
                     "but the shared transformer returned None."
                 )
             extracted_layers: list[DualExpertVideoLayerCache] = []
             for entry in cache_state.self_attention_kv:
                 if entry.key is None or entry.value is None:
                     raise RuntimeError(
-                        "DualExpert non_joint_two_stream cache extraction found an empty layer entry."
+                        "Dual Expert split-cache extraction found an empty layer entry."
                     )
                 key = entry.key
                 value = entry.value
@@ -410,7 +411,7 @@ class DualExpertSplitCacheInferenceProgram:
                     value = value[:batch_size]
                 elif key.shape[0] != batch_size:
                     raise RuntimeError(
-                        "DualExpert non_joint_two_stream cache batch dimension must match the current batch "
+                        "Dual Expert split-cache batch dimension must match the current batch "
                         f"(or 2x for CFG), got cache_batch={key.shape[0]}, batch_size={batch_size}."
                     )
                 extracted_layers.append(
@@ -502,7 +503,7 @@ class DualExpertSplitCacheInferenceProgram:
         past_action_seq_len = int(past_action_cache.action_seq_len) if past_action_cache is not None else 0
         if past_action_seq_len % action_tokens_per_frame != 0:
             raise ValueError(
-                "DualExpert non_joint_two_stream action cache length must be a multiple of action_tokens_per_frame, "
+                "Dual Expert split-cache action length must be a multiple of action_tokens_per_frame, "
                 f"got past_action_seq_len={past_action_seq_len}, action_tokens_per_frame={action_tokens_per_frame}."
             )
         past_action_frames = past_action_seq_len // action_tokens_per_frame
@@ -630,7 +631,7 @@ class DualExpertSplitCacheInferenceProgram:
         )
         if fresh_action_kv is None:
             raise RuntimeError(
-                "DualExpert non_joint_two_stream cache-write forward did not produce fresh K/V."
+                "Dual Expert split-cache write did not produce fresh K/V."
             )
         # Append fresh action K/V to the persistent action cache for next chunk.
         fresh_action_kv_moved = move_dual_expert_action_cache(
@@ -710,7 +711,7 @@ class DualExpertSplitCacheInferenceProgram:
                 else None
             ),
             condition_mode=str(self.config.condition_mode),
-            runtime_mode=str(self.config.runtime_mode),
+            program=self.config.program.value,
         )
         return PolicyInferOutput(
             policy_features=sample.new_zeros(batch_size, 0, self.action_expert.hidden_size),

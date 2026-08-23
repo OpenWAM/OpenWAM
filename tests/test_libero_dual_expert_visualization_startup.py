@@ -14,8 +14,8 @@ if str(REPO_ROOT) not in sys.path:
 
 from open_wam.evals import libero_dual_expert_rollout as dual_expert_viz
 from open_wam.evals import libero_dual_expert_runtime as dual_expert_runtime
-from open_wam.models.policy_variants.dual_expert.runtime_routing import (
-    should_use_dual_expert_legacy_split_cache_inference,
+from open_wam.models.policy_variants.dual_expert.runtime_routes import (
+    should_use_dual_expert_split_cache_inference,
 )
 from open_wam.models.policy_variants.contracts import (
     DecoderArtifactEnvelope,
@@ -64,7 +64,7 @@ def test_policy_debug_summarizes_typed_decoder_artifacts() -> None:
                 action_pred=action_pred,
                 predicted_latents=predicted_latents,
                 condition_mode="teacher_forcing_cond_video",
-                runtime_mode="non_joint_two_stream",
+                program="video_then_action",
             ),
         ),
         aux={"architecture": "dual_expert"},
@@ -77,7 +77,7 @@ def test_policy_debug_summarizes_typed_decoder_artifacts() -> None:
         "action_pred_shape": [1, 16, 7],
         "predicted_latents_shape": [1, 48, 4, 8, 16],
         "condition_mode": "teacher_forcing_cond_video",
-        "runtime_mode": "non_joint_two_stream",
+        "program": "video_then_action",
     }
 
 
@@ -306,24 +306,23 @@ def test_build_executed_action_history_returns_none_when_nothing_executed() -> N
 
 
 @pytest.mark.parametrize(
-    ("current_block_coupling", "expected"),
+    ("program", "expected"),
     [
         ("video_then_action", True),
         ("decoupled_same_step", True),
         ("joint", False),
         ("video_noisy_to_action", False),
-        (None, False),
     ],
 )
-def test_should_use_dual_expert_legacy_split_cache_inference_only_for_legacy_couplings(
-    current_block_coupling: str | None,
+def test_should_use_dual_expert_split_cache_inference_is_program_driven(
+    program: str,
     expected: bool,
 ) -> None:
     config = SimpleNamespace(
-        policy_variant=SimpleNamespace(current_block_coupling=current_block_coupling)
+        policy_variant=SimpleNamespace(name="dual_expert", program=program)
     )
 
-    assert should_use_dual_expert_legacy_split_cache_inference(config) is expected
+    assert should_use_dual_expert_split_cache_inference(config) is expected
 
 
 def test_prepare_dual_expert_visual_outputs_streaming_path_uses_run_frontend() -> None:
