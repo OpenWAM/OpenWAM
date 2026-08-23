@@ -1,11 +1,21 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import StrEnum
 from typing import Any
 
 import torch
 
 from .contracts import VisualCoreInput, VisualCoreOutput
+
+
+class RuntimeSequenceFamily(StrEnum):
+    """Sequence representation dispatched by the shared runtime executor."""
+
+    DENSE = "dense_default"
+    CHUNKED_DUAL_STREAM_TRAIN = "chunked_dual_stream_exact"
+    CHUNKED_DUAL_STREAM_INFERENCE = "chunked_dual_stream_exact_inference"
+    SINGLE_STREAM = "single_stream_exact"
 
 
 @dataclass(frozen=True)
@@ -20,14 +30,17 @@ class RuntimeProgramSpec:
     """
 
     name: str
-    sequence_family: str
+    sequence_family: RuntimeSequenceFamily
     attention_profile_name: str | None = None
-    cache_backend_name: str | None = None
-    conditioning_mode: str = "default"
-    teacher_forcing_layout: str = "none"
-    stream_layout: str = "single"
-    projection_mode: str = "core_output"
-    runtime_family: str = "shared"
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "sequence_family",
+            RuntimeSequenceFamily(self.sequence_family),
+        )
+        if not self.name:
+            raise ValueError("Runtime program names must be non-empty.")
 
 
 @dataclass
@@ -70,62 +83,34 @@ class RuntimeStepOutput:
 def build_dense_runtime_program() -> RuntimeProgramSpec:
     return RuntimeProgramSpec(
         name="dense_default",
-        sequence_family="dense_default",
-        stream_layout="single",
-        projection_mode="core_output",
+        sequence_family=RuntimeSequenceFamily.DENSE,
     )
 
 
-def build_parallel_stream_exact_train_program(
+def build_chunked_dual_stream_exact_train_program(
     *,
     attention_profile_name: str | None = None,
-    cache_backend_name: str | None = None,
 ) -> RuntimeProgramSpec:
     return RuntimeProgramSpec(
-        name="parallel_stream_exact_train",
-        sequence_family="chunked_dual_stream_exact",
+        name="chunked_dual_stream_exact_train",
+        sequence_family=RuntimeSequenceFamily.CHUNKED_DUAL_STREAM_TRAIN,
         attention_profile_name=attention_profile_name,
-        cache_backend_name=cache_backend_name,
-        teacher_forcing_layout="chunked_dual_stream",
-        stream_layout="video_then_action_dual",
-        projection_mode="dual_stream_exact",
-        runtime_family="exact",
     )
 
 
-def build_parallel_stream_exact_inference_program(
+def build_chunked_dual_stream_exact_inference_program(
     *,
     attention_profile_name: str | None = None,
-    cache_backend_name: str | None = None,
 ) -> RuntimeProgramSpec:
     return RuntimeProgramSpec(
-        name="parallel_stream_exact_inference",
-        sequence_family="chunked_dual_stream_exact_inference",
+        name="chunked_dual_stream_exact_inference",
+        sequence_family=RuntimeSequenceFamily.CHUNKED_DUAL_STREAM_INFERENCE,
         attention_profile_name=attention_profile_name,
-        cache_backend_name=cache_backend_name,
-        teacher_forcing_layout="chunked_dual_stream",
-        stream_layout="video_then_action_dual",
-        projection_mode="dual_stream_exact",
-        runtime_family="exact",
     )
 
 
-def build_single_stream_exact_runtime_program(
-    *,
-    cache_backend_name: str | None = None,
-) -> RuntimeProgramSpec:
+def build_single_stream_exact_runtime_program() -> RuntimeProgramSpec:
     return RuntimeProgramSpec(
         name="single_stream_exact",
-        sequence_family="single_stream_exact",
-        cache_backend_name=cache_backend_name,
-        stream_layout="single",
-        projection_mode="single_stream_exact",
-        runtime_family="exact",
+        sequence_family=RuntimeSequenceFamily.SINGLE_STREAM,
     )
-
-
-# Compatibility aliases for the old layout-named public builders.
-build_chunked_dual_stream_exact_train_program = build_parallel_stream_exact_train_program
-build_chunked_dual_stream_exact_inference_program = (
-    build_parallel_stream_exact_inference_program
-)

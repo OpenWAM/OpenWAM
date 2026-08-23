@@ -339,14 +339,17 @@ def test_align_rollout_window_tensor_shifts_overlap_and_seeds_new_frames() -> No
     assert torch.equal(aligned, torch.tensor([[[20.0, 30.0, 300.0]]]))
 
 
-def test_dual_expert_trajectory_eval_marks_session_reset_boundary() -> None:
+def test_trajectory_eval_uses_variant_owned_session_lifecycle() -> None:
     dual_expert_config = load_experiment_config(REPO_ROOT / "configs/experiments/dual_expert_robotwin_smoke.yaml")
     parallel_config = load_experiment_config(
         REPO_ROOT / "configs/experiments/parallel_stream_robotwin_smoke.yaml"
     )
 
-    assert evaluate_module._dual_expert_requires_observation_conditioned_session_reset(dual_expert_config)
-    assert not evaluate_module._dual_expert_requires_observation_conditioned_session_reset(parallel_config)
+    dual_expert = build_variant_pipeline_from_config(dual_expert_config).policy_variant
+    parallel = build_variant_pipeline_from_config(parallel_config).policy_variant
+
+    assert evaluate_module._requires_observation_window_session_rebuild(dual_expert)
+    assert not evaluate_module._requires_observation_window_session_rebuild(parallel)
 
 
 def test_run_evaluation_loads_pipeline_prefixed_checkpoint(tmp_path: Path) -> None:

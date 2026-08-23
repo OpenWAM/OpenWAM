@@ -1,21 +1,31 @@
 from __future__ import annotations
 
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any
 
 import torch
 import torch.nn.functional as F
+from einops import rearrange
 
+from open_wam.configs.backbone import (
+    SharedVideoTransformerConfig,
+    resolve_stage_attention_mode,
+)
 from open_wam.models.common import (
     PreparedAttentionProfile,
     build_chunked_temporal_exact_attention_profile,
     chunked_temporal_exact_coupling_from_profile_name,
     normalize_attention_profile_name,
 )
-from open_wam.configs.backbone import SharedVideoTransformerConfig, resolve_stage_attention_mode
+from open_wam.models.common.proprio_conditioning import (
+    HiddenProprioContext,
+    ProprioContextGranularity,
+    project_hidden_proprio_context_to_frames,
+)
 
 from .contracts import VisualCoreInput
-from .runtime_programs import RuntimeStepInput
+from .runtime_programs import RuntimeSequenceFamily, RuntimeStepInput
 
 
 @dataclass(frozen=True)
@@ -46,6 +56,156 @@ class PreparedRuntimeSequence:
     action_mode: bool = False
 
 
+def _apply_packed_video_action_proprio_context(
+    *,
+    hidden_states: torch.Tensor,
+    stream_lengths: Sequence[int],
+    payload: Mapping[str, Any],
+    patch_size: tuple[int, int, int],
+    encode_context: Callable[..., torch.Tensor],
+) -> torch.Tensor:
+    """Add boundary-aligned state context to a packed video/action sequence."""
+
+    proprio_state = payload.get("per_chunk_proprio_state")
+    if proprio_state is None:
+        return hidden_states
+    if not isinstance(proprio_state, torch.Tensor):
+        raise TypeError("`per_chunk_proprio_state` must be a tensor.")
+    latent_payload = payload.get("latent_dict")
+    action_payload = payload.get("action_dict")
+    if not isinstance(latent_payload, Mapping) or not isinstance(
+        action_payload, Mapping
+    ):
+        raise TypeError(
+            "Packed proprio context requires `latent_dict` and `action_dict` payloads."
+        )
+    noisy_video = latent_payload.get("noisy_latents")
+    noisy_action = action_payload.get("noisy_latents")
+    if not isinstance(noisy_video, torch.Tensor) or not isinstance(
+        noisy_action, torch.Tensor
+    ):
+        raise TypeError(
+            "Packed proprio context requires tensor `noisy_latents` for both streams."
+        )
+    if len(stream_lengths) < 4:
+        raise ValueError(
+            "Packed proprio context requires video-noisy, video-condition, "
+            "action-noisy, and action-condition stream lengths."
+        )
+
+    latent_shape = tuple(int(dim) for dim in noisy_video.shape)
+    action_shape = tuple(int(dim) for dim in noisy_action.shape)
+    batch_size, _, latent_frames, latent_height, latent_width = latent_shape
+    action_batch, _, action_frames, action_height, action_width = action_shape
+    if batch_size != action_batch:
+        raise ValueError(
+            "Packed proprio context expects matching video/action batches, "
+            f"got {batch_size} and {action_batch}."
+        )
+    if proprio_state.ndim != 3 or int(proprio_state.shape[0]) != batch_size:
+        raise ValueError(
+            "Packed proprio context expects state shape "
+            "[B, frames_or_chunks, state_dim], "
+            f"got {tuple(proprio_state.shape)} for batch_size={batch_size}."
+        )
+
+    chunk_size = max(1, int(payload["chunk_size"]))
+    chunk_origin_frame = int(payload.get("chunk_origin_frame", 0) or 0)
+    granularity_value = payload.get(
+        "per_chunk_proprio_state_granularity",
+        ProprioContextGranularity.CHUNK,
+    )
+    try:
+        granularity = ProprioContextGranularity(granularity_value)
+    except ValueError as exc:
+        raise ValueError(
+            "`per_chunk_proprio_state_granularity` must be `frame` or `chunk`, "
+            f"got {granularity_value!r}."
+        ) from exc
+    prefix_frames = max(0, int(payload.get("prefix_condition_frames", 0) or 0))
+    boundary_state = project_hidden_proprio_context_to_frames(
+        HiddenProprioContext(values=proprio_state, granularity=granularity),
+        num_frames=latent_frames,
+        chunk_size=chunk_size,
+        chunk_origin_frame=chunk_origin_frame,
+        prefix_frames=prefix_frames,
+    )
+
+    chunk_context = encode_context(
+        boundary_state,
+        device=hidden_states.device,
+        dtype=hidden_states.dtype,
+    )
+    patch_t, patch_h, patch_w = (int(value) for value in patch_size)
+    video_frames = latent_frames // patch_t
+    if patch_t != 1:
+        chunk_context = chunk_context[:, ::patch_t, :]
+    video_tokens_per_frame = (latent_height // patch_h) * (latent_width // patch_w)
+    action_tokens_per_frame = action_height * action_width
+    if video_frames != action_frames + prefix_frames:
+        raise ValueError(
+            "Packed proprio context expects patchified video frames to equal "
+            "action frames plus prefix frames, "
+            f"got video_frames={video_frames}, action_frames={action_frames}, "
+            f"prefix_frames={prefix_frames}."
+        )
+    video_context = chunk_context.repeat_interleave(
+        video_tokens_per_frame,
+        dim=1,
+    )
+    action_context = (
+        chunk_context[:, prefix_frames:, :] if prefix_frames > 0 else chunk_context
+    ).repeat_interleave(action_tokens_per_frame, dim=1)
+    if hidden_states.shape[0] == 1:
+        video_context = rearrange(video_context, "b l c -> 1 (b l) c")
+        action_context = rearrange(action_context, "b l c -> 1 (b l) c")
+    elif hidden_states.shape[0] != batch_size:
+        raise ValueError(
+            "Unexpected packed hidden-state batch layout: expected leading "
+            f"dimension 1 or {batch_size}, got {hidden_states.shape[0]}."
+        )
+
+    video_noisy_len, video_condition_len, action_noisy_len, action_condition_len = (
+        int(stream_lengths[index]) for index in range(4)
+    )
+    if (
+        int(video_context.shape[1]) != video_noisy_len
+        or int(action_context.shape[1]) != action_noisy_len
+    ):
+        raise ValueError(
+            "Packed proprio context does not match stream token lengths: "
+            f"video_context={tuple(video_context.shape)}, "
+            f"action_context={tuple(action_context.shape)}, "
+            f"stream_lengths={tuple(int(value) for value in stream_lengths)}."
+        )
+
+    output = hidden_states.clone()
+    if bool(payload.get("per_chunk_proprio_apply_to_video", True)):
+        output[:, :video_noisy_len, :] += video_context
+        if video_condition_len > 0:
+            if video_condition_len != video_noisy_len:
+                raise ValueError(
+                    "Packed proprio video streams must have equal token lengths, "
+                    f"got noisy={video_noisy_len}, condition={video_condition_len}."
+                )
+            output[:, video_noisy_len : video_noisy_len + video_condition_len, :] += (
+                video_context
+            )
+    action_start = video_noisy_len + video_condition_len
+    output[:, action_start : action_start + action_noisy_len, :] += action_context
+    if action_condition_len > 0:
+        if action_condition_len != action_noisy_len:
+            raise ValueError(
+                "Packed proprio action streams must have equal token lengths, "
+                f"got noisy={action_noisy_len}, condition={action_condition_len}."
+            )
+        condition_start = action_start + action_noisy_len
+        output[:, condition_start : condition_start + action_condition_len, :] += (
+            action_context
+        )
+    return output
+
+
 def prepare_exact_dual_stream_train_sequence(
     input_dict: dict[str, torch.Tensor | dict[str, torch.Tensor]],
     *,
@@ -54,8 +214,11 @@ def prepare_exact_dual_stream_train_sequence(
     model_dtype: torch.dtype,
     input_embed: Callable[[torch.Tensor, str], torch.Tensor],
     exact_text_hidden_states: Callable[[torch.Tensor], torch.Tensor],
-    time_embed: Callable[[torch.Tensor, int, int, torch.dtype, bool], tuple[torch.Tensor, torch.Tensor]],
+    time_embed: Callable[
+        [torch.Tensor, int, int, torch.dtype, bool], tuple[torch.Tensor, torch.Tensor]
+    ],
     rope: Callable[[torch.Tensor], torch.Tensor],
+    encode_proprio_context: Callable[..., torch.Tensor] | None = None,
 ) -> PreparedExactTrainSequence:
     latent_dict = input_dict["latent_dict"]
     action_dict = input_dict["action_dict"]
@@ -63,20 +226,49 @@ def prepare_exact_dual_stream_train_sequence(
     assert isinstance(action_dict, dict)
 
     latent_dict = {
-        key: value.to(model_dtype) if torch.is_tensor(value) and torch.is_floating_point(value) else value
+        key: value.to(model_dtype)
+        if torch.is_tensor(value) and torch.is_floating_point(value)
+        else value
         for key, value in latent_dict.items()
     }
     action_dict = {
-        key: value.to(model_dtype) if torch.is_tensor(value) and torch.is_floating_point(value) else value
+        key: value.to(model_dtype)
+        if torch.is_tensor(value) and torch.is_floating_point(value)
+        else value
         for key, value in action_dict.items()
     }
 
     batch_size = int(latent_dict["noisy_latents"].shape[0])
-    latent_hidden_states = input_embed(latent_dict["noisy_latents"], "latent").flatten(0, 1).contiguous()[None].clone()
-    action_hidden_states = input_embed(action_dict["noisy_latents"], "action").flatten(0, 1).contiguous()[None].clone()
-    text_hidden_states = exact_text_hidden_states(latent_dict["text_emb"]).flatten(0, 1).contiguous()[None].clone()
-    condition_latent_hidden_states = input_embed(latent_dict["latent"], "latent").flatten(0, 1).contiguous()[None].clone()
-    condition_action_hidden_states = input_embed(action_dict["latent"], "action").flatten(0, 1).contiguous()[None].clone()
+    latent_hidden_states = (
+        input_embed(latent_dict["noisy_latents"], "latent")
+        .flatten(0, 1)
+        .contiguous()[None]
+        .clone()
+    )
+    action_hidden_states = (
+        input_embed(action_dict["noisy_latents"], "action")
+        .flatten(0, 1)
+        .contiguous()[None]
+        .clone()
+    )
+    text_hidden_states = (
+        exact_text_hidden_states(latent_dict["text_emb"])
+        .flatten(0, 1)
+        .contiguous()[None]
+        .clone()
+    )
+    condition_latent_hidden_states = (
+        input_embed(latent_dict["latent"], "latent")
+        .flatten(0, 1)
+        .contiguous()[None]
+        .clone()
+    )
+    condition_action_hidden_states = (
+        input_embed(action_dict["latent"], "action")
+        .flatten(0, 1)
+        .contiguous()[None]
+        .clone()
+    )
 
     hidden_states = torch.cat(
         [
@@ -87,19 +279,37 @@ def prepare_exact_dual_stream_train_sequence(
         ],
         dim=1,
     )
-    latent_grid_id = latent_dict["grid_id"].permute(1, 0, 2).flatten(1).contiguous()[None].clone()
-    action_grid_id = action_dict["grid_id"].permute(1, 0, 2).flatten(1).contiguous()[None].clone()
+    latent_grid_id = (
+        latent_dict["grid_id"].permute(1, 0, 2).flatten(1).contiguous()[None].clone()
+    )
+    action_grid_id = (
+        action_dict["grid_id"].permute(1, 0, 2).flatten(1).contiguous()[None].clone()
+    )
     full_grid_id = torch.cat([latent_grid_id] * 2 + [action_grid_id] * 2, dim=2)
     rotary_emb = rope(full_grid_id)[:, :, None]
 
-    latent_time_steps = torch.cat(
-        [latent_dict["timesteps"].flatten(0, 1), latent_dict["cond_timesteps"].flatten(0, 1)],
-        dim=0,
-    ).contiguous()[None].clone()
-    action_time_steps = torch.cat(
-        [action_dict["timesteps"].flatten(0, 1), action_dict["cond_timesteps"].flatten(0, 1)],
-        dim=0,
-    ).contiguous()[None].clone()
+    latent_time_steps = (
+        torch.cat(
+            [
+                latent_dict["timesteps"].flatten(0, 1),
+                latent_dict["cond_timesteps"].flatten(0, 1),
+            ],
+            dim=0,
+        )
+        .contiguous()[None]
+        .clone()
+    )
+    action_time_steps = (
+        torch.cat(
+            [
+                action_dict["timesteps"].flatten(0, 1),
+                action_dict["cond_timesteps"].flatten(0, 1),
+            ],
+            dim=0,
+        )
+        .contiguous()[None]
+        .clone()
+    )
     latent_temb, latent_timestep_proj = time_embed(
         latent_time_steps,
         int(latent_dict["noisy_latents"].shape[-2]),
@@ -119,21 +329,49 @@ def prepare_exact_dual_stream_train_sequence(
 
     total_length = int(hidden_states.shape[1])
     padded_length = (128 - total_length % 128) % 128
+    stream_lengths = [
+        int(latent_hidden_states.shape[1]),
+        int(condition_latent_hidden_states.shape[1]),
+        int(action_hidden_states.shape[1]),
+        int(condition_action_hidden_states.shape[1]),
+        int(padded_length),
+    ]
     if padded_length > 0:
         hidden_states = F.pad(hidden_states, (0, 0, 0, padded_length))
         rotary_emb = F.pad(rotary_emb, (0, 0, 0, 0, 0, padded_length))
         temb = F.pad(temb, (0, 0, 0, padded_length))
         timestep_proj = F.pad(timestep_proj, (0, 0, 0, 0, 0, padded_length))
 
-    attention_profile_name = normalize_attention_profile_name(input_dict.get("attention_profile_name"))
-    if attention_profile_name is None and resolve_stage_attention_mode(
-        config,
-        stage="train",
-        exact_runtime=True,
-    ) == "flex":
+    if input_dict.get("per_chunk_proprio_state") is not None:
+        if encode_proprio_context is None:
+            raise ValueError(
+                "Packed proprio conditioning requires a visual-core state encoder."
+            )
+        hidden_states = _apply_packed_video_action_proprio_context(
+            hidden_states=hidden_states,
+            stream_lengths=stream_lengths,
+            payload=input_dict,
+            patch_size=patch_size,
+            encode_context=encode_proprio_context,
+        )
+
+    attention_profile_name = normalize_attention_profile_name(
+        input_dict.get("attention_profile_name")
+    )
+    if (
+        attention_profile_name is None
+        and resolve_stage_attention_mode(
+            config,
+            stage="train",
+            exact_runtime=True,
+        )
+        == "flex"
+    ):
         attention_profile_name = "chunked_temporal_exact"
     base_text_token_count = input_dict.get("base_text_token_count")
-    proprio_context_token_count = int(input_dict.get("proprio_context_token_count", 0) or 0)
+    proprio_context_token_count = int(
+        input_dict.get("proprio_context_token_count", 0) or 0
+    )
 
     exact_attention_profile = None
     if attention_profile_name in {
@@ -157,7 +395,9 @@ def prepare_exact_dual_stream_train_sequence(
             ),
             proprio_context_token_count=proprio_context_token_count,
             chunk_origin_frame=int(input_dict.get("chunk_origin_frame", 0) or 0),
-            prefix_condition_frames=int(input_dict.get("prefix_condition_frames", 0) or 0),
+            prefix_condition_frames=int(
+                input_dict.get("prefix_condition_frames", 0) or 0
+            ),
             singleton_chunk_frame=(
                 None
                 if input_dict.get("singleton_chunk_frame") is None
@@ -171,9 +411,8 @@ def prepare_exact_dual_stream_train_sequence(
             device=hidden_states.device,
             build_dense_masks=hidden_states.device.type != "cuda",
             build_flex_masks=hidden_states.device.type == "cuda",
-            current_block_coupling=chunked_temporal_exact_coupling_from_profile_name(attention_profile_name),
-            preserve_video_pretrain_history=bool(
-                input_dict.get("preserve_video_pretrain_history", False)
+            current_block_coupling=chunked_temporal_exact_coupling_from_profile_name(
+                attention_profile_name
             ),
             history_stream_visibility=input_dict.get("history_stream_visibility"),
             conditional_history_policy=input_dict.get("conditional_history_policy"),
@@ -198,13 +437,7 @@ def prepare_exact_dual_stream_train_sequence(
         rotary_emb=rotary_emb,
         temb=temb,
         timestep_proj=timestep_proj,
-        split_list=[
-            latent_hidden_states.shape[1],
-            condition_latent_hidden_states.shape[1],
-            action_hidden_states.shape[1],
-            condition_action_hidden_states.shape[1],
-            padded_length,
-        ],
+        split_list=stream_lengths,
         batch_size=batch_size,
         attention_profile=exact_attention_profile,
     )
@@ -224,19 +457,24 @@ def _action_mask_has_invalid_tokens(mask: Any) -> bool:
     elif mask.ndim == 2:
         token_valid = mask.float() > 0
     else:
-        raise ValueError(f"Unsupported action visibility mask shape {tuple(mask.shape)}.")
+        raise ValueError(
+            f"Unsupported action visibility mask shape {tuple(mask.shape)}."
+        )
     return bool((~token_valid).any().item())
 
 
 def prepare_runtime_sequence(
     step_input: RuntimeStepInput,
     *,
-    exact_train_preparer: Callable[[dict[str, torch.Tensor | dict[str, torch.Tensor]]], PreparedExactTrainSequence] | None = None,
+    exact_train_preparer: Callable[
+        [dict[str, torch.Tensor | dict[str, torch.Tensor]]], PreparedExactTrainSequence
+    ]
+    | None = None,
 ) -> PreparedRuntimeSequence:
     """Resolve one runtime step into an executable backbone payload."""
 
     family = step_input.program.sequence_family
-    if family == "dense_default":
+    if family is RuntimeSequenceFamily.DENSE:
         if step_input.core_input is None:
             raise ValueError(
                 f"Runtime program {step_input.program.name!r} requires `core_input`."
@@ -245,20 +483,27 @@ def prepare_runtime_sequence(
             mode="core_input",
             core_input=step_input.core_input,
         )
-    if family in {"chunked_dual_stream_exact", "chunked_dual_stream_exact_inference"}:
+    if family in {
+        RuntimeSequenceFamily.CHUNKED_DUAL_STREAM_TRAIN,
+        RuntimeSequenceFamily.CHUNKED_DUAL_STREAM_INFERENCE,
+    }:
         if step_input.payload is None:
             raise ValueError(
                 f"Runtime program {step_input.program.name!r} requires exact-train `payload`."
             )
         if exact_train_preparer is None:
-            raise ValueError("Exact train runtime preparation requires `exact_train_preparer`.")
+            raise ValueError(
+                "Exact train runtime preparation requires `exact_train_preparer`."
+            )
         payload = dict(step_input.payload)
         if (
             step_input.program.attention_profile_name is not None
             and payload.get("attention_profile_name") is None
         ):
-            payload["attention_profile_name"] = step_input.program.attention_profile_name
-        if family == "chunked_dual_stream_exact_inference":
+            payload["attention_profile_name"] = (
+                step_input.program.attention_profile_name
+            )
+        if family is RuntimeSequenceFamily.CHUNKED_DUAL_STREAM_INFERENCE:
             return PreparedRuntimeSequence(
                 mode="exact_inference",
                 payload=payload,
@@ -271,7 +516,7 @@ def prepare_runtime_sequence(
             payload=payload,
             exact_train=exact_train_preparer(payload),
         )
-    if family == "single_stream_exact":
+    if family is RuntimeSequenceFamily.SINGLE_STREAM:
         if step_input.payload is None:
             raise ValueError(
                 f"Runtime program {step_input.program.name!r} requires exact-stream `payload`."

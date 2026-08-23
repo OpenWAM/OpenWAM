@@ -15,14 +15,11 @@ from .enums import (
     DualExpertActionExpertInitMode,
     DualExpertConditionMode,
     DualExpertPreset,
-    GeneralistDenoisingMode,
-    GeneralistTrainingParadigm,
+    DynamicsObjective,
     HistoryStreamVisibility,
-    JointDenoiseTrainingMode,
     JointTimestepCoupling,
     MoTActionExpertInitMode,
     MoTConditionMode,
-    MoTGeneralistTrainingMode,
     MoTPreset,
     ParallelActionAttentionScope,
     ParallelActionConditionSource,
@@ -44,28 +41,17 @@ from .inference import InferenceConfig
 from .policy_contracts import (
     CausalVideoPredictionPolicyConfig,
     ExtensionPolicyConfig,
+    PolicyConditioningRequirements,
     PolicyVariantConfig,
 )
-from .policy_dual_expert import (
-    DualExpertPolicyConfig,
-    _coerce_mot_generalist_training_mode_probs,
-)
-from .policy_parallel_stream import (
-    ParallelStreamPolicyConfig,
-    _coerce_joint_denoise_training_mode_probs,
-    _default_joint_denoise_training_mode_probs,
-)
+from .policy_dual_expert import DualExpertPolicyConfig
+from .policy_parallel_stream import ParallelStreamPolicyConfig
 from .policy_parsing import parse_policy_variant_config
 from .policy_video_action import (
     VideoActionPolicyConfig,
     current_block_coupling_for_program,
-    resolve_video_action_program_semantics,
 )
 from .training import TrainingConfig
-from .variant_semantics import (
-    coerce_probability_map,
-    default_video_action_conditioning_mode_probs,
-)
 
 MoTPolicyConfig = DualExpertPolicyConfig
 
@@ -76,18 +62,15 @@ _POLICY_COMPATIBILITY_EXPORTS = (
     ContextConditionLatentSource,
     CurrentBlockCoupling,
     DataConfig,
-    GeneralistTrainingParadigm,
     HistoryStreamVisibility,
     InferenceConfig,
-    JointDenoiseTrainingMode,
     JointTimestepCoupling,
     DualExpertActionExpertInitMode,
     DualExpertConditionMode,
-    GeneralistDenoisingMode,
+    DynamicsObjective,
     DualExpertPreset,
     MoTActionExpertInitMode,
     MoTConditionMode,
-    MoTGeneralistTrainingMode,
     MoTPreset,
     ParallelActionAttentionScope,
     ParallelActionConditionSource,
@@ -106,11 +89,6 @@ _POLICY_COMPATIBILITY_EXPORTS = (
     TrainingConfig,
     VideoActionSequenceContract,
     coerce_fields,
-    coerce_probability_map,
-    default_video_action_conditioning_mode_probs,
-    _coerce_joint_denoise_training_mode_probs,
-    _coerce_mot_generalist_training_mode_probs,
-    _default_joint_denoise_training_mode_probs,
 )
 
 __all__ = [
@@ -118,9 +96,9 @@ __all__ = [
     "DualExpertPolicyConfig",
     "ExtensionPolicyConfig",
     "ParallelStreamPolicyConfig",
+    "PolicyConditioningRequirements",
     "PolicyVariantConfig",
     "VideoActionPolicyConfig",
     "current_block_coupling_for_program",
     "parse_policy_variant_config",
-    "resolve_video_action_program_semantics",
 ]

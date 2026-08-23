@@ -9,7 +9,6 @@ from torch import nn
 from open_wam.data import (
     CanonicalVideoBatch,
     ConfiguredCanonicalVideoPreprocessor,
-    RobotWinCanonicalVideoPreprocessor,
 )
 from open_wam.models.action_decoders import (
     ActionDecoder,
@@ -20,11 +19,13 @@ from open_wam.models.policy_variants import (
     PolicyInferContext,
     PolicyInferOutput,
     PolicyInferState,
+    PolicyModuleTopology,
     PolicyObservedHistory,
     PolicyObservedHistoryOutput,
     PolicyTrainBatch,
     PolicyTrainOutput,
     PolicyVariant,
+    PolicyVisualStage,
 )
 from open_wam.models.visual_tower import VisualStageOutputs, VisualTower
 
@@ -55,7 +56,7 @@ class VariantPipeline(nn.Module):
         visual_tower: VisualTower,
         policy_variant: PolicyVariant,
         action_decoder: ActionDecoder,
-        preprocessor: ConfiguredCanonicalVideoPreprocessor | None = None,
+        preprocessor: ConfiguredCanonicalVideoPreprocessor,
         action_sampler_mask: torch.Tensor | None = None,
         action_sampler_inactive_value: float = 0.0,
     ) -> None:
@@ -63,7 +64,8 @@ class VariantPipeline(nn.Module):
         self.visual_tower = visual_tower
         self.policy_variant = policy_variant
         self.action_decoder = action_decoder
-        self.preprocessor = preprocessor or RobotWinCanonicalVideoPreprocessor()
+        self._validate_decoder_artifact_contract()
+        self.preprocessor = preprocessor
         self.action_sampler_inactive_value = float(action_sampler_inactive_value)
         if action_sampler_mask is not None:
             self.register_buffer(
@@ -76,6 +78,42 @@ class VariantPipeline(nn.Module):
         self.action_decoder.configure_action_sampler_mask(
             self._action_sampler_mask,
             inactive_value=self.action_sampler_inactive_value,
+        )
+
+    def _validate_decoder_artifact_contract(self) -> None:
+        produced = self.policy_variant.decoder_artifact_contract
+        consumed = self.action_decoder.decoder_artifact_contract
+        if produced == consumed:
+            return
+        raise ValueError(
+            "Policy and action decoder artifact contracts do not match: "
+            f"policy emits {produced!r}, decoder accepts {consumed!r}. "
+            "Select a decoder compatible with the configured policy architecture."
+        )
+
+    def module_topology(self) -> PolicyModuleTopology:
+        """Return the active variant's module ownership contract."""
+
+        return self.policy_variant.module_topology(self.visual_tower)
+
+    def on_checkpoint_loaded(
+        self,
+        *,
+        loaded_state_keys: frozenset[str],
+        missing_state_keys: frozenset[str],
+    ) -> None:
+        """Forward policy-local checkpoint lifecycle state without key leakage."""
+
+        prefix = "policy_variant."
+
+        def _policy_keys(keys: frozenset[str]) -> frozenset[str]:
+            return frozenset(
+                key.removeprefix(prefix) for key in keys if key.startswith(prefix)
+            )
+
+        self.policy_variant.on_checkpoint_loaded(
+            loaded_state_keys=_policy_keys(loaded_state_keys),
+            missing_state_keys=_policy_keys(missing_state_keys),
         )
 
     def reconcile_observed_history(
@@ -132,9 +170,19 @@ class VariantPipeline(nn.Module):
         return self._complete_visual_outputs(frontend_output)
 
     def _complete_visual_outputs(self, frontend_output) -> VisualStageOutputs:
-        requested_stages = set(self.policy_variant.required_visual_stages())
+        try:
+            requested_stages = {
+                PolicyVisualStage(stage)
+                for stage in self.policy_variant.required_visual_stages()
+            }
+        except ValueError as exc:
+            supported = ", ".join(stage.value for stage in PolicyVisualStage)
+            raise ValueError(
+                "Policy requested an unsupported visual stage; "
+                f"supported stages: {supported}."
+            ) from exc
         core_output = None
-        if "core" in requested_stages:
+        if PolicyVisualStage.CORE in requested_stages:
             core_output = self.visual_tower.run_default_core(frontend_output)
         return VisualStageOutputs(frontend=frontend_output, core=core_output)
 
@@ -152,7 +200,9 @@ class VariantPipeline(nn.Module):
         previous_decoder_state: object | None = None,
     ) -> ActionDecoderInferOutput:
         return self._apply_action_sampler_mask_to_infer_output(
-            self.action_decoder.forward_infer(policy_output, previous_state=previous_decoder_state)
+            self.action_decoder.forward_infer(
+                policy_output, previous_state=previous_decoder_state
+            )
         )
 
     def _apply_action_sampler_mask_to_infer_output(
@@ -175,12 +225,16 @@ class VariantPipeline(nn.Module):
             aux=aux,
         )
 
-    def _apply_action_sampler_mask(self, actions: torch.Tensor, *, start_index: int = 0) -> torch.Tensor:
+    def _apply_action_sampler_mask(
+        self, actions: torch.Tensor, *, start_index: int = 0
+    ) -> torch.Tensor:
         sampler_mask = self._action_sampler_mask
         if sampler_mask is None:
             return actions
         if actions.ndim not in {2, 3}:
-            raise ValueError(f"Action sampler mask supports [B, D] or [B, H, D], got {tuple(actions.shape)}.")
+            raise ValueError(
+                f"Action sampler mask supports [B, D] or [B, H, D], got {tuple(actions.shape)}."
+            )
         if actions.shape[-1] != sampler_mask.shape[-1]:
             raise ValueError(
                 f"Action sampler mask dim {sampler_mask.shape[-1]} does not match action dim {actions.shape[-1]}."
@@ -192,7 +246,9 @@ class VariantPipeline(nn.Module):
                 "Action sampler mask horizon is shorter than the requested action slice, "
                 f"got mask_horizon={sampler_mask.shape[0]}, start_index={start_index}, horizon={horizon}."
             )
-        mask = sampler_mask[int(start_index) : end_index].to(device=actions.device, dtype=actions.dtype)
+        mask = sampler_mask[int(start_index) : end_index].to(
+            device=actions.device, dtype=actions.dtype
+        )
         if actions.ndim == 3:
             mask = mask.unsqueeze(0)
         inactive = actions.new_full((), self.action_sampler_inactive_value)
@@ -228,7 +284,9 @@ class VariantPipeline(nn.Module):
 
         if views is not None:
             if video_latents is not None:
-                raise ValueError("Pass either `views` or `video_latents` to VariantPipeline.forward, not both.")
+                raise ValueError(
+                    "Pass either `views` or `video_latents` to VariantPipeline.forward, not both."
+                )
             return self.forward_train(views, batch)
         if video_latents is not None:
             return self.forward_train_from_latents(
@@ -238,7 +296,9 @@ class VariantPipeline(nn.Module):
                 text_context=text_context,
                 negative_text_context=negative_text_context,
             )
-        raise ValueError("VariantPipeline.forward requires either `views` or `video_latents`.")
+        raise ValueError(
+            "VariantPipeline.forward requires either `views` or `video_latents`."
+        )
 
     def forward_train(
         self,
@@ -275,13 +335,17 @@ class VariantPipeline(nn.Module):
         *,
         batch: PolicyTrainBatch,
     ) -> VariantPipelineTrainOutput:
-        prepared_inputs = self.policy_variant.prepare_train_inputs(visual_outputs, batch)
+        prepared_inputs = self.policy_variant.prepare_train_inputs(
+            visual_outputs, batch
+        )
         policy_output = self.policy_variant.forward_train(
             visual_tower=self.visual_tower,
             visual_outputs=visual_outputs,
             prepared_inputs=prepared_inputs,
         )
-        decoder_output = self.resolve_train_decoder_output(policy_output, prepared_inputs.batch)
+        decoder_output = self.resolve_train_decoder_output(
+            policy_output, prepared_inputs.batch
+        )
         return VariantPipelineTrainOutput(
             visual_outputs=visual_outputs,
             policy_output=policy_output,

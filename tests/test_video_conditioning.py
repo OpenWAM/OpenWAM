@@ -3,15 +3,85 @@ from __future__ import annotations
 import pytest
 import torch
 
-from open_wam.models.policy_variants.parallel_stream import reference_runtime
-from open_wam.models.policy_variants.parallel_stream.latent_conditioning import (
+from open_wam.configs import (
+    DualExpertPolicyConfig,
+    ParallelStreamPolicyConfig,
+    VideoActionProgram,
+)
+from open_wam.models.common.video_conditioning import (
     build_repeated_first_frame_condition,
     resolve_full_window_condition_latents,
     select_first_frame_condition_latents,
 )
+from open_wam.models.policy_variants import PolicyTrainBatch
+from open_wam.models.policy_variants.dual_expert.conditioning import (
+    DualExpertConditioning,
+)
+from open_wam.models.policy_variants.parallel_stream import reference_runtime
+from open_wam.models.policy_variants.parallel_stream.conditioning import (
+    ParallelStreamConditioning,
+)
 
 
-def test_reference_runtime_latent_conditioning_names_alias_canonical_contract() -> None:
+def _training_conditioners():
+    shared = {
+        "program": VideoActionProgram.VIDEO_THEN_ACTION,
+        "use_condition_latents": True,
+        "require_condition_latents": True,
+    }
+    return (
+        DualExpertConditioning(DualExpertPolicyConfig(**shared)),
+        ParallelStreamConditioning(ParallelStreamPolicyConfig(**shared)),
+    )
+
+
+def test_policy_architectures_accept_the_same_canonical_condition_layout() -> None:
+    video_latents = torch.zeros(1, 3, 4, 2, 2, dtype=torch.float64)
+    condition_latents = torch.ones(1, 3, 1, 2, 2, dtype=torch.float32)
+    batch = PolicyTrainBatch(
+        actions=torch.zeros(1, 1, 1),
+        extra={"condition_latents": condition_latents},
+    )
+
+    resolved = tuple(
+        conditioning.resolve_train_condition_latents(
+            batch,
+            video_latents=video_latents,
+        )
+        for conditioning in _training_conditioners()
+    )
+
+    for value in resolved:
+        assert value is not None
+        assert value.dtype == video_latents.dtype
+        torch.testing.assert_close(
+            value,
+            condition_latents.to(dtype=video_latents.dtype),
+            rtol=0.0,
+            atol=0.0,
+        )
+
+
+def test_policy_architectures_reject_noncanonical_condition_layout_equally() -> None:
+    video_latents = torch.zeros(1, 3, 4, 2, 2)
+    time_first_condition = torch.zeros(1, 4, 3, 2, 2)
+    batch = PolicyTrainBatch(
+        actions=torch.zeros(1, 1, 1),
+        extra={"condition_latents": time_first_condition},
+    )
+
+    for conditioning in _training_conditioners():
+        with pytest.raises(
+            ValueError,
+            match="batch/channel dimensions must match video_latents",
+        ):
+            conditioning.resolve_train_condition_latents(
+                batch,
+                video_latents=video_latents,
+            )
+
+
+def test_reference_runtime_video_conditioning_names_alias_canonical_contract() -> None:
     assert (
         reference_runtime._build_clean_video_condition_from_anchor
         is build_repeated_first_frame_condition
@@ -170,7 +240,7 @@ def test_first_frame_condition_rejects_incompatible_tensors(
 def test_first_frame_condition_rejects_invalid_video_rank() -> None:
     with pytest.raises(
         ValueError,
-        match=r"Expected video latents shaped \[B, C, F, H, W\]",
+        match=r"Expected video latents shaped \[B, C, T, H, W\]",
     ):
         select_first_frame_condition_latents(
             torch.zeros(1, 2, 3, 2),

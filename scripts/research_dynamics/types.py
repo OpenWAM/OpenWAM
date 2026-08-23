@@ -5,6 +5,8 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
+from open_wam.configs import DynamicsObjective
+
 
 class FdmAblationMode(StrEnum):
     """Forward-dynamics ablation mode for parallel-stream joint denoising."""
@@ -13,6 +15,23 @@ class FdmAblationMode(StrEnum):
     VIDEO_CONDITIONED_ACTION = "video_conditioned_action"
     VANILLA_JOINT_ROLLOUT = "vanilla_joint_rollout"
     CLEAN_ACTION_FEEDBACK = "clean_action_feedback"
+
+
+def dynamics_objective_for_ablation_mode(
+    mode: FdmAblationMode,
+) -> DynamicsObjective:
+    """Translate a research intervention into the core model objective."""
+
+    if mode in {
+        FdmAblationMode.VANILLA_JOINT_ROLLOUT,
+        FdmAblationMode.CLEAN_ACTION_FEEDBACK,
+    }:
+        return DynamicsObjective.JOINT
+    if mode == FdmAblationMode.FORCED_ACTION_JOINT_FDM:
+        return DynamicsObjective.ACTION_CONDITIONED_VIDEO
+    if mode == FdmAblationMode.VIDEO_CONDITIONED_ACTION:
+        return DynamicsObjective.VIDEO_CONDITIONED_ACTION
+    raise AssertionError(f"Unhandled research dynamics mode {mode!r}.")
 
 
 class FdmStartPolicy(StrEnum):

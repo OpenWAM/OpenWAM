@@ -8,26 +8,22 @@ from typing import Any
 from .enums import (
     ActionDecoderName,
     ContextConditionLatentSource,
-    CurrentBlockCoupling,
-    GeneralistDenoisingMode,
     HistoryStreamVisibility,
-    ParallelRuntimeMode,
+    JointTimestepCoupling,
     PolicyVariantName,
     ProprioContextMode,
     RolloutContextPolicy,
     SampleTargetAlignment,
-    StrEnum,
     VideoActionProgram,
     VideoActionSequenceContract,
 )
 from .policy_video_action import (
-    conditional_denoising_modes_enabled,
     fixed_conditioning_mode_for_program,
-    is_dynamics_routed_paradigm,
+    requires_independent_timestep_clocks,
+    supports_dynamics_routing,
 )
 from .static_validation_contracts import _IssueBuilder
 from .static_validation_primitives import _optional_int
-from .variant_semantics import probability_map_static_issues
 
 
 def _validate_single_frame_condition_offset(
@@ -40,7 +36,18 @@ def _validate_single_frame_condition_offset(
         != ContextConditionLatentSource.SINGLE_FRAME_CONDITION_LATENT.value
     ):
         return
-    offset = None if sample_construction is None else _optional_int(sample_construction.get("condition_source_frame_offset"))
+    for field_name in ("use_condition_latents", "require_condition_latents"):
+        if policy_variant.get(field_name) is False:
+            issues.error(
+                f"policy_variant.{field_name}",
+                "`context_condition_latent_source=single_frame_condition_latent` "
+                f"requires `{field_name}=true`.",
+            )
+    offset = (
+        None
+        if sample_construction is None
+        else _optional_int(sample_construction.get("condition_source_frame_offset"))
+    )
     if offset != -1:
         issues.error(
             "data.sample_construction.condition_source_frame_offset",
@@ -50,58 +57,19 @@ def _validate_single_frame_condition_offset(
         )
 
 
-def _warn_deprecated_text_proprio_context(policy_variant: Mapping[str, Any], issues: _IssueBuilder) -> None:
-    if policy_variant.get("proprio_context_mode") != ProprioContextMode.TEXT_CONTEXT_TOKEN.value:
+def _warn_deprecated_text_proprio_context(
+    policy_variant: Mapping[str, Any], issues: _IssueBuilder
+) -> None:
+    if (
+        policy_variant.get("proprio_context_mode")
+        != ProprioContextMode.TEXT_CONTEXT_TOKEN.value
+    ):
         return
     issues.warning(
         "policy_variant.proprio_context_mode",
         "Deprecated text-space proprio token path; current proprio context is "
         "`per_chunk_additive` hidden-state conditioning.",
     )
-
-
-def _resolved_static_video_action_coupling(
-    policy_variant: Mapping[str, Any],
-) -> str | None:
-    raw_coupling = policy_variant.get("current_block_coupling")
-    if raw_coupling is not None:
-        return str(raw_coupling)
-    raw_program = policy_variant.get("program")
-    try:
-        program = VideoActionProgram(str(raw_program))
-    except ValueError:
-        return None
-    if program in {
-        VideoActionProgram.GENERALIST_JOINT_DENOISING,
-        VideoActionProgram.FORWARD_DYNAMICS,
-        VideoActionProgram.INVERSE_DYNAMICS,
-    }:
-        return CurrentBlockCoupling.JOINT.value
-    return program.value
-
-
-def _validate_video_action_program_coupling(
-    policy_variant: Mapping[str, Any],
-    issues: _IssueBuilder,
-) -> None:
-    raw_program = policy_variant.get("program")
-    if raw_program is None:
-        return
-    try:
-        program = VideoActionProgram(str(raw_program))
-    except ValueError:
-        return
-    expected_coupling = _resolved_static_video_action_coupling(
-        {"program": program.value}
-    )
-    assert expected_coupling is not None
-    raw_coupling = policy_variant.get("current_block_coupling")
-    if raw_coupling is not None and raw_coupling != expected_coupling:
-        issues.error(
-            "policy_variant.current_block_coupling",
-            f"`program: {program.value}` requires "
-            f"`current_block_coupling: {expected_coupling}` when both are provided.",
-        )
 
 
 def _validate_fixed_conditional_program(
@@ -117,75 +85,55 @@ def _validate_fixed_conditional_program(
     fixed_mode = fixed_conditioning_mode_for_program(program)
     if fixed_mode is None:
         return
-    if policy_variant.get("name") != PolicyVariantName.DUAL_EXPERT.value:
-        issues.error(
-            "policy_variant.program",
-            f"`{program.value}` is currently supported only by `policy_variant.name: dual_expert`.",
-        )
-    if (
-        not is_dynamics_routed_paradigm(
-            policy_variant.get("generalist_training_paradigm")
-        )
-    ):
-        issues.error(
-            "policy_variant.generalist_training_paradigm",
-            f"`program: {program.value}` requires `dynamics_routed` so real and optional "
-            "counterfactual sources use the same target-only t0 layout.",
-        )
     if bool(policy_variant.get("generalist_mode_text_token", False)):
         issues.error(
             "policy_variant.generalist_mode_text_token",
             f"`program: {program.value}` has one fixed mode and does not use a GJD mode token.",
         )
-    raw_probs = policy_variant.get("generalist_denoising_mode_probs")
-    if isinstance(raw_probs, Mapping):
-        positive_modes = {
-            str(mode)
-            for mode, weight in raw_probs.items()
-            if not isinstance(weight, bool)
-            and isinstance(weight, (int, float))
-            and float(weight) > 0.0
+    routing = data.get("dynamics_routing")
+    if isinstance(routing, Mapping):
+        routes = routing.get("routes", ())
+        active_modes = {
+            str(route.get("mode"))
+            for route in routes
+            if isinstance(route, Mapping)
+            and isinstance(route.get("weight"), (int, float))
+            and not isinstance(route.get("weight"), bool)
+            and float(route["weight"]) > 0.0
         }
-        if positive_modes != {fixed_mode.value}:
+        if active_modes and active_modes != {fixed_mode.value}:
             issues.error(
-                "policy_variant.generalist_denoising_mode_probs",
-                f"`program: {program.value}` permits only the fixed {fixed_mode.value!r} mode.",
+                "data.dynamics_routing.routes",
+                f"`program: {program.value}` accepts only {fixed_mode.value!r} routes.",
             )
-    mixture = data.get("generalist_dynamics_mixture")
-    if isinstance(mixture, Mapping):
-        source_keys = (
-            (
-                "real_action_conditioned_video_weight",
-                "counterfactual_action_conditioned_video_weight",
-            )
-            if fixed_mode == GeneralistDenoisingMode.ACTION_CONDITIONED_VIDEO
-            else (
-                "real_video_conditioned_action_weight",
-                "counterfactual_video_conditioned_action_weight",
-            )
+
+
+def _validate_program_timestep_contract(
+    policy_variant: Mapping[str, Any],
+    issues: _IssueBuilder,
+) -> None:
+    """Reject joint-clock settings for programs without a joint noise clock."""
+
+    try:
+        program = VideoActionProgram(str(policy_variant.get("program")))
+    except ValueError:
+        return
+    raw_coupling = policy_variant.get("joint_timestep_coupling")
+    if raw_coupling is None:
+        return
+    try:
+        coupling = JointTimestepCoupling(str(raw_coupling))
+    except ValueError:
+        return
+    if (
+        requires_independent_timestep_clocks(program)
+        and coupling != JointTimestepCoupling.INDEPENDENT
+    ):
+        issues.error(
+            "policy_variant.joint_timestep_coupling",
+            f"`program: {program.value}` does not define a jointly coupled "
+            "video/action noise clock and requires `independent`.",
         )
-        numeric_weights = [
-            float(mixture[key])
-            for key in source_keys
-            if isinstance(mixture.get(key), (int, float))
-            and not isinstance(mixture.get(key), bool)
-        ]
-        if len(numeric_weights) == len(source_keys) and sum(numeric_weights) <= 0.0:
-            issues.error(
-                "data.generalist_dynamics_mixture",
-                f"`program: {program.value}` requires a positive real or counterfactual "
-                f"{fixed_mode.value} source weight.",
-            )
-    for key in ("train_batch_size", "val_batch_size"):
-        try:
-            batch_size = int(data.get(key, 2))
-        except (TypeError, ValueError):
-            continue
-        if batch_size != 1:
-            issues.error(
-                f"data.{key}",
-                f"`program: {program.value}` requires rank-local train and validation batch size 1.",
-            )
 
 
 def _validate_video_action_sequence_contract_static(
@@ -205,27 +153,6 @@ def _validate_video_action_sequence_contract_static(
         VideoActionSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO,
     }:
         return
-
-    policy_name = policy_variant.get("name")
-    if policy_name not in {PolicyVariantName.PARALLEL_STREAM.value, PolicyVariantName.DUAL_EXPERT.value}:
-        issues.error(
-            "policy_variant.sequence_contract",
-            f"`{contract.value}` is only supported for policy_variant.name parallel_stream or dual_expert.",
-        )
-        return
-
-    if contract == VideoActionSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO:
-        runtime_mode = policy_variant.get("runtime_mode")
-        if policy_name == PolicyVariantName.PARALLEL_STREAM.value and runtime_mode not in (
-            None,
-            ParallelRuntimeMode.LINGBOT_EXACT.value,
-            ParallelRuntimeMode.LINGBOT_EXACT_ACTION_CONDITIONED.value,
-        ):
-            issues.error(
-                "policy_variant.runtime_mode",
-                "legacy_prefix_single_frame_perchunk_proprio requires runtime_mode "
-                "lingbot_exact or lingbot_exact_action_conditioned for parallel_stream.",
-            )
 
     expected_policy = {
         "proprio_context_mode": ProprioContextMode.PER_CHUNK_ADDITIVE.value,
@@ -247,7 +174,10 @@ def _validate_video_action_sequence_contract_static(
         "condition_source_frame_offset": -1,
         "start_padding_frames": 0,
     }
-    if contract == VideoActionSequenceContract.ROLLOUT_PARITY_SINGLE_FRAME_PERCHUNK_PROPRIO:
+    if (
+        contract
+        == VideoActionSequenceContract.ROLLOUT_PARITY_SINGLE_FRAME_PERCHUNK_PROPRIO
+    ):
         expected_sample.update(
             {
                 "target_alignment": SampleTargetAlignment.NEXT_AFTER_CONTEXT.value,
@@ -276,9 +206,16 @@ def _validate_action_horizons(
     issues: _IssueBuilder,
 ) -> None:
     video_only = False
-    if action_decoder is not None and action_decoder.get("name") == ActionDecoderName.VIDEO_ONLY.value:
+    if (
+        action_decoder is not None
+        and action_decoder.get("name") == ActionDecoderName.VIDEO_ONLY.value
+    ):
         video_only = True
-    if policy_variant is not None and policy_variant.get("name") == PolicyVariantName.CAUSAL_VIDEO_PREDICTION.value:
+    if (
+        policy_variant is not None
+        and policy_variant.get("name")
+        == PolicyVariantName.CAUSAL_VIDEO_PREDICTION.value
+    ):
         video_only = True
     if action_schema is not None:
         for key in ("action_horizon", "state_horizon"):
@@ -299,48 +236,64 @@ def _validate_action_horizons(
             )
 
 
-def _validate_generalist_denoising_mode_probs(
+def _active_dynamics_routes(data: Mapping[str, Any]) -> tuple[Mapping[str, Any], ...]:
+    routing = data.get("dynamics_routing")
+    routes = routing.get("routes", ()) if isinstance(routing, Mapping) else ()
+    return tuple(
+        route
+        for route in routes
+        if isinstance(route, Mapping)
+        and isinstance(route.get("weight"), (int, float))
+        and not isinstance(route.get("weight"), bool)
+        and float(route["weight"]) > 0.0
+    )
+
+
+def _validate_dynamics_route_contract(
     policy_variant: Mapping[str, Any],
     data: Mapping[str, Any],
     issues: _IssueBuilder,
-    *,
-    require_joint_coupling: bool,
-    require_batch_size_one: bool,
 ) -> None:
-    field_name = "generalist_denoising_mode_probs"
-    raw_probs = policy_variant.get(field_name)
-    if bool(policy_variant.get("generalist_mode_text_token", False)) and raw_probs is None:
-        issues.error(
-            "policy_variant.generalist_mode_text_token",
-            "`generalist_mode_text_token: true` requires "
-            f"`policy_variant.{field_name}`.",
-        )
-    if raw_probs is None:
+    for field_name in (
+        "dynamics_routing_requirement",
+        "generalist_training_paradigm",
+        "generalist_denoising_mode_probs",
+        "joint_denoise_training_mode_probs",
+        "mot_generalist_training_mode_probs",
+    ):
+        if field_name in policy_variant:
+            issues.error(
+                f"policy_variant.{field_name}",
+                "This field is retired; configure source and objective sampling "
+                "once in `data.dynamics_routing.routes`.",
+            )
+    try:
+        program = VideoActionProgram(str(policy_variant.get("program")))
+    except ValueError:
         return
     if (
-        isinstance(raw_probs, Mapping)
-        and conditional_denoising_modes_enabled(raw_probs)
-        and not is_dynamics_routed_paradigm(
-            policy_variant.get("generalist_training_paradigm")
-        )
+        bool(policy_variant.get("generalist_mode_text_token", False))
+        and program != VideoActionProgram.GENERALIST_JOINT_DENOISING
     ):
         issues.error(
-            "policy_variant.generalist_training_paradigm",
-            "Positive FDM/IDM `generalist_denoising_mode_probs` require `dynamics_routed` "
-            "so real and optional counterfactual samples use the target-only t0 contract. "
-            "Counterfactual source weights may be zero; pure joint may use `demo_only`.",
+            "policy_variant.generalist_mode_text_token",
+            "A generalist mode token requires `program: generalist_joint_denoising`.",
         )
-    if (
-        require_joint_coupling
-        and _resolved_static_video_action_coupling(policy_variant)
-        != CurrentBlockCoupling.JOINT.value
-    ):
+    active_routes = _active_dynamics_routes(data)
+    if active_routes:
+        if not supports_dynamics_routing(program):
+            issues.error(
+                "data.dynamics_routing.routes",
+                "Active routes require a generalist, forward-dynamics, or "
+                "inverse-dynamics program.",
+            )
+    elif fixed_conditioning_mode_for_program(program) is not None:
         issues.error(
-            f"policy_variant.{field_name}",
-            "Expected `program: generalist_joint_denoising` or "
-            "`current_block_coupling: joint` when generalist denoising is enabled.",
+            "data.dynamics_routing.routes",
+            f"`program: {program.value}` requires at least one positive route so "
+            "every sample uses the target-only t0 contract.",
         )
-    if require_batch_size_one:
+    if supports_dynamics_routing(program):
         for key in ("train_batch_size", "val_batch_size"):
             raw_batch_size = data.get(key, 2)
             try:
@@ -350,27 +303,6 @@ def _validate_generalist_denoising_mode_probs(
             if batch_size != 1:
                 issues.error(
                     f"data.{key}",
-                    f"`{field_name}` requires `data.train_batch_size: 1` and "
-                    "`data.val_batch_size: 1` for this policy architecture.",
+                    "Generalist and conditional-dynamics programs require rank-local "
+                    "batch size 1 because each rank executes one routed objective at a time.",
                 )
-    _validate_probability_map(
-        policy_variant,
-        issues,
-        field_name=field_name,
-        enum_cls=GeneralistDenoisingMode,
-    )
-
-
-def _validate_probability_map(
-    policy_variant: Mapping[str, Any],
-    issues: _IssueBuilder,
-    *,
-    field_name: str,
-    enum_cls: type[StrEnum],
-) -> None:
-    raw_probs = policy_variant.get(field_name)
-    for issue in probability_map_static_issues(raw_probs, enum_cls=enum_cls):
-        path = f"policy_variant.{field_name}"
-        if issue.path_suffix is not None:
-            path = f"{path}.{issue.path_suffix}"
-        issues.error(path, issue.message)

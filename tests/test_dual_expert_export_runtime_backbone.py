@@ -13,7 +13,23 @@ from __future__ import annotations
 
 import torch
 
-from open_wam.training.checkpoints import _remap_packed_video_blocks_into_backbone
+from open_wam.models.policy_variants.dual_expert.module_topology import (
+    map_packed_video_block_export_key,
+)
+from open_wam.training.checkpoint_export import merge_state_dict_overlay
+
+
+def _merge_packed_video_blocks(
+    *,
+    backbone_state_dict: dict[str, torch.Tensor],
+    stack_state_dict: dict[str, torch.Tensor],
+) -> dict[str, torch.Tensor]:
+    return merge_state_dict_overlay(
+        base_state_dict=backbone_state_dict,
+        overlay_state_dict=stack_state_dict,
+        map_key=map_packed_video_block_export_key,
+        exclusive_target_prefixes=("blocks.",),
+    )
 
 
 def _make_backbone_state_dict() -> dict[str, torch.Tensor]:
@@ -43,7 +59,7 @@ def _make_stack_state_dict() -> dict[str, torch.Tensor]:
 def test_remap_promotes_video_blocks_into_blocks_namespace() -> None:
     backbone_state = _make_backbone_state_dict()
     stack_state = _make_stack_state_dict()
-    remapped = _remap_packed_video_blocks_into_backbone(
+    remapped = _merge_packed_video_blocks(
         backbone_state_dict=backbone_state,
         stack_state_dict=stack_state,
     )
@@ -67,7 +83,7 @@ def test_remap_promotes_video_blocks_into_blocks_namespace() -> None:
 def test_remap_skips_action_block_entries() -> None:
     backbone_state = _make_backbone_state_dict()
     stack_state = _make_stack_state_dict()
-    remapped = _remap_packed_video_blocks_into_backbone(
+    remapped = _merge_packed_video_blocks(
         backbone_state_dict=backbone_state,
         stack_state_dict=stack_state,
     )
@@ -79,7 +95,7 @@ def test_remap_skips_action_block_entries() -> None:
 def test_remap_preserves_non_block_backbone_entries() -> None:
     backbone_state = _make_backbone_state_dict()
     stack_state = _make_stack_state_dict()
-    remapped = _remap_packed_video_blocks_into_backbone(
+    remapped = _merge_packed_video_blocks(
         backbone_state_dict=backbone_state,
         stack_state_dict=stack_state,
     )
@@ -92,7 +108,7 @@ def test_remap_does_not_mutate_inputs() -> None:
     stack_state = _make_stack_state_dict()
     backbone_keys_before = set(backbone_state)
     stack_keys_before = set(stack_state)
-    _remap_packed_video_blocks_into_backbone(
+    _merge_packed_video_blocks(
         backbone_state_dict=backbone_state,
         stack_state_dict=stack_state,
     )
@@ -105,12 +121,12 @@ def test_remap_rejects_backbone_state_with_existing_block_keys() -> None:
     backbone_state["blocks.0.attn1.to_q.weight"] = torch.zeros(4, 4)
     stack_state = _make_stack_state_dict()
     try:
-        _remap_packed_video_blocks_into_backbone(
+        _merge_packed_video_blocks(
             backbone_state_dict=backbone_state,
             stack_state_dict=stack_state,
         )
     except ValueError as exc:
-        assert "blocks.*" in str(exc)
+        assert "blocks." in str(exc)
     else:
         raise AssertionError(
             "Expected ValueError when backbone state already contains blocks.* keys."
@@ -126,7 +142,7 @@ def test_remap_skips_keys_with_unexpected_layout() -> None:
         "packed_blocks.0.something_else.attn1.to_q.weight": torch.zeros(4, 4),
         "packed_blocks.0.video_block.attn1.to_q.weight": torch.full((4, 4), 7.0),
     }
-    remapped = _remap_packed_video_blocks_into_backbone(
+    remapped = _merge_packed_video_blocks(
         backbone_state_dict=backbone_state,
         stack_state_dict=stack_state,
     )

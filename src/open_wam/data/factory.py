@@ -45,18 +45,17 @@ def resolve_dataset_loader_spec(
     world_size: int = 1,
     rank: int = 0,
 ) -> DatasetLoaderSpec:
-    if split == "train":
-        build_train_sampler = getattr(dataset, "build_train_sampler", None)
-        if callable(build_train_sampler):
-            sampler = build_train_sampler(world_size=world_size, rank=rank)
-            if sampler is None:
-                return DatasetLoaderSpec(sampler=None, shuffle=True)
-            return DatasetLoaderSpec(
-                sampler=sampler,
-                shuffle=False,
-            )
-        return DatasetLoaderSpec(sampler=None, shuffle=True)
-    return DatasetLoaderSpec(sampler=None, shuffle=False)
+    is_train = split == "train"
+    sampler_builder = getattr(
+        dataset,
+        "build_train_sampler" if is_train else "build_validation_sampler",
+        None,
+    )
+    if callable(sampler_builder):
+        sampler = sampler_builder(world_size=world_size, rank=rank)
+        if sampler is not None:
+            return DatasetLoaderSpec(sampler=sampler, shuffle=False)
+    return DatasetLoaderSpec(sampler=None, shuffle=is_train)
 
 
 def _build_synthetic_datasets(data_config: DataConfig) -> tuple[Dataset[WAMSample], Dataset[WAMSample]]:

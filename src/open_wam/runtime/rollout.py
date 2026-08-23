@@ -5,9 +5,10 @@ from typing import TYPE_CHECKING, Any, TypedDict
 
 import torch
 
-from open_wam.configs import ExperimentConfig, PolicyVariantName
+from open_wam.models.policy_variants import PolicyGenerationActionOrigin
 
 if TYPE_CHECKING:
+    from open_wam.models.policy_variants import PolicyVariant
     from open_wam.pipelines import VariantPipeline
 
 
@@ -32,14 +33,11 @@ def resolve_runtime_devices(
     return tuple(torch.device(part) for part in parts)
 
 
-def uses_zero_based_generation_start(config: ExperimentConfig) -> bool:
-    policy_variant = getattr(config, "policy_variant", None)
-    if policy_variant is None:
-        return False
-    policy_name = getattr(policy_variant, "name", None)
-    if policy_name == PolicyVariantName.DUAL_EXPERT:
-        return True
-    return False
+def uses_zero_based_generation_start(policy_variant: PolicyVariant) -> bool:
+    return (
+        policy_variant.rollout_contract.generation_action_origin
+        == PolicyGenerationActionOrigin.ZERO
+    )
 
 
 def resolve_initial_generation_action_start(
@@ -57,17 +55,14 @@ def resolve_initial_generation_action_start(
 
 def build_sequence_rollout_infer_extra(
     *,
-    config: ExperimentConfig,
+    policy_variant: PolicyVariant,
     prompt: str,
-    generation_action_start: int,
     runtime_device: torch.device | None = None,
-    task_id: int | None = None,
-    episode_idx: int | None = None,
 ) -> dict[str, object]:
     extra: dict[str, object] = {"task_text": (prompt,)}
-    policy_name = getattr(config.policy_variant, "name", None)
-    if policy_name == PolicyVariantName.DUAL_EXPERT and runtime_device is not None:
-        extra["action_device"] = str(runtime_device)
+    extra.update(
+        policy_variant.build_rollout_infer_extra(runtime_device=runtime_device)
+    )
     return extra
 
 

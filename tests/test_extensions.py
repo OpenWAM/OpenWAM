@@ -11,6 +11,7 @@ from open_wam.configs import (
     ExtensionActionDecoderConfig,
     ExtensionPolicyConfig,
     GenericDataConfig,
+    ProprioContextMode,
     load_experiment_config,
 )
 from open_wam.data import build_synthetic_batch, build_train_val_datasets
@@ -196,6 +197,8 @@ def test_out_of_tree_extension_loads_typed_policy_and_decoder_from_yaml(
         "extension_type": policy_type,
         "hidden_size": 256,
         "attach_site": "post_visual_core",
+        "proprio_context_mode": "per_chunk_additive",
+        "dynamics_mode_context_enabled": True,
         "options": {"attention_profile": "acme.block_sparse", "width": 32},
     }
     raw["action_decoder"] = {
@@ -214,6 +217,15 @@ def test_out_of_tree_extension_loads_typed_policy_and_decoder_from_yaml(
 
     assert isinstance(config.policy_variant, ExtensionPolicyConfig)
     assert isinstance(config.action_decoder, ExtensionActionDecoderConfig)
+    assert (
+        config.policy_variant.proprio_context_mode
+        is ProprioContextMode.PER_CHUNK_ADDITIVE
+    )
+    assert config.policy_variant.dynamics_mode_context_enabled is True
+    assert config.policy_variant.conditioning_requirements.proprio_context_mode is (
+        ProprioContextMode.PER_CHUNK_ADDITIVE
+    )
+    assert config.policy_variant.conditioning_requirements.dynamics_mode_context_enabled
     assert config.policy_variant.options == {
         "attention_profile": "acme.block_sparse",
         "width": 32,

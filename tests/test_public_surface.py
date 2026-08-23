@@ -19,6 +19,7 @@ from open_wam.configs import (
     load_experiment_config,
 )
 from open_wam.contracts import (
+    DYNAMICS_CONDITIONAL_CHUNK_LAYOUT_T0_SINGLETON,
     SampleConstructionMetadata,
     VideoFrameMapping,
     ViewPlacement,
@@ -315,7 +316,6 @@ def test_lazy_data_facade_preserves_representative_export_identities() -> None:
         "PoseSequence": "action_pose",
         "ActionMappingResult": "action_mapping",
         "WAMSample": "contracts",
-        "GENERALIST_GJD_CHUNK_CONTRACT_T0_SINGLETON": "conditional_dynamics_layout",
         "ActionBranchSpec": "counterfactual_actions",
         "LatentWAMSample": "latent_contracts",
         "LatentSegmentBoundary": "latent_segment_geometry",
@@ -501,6 +501,7 @@ def test_public_cross_layer_contracts_are_dependency_free() -> None:
     )
 
     assert placement.width == 64
+    assert DYNAMICS_CONDITIONAL_CHUNK_LAYOUT_T0_SINGLETON == "t0_singleton"
     assert metadata is not None
     assert metadata.sampled_chunk_size_for(2) == 2
     assert metadata.frame_range_or_default(observed_num_frames=8) == (1, 5)

@@ -4,14 +4,14 @@ from typing import Any
 
 import torch
 
-from open_wam.configs import GeneralistDenoisingMode, InferenceConfig, TrainingConfig
+from open_wam.configs import DynamicsObjective, InferenceConfig, TrainingConfig
 from open_wam.models.action_decoders.base import (
     ActionDecoder,
     ActionDecoderInferOutput,
     ActionDecoderTrainOutput,
     require_decoder_artifact_payload,
 )
-from open_wam.models.common.metric_rollups import add_joint_conditioning_mode_metrics
+from open_wam.models.common.metric_rollups import add_dynamics_objective_metrics
 from open_wam.models.policy_variants.contracts import (
     PolicyInferOutput,
     PolicyTrainBatch,
@@ -126,6 +126,14 @@ class DualExpertActionDecoder(ActionDecoder):
         self.action_horizon = int(action_horizon)
         self.training_config = training_config
 
+    @property
+    def dynamics_metric_namespace(self) -> str:
+        return "dual_expert_generalist"
+
+    @property
+    def decoder_artifact_contract(self) -> str:
+        return DUAL_EXPERT_DECODER_ARTIFACT_CONTRACT
+
     def forward_train(self, policy_output: PolicyTrainOutput, batch: PolicyTrainBatch) -> ActionDecoderTrainOutput:
         train_artifacts = require_decoder_artifact_payload(
             policy_output,
@@ -191,8 +199,12 @@ class DualExpertActionDecoder(ActionDecoder):
         # A1 generalist per-mode metrics. Only populated when the variant ran
         # the dual-expert generalist sampler this segment. Metric names intentionally
         # spell out denoised MSE semantics because parallel-stream logs flow-loss sums.
-        generalist_mode = policy_output.aux.get("dual_expert_generalist_training_mode")
-        if generalist_mode is not None:
+        dynamics_objective = (
+            None
+            if policy_output.decoder_artifacts is None
+            else policy_output.decoder_artifacts.dynamics_objective
+        )
+        if dynamics_objective is not None:
             action_mask = train_artifacts.action.action_mask
             action_active = (
                 (action_mask.float().sum() > 0).to(dtype=torch.float32)
@@ -205,11 +217,11 @@ class DualExpertActionDecoder(ActionDecoder):
                 ).to(dtype=torch.float32)
             else:
                 latent_active = torch.zeros((), device=total_loss.device)
-            add_joint_conditioning_mode_metrics(
+            add_dynamics_objective_metrics(
                 metrics,
                 namespace="dual_expert_generalist",
-                mode_value=str(generalist_mode),
-                modes=GeneralistDenoisingMode,
+                mode_value=dynamics_objective.value,
+                modes=DynamicsObjective,
                 action_loss=action_mse,
                 latent_loss=latent_mse,
                 action_loss_active=action_active,

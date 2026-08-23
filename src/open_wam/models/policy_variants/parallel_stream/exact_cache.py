@@ -28,8 +28,8 @@ __all__ = [
     "ensure_exact_cache_initialized",
     "ensure_exact_text_embeddings",
     "existing_exact_cache_attention_window",
-    "restore_slot_pool_layer_metadata",
     "resolve_exact_cache_context",
+    "restore_slot_pool_layer_metadata",
     "set_slot_pool_layer_metadata",
     "validate_existing_exact_cache_attention_window",
 ]
@@ -119,10 +119,12 @@ def set_slot_pool_layer_metadata(
 ) -> SlotPoolLayerMetadataSnapshot:
     """Apply reversible per-layer metadata to an initialized slot-pool cache."""
 
-    if not updates or not hasattr(transformer, "_resolve_exact_cache_state"):
+    if not updates:
         return []
-    cache_state = transformer._resolve_exact_cache_state(cache_name)
-    if cache_state is None or not cache_backend_uses_slot_pool(cache_state.backend_name):
+    cache_state = transformer.get_runtime_cache_state(cache_name)
+    if cache_state is None or not cache_backend_uses_slot_pool(
+        cache_state.backend_name
+    ):
         return []
     cache_payload = cache_state.backend_payload
     layer_states = getattr(cache_payload, "layer_states", None)
@@ -335,9 +337,8 @@ def validate_existing_exact_cache_attention_window(
         transformer,
         cache_name=cache_name,
     )
-    if (
-        existing_attn_window is not None
-        and int(existing_attn_window) != int(requested_attn_window)
+    if existing_attn_window is not None and int(existing_attn_window) != int(
+        requested_attn_window
     ):
         raise ValueError(
             "Existing exact cache attention window does not match the requested rollout contract, "
@@ -353,9 +354,7 @@ def existing_exact_cache_attention_window(
 ) -> int | None:
     """Read the active attention window from either exact cache backend."""
 
-    if not hasattr(transformer, "_resolve_exact_cache_state"):
-        return None
-    cache_state = transformer._resolve_exact_cache_state(cache_name)
+    cache_state = transformer.get_runtime_cache_state(cache_name)
     if cache_state is None:
         return None
     payload_value = getattr(cache_state, "payload", {}).get("attn_window")

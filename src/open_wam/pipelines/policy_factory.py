@@ -16,7 +16,6 @@ from open_wam.models.policy_variants import (
     PolicyVariant,
 )
 
-from .factory_validation import _resolve_parallel_stream_model_action_dim
 from .registries import _EXTENSION_POLICY_VARIANT_BUILDERS, POLICY_VARIANT_BUILDERS
 
 
@@ -31,7 +30,6 @@ def _build_causal_video_prediction_policy_variant(config: ExperimentConfig):
 
 
 def _build_dual_expert_policy_variant(config: ExperimentConfig):
-    action_schema = config.data.action_schema
     policy_config = config.policy_variant
     assert isinstance(policy_config, DualExpertPolicyConfig)
     return DualExpertPolicyVariant(
@@ -39,14 +37,12 @@ def _build_dual_expert_policy_variant(config: ExperimentConfig):
         backbone_config=config.backbone,
         training_config=config.training,
         inference_config=config.inference,
-        action_dim=action_schema.action_dim,
-        action_horizon=action_schema.action_horizon,
-        state_dim=action_schema.state_dim,
+        action_dim=config.action_decoder.action_dim,
+        action_horizon=config.action_decoder.action_horizon,
     )
 
 
 def _build_parallel_stream_policy_variant(config: ExperimentConfig):
-    action_schema = config.data.action_schema
     policy_config = config.policy_variant
     assert isinstance(policy_config, ParallelStreamPolicyConfig)
     return ParallelStreamPolicyVariant(
@@ -54,8 +50,8 @@ def _build_parallel_stream_policy_variant(config: ExperimentConfig):
         backbone_config=config.backbone,
         training_config=config.training,
         inference_config=config.inference,
-        action_dim=_resolve_parallel_stream_model_action_dim(config),
-        action_horizon=action_schema.action_horizon,
+        action_dim=config.action_decoder.action_dim,
+        action_horizon=config.action_decoder.action_horizon,
         num_frames=config.data.num_frames,
     )
 
@@ -77,7 +73,9 @@ def _build_extension_policy_variant(config: ExperimentConfig):
 def build_policy_variant(config: ExperimentConfig):
     builder = POLICY_VARIANT_BUILDERS.get(type(config.policy_variant))
     if builder is None:
-        raise ValueError(f"Unsupported policy variant config '{type(config.policy_variant).__name__}'.")
+        raise ValueError(
+            f"Unsupported policy variant config '{type(config.policy_variant).__name__}'."
+        )
     policy_variant = builder(config)
     if not isinstance(policy_variant, PolicyVariant):
         raise TypeError(

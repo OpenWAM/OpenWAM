@@ -16,6 +16,7 @@ from open_wam.sdk.policy import (
     PolicyTrainBatch,
     PolicyTrainOutput,
     PolicyVariant,
+    PolicyVisualStage,
     VisualStageOutputs,
     VisualTower,
 )
@@ -27,11 +28,8 @@ class TemplatePolicyVariant(PolicyVariant):
         self.config = config
         self.feature_norm = nn.LayerNorm(config.hidden_size)
 
-    def attach_site(self) -> str:
-        return self.config.attach_site.value
-
-    def required_visual_stages(self) -> tuple[str, ...]:
-        return ("frontend", "core")
+    def required_visual_stages(self) -> tuple[PolicyVisualStage, ...]:
+        return (PolicyVisualStage.FRONTEND, PolicyVisualStage.CORE)
 
     def prepare_train_inputs(
         self,
@@ -53,7 +51,9 @@ class TemplatePolicyVariant(PolicyVariant):
         policy_features = prepared_inputs.variant_inputs["policy_features"]
         return PolicyTrainOutput(
             policy_features=policy_features,
-            metrics={"template_feature_rms": policy_features.square().mean().sqrt().detach()},
+            metrics={
+                "template_feature_rms": policy_features.square().mean().sqrt().detach()
+            },
         )
 
     def prepare_infer_state(

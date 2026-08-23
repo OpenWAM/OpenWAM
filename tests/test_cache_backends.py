@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from open_wam.configs.enums import CurrentBlockCoupling
+from open_wam.configs.enums import CurrentBlockCoupling, HistoryStreamVisibility
 from open_wam.models.common import (
     AttentionProfileSpec,
     apply_attention_backend,
@@ -41,38 +41,69 @@ from open_wam.models.visual_tower import (
     select_split_segments,
 )
 from open_wam.models.visual_tower import replica_core as replica_core_module
-from open_wam.models.visual_tower import shared_transformer_support as transformer_support_module
+from open_wam.models.visual_tower import (
+    shared_transformer_support as transformer_support_module,
+)
 from open_wam.models.visual_tower.replica_core import SharedVideoTransformerCore
 
 
 def test_cache_policy_public_and_compatibility_exports_preserve_identity() -> None:
     assert replica_core_module._prepare_sdpa_mask is prepare_sdpa_mask
     assert replica_core_module._prepend_cached_prefix_mask is prepend_cached_prefix_mask
-    assert replica_core_module._resolve_slot_pool_prefix_visibility is resolve_slot_pool_prefix_visibility
-    assert replica_core_module._packed_slot_pool_query_sequence_ids is packed_slot_pool_query_sequence_ids
+    assert (
+        replica_core_module._resolve_slot_pool_prefix_visibility
+        is resolve_slot_pool_prefix_visibility
+    )
+    assert (
+        replica_core_module._packed_slot_pool_query_sequence_ids
+        is packed_slot_pool_query_sequence_ids
+    )
     assert (
         replica_core_module._retained_slot_pool_indices_for_current_write
         is retained_slot_pool_indices_for_current_write
     )
-    assert replica_core_module._merge_attention_cache_entries is merge_attention_cache_entries
+    assert (
+        replica_core_module._merge_attention_cache_entries
+        is merge_attention_cache_entries
+    )
 
 
-def test_shared_transformer_public_and_compatibility_exports_preserve_identity() -> None:
+def test_shared_transformer_public_and_compatibility_exports_preserve_identity() -> (
+    None
+):
     assert replica_core_module.SharedTransformerAttention is SharedTransformerAttention
     assert replica_core_module.SharedTransformerBlock is SharedTransformerBlock
     assert (
         replica_core_module.SharedTransformerRotaryPositionalEmbedding
         is SharedTransformerRotaryPositionalEmbedding
     )
-    assert replica_core_module.SharedTransformerTimeEmbedding is SharedTransformerTimeEmbedding
+    assert (
+        replica_core_module.SharedTransformerTimeEmbedding
+        is SharedTransformerTimeEmbedding
+    )
     assert replica_core_module._apply_rotary_emb is apply_rotary_emb
     assert replica_core_module._select_chunk_slices is select_chunk_slices
     assert replica_core_module._select_split_segments is select_split_segments
-    assert replica_core_module._materialize_runtime_parameter is materialize_runtime_parameter
-    assert replica_core_module._linear_with_materialized_params is linear_with_materialized_params
-    assert replica_core_module._rms_norm_with_materialized_weight is rms_norm_with_materialized_weight
-    assert replica_core_module._layer_norm_with_materialized_params is layer_norm_with_materialized_params
-    assert replica_core_module._feed_forward_with_materialized_params is feed_forward_with_materialized_params
+    assert (
+        replica_core_module._materialize_runtime_parameter
+        is materialize_runtime_parameter
+    )
+    assert (
+        replica_core_module._linear_with_materialized_params
+        is linear_with_materialized_params
+    )
+    assert (
+        replica_core_module._rms_norm_with_materialized_weight
+        is rms_norm_with_materialized_weight
+    )
+    assert (
+        replica_core_module._layer_norm_with_materialized_params
+        is layer_norm_with_materialized_params
+    )
+    assert (
+        replica_core_module._feed_forward_with_materialized_params
+        is feed_forward_with_materialized_params
+    )
 
 
 def test_slot_pool_backend_materializes_and_clears_predicted_entries() -> None:
@@ -111,14 +142,18 @@ def test_slot_pool_backend_materializes_and_clears_predicted_entries() -> None:
     entries = materialize_cache_backend_entries(payload)
     assert entries[0].key is not None
     assert entries[0].key.shape[2] == 3
-    assert torch.equal(entries[0].metadata["prediction_mask"], torch.tensor([False, False, True]))
+    assert torch.equal(
+        entries[0].metadata["prediction_mask"], torch.tensor([False, False, True])
+    )
     assert torch.equal(entries[0].metadata["stream_ids"], torch.tensor([0, 0, 1]))
 
     cleared = clear_cache_backend_payload(payload, clear_predictions_only=True)
     entries = materialize_cache_backend_entries(cleared)
     assert entries[0].key is not None
     assert entries[0].key.shape[2] == 2
-    assert torch.equal(entries[0].metadata["prediction_mask"], torch.tensor([False, False]))
+    assert torch.equal(
+        entries[0].metadata["prediction_mask"], torch.tensor([False, False])
+    )
     assert torch.equal(entries[0].metadata["stream_ids"], torch.tensor([0, 0]))
 
 
@@ -128,7 +163,7 @@ def test_slot_pool_prefix_visibility_preserves_video_pretrain_history() -> None:
     resolved = resolve_slot_pool_prefix_visibility(
         current_mask,
         prefix_len=2,
-        prefix_visibility_mode="preserve_video_pretrain_history",
+        prefix_visibility_mode="video_queries_video_only",
         query_stream_ids=torch.tensor([0, 1, -1]),
         cached_prefix_stream_ids=torch.tensor([0, 1]),
     )
@@ -151,7 +186,7 @@ def test_slot_pool_prefix_visibility_allows_staged_current_action_tail() -> None
     resolved = resolve_slot_pool_prefix_visibility(
         current_mask,
         prefix_len=3,
-        prefix_visibility_mode="preserve_video_pretrain_history",
+        prefix_visibility_mode="video_queries_video_only",
         query_stream_ids=torch.tensor([0, 1, -1]),
         cached_prefix_stream_ids=torch.tensor([0, 1, 1]),
         allow_video_query_to_action_prefix_tail_tokens=1,
@@ -342,7 +377,9 @@ def test_slot_pool_update_zero_does_not_evict_persistent_history() -> None:
     assert torch.equal(layer_state.value, before_value)
 
 
-def test_slot_pool_update_write_attends_after_non_mutating_eviction(monkeypatch) -> None:
+def test_slot_pool_update_write_attends_after_non_mutating_eviction(
+    monkeypatch,
+) -> None:
     payload = init_cache_backend_payload(
         "slot_pool_exact",
         num_layers=1,
@@ -375,10 +412,16 @@ def test_slot_pool_update_write_attends_after_non_mutating_eviction(monkeypatch)
         del value, block_mask, kernel_options
         captured["query_shape"] = tuple(query.shape)
         captured["key_shape"] = tuple(key.shape)
-        captured["mask_shape"] = tuple(attention_mask.shape) if attention_mask is not None else ()
+        captured["mask_shape"] = (
+            tuple(attention_mask.shape) if attention_mask is not None else ()
+        )
         return torch.zeros_like(query)
 
-    monkeypatch.setattr(transformer_support_module, "apply_attention_backend", fake_apply_attention_backend)
+    monkeypatch.setattr(
+        transformer_support_module,
+        "apply_attention_backend",
+        fake_apply_attention_backend,
+    )
 
     attention = SharedTransformerAttention(dim=8, heads=1, dim_head=8, eps=1e-6)
     hidden = torch.randn(1, 1, 8)
@@ -429,7 +472,7 @@ def test_joint_clean_cache_commit_mask_matches_preserved_history_rule() -> None:
         chunk_size=1,
         window_size=4,
         current_block_coupling=CurrentBlockCoupling.JOINT,
-        preserve_video_pretrain_history=True,
+        history_stream_visibility=(HistoryStreamVisibility.VIDEO_QUERIES_VIDEO_ONLY),
     )
 
     assert mask.shape == (2, 2)
@@ -465,7 +508,7 @@ def test_joint_clean_cache_commit_mask_counts_action_width() -> None:
         chunk_size=1,
         window_size=4,
         current_block_coupling=CurrentBlockCoupling.JOINT,
-        preserve_video_pretrain_history=True,
+        history_stream_visibility=(HistoryStreamVisibility.VIDEO_QUERIES_VIDEO_ONLY),
     )
 
     assert mask.shape == (7, 7)
@@ -497,7 +540,7 @@ def test_joint_clean_cache_commit_mask_is_batch_local() -> None:
         chunk_size=1,
         window_size=4,
         current_block_coupling=CurrentBlockCoupling.JOINT,
-        preserve_video_pretrain_history=True,
+        history_stream_visibility=(HistoryStreamVisibility.VIDEO_QUERIES_VIDEO_ONLY),
     )
 
     assert mask.shape == (2, 2)
@@ -518,7 +561,9 @@ def test_exact_replica_core_uses_slot_pool_cache_backend() -> None:
         patch_size_h=2,
         patch_size_w=2,
     )
-    core = SharedVideoTransformerCore(backbone_config, action_dim=4).to(dtype=torch.bfloat16)
+    core = SharedVideoTransformerCore(backbone_config, action_dim=4).to(
+        dtype=torch.bfloat16
+    )
     cache_name = "slot_pool_exact"
     core.create_empty_cache(
         cache_name,
@@ -534,8 +579,15 @@ def test_exact_replica_core_uses_slot_pool_cache_backend() -> None:
     assert cache_state.backend_name == "slot_pool_exact"
     assert cache_state.backend_payload is not None
 
-    text_emb = torch.zeros(1, backbone_config.max_text_tokens, backbone_config.text_dim, dtype=torch.bfloat16)
-    video_latents = torch.randn(1, backbone_config.latent_channels, 1, 4, 4, dtype=torch.bfloat16)
+    text_emb = torch.zeros(
+        1,
+        backbone_config.max_text_tokens,
+        backbone_config.text_dim,
+        dtype=torch.bfloat16,
+    )
+    video_latents = torch.randn(
+        1, backbone_config.latent_channels, 1, 4, 4, dtype=torch.bfloat16
+    )
 
     committed_input = prepare_reference_single_stream_input(
         latents=video_latents,

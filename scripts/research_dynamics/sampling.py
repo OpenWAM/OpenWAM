@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+import random
 from collections import defaultdict
 from dataclasses import replace
 from pathlib import Path
-import random
 from typing import Any
 
 from torch.utils.data import Dataset
@@ -18,7 +18,10 @@ from open_wam.data.lerobot_v2_latent_storage import (
     discover_local_lerobot_repo_bundles,
     resolve_latent_root,
 )
-from open_wam.data.replay_status import filter_episode_indices_by_replay_status, load_replay_status_records
+from open_wam.data.replay_status import (
+    filter_episode_indices_by_replay_status,
+    load_replay_status_records,
+)
 from open_wam.utils.latent_filenames import match_latent_window_filename
 
 from .types import FdmStartPolicy, FdmWindowSelection
@@ -71,14 +74,15 @@ def build_counterfactual_fdm_eval_dataset(
 ) -> Dataset[LatentWAMSample]:
     """Build the encoded counterfactual target-only latent dataset."""
 
-    from open_wam.data.counterfactual_dynamics_dataset import (
-        EncodedCounterfactualDynamicsLatentDataset,
+    from open_wam.data.encoded_dynamics_dataset import (
+        EncodedDynamicsLatentDataset,
     )
 
-    return EncodedCounterfactualDynamicsLatentDataset(
+    return EncodedDynamicsLatentDataset.from_root(
         data_config=data_config,
         encoded_root=encoded_root,
         split=split,
+        source="counterfactual_dynamics",
     )
 
 
@@ -107,7 +111,7 @@ def select_counterfactual_target_only_windows(
     rows = getattr(dataset, "transition_rows", None)
     if rows is None:
         raise TypeError(
-            "Counterfactual FDM sampling expects EncodedCounterfactualDynamicsLatentDataset "
+            "Counterfactual FDM sampling expects EncodedDynamicsLatentDataset "
             "or a dataset exposing `transition_rows`."
         )
     source_order = _balanced_source_indices_for_dataset(dataset)

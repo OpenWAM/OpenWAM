@@ -6,7 +6,9 @@ from pathlib import Path
 import pytest
 import yaml
 
+import open_wam.configs.loader as config_loader_module
 from open_wam.configs import (
+    EXPERIMENT_CONFIG_SCHEMA_VERSION,
     ActionDecoderName,
     ActionNormalizationMode,
     ActionTargetRepresentation,
@@ -21,9 +23,9 @@ from open_wam.configs import (
     DeprecatedPolicyConfigFieldWarning,
     DualExpertPolicyConfig,
     DualExpertPreset,
+    DynamicsObjective,
+    DynamicsSource,
     ExportedRuntimeActionInitMode,
-    GeneralistDenoisingMode,
-    GeneralistTrainingParadigm,
     HistoryStreamVisibility,
     JointTimestepCoupling,
     LatentWindowProfile,
@@ -39,7 +41,6 @@ from open_wam.configs import (
     PaddedTargetPolicy,
     ParallelRuntimeMode,
     ParallelStreamPolicyConfig,
-    ParallelStreamVariantProfile,
     ProprioContextMode,
     ReplayStatusPolicy,
     RolloutContextPolicy,
@@ -61,6 +62,7 @@ from open_wam.configs import (
 from open_wam.models.policy_variants.parallel_stream.variant import (
     ParallelStreamPolicyVariant,
 )
+from open_wam.utils.config_overrides import apply_config_overrides
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -118,28 +120,45 @@ def test_legacy_parallel_decoder_python_config_normalizes_to_canonical() -> None
     assert config.name == ActionDecoderName.PARALLEL_STREAM
 
 
-def test_null_legacy_timestep_coupling_is_inert() -> None:
-    with pytest.warns(
-        DeprecatedPolicyConfigFieldWarning,
-        match="couple_action_to_video_timesteps",
-    ):
-        normalized = normalize_video_action_policy_fields(
-            {
-                "joint_timestep_coupling": "independent",
-                "couple_action_to_video_timesteps": None,
-            }
-        )
-
-    assert normalized == {"joint_timestep_coupling": "independent"}
+@pytest.mark.parametrize(
+    "field_name",
+    [
+        "couple_action_to_video_timesteps",
+        "parallel_sequence_contract",
+        "preserve_video_pretrain_history",
+    ],
+)
+def test_authored_policy_semantic_aliases_are_rejected(field_name: str) -> None:
+    with pytest.raises(ValueError, match=f"policy_variant.{field_name}.*retired"):
+        normalize_video_action_policy_fields({field_name: None}, warn=False)
 
 
-def test_null_legacy_timestep_coupling_leaves_canonical_default_unset() -> None:
-    normalized = normalize_video_action_policy_fields(
-        {"couple_action_to_video_timesteps": None},
-        warn=False,
-    )
+@pytest.mark.parametrize(
+    ("field_name", "canonical_name", "legacy_value"),
+    [
+        ("couple_action_to_video_timesteps", "joint_timestep_coupling", False),
+        (
+            "parallel_sequence_contract",
+            "sequence_contract",
+            "legacy_prefix_single_frame_perchunk_proprio",
+        ),
+    ],
+)
+def test_authored_config_loader_rejects_semantic_aliases(
+    tmp_path: Path,
+    field_name: str,
+    canonical_name: str,
+    legacy_value: object,
+) -> None:
+    source_path = REPO_ROOT / "configs/experiments/dual_expert_libero_joint.yaml"
+    raw = yaml.safe_load(source_path.read_text(encoding="utf-8"))
+    raw["policy_variant"].pop(canonical_name)
+    raw["policy_variant"][field_name] = legacy_value
+    config_path = tmp_path / "authored.yaml"
+    config_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
 
-    assert "joint_timestep_coupling" not in normalized
+    with pytest.raises(ValueError, match=f"policy_variant.{field_name}.*retired"):
+        load_experiment_config(config_path)
 
 
 @pytest.mark.parametrize(
@@ -149,35 +168,216 @@ def test_null_legacy_timestep_coupling_leaves_canonical_default_unset() -> None:
         (False, JointTimestepCoupling.INDEPENDENT),
     ],
 )
-def test_boolean_legacy_timestep_coupling_maps_to_canonical_enum(
+def test_checkpoint_loader_migrates_boolean_timestep_coupling(
+    tmp_path: Path,
     legacy_value: bool,
     expected: JointTimestepCoupling,
 ) -> None:
-    normalized = normalize_video_action_policy_fields(
-        {"couple_action_to_video_timesteps": legacy_value},
-        warn=False,
+    source_path = REPO_ROOT / "configs/experiments/dual_expert_libero_joint.yaml"
+    raw = yaml.safe_load(source_path.read_text(encoding="utf-8"))
+    raw["policy_variant"].pop("joint_timestep_coupling")
+    raw["policy_variant"]["couple_action_to_video_timesteps"] = legacy_value
+    config_path = tmp_path / "resolved_config.yaml"
+    config_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+
+    with pytest.warns(
+        DeprecatedPolicyConfigFieldWarning,
+        match="couple_action_to_video_timesteps",
+    ):
+        config = load_experiment_config(config_path, checkpoint_runtime_compat=True)
+
+    assert config.policy_variant.joint_timestep_coupling is expected
+
+
+def test_current_checkpoint_schema_bypasses_historical_migration(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_path = REPO_ROOT / "configs/experiments/dual_expert_libero_joint.yaml"
+    raw = yaml.safe_load(source_path.read_text(encoding="utf-8"))
+    raw["schema_version"] = EXPERIMENT_CONFIG_SCHEMA_VERSION
+    config_path = tmp_path / "resolved_config.yaml"
+    config_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+
+    monkeypatch.setattr(
+        config_loader_module,
+        "apply_checkpoint_runtime_compat",
+        lambda _: pytest.fail("current checkpoint config must not be migrated"),
     )
 
-    assert normalized["joint_timestep_coupling"] == expected
+    config = load_experiment_config(config_path, checkpoint_runtime_compat=True)
+
+    assert config.name == raw["name"]
 
 
-def test_conflicting_legacy_timestep_coupling_is_rejected() -> None:
-    with pytest.raises(ValueError, match="Conflicting policy config fields"):
-        normalize_video_action_policy_fields(
-            {
-                "joint_timestep_coupling": "independent",
-                "couple_action_to_video_timesteps": True,
-            },
-            warn=False,
+def test_resolved_config_filename_does_not_select_checkpoint_migration(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_path = REPO_ROOT / "configs/experiments/dual_expert_libero_joint.yaml"
+    config_path = tmp_path / "resolved_config.yaml"
+    config_path.write_text(source_path.read_text(encoding="utf-8"), encoding="utf-8")
+    monkeypatch.setattr(
+        config_loader_module,
+        "apply_checkpoint_runtime_compat",
+        lambda _: pytest.fail("filename must not select checkpoint migration"),
+    )
+
+    config = load_experiment_config(config_path)
+
+    assert config.name
+
+
+@pytest.mark.parametrize("schema_version", [True, "1", 1.0])
+def test_config_schema_version_requires_an_integer(
+    tmp_path: Path,
+    schema_version: object,
+) -> None:
+    source_path = REPO_ROOT / "configs/experiments/dual_expert_libero_joint.yaml"
+    raw = yaml.safe_load(source_path.read_text(encoding="utf-8"))
+    raw["schema_version"] = schema_version
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+
+    with pytest.raises(TypeError, match="schema_version.*integer"):
+        load_experiment_config(config_path)
+
+
+def test_checkpoint_loader_migrates_sequence_contract_alias(tmp_path: Path) -> None:
+    source_path = REPO_ROOT / "configs/experiments/dual_expert_libero_joint.yaml"
+    raw = yaml.safe_load(source_path.read_text(encoding="utf-8"))
+    sequence_contract = raw["policy_variant"].pop("sequence_contract")
+    raw["policy_variant"]["parallel_sequence_contract"] = sequence_contract
+    config_path = tmp_path / "resolved_config.yaml"
+    config_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+
+    with pytest.warns(
+        DeprecatedPolicyConfigFieldWarning,
+        match="parallel_sequence_contract",
+    ):
+        config = load_experiment_config(config_path, checkpoint_runtime_compat=True)
+
+    assert config.policy_variant.sequence_contract.value == sequence_contract
+
+
+def test_checkpoint_loader_migrates_history_visibility_alias(tmp_path: Path) -> None:
+    source_path = (
+        REPO_ROOT / "configs/experiments/parallel_stream_libero_joint.yaml"
+    )
+    raw = yaml.safe_load(source_path.read_text(encoding="utf-8"))
+    raw["policy_variant"]["sequence_contract"] = "default"
+    raw["policy_variant"]["preserve_video_pretrain_history"] = True
+    config_path = tmp_path / "resolved_config.yaml"
+    config_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+
+    with pytest.warns(
+        DeprecatedPolicyConfigFieldWarning,
+        match="preserve_video_pretrain_history",
+    ):
+        config = load_experiment_config(
+            config_path,
+            checkpoint_runtime_compat=True,
         )
+
+    assert (
+        config.policy_variant.history_stream_visibility
+        == HistoryStreamVisibility.VIDEO_QUERIES_VIDEO_ONLY
+    )
+
+
+def test_checkpoint_history_alias_defers_to_sequence_contract(tmp_path: Path) -> None:
+    source_path = (
+        REPO_ROOT / "configs/experiments/parallel_stream_libero_joint.yaml"
+    )
+    raw = yaml.safe_load(source_path.read_text(encoding="utf-8"))
+    raw["policy_variant"]["preserve_video_pretrain_history"] = True
+    config_path = tmp_path / "resolved_config.yaml"
+    config_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+
+    with pytest.warns(
+        DeprecatedPolicyConfigFieldWarning,
+        match="preserve_video_pretrain_history",
+    ):
+        config = load_experiment_config(
+            config_path,
+            checkpoint_runtime_compat=True,
+        )
+
+    assert (
+        config.policy_variant.history_stream_visibility
+        == HistoryStreamVisibility.VIDEO_ONLY
+    )
+
+
+def test_checkpoint_history_alias_defers_to_explicit_canonical_visibility(
+    tmp_path: Path,
+) -> None:
+    source_path = (
+        REPO_ROOT / "configs/experiments/parallel_stream_libero_joint.yaml"
+    )
+    raw = yaml.safe_load(source_path.read_text(encoding="utf-8"))
+    raw["policy_variant"]["sequence_contract"] = "default"
+    raw["policy_variant"]["history_stream_visibility"] = "full"
+    raw["policy_variant"]["preserve_video_pretrain_history"] = True
+    config_path = tmp_path / "resolved_config.yaml"
+    config_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+
+    with pytest.warns(
+        DeprecatedPolicyConfigFieldWarning,
+        match="preserve_video_pretrain_history",
+    ):
+        config = load_experiment_config(
+            config_path,
+            checkpoint_runtime_compat=True,
+        )
+
+    assert (
+        config.policy_variant.history_stream_visibility
+        == HistoryStreamVisibility.FULL
+    )
+
+
+def test_checkpoint_loader_rejects_conflicting_timestep_alias(tmp_path: Path) -> None:
+    source_path = REPO_ROOT / "configs/experiments/dual_expert_libero_joint.yaml"
+    raw = yaml.safe_load(source_path.read_text(encoding="utf-8"))
+    raw["policy_variant"]["joint_timestep_coupling"] = "independent"
+    raw["policy_variant"]["couple_action_to_video_timesteps"] = True
+    config_path = tmp_path / "resolved_config.yaml"
+    config_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="Conflicting policy config fields"):
+        load_experiment_config(config_path, checkpoint_runtime_compat=True)
 
 
 @pytest.mark.parametrize("legacy_value", [0, 1, "true", (), {}])
-def test_non_boolean_legacy_timestep_coupling_is_rejected(legacy_value: object) -> None:
+def test_checkpoint_loader_rejects_non_boolean_timestep_alias(
+    tmp_path: Path,
+    legacy_value: object,
+) -> None:
+    source_path = REPO_ROOT / "configs/experiments/dual_expert_libero_joint.yaml"
+    raw = yaml.safe_load(source_path.read_text(encoding="utf-8"))
+    raw["policy_variant"].pop("joint_timestep_coupling")
+    raw["policy_variant"]["couple_action_to_video_timesteps"] = legacy_value
+    config_path = tmp_path / "resolved_config.yaml"
+    config_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+
     with pytest.raises(TypeError, match="must be a boolean"):
-        normalize_video_action_policy_fields(
-            {"couple_action_to_video_timesteps": legacy_value},
-            warn=False,
+        load_experiment_config(config_path, checkpoint_runtime_compat=True)
+
+
+def test_policy_dataclass_has_no_legacy_timestep_constructor_route() -> None:
+    with pytest.raises(TypeError, match="unexpected keyword argument"):
+        ParallelStreamPolicyConfig(
+            program=VideoActionProgram.JOINT,
+            couple_action_to_video_timesteps=True,  # type: ignore[call-arg]
+        )
+
+
+def test_parallel_policy_dataclass_has_no_legacy_history_constructor_route() -> None:
+    with pytest.raises(TypeError, match="unexpected keyword argument"):
+        ParallelStreamPolicyConfig(
+            program=VideoActionProgram.JOINT,
+            preserve_video_pretrain_history=True,  # type: ignore[call-arg]
         )
 
 
@@ -259,7 +459,7 @@ def test_new_variant_yaml_configs_load() -> None:
     assert smoke_parallel.backbone.reference_model_path is None
 
 
-def test_generalist_dynamics_routing_knob_loads_from_yaml(tmp_path: Path) -> None:
+def test_dynamics_routing_knob_loads_from_yaml(tmp_path: Path) -> None:
     config_path = tmp_path / "dynamics_routed.yaml"
     config_path.write_text(
         """
@@ -267,31 +467,31 @@ name: dynamics_routed
 data:
   dataset_name: libero
   dataset_type: lerobot_v2_latent_local
+  train_batch_size: 1
+  val_batch_size: 1
+  sample_construction:
+    sample_order_mode: replacement
   action_schema:
     action_dim: 7
     action_horizon: 16
     state_dim: 8
     state_horizon: 1
-  generalist_dynamics_mixture:
+  dynamics_routing:
     train_latent_root: /tmp/counterfactual_train/encoded_latents
     val_latent_root: /tmp/counterfactual_val/encoded_latents
     allow_train_latent_root_for_val: false
-    real_joint_weight: 0.6
-    real_action_conditioned_video_weight: 0.1
-    real_video_conditioned_action_weight: 0.1
-    counterfactual_action_conditioned_video_weight: 0.1
-    counterfactual_video_conditioned_action_weight: 0.1
-    conditional_history_frames: 8
+    routes:
+      - {source: real_demo, mode: joint, weight: 0.6}
+      - {source: real_demo, mode: action_conditioned_video, weight: 0.1}
+      - {source: real_demo, mode: video_conditioned_action, weight: 0.1}
+      - {source: counterfactual_dynamics, mode: action_conditioned_video, weight: 0.1}
+      - {source: counterfactual_dynamics, mode: video_conditioned_action, weight: 0.1}
 backbone:
   implementation: shared_transformer
 policy_variant:
   name: parallel_stream
   attach_site: within_visual_core
-  runtime_mode: lingbot_exact_action_conditioned
-  variant_profile: generalist_joint_denoising
-  current_block_coupling: joint
-  video_condition_on_action: true
-  generalist_training_paradigm: dynamics_routed
+  program: generalist_joint_denoising
 action_decoder:
   name: parallel_stream_decoder
   action_dim: 7
@@ -305,15 +505,43 @@ trainer:
 
     config = load_experiment_config(config_path)
 
-    assert config.policy_variant.generalist_training_paradigm == GeneralistTrainingParadigm.DYNAMICS_ROUTED
     assert config.policy_variant.joint_timestep_coupling == JointTimestepCoupling.INDEPENDENT
-    assert config.data.generalist_dynamics_mixture.train_latent_root == "/tmp/counterfactual_train/encoded_latents"
-    assert config.data.generalist_dynamics_mixture.allow_train_latent_root_for_val is False
-    assert config.data.generalist_dynamics_mixture.real_joint_weight == 0.6
-    assert config.data.generalist_dynamics_mixture.conditional_history_frames == 8
+    assert config.data.dynamics_routing.train_latent_root == "/tmp/counterfactual_train/encoded_latents"
+    assert config.data.dynamics_routing.allow_train_latent_root_for_val is False
+    routes = config.data.dynamics_routing.active_routes
+    assert len(routes) == 5
+    assert routes[0].source is DynamicsSource.REAL_DEMO
+    assert routes[0].mode is DynamicsObjective.JOINT
+    assert routes[0].weight == pytest.approx(0.6)
+    assert config.data.dynamics_routing.mode_probabilities() == {
+        DynamicsObjective.JOINT: pytest.approx(0.6),
+        DynamicsObjective.ACTION_CONDITIONED_VIDEO: pytest.approx(0.2),
+        DynamicsObjective.VIDEO_CONDITIONED_ACTION: pytest.approx(0.2),
+    }
 
 
-def test_legacy_mixed_dynamics_value_normalizes_to_dynamics_routed(
+@pytest.mark.parametrize(
+    "field_name",
+    ["generalist_training_paradigm", "dynamics_routing_requirement"],
+)
+def test_authored_legacy_routing_marker_is_rejected(
+    tmp_path: Path,
+    field_name: str,
+) -> None:
+    source_path = (
+        REPO_ROOT
+        / "configs/experiments/dual_expert_libero_generalist_joint_denoising.yaml"
+    )
+    raw = yaml.safe_load(source_path.read_text(encoding="utf-8"))
+    raw["policy_variant"][field_name] = "mixed_dynamics"
+    config_path = tmp_path / "legacy_mixed_dynamics.yaml"
+    config_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+
+    with pytest.raises(ValueError, match=f"{field_name}.*retired"):
+        load_experiment_config(config_path)
+
+
+def test_checkpoint_legacy_mixed_dynamics_marker_is_consumed(
     tmp_path: Path,
 ) -> None:
     source_path = (
@@ -322,17 +550,100 @@ def test_legacy_mixed_dynamics_value_normalizes_to_dynamics_routed(
     )
     raw = yaml.safe_load(source_path.read_text(encoding="utf-8"))
     raw["policy_variant"]["generalist_training_paradigm"] = "mixed_dynamics"
-    config_path = tmp_path / "legacy_mixed_dynamics.yaml"
+    config_path = tmp_path / "resolved_config.yaml"
     config_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
 
-    config = load_experiment_config(config_path)
+    config = load_experiment_config(config_path, checkpoint_runtime_compat=True)
 
-    paradigm = config.policy_variant.generalist_training_paradigm
-    assert paradigm is GeneralistTrainingParadigm.DYNAMICS_ROUTED
-    assert paradigm.value == "dynamics_routed"
+    assert not hasattr(config.policy_variant, "dynamics_routing_requirement")
+    assert config.data.dynamics_routing.active_routes
 
 
-def test_generalist_dynamics_routing_accepts_replacement_sample_order(tmp_path: Path) -> None:
+def test_authored_legacy_routing_keys_are_rejected(tmp_path: Path) -> None:
+    source_path = (
+        REPO_ROOT
+        / "configs/experiments/dual_expert_libero_generalist_joint_denoising.yaml"
+    )
+    raw = yaml.safe_load(source_path.read_text(encoding="utf-8"))
+    raw["policy_variant"]["generalist_training_paradigm"] = "mixed_dynamics"
+    policy_path = tmp_path / "legacy_policy_key.yaml"
+    policy_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="generalist_training_paradigm.*retired"):
+        load_experiment_config(policy_path)
+
+    raw = yaml.safe_load(source_path.read_text(encoding="utf-8"))
+    raw["data"]["generalist_dynamics_mixture"] = raw["data"].pop(
+        "dynamics_routing"
+    )
+    data_path = tmp_path / "legacy_data_key.yaml"
+    data_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="generalist_dynamics_mixture.*retired"):
+        load_experiment_config(data_path)
+
+
+def test_checkpoint_legacy_routing_keys_and_source_migrate_once(
+    tmp_path: Path,
+) -> None:
+    source_path = (
+        REPO_ROOT
+        / "configs/experiments/dual_expert_libero_generalist_joint_denoising.yaml"
+    )
+    canonical_raw = yaml.safe_load(source_path.read_text(encoding="utf-8"))
+    legacy_raw = yaml.safe_load(source_path.read_text(encoding="utf-8"))
+    legacy_raw["policy_variant"]["generalist_training_paradigm"] = "mixed_dynamics"
+    legacy_routing = legacy_raw["data"].pop("dynamics_routing")
+    legacy_raw["data"]["generalist_dynamics_mixture"] = legacy_routing
+    for route in legacy_routing["routes"]:
+        if route["source"] == "counterfactual_dynamics":
+            route["source"] = "counterfactual"
+
+    canonical_path = tmp_path / "canonical.yaml"
+    canonical_path.write_text(
+        yaml.safe_dump(canonical_raw, sort_keys=False), encoding="utf-8"
+    )
+    checkpoint_path = tmp_path / "resolved_config.yaml"
+    checkpoint_path.write_text(
+        yaml.safe_dump(legacy_raw, sort_keys=False), encoding="utf-8"
+    )
+
+    canonical = load_experiment_config(canonical_path)
+    migrated = load_experiment_config(
+        checkpoint_path,
+        checkpoint_runtime_compat=True,
+    )
+
+    assert migrated == canonical
+
+
+def test_checkpoint_missing_sample_order_uses_replacement_default(
+    tmp_path: Path,
+) -> None:
+    source_path = (
+        REPO_ROOT
+        / "configs/experiments/dual_expert_libero_generalist_joint_denoising.yaml"
+    )
+    raw = yaml.safe_load(source_path.read_text(encoding="utf-8"))
+    raw["data"]["sample_construction"].pop("sample_order_mode")
+    checkpoint_path = tmp_path / "resolved_config.yaml"
+    checkpoint_path.write_text(
+        yaml.safe_dump(raw, sort_keys=False),
+        encoding="utf-8",
+    )
+
+    config = load_experiment_config(
+        checkpoint_path,
+        checkpoint_runtime_compat=True,
+    )
+
+    assert (
+        config.data.sample_construction.sample_order_mode
+        is SampleOrderMode.REPLACEMENT
+    )
+
+
+def test_dynamics_routing_accepts_replacement_sample_order(tmp_path: Path) -> None:
     config_path = tmp_path / "dynamics_routed_replacement_order.yaml"
     config_path.write_text(
         """
@@ -340,6 +651,8 @@ name: dynamics_routed_replacement_order
 data:
   dataset_name: libero
   dataset_type: lerobot_v2_latent_local
+  train_batch_size: 1
+  val_batch_size: 1
   sample_construction:
     mode: uniform_segment
     sample_order_mode: replacement
@@ -352,19 +665,17 @@ data:
     action_horizon: 16
     state_dim: 8
     state_horizon: 1
-  generalist_dynamics_mixture:
+  dynamics_routing:
     train_latent_root: /tmp/counterfactual_train/encoded_latents
     val_latent_root: /tmp/counterfactual_val/encoded_latents
+    routes:
+      - {source: real_demo, mode: joint, weight: 1.0}
 backbone:
   implementation: shared_transformer
 policy_variant:
   name: parallel_stream
   attach_site: within_visual_core
-  runtime_mode: lingbot_exact_action_conditioned
-  variant_profile: generalist_joint_denoising
-  current_block_coupling: joint
-  video_condition_on_action: true
-  generalist_training_paradigm: dynamics_routed
+  program: generalist_joint_denoising
 action_decoder:
   name: parallel_stream_decoder
   action_dim: 7
@@ -378,18 +689,30 @@ trainer:
 
     config = load_experiment_config(config_path)
 
-    assert config.policy_variant.generalist_training_paradigm == GeneralistTrainingParadigm.DYNAMICS_ROUTED
     assert config.data.sample_construction.sample_order_mode == SampleOrderMode.REPLACEMENT
     assert config.data.sample_construction.chunk_size == 4
     assert config.data.sample_construction.window_size == 64
     assert config.data.sample_construction.randomize_geometry is True
     assert config.data.sample_construction.sample_weight_mode == SampleWeightMode.UNIFORM
-    assert config.data.generalist_dynamics_mixture.train_latent_root == "/tmp/counterfactual_train/encoded_latents"
-    assert config.data.generalist_dynamics_mixture.val_latent_root == "/tmp/counterfactual_val/encoded_latents"
-    assert config.data.generalist_dynamics_mixture.conditional_history_frames is None
+    assert config.data.dynamics_routing.train_latent_root == "/tmp/counterfactual_train/encoded_latents"
+    assert config.data.dynamics_routing.val_latent_root == "/tmp/counterfactual_val/encoded_latents"
+    assert len(config.data.dynamics_routing.active_routes) == 1
 
 
-def test_generalist_dynamics_routing_rejects_views_batch_adapter(tmp_path: Path) -> None:
+def test_dynamics_routing_rejects_epoch_order_override() -> None:
+    config = load_experiment_config(
+        REPO_ROOT
+        / "configs/experiments/dual_expert_libero_generalist_joint_denoising.yaml"
+    )
+
+    with pytest.raises(ValueError, match="sample_order_mode.*replacement"):
+        apply_config_overrides(
+            config,
+            {"data.sample_construction.sample_order_mode": "epoch_order"},
+        )
+
+
+def test_dynamics_routing_rejects_views_batch_adapter(tmp_path: Path) -> None:
     config_path = tmp_path / "dynamics_routed_views_adapter.yaml"
     config_path.write_text(
         """
@@ -397,24 +720,24 @@ name: dynamics_routed_views_adapter
 data:
   dataset_name: libero
   dataset_type: lerobot_v2_latent_local
+  train_batch_size: 1
+  val_batch_size: 1
   action_schema:
     action_dim: 7
     action_horizon: 16
     state_dim: 8
     state_horizon: 1
-  generalist_dynamics_mixture:
+  dynamics_routing:
     train_latent_root: /tmp/counterfactual_train/encoded_latents
     val_latent_root: /tmp/counterfactual_val/encoded_latents
+    routes:
+      - {source: real_demo, mode: joint, weight: 1.0}
 backbone:
   implementation: shared_transformer
 policy_variant:
   name: parallel_stream
   attach_site: within_visual_core
-  runtime_mode: lingbot_exact_action_conditioned
-  variant_profile: generalist_joint_denoising
-  current_block_coupling: joint
-  video_condition_on_action: true
-  generalist_training_paradigm: dynamics_routed
+  program: generalist_joint_denoising
 action_decoder:
   name: parallel_stream_decoder
   action_dim: 7
@@ -430,7 +753,7 @@ trainer:
         load_experiment_config(config_path)
 
 
-def test_generalist_dynamics_routing_rejects_non_uniform_sample_weight(tmp_path: Path) -> None:
+def test_dynamics_routing_rejects_non_uniform_sample_weight(tmp_path: Path) -> None:
     config_path = tmp_path / "dynamics_routed_weighted_source.yaml"
     config_path.write_text(
         """
@@ -438,27 +761,28 @@ name: dynamics_routed_weighted_source
 data:
   dataset_name: libero
   dataset_type: lerobot_v2_latent_local
+  train_batch_size: 1
+  val_batch_size: 1
   sample_construction:
     mode: uniform_segment
+    sample_order_mode: replacement
     sample_weight_mode: valid_action_steps
   action_schema:
     action_dim: 7
     action_horizon: 16
     state_dim: 8
     state_horizon: 1
-  generalist_dynamics_mixture:
+  dynamics_routing:
     train_latent_root: /tmp/counterfactual_train/encoded_latents
     val_latent_root: /tmp/counterfactual_val/encoded_latents
+    routes:
+      - {source: real_demo, mode: joint, weight: 1.0}
 backbone:
   implementation: shared_transformer
 policy_variant:
   name: parallel_stream
   attach_site: within_visual_core
-  runtime_mode: lingbot_exact_action_conditioned
-  variant_profile: generalist_joint_denoising
-  current_block_coupling: joint
-  video_condition_on_action: true
-  generalist_training_paradigm: dynamics_routed
+  program: generalist_joint_denoising
 action_decoder:
   name: parallel_stream_decoder
   action_dim: 7
@@ -481,12 +805,20 @@ def test_auxiliary_validation_tasks_load_from_yaml(tmp_path: Path) -> None:
 name: auxiliary_validation
 data:
   dataset_name: robotwin
+  train_batch_size: 1
+  val_batch_size: 1
+  sample_construction:
+    sample_order_mode: replacement
+  dynamics_routing:
+    routes:
+      - {source: real_demo, mode: action_conditioned_video, weight: 1.0}
+      - {source: real_demo, mode: video_conditioned_action, weight: 1.0}
 backbone:
   implementation: shared_transformer
 policy_variant:
   name: parallel_stream
   attach_site: within_visual_core
-  runtime_mode: lingbot_exact_action_conditioned
+  program: generalist_joint_denoising
 action_decoder:
   name: parallel_stream_decoder
 validation:
@@ -499,11 +831,12 @@ validation:
       report_prefix: val_fdm
     - name: idm_val
       mode_override: video_conditioned_action
+      source: counterfactual_dynamics_if_available
       max_batches: 8
       report_prefix: val_idm
-      drop_text_conditioning: false
 trainer:
   accelerator: cpu
+  batch_adapter: latents
 """,
         encoding="utf-8",
     )
@@ -512,13 +845,96 @@ trainer:
 
     fdm, idm = config.validation.auxiliary_tasks
     assert fdm.name == "fdm_val"
-    assert fdm.mode_override == GeneralistDenoisingMode.ACTION_CONDITIONED_VIDEO
+    assert fdm.mode_override == DynamicsObjective.ACTION_CONDITIONED_VIDEO
     assert fdm.source == AuxiliaryValidationSource.COUNTERFACTUAL_DYNAMICS_IF_AVAILABLE
     assert fdm.phase == "val_fdm"
     assert fdm.should_drop_text is True
-    assert idm.mode_override == GeneralistDenoisingMode.VIDEO_CONDITIONED_ACTION
+    assert idm.mode_override == DynamicsObjective.VIDEO_CONDITIONED_ACTION
     assert idm.max_batches == 8
-    assert idm.should_drop_text is False
+    assert idm.should_drop_text is True
+
+
+def test_conditional_auxiliary_validation_rejects_text_drop_override(
+    tmp_path: Path,
+) -> None:
+    source_path = REPO_ROOT / "configs/experiments/dual_expert_libero_joint.yaml"
+    raw = yaml.safe_load(source_path.read_text(encoding="utf-8"))
+    raw["validation"] = {
+        "auxiliary_tasks": [
+            {
+                "name": "idm_val",
+                "mode_override": "video_conditioned_action",
+                "drop_text_conditioning": False,
+            }
+        ]
+    }
+    config_path = tmp_path / "conditional_text_override.yaml"
+    config_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+
+    with pytest.raises(
+        ValueError,
+        match="Conditional FDM/IDM validation always removes task text",
+    ):
+        load_experiment_config(config_path)
+
+
+def test_strict_dynamics_auxiliary_validation_rejects_text_drop_override(
+    tmp_path: Path,
+) -> None:
+    source_path = (
+        REPO_ROOT
+        / "configs/experiments/dual_expert_libero_conditional_dynamics.yaml"
+    )
+    raw = yaml.safe_load(source_path.read_text(encoding="utf-8"))
+    raw["validation"] = {
+        "auxiliary_tasks": [
+            {
+                "name": "fdm_val",
+                "source": "real_demo",
+                "drop_text_conditioning": False,
+            }
+        ]
+    }
+    config_path = tmp_path / "strict_conditional_text_override.yaml"
+    config_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="always removes task text"):
+        load_experiment_config(config_path)
+
+
+def test_conditional_auxiliary_validation_rejects_unprojected_mixed_dataset() -> None:
+    config = load_experiment_config(
+        REPO_ROOT
+        / "configs/experiments/dual_expert_libero_generalist_joint_denoising.yaml"
+    )
+
+    with pytest.raises(ValueError, match="active routes contain another objective"):
+        apply_config_overrides(
+            config,
+            {
+                "validation.auxiliary_tasks": [
+                    {
+                        "name": "fdm_mixed_dataset",
+                        "mode_override": "action_conditioned_video",
+                        "source": "dataset",
+                        "max_batches": 1,
+                    }
+                ]
+            },
+        )
+
+
+def test_conditional_auxiliary_validation_requires_active_router() -> None:
+    config = load_experiment_config(
+        REPO_ROOT
+        / "configs/experiments/dual_expert_libero_generalist_joint_denoising.yaml"
+    )
+
+    with pytest.raises(ValueError, match="requires active `data.dynamics_routing.routes`"):
+        apply_config_overrides(
+            config,
+            {"data.dynamics_routing.routes": []},
+        )
 
 
 def test_absolute_joint_position_action_target_loads_from_yaml(tmp_path: Path) -> None:
@@ -555,7 +971,7 @@ backbone:
 policy_variant:
   name: parallel_stream
   attach_site: within_visual_core
-  runtime_mode: lingbot_exact_action_conditioned
+  program: joint
 action_decoder:
   name: parallel_stream_decoder
   action_dim: 8
@@ -948,10 +1364,45 @@ def test_checkpoint_loader_preserves_generalist_program_during_legacy_migration(
     )
 
 
-@pytest.mark.parametrize("stored_paradigm", [None, "demo_only"])
-def test_checkpoint_loader_normalizes_stale_mixed_gjd_routing_metadata(
+def test_checkpoint_loader_consumes_derived_parallel_execution_fields(
     tmp_path: Path,
-    stored_paradigm: str | None,
+) -> None:
+    source_path = (
+        REPO_ROOT
+        / "configs/experiments/parallel_stream_libero_generalist_joint_denoising.yaml"
+    )
+    canonical_raw = yaml.safe_load(source_path.read_text(encoding="utf-8"))
+    checkpoint_raw = yaml.safe_load(source_path.read_text(encoding="utf-8"))
+    checkpoint_raw["policy_variant"].update(
+        {
+            "runtime_mode": "lingbot_exact_action_conditioned",
+            "current_block_coupling": "joint",
+            "variant_profile": "generalist_joint_denoising",
+            "video_condition_on_action": True,
+        }
+    )
+    canonical_path = tmp_path / "canonical.yaml"
+    canonical_path.write_text(
+        yaml.safe_dump(canonical_raw, sort_keys=False),
+        encoding="utf-8",
+    )
+    checkpoint_path = tmp_path / "resolved_config.yaml"
+    checkpoint_path.write_text(
+        yaml.safe_dump(checkpoint_raw, sort_keys=False),
+        encoding="utf-8",
+    )
+
+    canonical = load_experiment_config(canonical_path)
+    migrated = load_experiment_config(
+        checkpoint_path,
+        checkpoint_runtime_compat=True,
+    )
+
+    assert migrated == canonical
+
+
+def test_checkpoint_loader_uses_explicit_routes_over_stale_gjd_routing_marker(
+    tmp_path: Path,
 ) -> None:
     source_path = (
         REPO_ROOT
@@ -965,13 +1416,12 @@ def test_checkpoint_loader_normalizes_stale_mixed_gjd_routing_metadata(
     stale_policy["runtime_mode"] = "non_joint_two_stream"
     stale_policy["current_block_coupling"] = "joint"
     stale_policy["video_can_attend_action"] = False
-    stale_policy["mot_generalist_training_mode_probs"] = stale_policy.pop(
-        "generalist_denoising_mode_probs"
-    )
-    if stored_paradigm is None:
-        stale_policy.pop("generalist_training_paradigm")
-    else:
-        stale_policy["generalist_training_paradigm"] = stored_paradigm
+    stale_policy["mot_generalist_training_mode_probs"] = {
+        "joint": 0.6,
+        "action_conditioned_video": 0.2,
+        "video_conditioned_action": 0.2,
+    }
+    stale_policy["generalist_training_paradigm"] = "demo_only"
 
     canonical_path = tmp_path / "canonical.yaml"
     canonical_path.write_text(
@@ -987,13 +1437,248 @@ def test_checkpoint_loader_normalizes_stale_mixed_gjd_routing_metadata(
             checkpoint_runtime_compat=True,
         )
 
-    assert [warning.category for warning in emitted] == [
-        DeprecatedPolicyConfigFieldWarning,
+    assert {warning.category for warning in emitted} == {
         DeprecatedPolicyConfigFieldWarning,
         UserWarning,
-    ]
-    assert "normalized stale GJD training-data" in str(emitted[-1].message)
+    }
     assert migrated == canonical
+
+
+def test_checkpoint_loader_migrates_legacy_source_weights_only_for_mixed_data(
+    tmp_path: Path,
+) -> None:
+    source_path = (
+        REPO_ROOT
+        / "configs/experiments/dual_expert_libero_generalist_joint_denoising.yaml"
+    )
+    canonical_raw = yaml.safe_load(source_path.read_text(encoding="utf-8"))
+    legacy_raw = yaml.safe_load(source_path.read_text(encoding="utf-8"))
+    legacy_policy = legacy_raw["policy_variant"]
+    legacy_policy["name"] = "mot"
+    legacy_policy.pop("program")
+    legacy_policy.update(
+        {
+            "runtime_mode": "non_joint_two_stream",
+            "current_block_coupling": "joint",
+            "video_can_attend_action": False,
+            "mot_generalist_training_mode_probs": {
+                "joint": 0.6,
+                "action_conditioned_video": 0.2,
+                "video_conditioned_action": 0.2,
+            },
+            "generalist_training_paradigm": "mixed_dynamics",
+        }
+    )
+    legacy_routing = legacy_raw["data"]["dynamics_routing"]
+    legacy_routing.pop("routes")
+    legacy_routing.update(
+        {
+            "real_joint_weight": 0.6,
+            "real_action_conditioned_video_weight": 0.1,
+            "real_video_conditioned_action_weight": 0.1,
+            "counterfactual_action_conditioned_video_weight": 0.1,
+            "counterfactual_video_conditioned_action_weight": 0.1,
+        }
+    )
+    canonical_path = tmp_path / "canonical.yaml"
+    canonical_path.write_text(
+        yaml.safe_dump(canonical_raw, sort_keys=False), encoding="utf-8"
+    )
+    legacy_path = tmp_path / "resolved_config.yaml"
+    legacy_path.write_text(
+        yaml.safe_dump(legacy_raw, sort_keys=False), encoding="utf-8"
+    )
+
+    canonical = load_experiment_config(canonical_path)
+    with pytest.warns(DeprecatedPolicyConfigFieldWarning):
+        migrated = load_experiment_config(
+            legacy_path,
+            checkpoint_runtime_compat=True,
+        )
+
+    assert migrated == canonical
+
+
+def test_checkpoint_loader_normalizes_routed_epoch_order_sampling(
+    tmp_path: Path,
+) -> None:
+    source_path = (
+        REPO_ROOT
+        / "configs/experiments/dual_expert_libero_generalist_joint_denoising.yaml"
+    )
+    raw = yaml.safe_load(source_path.read_text(encoding="utf-8"))
+    raw["data"]["sample_construction"]["sample_order_mode"] = "epoch_order"
+    expected_routes = raw["data"]["dynamics_routing"]["routes"]
+    config_path = tmp_path / "resolved_config.yaml"
+    config_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+
+    with pytest.warns(UserWarning, match="routed checkpoint sampling.*replacement"):
+        config = load_experiment_config(
+            config_path,
+            checkpoint_runtime_compat=True,
+        )
+
+    assert (
+        config.data.sample_construction.sample_order_mode
+        == SampleOrderMode.REPLACEMENT
+    )
+    assert [
+        {
+            "source": route.source.value,
+            "mode": route.mode.value,
+            "weight": route.weight,
+        }
+        for route in config.data.dynamics_routing.routes
+    ] == expected_routes
+
+
+def test_checkpoint_loader_preserves_epoch_order_without_active_routes(
+    tmp_path: Path,
+) -> None:
+    source_path = REPO_ROOT / "configs/experiments/dual_expert_libero_joint.yaml"
+    raw = yaml.safe_load(source_path.read_text(encoding="utf-8"))
+    raw["data"]["sample_construction"]["sample_order_mode"] = "epoch_order"
+    config_path = tmp_path / "resolved_config.yaml"
+    config_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+
+    config = load_experiment_config(
+        config_path,
+        checkpoint_runtime_compat=True,
+    )
+
+    assert config.data.sample_construction.sample_order_mode == SampleOrderMode.EPOCH_ORDER
+
+
+def test_checkpoint_loader_ignores_inert_legacy_weights_for_standard_program(
+    tmp_path: Path,
+) -> None:
+    source_path = REPO_ROOT / "configs/experiments/dual_expert_libero_video_then_action.yaml"
+    canonical_raw = yaml.safe_load(source_path.read_text(encoding="utf-8"))
+    legacy_raw = yaml.safe_load(source_path.read_text(encoding="utf-8"))
+    legacy_policy = legacy_raw["policy_variant"]
+    legacy_policy["name"] = "mot"
+    legacy_policy.pop("program")
+    legacy_policy.update(
+        {
+            "runtime_mode": "non_joint_two_stream",
+            "current_block_coupling": "video_then_action",
+            "video_can_attend_action": False,
+            "mot_generalist_training_mode_probs": None,
+            "generalist_training_paradigm": "demo_only",
+        }
+    )
+    legacy_raw["data"]["generalist_dynamics_mixture"] = {
+        "train_latent_root": None,
+        "val_latent_root": None,
+        "allow_train_latent_root_for_val": False,
+        "real_joint_weight": 0.6,
+        "real_action_conditioned_video_weight": 0.1,
+        "real_video_conditioned_action_weight": 0.1,
+        "counterfactual_action_conditioned_video_weight": 0.1,
+        "counterfactual_video_conditioned_action_weight": 0.1,
+        "conditional_history_frames": 16,
+        "seed": 0,
+        "length_multiplier": 1.0,
+    }
+    canonical_path = tmp_path / "canonical.yaml"
+    canonical_path.write_text(
+        yaml.safe_dump(canonical_raw, sort_keys=False), encoding="utf-8"
+    )
+    legacy_path = tmp_path / "resolved_config.yaml"
+    legacy_path.write_text(
+        yaml.safe_dump(legacy_raw, sort_keys=False), encoding="utf-8"
+    )
+
+    canonical = load_experiment_config(canonical_path)
+    with pytest.warns(DeprecatedPolicyConfigFieldWarning):
+        migrated = load_experiment_config(
+            legacy_path,
+            checkpoint_runtime_compat=True,
+        )
+
+    assert migrated == canonical
+
+
+def test_checkpoint_loader_maps_demo_only_conditional_modes_to_real_routes(
+    tmp_path: Path,
+) -> None:
+    source_path = (
+        REPO_ROOT
+        / "configs/experiments/dual_expert_libero_generalist_joint_denoising.yaml"
+    )
+    raw = yaml.safe_load(source_path.read_text(encoding="utf-8"))
+    policy = raw["policy_variant"]
+    policy["generalist_training_paradigm"] = "demo_only"
+    policy["generalist_denoising_mode_probs"] = {
+        "joint": 0.6,
+        "action_conditioned_video": 0.2,
+        "video_conditioned_action": 0.2,
+    }
+    routing = raw["data"]["dynamics_routing"]
+    routing.pop("routes")
+    routing.update(
+        {
+            "real_joint_weight": 0.6,
+            "real_action_conditioned_video_weight": 0.1,
+            "real_video_conditioned_action_weight": 0.1,
+            "counterfactual_action_conditioned_video_weight": 0.1,
+            "counterfactual_video_conditioned_action_weight": 0.1,
+        }
+    )
+    config_path = tmp_path / "resolved_config.yaml"
+    config_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+
+    config = load_experiment_config(config_path, checkpoint_runtime_compat=True)
+
+    assert [
+        (route.source.value, route.mode.value, route.weight)
+        for route in config.data.dynamics_routing.routes
+    ] == [
+        ("real_demo", "joint", 0.6),
+        ("real_demo", "action_conditioned_video", 0.2),
+        ("real_demo", "video_conditioned_action", 0.2),
+    ]
+
+
+def test_checkpoint_loader_rejects_enabled_marker_without_routes(
+    tmp_path: Path,
+) -> None:
+    source_path = (
+        REPO_ROOT
+        / "configs/experiments/dual_expert_libero_generalist_joint_denoising.yaml"
+    )
+    raw = yaml.safe_load(source_path.read_text(encoding="utf-8"))
+    raw["policy_variant"]["generalist_training_paradigm"] = "mixed_dynamics"
+    raw["data"]["dynamics_routing"]["routes"] = []
+    config_path = tmp_path / "resolved_config.yaml"
+    config_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="no positive source/objective route"):
+        load_experiment_config(config_path, checkpoint_runtime_compat=True)
+
+
+def test_checkpoint_loader_rejects_strict_program_legacy_gjd_weights(
+    tmp_path: Path,
+) -> None:
+    source_path = (
+        REPO_ROOT
+        / "configs/experiments/dual_expert_libero_conditional_dynamics.yaml"
+    )
+    raw = yaml.safe_load(source_path.read_text(encoding="utf-8"))
+    raw["policy_variant"]["generalist_training_paradigm"] = "mixed_dynamics"
+    routing = raw["data"]["dynamics_routing"]
+    routing.pop("routes")
+    routing.update(
+        {
+            "real_action_conditioned_video_weight": 1.0,
+            "real_video_conditioned_action_weight": 1.0,
+        }
+    )
+    config_path = tmp_path / "resolved_config.yaml"
+    config_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="Strict forward- and inverse-dynamics"):
+        load_experiment_config(config_path, checkpoint_runtime_compat=True)
 
 
 def test_checkpoint_loader_does_not_rewrite_unknown_gjd_routing_metadata(
@@ -1012,7 +1697,7 @@ def test_checkpoint_loader_does_not_rewrite_unknown_gjd_routing_metadata(
         load_experiment_config(config_path, checkpoint_runtime_compat=True)
 
 
-def test_authored_mixed_gjd_config_rejects_demo_only_routing(tmp_path: Path) -> None:
+def test_authored_gjd_config_rejects_retired_demo_only_marker(tmp_path: Path) -> None:
     source_path = (
         REPO_ROOT
         / "configs/experiments/dual_expert_libero_generalist_joint_denoising.yaml"
@@ -1022,10 +1707,7 @@ def test_authored_mixed_gjd_config_rejects_demo_only_routing(tmp_path: Path) -> 
     config_path = tmp_path / "authored.yaml"
     config_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
 
-    with pytest.raises(
-        ValueError,
-        match="Positive FDM/IDM.*require.*dynamics_routed",
-    ):
+    with pytest.raises(ValueError, match="generalist_training_paradigm.*retired"):
         load_experiment_config(config_path)
 
 
@@ -1043,15 +1725,109 @@ def test_checkpoint_loader_preserves_pure_joint_demo_only_routing(
         "action_conditioned_video": 0.0,
         "video_conditioned_action": 0.0,
     }
+    routing = raw["data"]["dynamics_routing"]
+    routing.pop("routes")
+    routing.update(
+        {
+            "real_joint_weight": 0.6,
+            "real_action_conditioned_video_weight": 0.1,
+            "real_video_conditioned_action_weight": 0.1,
+            "counterfactual_action_conditioned_video_weight": 0.1,
+            "counterfactual_video_conditioned_action_weight": 0.1,
+        }
+    )
+    config_path = tmp_path / "resolved_config.yaml"
+    config_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+
+    with pytest.warns(UserWarning, match="no active dynamics routes"):
+        config = load_experiment_config(config_path, checkpoint_runtime_compat=True)
+
+    assert config.data.dynamics_routing.routes == ()
+    assert config.policy_variant.program == VideoActionProgram.GENERALIST_JOINT_DENOISING
+    assert not any(task.enabled for task in config.validation.auxiliary_tasks)
+
+
+def test_checkpoint_loader_does_not_misclassify_parallel_joint_probability_defaults(
+    tmp_path: Path,
+) -> None:
+    source_path = REPO_ROOT / "configs/experiments/parallel_stream_libero_joint.yaml"
+    raw = yaml.safe_load(source_path.read_text(encoding="utf-8"))
+    policy = raw["policy_variant"]
+    policy.pop("program")
+    policy.update(
+        {
+            "runtime_mode": "lingbot_exact_action_conditioned",
+            "current_block_coupling": "joint",
+            "variant_profile": "standard",
+            "video_condition_on_action": True,
+            "joint_denoise_training_mode_probs": {
+                "joint": 1.0,
+                "action_conditioned_video": 0.0,
+                "video_conditioned_action": 0.0,
+            },
+            "generalist_training_paradigm": "demo_only",
+        }
+    )
     config_path = tmp_path / "resolved_config.yaml"
     config_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
 
     config = load_experiment_config(config_path, checkpoint_runtime_compat=True)
 
-    assert (
-        config.policy_variant.generalist_training_paradigm
-        == GeneralistTrainingParadigm.DEMO_ONLY
+    assert config.policy_variant.program == VideoActionProgram.JOINT
+    assert config.data.dynamics_routing.routes == ()
+
+
+def test_checkpoint_loader_uses_parallel_profile_for_pure_joint_gjd(
+    tmp_path: Path,
+) -> None:
+    source_path = (
+        REPO_ROOT
+        / "configs/experiments/parallel_stream_libero_generalist_joint_denoising.yaml"
     )
+    raw = yaml.safe_load(source_path.read_text(encoding="utf-8"))
+    raw["data"]["dynamics_routing"]["routes"] = []
+    policy = raw["policy_variant"]
+    policy.pop("program")
+    policy.update(
+        {
+            "runtime_mode": "lingbot_exact_action_conditioned",
+            "current_block_coupling": "joint",
+            "variant_profile": "generalist_joint_denoising",
+            "video_condition_on_action": True,
+            "joint_denoise_training_mode_probs": {
+                "joint": 1.0,
+                "action_conditioned_video": 0.0,
+                "video_conditioned_action": 0.0,
+            },
+            "generalist_training_paradigm": "demo_only",
+        }
+    )
+    config_path = tmp_path / "resolved_config.yaml"
+    config_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+
+    with pytest.warns(UserWarning, match="no active dynamics routes"):
+        config = load_experiment_config(config_path, checkpoint_runtime_compat=True)
+
+    assert config.policy_variant.program == VideoActionProgram.GENERALIST_JOINT_DENOISING
+    assert config.data.dynamics_routing.routes == ()
+    assert not any(task.enabled for task in config.validation.auxiliary_tasks)
+
+
+def test_checkpoint_loader_rejects_routed_metadata_for_explicit_standard_program(
+    tmp_path: Path,
+) -> None:
+    source_path = REPO_ROOT / "configs/experiments/dual_expert_libero_joint.yaml"
+    raw = yaml.safe_load(source_path.read_text(encoding="utf-8"))
+    raw["policy_variant"]["generalist_denoising_mode_probs"] = {
+        "joint": 0.6,
+        "action_conditioned_video": 0.2,
+        "video_conditioned_action": 0.2,
+    }
+    config_path = tmp_path / "resolved_config.yaml"
+    config_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="conflicts with its explicit policy program"):
+        load_experiment_config(config_path, checkpoint_runtime_compat=True)
 
 
 def test_checkpoint_loader_rejects_runtime_only_dual_expert_metadata(
@@ -1070,11 +1846,12 @@ def test_checkpoint_loader_rejects_runtime_only_dual_expert_metadata(
         load_experiment_config(config_path, checkpoint_runtime_compat=True)
 
 
-def test_dual_expert_policy_allows_shared_video_schedule(tmp_path: Path) -> None:
+def test_dual_expert_joint_policy_allows_shared_video_schedule(tmp_path: Path) -> None:
     source_path = REPO_ROOT / "configs/experiments/dual_expert_robotwin_smoke.yaml"
     with source_path.open("r", encoding="utf-8") as handle:
         raw = yaml.safe_load(handle)
     raw["name"] = "dual_expert_shared_video_schedule_robotwin"
+    raw["policy_variant"]["program"] = "joint"
     raw["policy_variant"]["joint_timestep_coupling"] = "shared_video_schedule"
 
     config_path = tmp_path / "dual_expert_shared_video_schedule_robotwin.yaml"
@@ -1180,7 +1957,10 @@ def test_m1_non_generalist_configs_instantiate_reference_variant() -> None:
     for config_path in config_paths:
         config = load_experiment_config(config_path)
         assert isinstance(config.policy_variant, ParallelStreamPolicyConfig)
-        assert config.policy_variant.variant_profile != ParallelStreamVariantProfile.GENERALIST_JOINT_DENOISING
+        assert (
+            config.policy_variant.program
+            != VideoActionProgram.GENERALIST_JOINT_DENOISING
+        )
         _instantiate_parallel_stream_variant(config)
 
 
@@ -1203,7 +1983,10 @@ def test_parallel_stream_generalist_joint_denoising_yaml_config_loads() -> None:
 
     assert isinstance(config.policy_variant, ParallelStreamPolicyConfig)
     assert config.policy_variant.runtime_mode == ParallelRuntimeMode.LINGBOT_EXACT_ACTION_CONDITIONED
-    assert config.policy_variant.variant_profile == ParallelStreamVariantProfile.GENERALIST_JOINT_DENOISING
+    assert (
+        config.policy_variant.program
+        == VideoActionProgram.GENERALIST_JOINT_DENOISING
+    )
     assert config.policy_variant.current_block_coupling == "joint"
     assert config.policy_variant.proprio_context_mode == ProprioContextMode.PER_CHUNK_ADDITIVE
     assert config.policy_variant.joint_timestep_coupling == JointTimestepCoupling.INDEPENDENT
@@ -1216,7 +1999,6 @@ def test_parallel_stream_generalist_joint_denoising_yaml_config_loads() -> None:
     )
     assert config.policy_variant.history_stream_visibility == HistoryStreamVisibility.VIDEO_ONLY
     assert config.policy_variant.require_condition_latents is True
-    assert config.policy_variant.generalist_training_paradigm == GeneralistTrainingParadigm.DYNAMICS_ROUTED
     assert config.data.sample_construction.mode == WindowSamplingMode.UNIFORM_SEGMENT
     assert config.data.sample_construction.sample_order_mode == SampleOrderMode.REPLACEMENT
     assert config.data.sample_construction.window_size == 64
@@ -1225,14 +2007,14 @@ def test_parallel_stream_generalist_joint_denoising_yaml_config_loads() -> None:
     assert config.data.sample_construction.require_full_segment is True
     assert config.data.sample_construction.condition_source_frame_offset == -1
     assert config.data.sample_construction.target_alignment == SampleTargetAlignment.LEGACY
-    assert config.data.generalist_dynamics_mixture.train_latent_root is not None
-    assert config.data.generalist_dynamics_mixture.val_latent_root is not None
+    assert config.data.dynamics_routing.train_latent_root is not None
+    assert config.data.dynamics_routing.val_latent_root is not None
     assert config.training.window_size == 64
     assert config.training.sample_loss_weight_mode == SampleLossWeightMode.NONE
-    probs = config.policy_variant.generalist_denoising_mode_probs
-    assert probs[GeneralistDenoisingMode.JOINT] == pytest.approx(0.6)
-    assert probs[GeneralistDenoisingMode.ACTION_CONDITIONED_VIDEO] == pytest.approx(0.2)
-    assert probs[GeneralistDenoisingMode.VIDEO_CONDITIONED_ACTION] == pytest.approx(0.2)
+    probs = config.data.dynamics_routing.mode_probabilities()
+    assert probs[DynamicsObjective.JOINT] == pytest.approx(0.6)
+    assert probs[DynamicsObjective.ACTION_CONDITIONED_VIDEO] == pytest.approx(0.2)
+    assert probs[DynamicsObjective.VIDEO_CONDITIONED_ACTION] == pytest.approx(0.2)
     assert config.action_decoder.name == ActionDecoderName.PARALLEL_STREAM
 
 
@@ -1257,22 +2039,24 @@ def test_m5_generalist_joint_denoising_defaults_independent_joint_coupling(tmp_p
     [
         (
             VideoActionProgram.FORWARD_DYNAMICS,
-            GeneralistDenoisingMode.ACTION_CONDITIONED_VIDEO,
+            DynamicsObjective.ACTION_CONDITIONED_VIDEO,
         ),
         (
             VideoActionProgram.INVERSE_DYNAMICS,
-            GeneralistDenoisingMode.VIDEO_CONDITIONED_ACTION,
+            DynamicsObjective.VIDEO_CONDITIONED_ACTION,
         ),
     ],
 )
 def test_dual_expert_conditional_dynamics_config_derives_fixed_gjd_contract(
     tmp_path: Path,
     program: VideoActionProgram,
-    expected_mode: GeneralistDenoisingMode,
+    expected_mode: DynamicsObjective,
 ) -> None:
     source_path = REPO_ROOT / "configs/experiments/dual_expert_libero_conditional_dynamics.yaml"
     raw = yaml.safe_load(source_path.read_text(encoding="utf-8"))
     raw["policy_variant"]["program"] = program.value
+    for route in raw["data"]["dynamics_routing"]["routes"]:
+        route["mode"] = expected_mode.value
     config_path = tmp_path / f"conditional_{program.value}.yaml"
     config_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
 
@@ -1281,10 +2065,6 @@ def test_dual_expert_conditional_dynamics_config_derives_fixed_gjd_contract(
     assert isinstance(config.policy_variant, DualExpertPolicyConfig)
     assert config.policy_variant.program is program
     assert config.policy_variant.current_block_coupling == CurrentBlockCoupling.JOINT
-    assert (
-        config.policy_variant.generalist_training_paradigm
-        == GeneralistTrainingParadigm.DYNAMICS_ROUTED
-    )
     assert config.policy_variant.generalist_mode_text_token is False
     assert config.policy_variant.sequence_contract == (
         VideoActionSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO
@@ -1298,8 +2078,8 @@ def test_dual_expert_conditional_dynamics_config_derives_fixed_gjd_contract(
     assert config.policy_variant.use_condition_latents is True
     assert config.policy_variant.require_condition_latents is True
     assert config.policy_variant.joint_timestep_coupling == JointTimestepCoupling.INDEPENDENT
-    assert config.policy_variant.generalist_denoising_mode_probs == {
-        mode: float(mode is expected_mode) for mode in GeneralistDenoisingMode
+    assert config.data.dynamics_routing.mode_probabilities() == {
+        mode: float(mode is expected_mode) for mode in DynamicsObjective
     }
     assert config.data.sample_construction.sample_order_mode == SampleOrderMode.REPLACEMENT
     assert config.data.sample_construction.condition_source_frame_offset == -1
@@ -1311,20 +2091,18 @@ def test_dual_expert_conditional_dynamics_config_derives_fixed_gjd_contract(
     assert config.data.val_batch_size == 1
 
 
-def test_dual_expert_conditional_dynamics_rejects_conflicting_mode_distribution(
+def test_dual_expert_conditional_dynamics_rejects_conflicting_route(
     tmp_path: Path,
 ) -> None:
     source_path = REPO_ROOT / "configs/experiments/dual_expert_libero_conditional_dynamics.yaml"
     raw = yaml.safe_load(source_path.read_text(encoding="utf-8"))
-    raw["policy_variant"]["generalist_denoising_mode_probs"] = {
-        "joint": 0.0,
-        "action_conditioned_video": 0.0,
-        "video_conditioned_action": 1.0,
-    }
-    config_path = tmp_path / "conditional_fdm_conflicting_distribution.yaml"
+    raw["data"]["dynamics_routing"]["routes"][0]["mode"] = (
+        "video_conditioned_action"
+    )
+    config_path = tmp_path / "conditional_fdm_conflicting_route.yaml"
     config_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
 
-    with pytest.raises(ValueError, match="fixed one-hot.*action_conditioned_video"):
+    with pytest.raises(ValueError, match="accepts only.*action_conditioned_video"):
         load_experiment_config(config_path)
 
 
@@ -1343,11 +2121,11 @@ def test_dual_expert_conditional_dynamics_keeps_gjd_training_contract() -> None:
     assert conditional.trainer == gjd.trainer
     assert replace(
         conditional.data,
-        generalist_dynamics_mixture=gjd.data.generalist_dynamics_mixture,
+        dynamics_routing=gjd.data.dynamics_routing,
     ) == gjd.data
     conditional_policy = asdict(conditional.policy_variant)
     gjd_policy = asdict(gjd.policy_variant)
-    for field_name in ("program", "generalist_denoising_mode_probs"):
+    for field_name in ("program",):
         conditional_policy.pop(field_name)
         gjd_policy.pop(field_name)
     assert conditional_policy == gjd_policy
@@ -1363,7 +2141,7 @@ def test_m5_generalist_joint_denoising_rejects_multi_sample_batches(tmp_path: Pa
     with config_path.open("w", encoding="utf-8") as handle:
         yaml.safe_dump(raw, handle, sort_keys=False)
 
-    with pytest.raises(ValueError, match="generalist_denoising_mode_probs.*train_batch_size"):
+    with pytest.raises(ValueError, match="Generalist and conditional-dynamics.*train_batch_size"):
         load_experiment_config(config_path)
 
 
@@ -1451,7 +2229,7 @@ def test_m1_generalist_mode_text_token_rejects_non_generalist_profile(tmp_path: 
         load_experiment_config(config_path)
 
 
-def test_m1_step3500_variant_yaml_configs_preserve_video_pretrain_history() -> None:
+def test_parallel_program_configs_use_canonical_video_only_history() -> None:
     config_paths = [
         REPO_ROOT / "configs/experiments" / name
         for name in PARALLEL_STREAM_PROGRAM_CONFIG_NAMES
@@ -1460,53 +2238,45 @@ def test_m1_step3500_variant_yaml_configs_preserve_video_pretrain_history() -> N
     for config_path in config_paths:
         config = load_experiment_config(config_path)
         assert isinstance(config.policy_variant, ParallelStreamPolicyConfig)
-        assert config.policy_variant.preserve_video_pretrain_history is True
+        assert (
+            config.policy_variant.history_stream_visibility
+            == HistoryStreamVisibility.VIDEO_ONLY
+        )
 
 
-def test_m1_generalist_joint_denoising_defaults_mode_probabilities(tmp_path: Path) -> None:
+def test_m1_generalist_joint_denoising_derives_mode_probabilities_from_routes() -> None:
+    source_path = (
+        REPO_ROOT
+        / "configs/experiments/parallel_stream_libero_generalist_joint_denoising.yaml"
+    )
+    config = load_experiment_config(source_path)
+
+    probs = config.data.dynamics_routing.mode_probabilities()
+    assert probs[DynamicsObjective.JOINT] == pytest.approx(0.6)
+    assert probs[DynamicsObjective.ACTION_CONDITIONED_VIDEO] == pytest.approx(0.2)
+    assert probs[DynamicsObjective.VIDEO_CONDITIONED_ACTION] == pytest.approx(0.2)
+
+
+def test_m1_generalist_joint_denoising_rejects_all_zero_routes(tmp_path: Path) -> None:
     source_path = (
         REPO_ROOT
         / "configs/experiments/parallel_stream_libero_generalist_joint_denoising.yaml"
     )
     with source_path.open("r", encoding="utf-8") as handle:
         raw = yaml.safe_load(handle)
-    raw["policy_variant"].pop("generalist_denoising_mode_probs")
-
-    config_path = tmp_path / "generalist_joint_default_probs.yaml"
-    with config_path.open("w", encoding="utf-8") as handle:
-        yaml.safe_dump(raw, handle, sort_keys=False)
-
-    config = load_experiment_config(config_path)
-
-    probs = config.policy_variant.generalist_denoising_mode_probs
-    assert probs[GeneralistDenoisingMode.JOINT] == pytest.approx(0.6)
-    assert probs[GeneralistDenoisingMode.ACTION_CONDITIONED_VIDEO] == pytest.approx(0.2)
-    assert probs[GeneralistDenoisingMode.VIDEO_CONDITIONED_ACTION] == pytest.approx(0.2)
-
-
-def test_m1_generalist_joint_denoising_rejects_invalid_probabilities(tmp_path: Path) -> None:
-    source_path = (
-        REPO_ROOT
-        / "configs/experiments/parallel_stream_libero_generalist_joint_denoising.yaml"
-    )
-    with source_path.open("r", encoding="utf-8") as handle:
-        raw = yaml.safe_load(handle)
-    raw["policy_variant"]["generalist_denoising_mode_probs"] = {
-        "joint": 0.0,
-        "action_conditioned_video": 0.0,
-        "video_conditioned_action": 0.0,
-    }
+    for route in raw["data"]["dynamics_routing"]["routes"]:
+        route["weight"] = 0.0
 
     config_path = tmp_path / "generalist_joint_bad_probs.yaml"
     with config_path.open("w", encoding="utf-8") as handle:
         yaml.safe_dump(raw, handle, sort_keys=False)
 
-    with pytest.raises(ValueError, match="at least one positive probability"):
+    with pytest.raises(ValueError, match="at least one positive weight"):
         load_experiment_config(config_path)
 
 
-@pytest.mark.parametrize("bad_value", [True, float("nan"), float("inf")])
-def test_m1_generalist_joint_denoising_rejects_non_numeric_probabilities(
+@pytest.mark.parametrize("bad_value", [True, "1.0", float("nan"), float("inf")])
+def test_m1_generalist_joint_denoising_rejects_invalid_route_weights(
     tmp_path: Path,
     bad_value: object,
 ) -> None:
@@ -1516,17 +2286,86 @@ def test_m1_generalist_joint_denoising_rejects_non_numeric_probabilities(
     )
     with source_path.open("r", encoding="utf-8") as handle:
         raw = yaml.safe_load(handle)
-    raw["policy_variant"]["generalist_denoising_mode_probs"] = {
-        "joint": 0.6,
-        "action_conditioned_video": bad_value,
-        "video_conditioned_action": 0.2,
-    }
+    raw["data"]["dynamics_routing"]["routes"][1]["weight"] = bad_value
 
     config_path = tmp_path / "generalist_joint_non_numeric_probs.yaml"
     with config_path.open("w", encoding="utf-8") as handle:
         yaml.safe_dump(raw, handle, sort_keys=False)
 
-    with pytest.raises(ValueError, match="finite numeric probabilities"):
+    with pytest.raises(ValueError, match="finite real number|finite and non-negative"):
+        load_experiment_config(config_path)
+
+
+def test_dynamics_routing_routes_reject_unknown_fields(tmp_path: Path) -> None:
+    source_path = (
+        REPO_ROOT
+        / "configs/experiments/dual_expert_libero_generalist_joint_denoising.yaml"
+    )
+    raw = yaml.safe_load(source_path.read_text(encoding="utf-8"))
+    raw["data"]["dynamics_routing"]["routes"][0]["ratio"] = 0.6
+    config_path = tmp_path / "generalist_joint_unknown_route_field.yaml"
+    config_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+
+    with pytest.raises(ValueError, match=r"routes\[0\].*unknown fields: ratio"):
+        load_experiment_config(config_path)
+
+
+def test_dynamics_routing_rejects_unknown_top_level_fields(tmp_path: Path) -> None:
+    source_path = (
+        REPO_ROOT
+        / "configs/experiments/dual_expert_libero_generalist_joint_denoising.yaml"
+    )
+    raw = yaml.safe_load(source_path.read_text(encoding="utf-8"))
+    raw["data"]["dynamics_routing"]["lenght_multiplier"] = 2.0
+    config_path = tmp_path / "generalist_joint_unknown_routing_field.yaml"
+    config_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="unknown fields: lenght_multiplier"):
+        load_experiment_config(config_path)
+
+
+@pytest.mark.parametrize(
+    ("field_name", "bad_value", "message"),
+    [
+        ("seed", True, "seed.*integer"),
+        ("seed", 1.5, "seed.*integer"),
+        ("length_multiplier", True, "length_multiplier.*finite positive number"),
+        ("length_multiplier", "2", "length_multiplier.*finite positive number"),
+        ("train_latent_root", 42, "train_latent_root.*string path or null"),
+    ],
+)
+def test_dynamics_routing_rejects_invalid_scalar_types(
+    tmp_path: Path,
+    field_name: str,
+    bad_value: object,
+    message: str,
+) -> None:
+    source_path = (
+        REPO_ROOT
+        / "configs/experiments/dual_expert_libero_generalist_joint_denoising.yaml"
+    )
+    raw = yaml.safe_load(source_path.read_text(encoding="utf-8"))
+    raw["data"]["dynamics_routing"][field_name] = bad_value
+    config_path = tmp_path / f"generalist_joint_bad_{field_name}.yaml"
+    config_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+
+    with pytest.raises(ValueError, match=message):
+        load_experiment_config(config_path)
+
+
+def test_parallel_generalist_joint_denoising_rejects_multi_sample_batches(
+    tmp_path: Path,
+) -> None:
+    source_path = (
+        REPO_ROOT
+        / "configs/experiments/parallel_stream_libero_generalist_joint_denoising.yaml"
+    )
+    raw = yaml.safe_load(source_path.read_text(encoding="utf-8"))
+    raw["data"]["train_batch_size"] = 2
+    config_path = tmp_path / "parallel_generalist_bad_batch.yaml"
+    config_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="Generalist and conditional-dynamics.*train_batch_size"):
         load_experiment_config(config_path)
 
 
@@ -1777,6 +2616,42 @@ def test_dual_expert_per_chunk_single_frame_context_flags_load(tmp_path: Path) -
     assert config.policy_variant.require_condition_latents is True
 
 
+@pytest.mark.parametrize(
+    ("config_name", "field_name"),
+    [
+        ("parallel_stream_libero_decoupled_same_step.yaml", "use_condition_latents"),
+        ("parallel_stream_libero_decoupled_same_step.yaml", "require_condition_latents"),
+        ("dual_expert_libero_decoupled_same_step.yaml", "use_condition_latents"),
+        ("dual_expert_libero_decoupled_same_step.yaml", "require_condition_latents"),
+    ],
+)
+def test_single_frame_condition_rejects_disabled_latent_flags(
+    tmp_path: Path,
+    config_name: str,
+    field_name: str,
+) -> None:
+    source_path = REPO_ROOT / "configs/experiments" / config_name
+    raw = yaml.safe_load(source_path.read_text(encoding="utf-8"))
+    raw["policy_variant"].pop("sequence_contract", None)
+    raw["policy_variant"].update(
+        {
+            "context_condition_latent_source": "single_frame_condition_latent",
+            "use_condition_latents": True,
+            "require_condition_latents": True,
+        }
+    )
+    raw["policy_variant"][field_name] = False
+    raw["data"]["sample_construction"]["condition_source_frame_offset"] = -1
+    config_path = tmp_path / f"single_frame_{field_name}_false.yaml"
+    config_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+
+    with pytest.raises(
+        ValueError,
+        match="single_frame_condition_latent.*requires both",
+    ):
+        load_experiment_config(config_path)
+
+
 
 def test_sequence_contract_expands_parallel_stream_rollout_parity_defaults(tmp_path: Path) -> None:
     source_path = REPO_ROOT / "configs/experiments/parallel_stream_libero_decoupled_same_step.yaml"
@@ -1910,7 +2785,7 @@ def test_sequence_contract_legacy_prefix_restores_target_only_sampling(tmp_path:
 
 
 def test_sequence_contract_expands_dual_expert_legacy_prefix_defaults(tmp_path: Path) -> None:
-    source_path = REPO_ROOT / "configs/experiments/dual_expert_libero_video_then_action.yaml"
+    source_path = REPO_ROOT / "configs/experiments/dual_expert_libero_joint.yaml"
     with source_path.open("r", encoding="utf-8") as handle:
         raw = yaml.safe_load(handle)
 
@@ -2052,6 +2927,35 @@ def test_sequence_contract_rejects_conflicting_explicit_values(tmp_path: Path) -
         load_experiment_config(config_path)
 
 
+def test_shared_config_overrides_reject_sequence_contract_owned_fields() -> None:
+    config = load_experiment_config(
+        REPO_ROOT / "configs/experiments/parallel_stream_libero_joint.yaml"
+    )
+
+    with pytest.raises(ValueError, match="sequence_contract=.*proprio_context_mode"):
+        apply_config_overrides(
+            config,
+            {"policy_variant.proprio_context_mode": "none"},
+        )
+
+
+def test_shared_config_overrides_can_release_sequence_contract_fields() -> None:
+    config = load_experiment_config(
+        REPO_ROOT / "configs/experiments/parallel_stream_libero_joint.yaml"
+    )
+
+    updated = apply_config_overrides(
+        config,
+        {
+            "policy_variant.sequence_contract": "default",
+            "policy_variant.proprio_context_mode": "none",
+        },
+    )
+
+    assert updated.policy_variant.sequence_contract is VideoActionSequenceContract.DEFAULT
+    assert updated.policy_variant.proprio_context_mode is ProprioContextMode.NONE
+
+
 def test_parallel_stream_generalist_uses_planning_sequence_contract() -> None:
     config = load_experiment_config(
         REPO_ROOT
@@ -2066,6 +2970,13 @@ def test_parallel_stream_generalist_uses_planning_sequence_contract() -> None:
     )
     assert config.policy_variant.require_condition_latents is True
     assert config.data.sample_construction.condition_source_frame_offset == -1
+
+
+def test_sample_construction_defaults_to_replacement_order() -> None:
+    assert (
+        SampleConstructionConfig().sample_order_mode
+        is SampleOrderMode.REPLACEMENT
+    )
 
 
 def test_sample_construction_yaml_strings_are_coerced_to_enum_members(tmp_path: Path) -> None:
@@ -2136,6 +3047,7 @@ def test_hierarchical_fixed_segment_sample_construction_loads_explicit_sampler_f
     raw.setdefault("data", {})
     raw["data"]["sample_construction"] = {
         "mode": "hierarchical_fixed_segment",
+        "sample_order_mode": "epoch_order",
         "segment_frames": 128,
         "start_padding_frames": 3,
         "context_prefix_policy": "rollout_history",
@@ -2193,6 +3105,7 @@ def test_hierarchical_fixed_segment_loads_strict_rollout_parity_fields(tmp_path:
     raw.setdefault("data", {})
     raw["data"]["sample_construction"] = {
         "mode": "hierarchical_fixed_segment",
+        "sample_order_mode": "epoch_order",
         "segment_frames": 128,
         "chunk_size": 4,
         "window_size": 30,
@@ -2233,6 +3146,7 @@ def test_hierarchical_fixed_segment_rollout_parity_rejects_legacy_context_fields
     raw.setdefault("data", {})
     raw["data"]["sample_construction"] = {
         "mode": "hierarchical_fixed_segment",
+        "sample_order_mode": "epoch_order",
         "segment_frames": 128,
         "chunk_size": 4,
         "randomize_geometry": False,
@@ -2253,6 +3167,7 @@ def test_sample_construction_rollout_parity_rejects_programmatic_legacy_context_
     with pytest.raises(ValueError, match="remove legacy context fields"):
         SampleConstructionConfig(
             mode=WindowSamplingMode.HIERARCHICAL_FIXED_SEGMENT,
+            sample_order_mode=SampleOrderMode.EPOCH_ORDER,
             segment_frames=128,
             chunk_size=4,
             randomize_geometry=False,
@@ -2264,6 +3179,7 @@ def test_sample_construction_rollout_parity_rejects_programmatic_legacy_context_
     with pytest.raises(ValueError, match="remove legacy context fields"):
         SampleConstructionConfig(
             mode=WindowSamplingMode.HIERARCHICAL_FIXED_SEGMENT,
+            sample_order_mode=SampleOrderMode.EPOCH_ORDER,
             segment_frames=128,
             chunk_size=4,
             randomize_geometry=False,
@@ -2282,6 +3198,7 @@ def test_hierarchical_fixed_segment_rollout_parity_rejects_malformed_chunk_size(
     raw.setdefault("data", {})
     raw["data"]["sample_construction"] = {
         "mode": "hierarchical_fixed_segment",
+        "sample_order_mode": "epoch_order",
         "segment_frames": 128,
         "chunk_size": 4,
         "randomize_geometry": False,
@@ -2308,6 +3225,7 @@ def test_hierarchical_fixed_segment_rejects_legacy_full_segment_flag(tmp_path: P
     raw.setdefault("data", {})
     raw["data"]["sample_construction"] = {
         "mode": "hierarchical_fixed_segment",
+        "sample_order_mode": "epoch_order",
         "segment_frames": 128,
         "require_full_segment": False,
     }

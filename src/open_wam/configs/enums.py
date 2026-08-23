@@ -483,14 +483,14 @@ class ParallelRuntimeMode(StrEnum):
 
 
 class ParallelStreamVariantProfile(StrEnum):
-    """Named semantic profile layered on the exact parallel-stream runtime."""
+    """Checkpoint-era Parallel Stream profile retained for metadata migration."""
 
     STANDARD = "standard"
     GENERALIST_JOINT_DENOISING = "generalist_joint_denoising"
 
 
-class GeneralistDenoisingMode(StrEnum):
-    """Architecture-independent video/action denoising program.
+class DynamicsObjective(StrEnum):
+    """One video/action denoising objective selected for a routed sample.
 
     Under a fixed joint coupling, each training segment samples one regime.
     ``joint`` denoises both modalities. The conditional modes place the clean
@@ -501,6 +501,22 @@ class GeneralistDenoisingMode(StrEnum):
     JOINT = "joint"
     ACTION_CONDITIONED_VIDEO = "action_conditioned_video"
     VIDEO_CONDITIONED_ACTION = "video_conditioned_action"
+
+    @property
+    def is_conditional(self) -> bool:
+        """Whether the objective predicts one modality from the other."""
+
+        return self in {
+            DynamicsObjective.ACTION_CONDITIONED_VIDEO,
+            DynamicsObjective.VIDEO_CONDITIONED_ACTION,
+        }
+
+
+class DynamicsSource(StrEnum):
+    """Dataset source used by one dynamics-routed training route."""
+
+    REAL_DEMO = "real_demo"
+    COUNTERFACTUAL_DYNAMICS = "counterfactual_dynamics"
 
 
 class ParallelActionConditionSource(StrEnum):
@@ -528,8 +544,7 @@ class HistoryStreamVisibility(StrEnum):
     """Which clean video/action history streams a query may attend."""
 
     FULL = "full"
-    # Backward-compatible behavior of `preserve_video_pretrain_history=true`:
-    # video queries see only video history, action queries keep full history.
+    # Video queries see only video history; action queries keep full history.
     VIDEO_QUERIES_VIDEO_ONLY = "video_queries_video_only"
     # Strict history filter: all queries see video history only.
     VIDEO_ONLY = "video_only"
@@ -572,7 +587,7 @@ class VideoActionProgram(StrEnum):
     ACTION_NOISY_TO_VIDEO = "action_noisy_to_video"
     GENERALIST_JOINT_DENOISING = "generalist_joint_denoising"
     # Fixed conditional programs use the same tensor and attention semantics
-    # as their one-hot GJD counterparts and cannot select another GJD mode.
+    # as their single-mode GJD counterparts and cannot select another GJD mode.
     FORWARD_DYNAMICS = "forward_dynamics"
     INVERSE_DYNAMICS = "inverse_dynamics"
 
@@ -580,13 +595,13 @@ class VideoActionProgram(StrEnum):
 class JointTimestepCoupling(StrEnum):
     """How joint video/action denoising synchronizes modality noise clocks."""
 
-    # Canonical joint denoising: action and video share the same actual noise amount.
+    # Ablation: action and video share the same actual noise amount.
     MATCH_SIGMA = "match_sigma"
     # Ablation: action and video use the same scheduler grid index/progress.
     MATCH_INDEX = "match_index"
     # Ablation: action reuses the video scheduler timestep/sigma grid directly.
     SHARED_VIDEO_SCHEDULE = "shared_video_schedule"
-    # Legacy/control: action and video sample or step their clocks independently.
+    # Checkpoint-validated baseline: each modality uses its own scheduler clock.
     INDEPENDENT = "independent"
 
 
@@ -604,29 +619,9 @@ class ProprioContextMode(StrEnum):
     PER_CHUNK_ADDITIVE = "per_chunk_additive"
 
 
-class GeneralistTrainingParadigm(StrEnum):
-    """How generalist samples reach the policy training contract."""
-
-    DEMO_ONLY = "demo_only"
-    # Route each draw through the dynamics source adapter. The active sources
-    # may still be real-demo-only; counterfactual data is not implied.
-    DYNAMICS_ROUTED = "dynamics_routed"
-    # Deprecated Python symbol alias. Raw `mixed_dynamics` config values are
-    # normalized by `_missing_` and serialize as `dynamics_routed`.
-    MIXED_DYNAMICS = "dynamics_routed"
-
-    @classmethod
-    def _missing_(cls, value: object) -> GeneralistTrainingParadigm | None:
-        if value == "mixed_dynamics":
-            return cls.DYNAMICS_ROUTED
-        return None
-
-
 # Deprecated symbol aliases. They intentionally preserve class identity so old
 # imports and serialized config objects remain loadable without duplicating the
 # public semantic types.
-JointDenoiseTrainingMode = GeneralistDenoisingMode
-MoTGeneralistTrainingMode = GeneralistDenoisingMode
 ParallelContextConditionLatentSource = ContextConditionLatentSource
 ParallelHistoryStreamVisibility = HistoryStreamVisibility
 ParallelSequenceContract = VideoActionSequenceContract

@@ -11,21 +11,24 @@ from open_wam.configs.backbone import (
 )
 from open_wam.configs.enums import (
     ContextConditionLatentSource,
-    CurrentBlockCoupling,
-    GeneralistDenoisingMode,
     JointTimestepCoupling,
-    ParallelStreamVariantProfile,
 )
 from open_wam.configs.policy_parallel_stream import ParallelStreamPolicyConfig
 from open_wam.configs.training import TrainingConfig
+from open_wam.contracts import SampleConstructionMetadata
+from open_wam.models.common.dynamics_objectives import (
+    DynamicsSamplePlan,
+    resolve_dynamics_sample_plan,
+    resolve_dynamics_training_plan,
+)
 from open_wam.models.common.flow_schedule import FlowMatchScheduler
+from open_wam.models.common.video_conditioning import (
+    resolve_full_window_condition_latents as _resolve_full_condition_latents,
+)
 from open_wam.models.visual_tower.reference_transformer import preferred_reference_dtype
 
-from .generalist_training import (
-    apply_generalist_joint_denoise_training_mode as _apply_generalist_joint_denoise_training_mode,
-)
-from .latent_conditioning import (
-    resolve_full_window_condition_latents as _resolve_full_condition_latents,
+from .dynamics_training import (
+    apply_parallel_dynamics_training_plan,
 )
 from .runtime_semantics import (
     attention_profile_name_for_current_block_coupling as _attention_profile_name_for_current_block_coupling,
@@ -77,6 +80,7 @@ def prepare_parallel_exact_train_artifacts(
     singleton_chunk_frame: int | None = None,
     conditional_history_policy: str | None = None,
     force_clean_video_condition: bool = False,
+    dynamics_sample_plan: DynamicsSamplePlan | None = None,
 ) -> ParallelTrainArtifacts:
     batch_size, _, num_frames, _, _ = video_latents.shape
     context_condition_source = resolve_parallel_context_condition_latent_source(
@@ -85,6 +89,10 @@ def prepare_parallel_exact_train_artifacts(
     if (
         context_condition_source
         == ContextConditionLatentSource.SINGLE_FRAME_CONDITION_LATENT
+        and not (
+            dynamics_sample_plan is not None
+            and dynamics_sample_plan.uses_in_sequence_condition
+        )
     ):
         if condition_latents is None:
             raise ValueError(
@@ -99,6 +107,14 @@ def prepare_parallel_exact_train_artifacts(
                 label="Parallel exact context-condition training",
             )
         )
+    elif (
+        context_condition_source
+        == ContextConditionLatentSource.SINGLE_FRAME_CONDITION_LATENT
+    ):
+        context_condition_latents = None
+        context_condition_source_label = None
+        resolved_condition_latents = None
+        condition_source = "video_latents_target_only"
     else:
         context_condition_latents = None
         context_condition_source_label = None
@@ -358,9 +374,6 @@ def prepare_parallel_exact_train_artifacts(
             else int(singleton_chunk_frame),
             "conditional_history_policy": conditional_history_policy,
             "attention_profile_name": attention_profile_name,
-            "preserve_video_pretrain_history": bool(
-                getattr(policy_config, "preserve_video_pretrain_history", False)
-            ),
             "history_stream_visibility": resolve_parallel_history_stream_visibility(
                 policy_config
             ).value,
@@ -403,24 +416,20 @@ def prepare_parallel_action_conditioned_train_artifacts(
     singleton_chunk_frame: int | None = None,
     conditional_history_policy: str | None = None,
     force_clean_video_condition: bool = False,
-    generalist_training_mode_override: GeneralistDenoisingMode | str | None = None,
-    generalist_drop_text_conditioning: bool | None = None,
-    generalist_training_source: str | None = None,
+    sample_metadata: SampleConstructionMetadata | None = None,
+    dynamics_sample_plan: DynamicsSamplePlan | None = None,
 ) -> ParallelTrainArtifacts:
-    coupling = resolve_parallel_current_block_coupling(policy_config)
-    if (
-        coupling
-        in {
-            CurrentBlockCoupling.JOINT,
-            CurrentBlockCoupling.VIDEO_NOISY_TO_ACTION,
-            CurrentBlockCoupling.ACTION_NOISY_TO_VIDEO,
-        }
-        and policy_config.current_block_coupling is None
-        and not policy_config.video_condition_on_action
-    ):
-        raise ValueError(
-            "`lingbot_exact_action_conditioned` requires `video_condition_on_action = true`."
+    if dynamics_sample_plan is None:
+        dynamics_sample_plan = resolve_dynamics_sample_plan(
+            program=policy_config.program,
+            sample_metadata=sample_metadata,
         )
+    selected_objective = (
+        None if dynamics_sample_plan is None else dynamics_sample_plan.objective
+    )
+    force_clean_video_condition = bool(force_clean_video_condition) or bool(
+        selected_objective is not None and selected_objective.is_conditional
+    )
     artifacts = prepare_parallel_exact_train_artifacts(
         backbone_config=backbone_config,
         policy_config=policy_config,
@@ -443,11 +452,17 @@ def prepare_parallel_action_conditioned_train_artifacts(
         singleton_chunk_frame=singleton_chunk_frame,
         conditional_history_policy=conditional_history_policy,
         force_clean_video_condition=force_clean_video_condition,
+        dynamics_sample_plan=dynamics_sample_plan,
     )
-    if (
-        policy_config.variant_profile
-        == ParallelStreamVariantProfile.GENERALIST_JOINT_DENOISING
-    ):
+    if dynamics_sample_plan is not None:
+        dynamics_training_plan = resolve_dynamics_training_plan(
+            program=policy_config.program,
+            sample_metadata=sample_metadata,
+            device=video_latents.device,
+            sample_plan=dynamics_sample_plan,
+        )
+        if dynamics_training_plan is None:  # pragma: no cover - plan invariant
+            raise RuntimeError("Dynamics sample plan did not compile for training.")
         _, _, num_frames, _, _ = video_latents.shape
         action_latents = rearrange(
             actions,
@@ -463,18 +478,13 @@ def prepare_parallel_action_conditioned_train_artifacts(
                 f=num_frames,
                 a=policy_config.action_per_frame,
             )
-        _apply_generalist_joint_denoise_training_mode(
+        apply_parallel_dynamics_training_plan(
             artifacts=artifacts,
             policy_config=policy_config,
-            backbone_config=backbone_config,
             video_latents=video_latents,
-            condition_latents=condition_latents,
             action_latents=action_latents,
             action_mask_latents=action_mask_latents,
-            frame_shift=frame_shift,
-            training_mode_override=generalist_training_mode_override,
-            drop_text_conditioning=generalist_drop_text_conditioning,
-            training_source=generalist_training_source,
+            plan=dynamics_training_plan,
         )
     return artifacts
 

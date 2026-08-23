@@ -2,162 +2,62 @@ from __future__ import annotations
 
 import torch
 
-from open_wam.configs.enums import (
-    GeneralistDenoisingMode,
-    HistoryStreamVisibility,
-)
 from open_wam.configs.policy_parallel_stream import ParallelStreamPolicyConfig
-from open_wam.models.common.joint_conditioning import (
-    generalist_joint_conditioning_chunk_size,
-    generalist_joint_conditioning_window_size,
-    is_conditional_joint_conditioning_mode,
+from open_wam.contracts import (
+    DYNAMICS_CONDITIONAL_HISTORY_PREVIOUS_BOUNDARY_VIDEO_ONLY,
 )
+from open_wam.models.common.dynamics_contracts import DynamicsRolloutGeometry
 
 from .runtime_semantics import (
+    prefix_visibility_mode_for_history_visibility,
     prefix_visibility_mode_for_policy,
-    resolve_parallel_history_stream_visibility,
 )
 
 __all__ = [
-    "generalist_conditioning_chunk_size",
-    "generalist_conditioning_history_stream_visibility",
-    "generalist_conditioning_prefix_visibility_mode",
-    "generalist_conditioning_window_size",
-    "is_conditional_joint_denoise_mode",
-    "resolve_action_conditioning_mode",
-    "select_conditional_warmup_history_suffix",
-    "slice_conditioning_chunk",
-    "uses_generalist_mode_text_token",
+    "dynamics_rollout_prefix_visibility_mode",
+    "select_dynamics_warmup_history_suffix",
+    "slice_dynamics_conditioning_chunk",
+    "uses_dynamics_mode_text_token",
 ]
 
 
-def resolve_action_conditioning_mode(
-    action_conditioning_mode: GeneralistDenoisingMode | str,
-) -> GeneralistDenoisingMode:
-    """Map rollout-facing labels to the shared GJD training-mode enum."""
-
-    raw_value = str(
-        getattr(action_conditioning_mode, "value", action_conditioning_mode)
-    )
-    direct_values = {mode.value: mode for mode in GeneralistDenoisingMode}
-    if raw_value in direct_values:
-        return direct_values[raw_value]
-    aliases = {
-        "joint": GeneralistDenoisingMode.JOINT,
-        "vanilla_joint_rollout": GeneralistDenoisingMode.JOINT,
-        "clean_action_feedback": GeneralistDenoisingMode.JOINT,
-        "fdm": GeneralistDenoisingMode.ACTION_CONDITIONED_VIDEO,
-        "forced_action_joint_fdm": (
-            GeneralistDenoisingMode.ACTION_CONDITIONED_VIDEO
-        ),
-        "idm": GeneralistDenoisingMode.VIDEO_CONDITIONED_ACTION,
-    }
-    try:
-        return aliases[raw_value]
-    except KeyError as exc:
-        supported = ", ".join(sorted(set(direct_values) | set(aliases)))
-        raise ValueError(
-            f"Unsupported joint-denoise rollout mode {raw_value!r}. "
-            f"Supported modes: {supported}."
-        ) from exc
-
-
-def is_conditional_joint_denoise_mode(
-    mode: GeneralistDenoisingMode | str,
-) -> bool:
-    """Return whether a rollout is conditional FDM or IDM rather than joint."""
-
-    return is_conditional_joint_conditioning_mode(
-        mode,
-        joint_mode=GeneralistDenoisingMode.JOINT,
-        action_conditioned_video_mode=(
-            GeneralistDenoisingMode.ACTION_CONDITIONED_VIDEO
-        ),
-        video_conditioned_action_mode=(
-            GeneralistDenoisingMode.VIDEO_CONDITIONED_ACTION
-        ),
-    )
-
-
-def generalist_conditioning_window_size(
-    mode: GeneralistDenoisingMode | str,
-    *,
-    fallback_window_size: int,
-) -> int:
-    """Resolve the local exact-attention window for one rollout mode."""
-
-    return generalist_joint_conditioning_window_size(
-        mode,
-        joint_mode=GeneralistDenoisingMode.JOINT,
-        action_conditioned_video_mode=(
-            GeneralistDenoisingMode.ACTION_CONDITIONED_VIDEO
-        ),
-        video_conditioned_action_mode=(
-            GeneralistDenoisingMode.VIDEO_CONDITIONED_ACTION
-        ),
-        fallback_window_size=fallback_window_size,
-    )
-
-
-def generalist_conditioning_chunk_size(
-    mode: GeneralistDenoisingMode | str,
-    *,
-    fallback_chunk_size: int,
-) -> int:
-    """Resolve the exact-runtime chunk size for one rollout mode."""
-
-    return generalist_joint_conditioning_chunk_size(
-        mode,
-        joint_mode=GeneralistDenoisingMode.JOINT,
-        action_conditioned_video_mode=(
-            GeneralistDenoisingMode.ACTION_CONDITIONED_VIDEO
-        ),
-        video_conditioned_action_mode=(
-            GeneralistDenoisingMode.VIDEO_CONDITIONED_ACTION
-        ),
-        fallback_chunk_size=fallback_chunk_size,
-    )
-
-
-def generalist_conditioning_history_stream_visibility(
-    mode: GeneralistDenoisingMode | str,
-    policy_config: ParallelStreamPolicyConfig,
-) -> HistoryStreamVisibility:
-    """Restrict conditional rollouts to the latest clean video history."""
-
-    if is_conditional_joint_denoise_mode(mode):
-        return HistoryStreamVisibility.VIDEO_ONLY
-    return resolve_parallel_history_stream_visibility(policy_config)
-
-
-def generalist_conditioning_prefix_visibility_mode(
-    mode: GeneralistDenoisingMode | str,
+def dynamics_rollout_prefix_visibility_mode(
+    geometry: DynamicsRolloutGeometry,
     policy_config: ParallelStreamPolicyConfig,
 ) -> str:
-    """Map conditional history semantics to the cache-prefix contract."""
+    """Adapt shared history semantics to the parallel cache-prefix contract."""
 
-    if is_conditional_joint_denoise_mode(mode):
-        return "video_history_only"
+    if (
+        geometry.conditional_history_policy
+        == DYNAMICS_CONDITIONAL_HISTORY_PREVIOUS_BOUNDARY_VIDEO_ONLY
+    ):
+        return prefix_visibility_mode_for_history_visibility(
+            geometry.history_stream_visibility
+        )
+    if geometry.conditional_history_policy is not None:
+        raise ValueError(
+            "Parallel Stream does not implement conditional history policy "
+            f"{geometry.conditional_history_policy!r}."
+        )
     return prefix_visibility_mode_for_policy(policy_config)
 
 
-def select_conditional_warmup_history_suffix(
+def select_dynamics_warmup_history_suffix(
     *,
     video_latents: torch.Tensor,
     action_latents: torch.Tensor,
     frame_start: int,
-    frame_chunk_size: int,
-    mode: GeneralistDenoisingMode | str,
+    geometry: DynamicsRolloutGeometry,
 ) -> tuple[torch.Tensor, torch.Tensor, int, int]:
     """Keep only the rollout-local history chunk for conditional warmup."""
 
-    if not is_conditional_joint_denoise_mode(mode):
+    if geometry.conditional_history_policy is None:
         return video_latents, action_latents, int(frame_start), 0
     available_frames = min(
         int(video_latents.shape[2]),
         int(action_latents.shape[2]),
     )
-    retained_frames = min(max(1, int(frame_chunk_size)), available_frames)
+    retained_frames = min(int(geometry.frame_chunk_size), available_frames)
     if retained_frames <= 0:
         return (
             video_latents[:, :, :0],
@@ -174,7 +74,7 @@ def select_conditional_warmup_history_suffix(
     )
 
 
-def slice_conditioning_chunk(
+def slice_dynamics_conditioning_chunk(
     value: torch.Tensor | None,
     *,
     target_frames: int,
@@ -189,15 +89,15 @@ def slice_conditioning_chunk(
         return value
     if observed_frames < target_frames:
         raise ValueError(
-            f"{source} provides {observed_frames} frames but conditional GJD "
+            f"{source} provides {observed_frames} frames but conditional dynamics "
             f"rollout needs {target_frames}."
         )
     return value[:, :, :target_frames].contiguous()
 
 
-def uses_generalist_mode_text_token(
+def uses_dynamics_mode_text_token(
     policy_config: ParallelStreamPolicyConfig,
 ) -> bool:
-    """Return whether rollout text receives the learned GJD mode token."""
+    """Return whether rollout text receives the learned dynamics mode token."""
 
-    return bool(getattr(policy_config, "generalist_mode_text_token", False))
+    return policy_config.generalist_mode_text_token

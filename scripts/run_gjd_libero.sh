@@ -121,9 +121,10 @@ Shipped defaults:
       data.sample_construction.target_alignment=legacy
   - Dynamics-routed FDM/IDM samples remain target-only: one singleton t0 frame,
     no task text, and only the immediately previous video boundary as clean
-    history. They bypass the planning prefix assembler while retaining the
-    sampled chunk size. This conditional contract is identical across model
-    architectures and does not change joint planning semantics.
+    history. Both architectures consume the in-sequence t0 and bypass their
+    external planning-prefix path for these rows. This preserves the same
+    one-t0 history and sampled future chunk size without changing ordinary
+    joint-planning semantics.
   - parallel_stream rollout uses run_libero_realtime_sandbox.py; dual_expert
     rollout uses the standard dual-expert visualization path.
   - dual_expert GJD rollout uses the standard dual-expert visualization path with
@@ -202,16 +203,13 @@ fi
 if [[ "${GJD_ARCHITECTURE}" == "parallel_stream" ]]; then
   GJD_CONFIG_NAME="parallel_stream_libero_generalist_joint_denoising"
   GJD_TRAIN_LAUNCHER="${SCRIPT_DIR}/run_parallel_stream_posttrain_libero.sh"
-  GJD_PROB_PREFIX="policy_variant.generalist_denoising_mode_probs"
 else
   GJD_CONFIG_NAME="dual_expert_libero_generalist_joint_denoising"
   GJD_TRAIN_LAUNCHER="${SCRIPT_DIR}/run_dual_expert_posttrain_libero.sh"
-  GJD_PROB_PREFIX="policy_variant.generalist_denoising_mode_probs"
 fi
-GJD_VANILLA_PROB_MAP='{"joint": 0.6, "action_conditioned_video": 0.2, "video_conditioned_action": 0.2}'
-GJD_PURE_JOINT_PROB_MAP='{"joint": 1.0, "action_conditioned_video": 0.0, "video_conditioned_action": 0.0}'
-GJD_PURE_FDM_PROB_MAP='{"joint": 0.0, "action_conditioned_video": 1.0, "video_conditioned_action": 0.0}'
-GJD_PURE_IDM_PROB_MAP='{"joint": 0.0, "action_conditioned_video": 0.0, "video_conditioned_action": 1.0}'
+GJD_ROUTE_PREFIX="data.dynamics_routing.routes"
+GJD_FDM_VALIDATION='[{"name":"fdm_val","mode_override":"action_conditioned_video","dataset_split":"val","source":"counterfactual_dynamics_if_available","max_batches":16,"report_prefix":"val_fdm"}]'
+GJD_IDM_VALIDATION='[{"name":"idm_val","mode_override":"video_conditioned_action","dataset_split":"val","source":"counterfactual_dynamics_if_available","max_batches":16,"report_prefix":"val_idm"}]'
 GJD_CFG_PATH="configs/experiments/${GJD_CONFIG_NAME}.yaml"
 GJD_DUAL_EXPERT_CURRENT_FRONTEND_ENCODE_MODE="lingbot_streaming_vae"
 
@@ -220,7 +218,8 @@ print_gjd_architecture_contract_notice() {
 [run_gjd_libero] shared GJD defaults:
 [run_gjd_libero]   real_joint uses the configured full-segment W64 recipe and legacy-prefix layout.
 [run_gjd_libero]   Conditional FDM/IDM uses target-only t0 + future layout, drops task text,
-[run_gjd_libero]   and bypasses the planning prefix assembler on both architectures.
+[run_gjd_libero]   and exposes only t0 as clean history on both architectures.
+[run_gjd_libero]   Both architectures bypass external planning-prefix handling for conditional rows.
 EOF
 }
 
@@ -403,47 +402,34 @@ build_ablation_args() {
   case "${GJD_ABLATION}" in
     vanilla)
       target_args+=(
-        --set "${GJD_PROB_PREFIX}=${GJD_VANILLA_PROB_MAP}"
         --set policy_variant.generalist_mode_text_token=false
       )
       ;;
     pure_joint)
       target_args+=(
-        --set "${GJD_PROB_PREFIX}=${GJD_PURE_JOINT_PROB_MAP}"
         --set policy_variant.generalist_mode_text_token=false
-        --set policy_variant.generalist_training_paradigm=demo_only
-        --set data.generalist_dynamics_mixture.train_latent_root=null
-        --set data.generalist_dynamics_mixture.val_latent_root=null
+        --set "${GJD_ROUTE_PREFIX}=[]"
+        --set data.dynamics_routing.train_latent_root=null
+        --set data.dynamics_routing.val_latent_root=null
         --set validation.auxiliary_tasks=[]
       )
       ;;
     pure_fdm)
       target_args+=(
-        --set "${GJD_PROB_PREFIX}=${GJD_PURE_FDM_PROB_MAP}"
         --set policy_variant.generalist_mode_text_token=false
-        --set policy_variant.generalist_training_paradigm=dynamics_routed
-        --set data.generalist_dynamics_mixture.real_joint_weight=0.0
-        --set "data.generalist_dynamics_mixture.real_action_conditioned_video_weight=${GJD_REAL_DEMO_WEIGHT}"
-        --set data.generalist_dynamics_mixture.real_video_conditioned_action_weight=0.0
-        --set "data.generalist_dynamics_mixture.counterfactual_action_conditioned_video_weight=${GJD_COUNTERFACTUAL_WEIGHT}"
-        --set data.generalist_dynamics_mixture.counterfactual_video_conditioned_action_weight=0.0
+        --set "${GJD_ROUTE_PREFIX}=[{\"source\":\"real_demo\",\"mode\":\"action_conditioned_video\",\"weight\":${GJD_REAL_DEMO_WEIGHT}},{\"source\":\"counterfactual_dynamics\",\"mode\":\"action_conditioned_video\",\"weight\":${GJD_COUNTERFACTUAL_WEIGHT}}]"
+        --set "validation.auxiliary_tasks=${GJD_FDM_VALIDATION}"
       )
       ;;
     pure_idm)
       target_args+=(
-        --set "${GJD_PROB_PREFIX}=${GJD_PURE_IDM_PROB_MAP}"
         --set policy_variant.generalist_mode_text_token=false
-        --set policy_variant.generalist_training_paradigm=dynamics_routed
-        --set data.generalist_dynamics_mixture.real_joint_weight=0.0
-        --set data.generalist_dynamics_mixture.real_action_conditioned_video_weight=0.0
-        --set "data.generalist_dynamics_mixture.real_video_conditioned_action_weight=${GJD_REAL_DEMO_WEIGHT}"
-        --set data.generalist_dynamics_mixture.counterfactual_action_conditioned_video_weight=0.0
-        --set "data.generalist_dynamics_mixture.counterfactual_video_conditioned_action_weight=${GJD_COUNTERFACTUAL_WEIGHT}"
+        --set "${GJD_ROUTE_PREFIX}=[{\"source\":\"real_demo\",\"mode\":\"video_conditioned_action\",\"weight\":${GJD_REAL_DEMO_WEIGHT}},{\"source\":\"counterfactual_dynamics\",\"mode\":\"video_conditioned_action\",\"weight\":${GJD_COUNTERFACTUAL_WEIGHT}}]"
+        --set "validation.auxiliary_tasks=${GJD_IDM_VALIDATION}"
       )
       ;;
     mode_token)
       target_args+=(
-        --set "${GJD_PROB_PREFIX}=${GJD_VANILLA_PROB_MAP}"
         --set policy_variant.generalist_mode_text_token=true
       )
       ;;

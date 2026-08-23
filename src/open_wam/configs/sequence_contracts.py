@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Collection, Mapping
+from collections.abc import Mapping
 from dataclasses import replace
 from typing import Any
 
@@ -10,30 +10,20 @@ from . import enums
 from .coercion import coerce_enum, coerce_strict_chunk_size, raw_enum_value
 from .data_contracts import DataConfig
 from .experiment import ExperimentConfig
-from .policy_compatibility import normalize_video_action_config_fields
 from .policy_contracts import PolicyVariantConfig
-from .policy_dual_expert import DualExpertPolicyConfig
-from .policy_parallel_stream import ParallelStreamPolicyConfig
+from .policy_video_action import (
+    VideoActionPolicyConfig,
+    fixed_conditioning_mode_for_program,
+    supports_dynamics_routing,
+)
 
 __all__ = [
     "apply_video_action_sequence_contract",
     "expand_video_action_sequence_contract",
-    "validate_video_action_sequence_contract_override_keys",
-    # Deprecated import aliases.
-    "apply_parallel_sequence_contract",
-    "expand_parallel_sequence_contract",
     "validate_experiment_config_runtime_contract",
-    "validate_parallel_sequence_contract_override_keys",
     "validate_policy_data_sequence_contract",
+    "validate_video_action_sequence_contract_override_keys",
 ]
-
-
-_LEGACY_PREFIX_PARALLEL_RUNTIME_MODES = frozenset(
-    {
-        enums.ParallelRuntimeMode.LINGBOT_EXACT,
-        enums.ParallelRuntimeMode.LINGBOT_EXACT_ACTION_CONDITIONED,
-    }
-)
 
 
 def _set_contract_default(
@@ -56,7 +46,7 @@ def _set_contract_default(
 def expand_video_action_sequence_contract(raw: dict[str, Any]) -> dict[str, Any]:
     """Expand sequence contracts into raw defaults before typed parsing."""
 
-    normalized = normalize_video_action_config_fields(raw)
+    normalized = dict(raw)
     policy_variant_raw = normalized.get("policy_variant")
     if not isinstance(policy_variant_raw, dict):
         return normalized
@@ -73,54 +63,12 @@ def expand_video_action_sequence_contract(raw: dict[str, Any]) -> dict[str, Any]
     if contract == enums.VideoActionSequenceContract.DEFAULT:
         return normalized
 
-    policy_name = coerce_enum(
-        enums.PolicyVariantName,
-        policy_variant_raw.get("name"),
-    )
-    if policy_name not in {
-        enums.PolicyVariantName.PARALLEL_STREAM,
-        enums.PolicyVariantName.DUAL_EXPERT,
-    }:
-        raise ValueError(
-            f"`policy_variant.sequence_contract={contract.value}` is only supported for "
-            "`policy_variant.name` in {'parallel_stream', 'dual_expert'}."
-        )
-
-    if contract == enums.VideoActionSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO:
-        if policy_name == enums.PolicyVariantName.PARALLEL_STREAM:
-            runtime_mode = coerce_enum(
-                enums.ParallelRuntimeMode,
-                policy_variant_raw.get(
-                    "runtime_mode",
-                    enums.ParallelRuntimeMode.LINGBOT_EXACT,
-                ),
-            )
-            if runtime_mode not in _LEGACY_PREFIX_PARALLEL_RUNTIME_MODES:
-                allowed = ", ".join(
-                    f"'{mode.value}'"
-                    for mode in sorted(_LEGACY_PREFIX_PARALLEL_RUNTIME_MODES)
-                )
-                raise ValueError(
-                    "`policy_variant.sequence_contract=legacy_prefix_single_frame_perchunk_proprio` only "
-                    f"supports `policy_variant.runtime_mode` in {{{allowed}}}, got {runtime_mode.value!r}."
-                )
-
     if contract not in {
         enums.VideoActionSequenceContract.ROLLOUT_PARITY_SINGLE_FRAME_PERCHUNK_PROPRIO,
         enums.VideoActionSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO,
     }:
         raise ValueError(
             f"Unsupported `policy_variant.sequence_contract={contract.value}`."
-        )
-
-    if (
-        contract
-        == enums.VideoActionSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO
-        and policy_name == enums.PolicyVariantName.DUAL_EXPERT
-        and "joint_timestep_coupling" not in policy_variant_raw
-    ):
-        policy_variant_raw["joint_timestep_coupling"] = (
-            enums.JointTimestepCoupling.INDEPENDENT
         )
 
     for key, value in (
@@ -192,10 +140,7 @@ def validate_policy_data_sequence_contract(
     data_config: DataConfig,
     policy_variant_config: PolicyVariantConfig,
 ) -> None:
-    if not isinstance(
-        policy_variant_config,
-        (ParallelStreamPolicyConfig, DualExpertPolicyConfig),
-    ):
+    if not isinstance(policy_variant_config, VideoActionPolicyConfig):
         return
     if (
         policy_variant_config.context_condition_latent_source
@@ -219,35 +164,112 @@ def validate_experiment_config_runtime_contract(
 ) -> ExperimentConfig:
     """Validate cross-section runtime contracts after YAML and CLI overrides."""
 
-    if (
-        isinstance(config.policy_variant, DualExpertPolicyConfig)
-        and config.policy_variant.generalist_denoising_mode_probs is not None
-        and (
-            int(config.data.train_batch_size) != 1
-            or int(config.data.val_batch_size) != 1
-        )
+    policy_program = (
+        config.policy_variant.program
+        if isinstance(config.policy_variant, VideoActionPolicyConfig)
+        else None
+    )
+    if supports_dynamics_routing(policy_program) and (
+        int(config.data.train_batch_size) != 1
+        or int(config.data.val_batch_size) != 1
     ):
         raise ValueError(
-            "`policy_variant.generalist_denoising_mode_probs` currently requires "
-            "`data.train_batch_size = data.val_batch_size = 1` because dual-expert GJD samples one mode per "
-            "segment/forward pass and forced per-sample metadata is only unambiguous for rank-local batch size 1."
+            "Generalist and conditional-dynamics programs currently require "
+            "`data.train_batch_size = data.val_batch_size = 1` because one mode is applied per "
+            "segment/forward pass and routed metadata is only unambiguous for rank-local batch size 1."
         )
 
-    if (
-        getattr(config.policy_variant, "generalist_training_paradigm", None)
-        == enums.GeneralistTrainingParadigm.DYNAMICS_ROUTED
-    ):
+    active_routes = config.data.dynamics_routing.active_routes
+    fixed_mode = fixed_conditioning_mode_for_program(policy_program)
+    if active_routes:
+        if not supports_dynamics_routing(policy_program):
+            raise ValueError(
+                "Active `data.dynamics_routing.routes` require a generalist, "
+                "forward-dynamics, or inverse-dynamics policy program."
+            )
+        conflicting_routes = tuple(
+            route for route in active_routes if fixed_mode is not None and route.mode != fixed_mode
+        )
+        if conflicting_routes:
+            route_labels = ", ".join(route.bucket_name for route in conflicting_routes)
+            raise ValueError(
+                f"`policy_variant.program={policy_program.value}` accepts only "
+                f"{fixed_mode.value!r} routes; remove conflicting routes: {route_labels}."
+            )
         if config.trainer.batch_adapter != enums.BatchAdapterName.LATENTS:
             raise ValueError(
-                "`policy_variant.generalist_training_paradigm=dynamics_routed` requires "
+                "Active `data.dynamics_routing.routes` require "
                 "`trainer.batch_adapter=latents` because the dynamics source router wraps latent datasets."
             )
         sample_construction = config.data.sample_construction
+        if (
+            sample_construction.sample_order_mode
+            != enums.SampleOrderMode.REPLACEMENT
+        ):
+            raise ValueError(
+                "`data.sample_construction.sample_order_mode` must be `replacement` "
+                "with active `data.dynamics_routing.routes` because route weights "
+                "define replacement probabilities."
+            )
         if sample_construction.sample_weight_mode != enums.SampleWeightMode.UNIFORM:
             raise ValueError(
                 "`data.sample_construction.sample_weight_mode` must be `uniform` with "
-                "`policy_variant.generalist_training_paradigm=dynamics_routed` because the dynamics router "
+                "active `data.dynamics_routing.routes` because the dynamics router "
                 "owns source sampling and only preserves parity for uniform replacement draws."
+            )
+    elif fixed_mode is not None:
+        raise ValueError(
+            f"`policy_variant.program={policy_program.value}` requires at least one "
+            "positive `data.dynamics_routing.routes` entry so every sample uses "
+            "the target-only t0 contract."
+        )
+
+    if fixed_mode is not None:
+        for task in config.validation.auxiliary_tasks:
+            if not task.enabled or task.max_batches == 0:
+                continue
+            if task.mode_override is not None and task.mode_override != fixed_mode:
+                raise ValueError(
+                    f"Auxiliary validation task {task.name!r} requests mode "
+                    f"{task.mode_override.value!r}, but policy program "
+                    f"{policy_program.value!r} fixes mode {fixed_mode.value!r}."
+                )
+
+    for task in config.validation.auxiliary_tasks:
+        effective_mode = (
+            fixed_mode if task.mode_override is None else task.mode_override
+        )
+        if (
+            effective_mode is not None
+            and effective_mode.is_conditional
+            and task.drop_text_conditioning is not None
+        ):
+            raise ValueError(
+                f"Conditional auxiliary validation task {task.name!r} always "
+                "removes task text; remove `drop_text_conditioning`."
+            )
+        if (
+            not task.enabled
+            or task.max_batches == 0
+            or effective_mode is None
+            or not effective_mode.is_conditional
+        ):
+            continue
+        if not active_routes:
+            raise ValueError(
+                f"Conditional auxiliary validation task {task.name!r} requires "
+                "active `data.dynamics_routing.routes` so samples receive the "
+                "target-only t0 projection."
+            )
+        if (
+            task.source == enums.AuxiliaryValidationSource.DATASET
+            and any(route.mode != effective_mode for route in active_routes)
+        ):
+            raise ValueError(
+                f"Conditional auxiliary validation task {task.name!r} cannot use "
+                "`source = dataset` when active routes contain another objective. "
+                "Select a named dynamics source or make the routed dataset "
+                f"homogeneous for {effective_mode.value!r}."
             )
 
     if (
@@ -292,54 +314,21 @@ def validate_experiment_config_runtime_contract(
     return config
 
 
-def apply_video_action_sequence_contract(
+def _materialize_video_action_sequence_contract(
     config: ExperimentConfig,
-    *,
-    explicit_override_keys: Collection[str] | None = None,
 ) -> ExperimentConfig:
-    """Apply typed sequence-contract defaults after config overrides."""
+    """Materialize fields owned by a typed sequence contract."""
 
     policy_variant = config.policy_variant
+    if not isinstance(policy_variant, VideoActionPolicyConfig):
+        return config
+
     contract = coerce_enum(
         enums.VideoActionSequenceContract,
-        getattr(
-            policy_variant,
-            "sequence_contract",
-            enums.VideoActionSequenceContract.DEFAULT,
-        ),
+        policy_variant.sequence_contract,
     )
     if contract == enums.VideoActionSequenceContract.DEFAULT:
-        return validate_experiment_config_runtime_contract(config)
-
-    policy_name = coerce_enum(enums.PolicyVariantName, policy_variant.name)
-    if policy_name not in {
-        enums.PolicyVariantName.PARALLEL_STREAM,
-        enums.PolicyVariantName.DUAL_EXPERT,
-    }:
-        raise ValueError(
-            f"`policy_variant.sequence_contract={contract.value}` is only supported for "
-            "`policy_variant.name` in {'parallel_stream', 'dual_expert'}."
-        )
-
-    if contract == enums.VideoActionSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO:
-        if policy_name == enums.PolicyVariantName.PARALLEL_STREAM:
-            runtime_mode = coerce_enum(
-                enums.ParallelRuntimeMode,
-                getattr(
-                    policy_variant,
-                    "runtime_mode",
-                    enums.ParallelRuntimeMode.LINGBOT_EXACT,
-                ),
-            )
-            if runtime_mode not in _LEGACY_PREFIX_PARALLEL_RUNTIME_MODES:
-                allowed = ", ".join(
-                    f"'{mode.value}'"
-                    for mode in sorted(_LEGACY_PREFIX_PARALLEL_RUNTIME_MODES)
-                )
-                raise ValueError(
-                    "`policy_variant.sequence_contract=legacy_prefix_single_frame_perchunk_proprio` only "
-                    f"supports `policy_variant.runtime_mode` in {{{allowed}}}, got {runtime_mode.value!r}."
-                )
+        return config
 
     if contract not in {
         enums.VideoActionSequenceContract.ROLLOUT_PARITY_SINGLE_FRAME_PERCHUNK_PROPRIO,
@@ -358,28 +347,8 @@ def apply_video_action_sequence_contract(
             enums.HistoryStreamVisibility.VIDEO_ONLY
         ),
     }
-    if hasattr(policy_variant, "use_condition_latents"):
-        policy_updates["use_condition_latents"] = True
-    if hasattr(policy_variant, "require_condition_latents"):
-        policy_updates["require_condition_latents"] = True
-    if (
-        contract
-        == enums.VideoActionSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO
-        and hasattr(policy_variant, "joint_timestep_coupling")
-    ):
-        explicit_keys = set(explicit_override_keys or ())
-        contract_set_by_cli = (
-            "policy_variant.sequence_contract" in explicit_keys
-        )
-        if (
-            contract_set_by_cli
-            and "policy_variant.joint_timestep_coupling" not in explicit_keys
-            and policy_variant.joint_timestep_coupling
-            == enums.JointTimestepCoupling.MATCH_SIGMA
-        ):
-            policy_updates["joint_timestep_coupling"] = (
-                enums.JointTimestepCoupling.INDEPENDENT
-            )
+    policy_updates["use_condition_latents"] = True
+    policy_updates["require_condition_latents"] = True
     updated_policy_variant = replace(policy_variant, **policy_updates)
 
     sample_updates: dict[str, Any] = {
@@ -410,12 +379,18 @@ def apply_video_action_sequence_contract(
         config.data,
         sample_construction=updated_sample_construction,
     )
+    return replace(
+        config,
+        data=updated_data,
+        policy_variant=updated_policy_variant,
+    )
+
+
+def apply_video_action_sequence_contract(config: ExperimentConfig) -> ExperimentConfig:
+    """Materialize sequence defaults and validate the resulting runtime config."""
+
     return validate_experiment_config_runtime_contract(
-        replace(
-            config,
-            data=updated_data,
-            policy_variant=updated_policy_variant,
-        )
+        _materialize_video_action_sequence_contract(config)
     )
 
 
@@ -426,7 +401,6 @@ _VIDEO_ACTION_SEQUENCE_CONTRACT_MANAGED_OVERRIDE_KEYS = frozenset(
         "policy_variant.history_stream_visibility",
         "policy_variant.use_condition_latents",
         "policy_variant.require_condition_latents",
-        "policy_variant.joint_timestep_coupling",
         "data.sample_construction.target_alignment",
         "data.sample_construction.rollout_context_policy",
         "data.sample_construction.condition_source_frame_offset",
@@ -454,14 +428,10 @@ def validate_video_action_sequence_contract_override_keys(
     )
     if contract == enums.VideoActionSequenceContract.DEFAULT:
         return
-    managed_keys = set(_VIDEO_ACTION_SEQUENCE_CONTRACT_MANAGED_OVERRIDE_KEYS)
-    if (
-        contract
-        == enums.VideoActionSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO
-    ):
-        managed_keys.discard("policy_variant.joint_timestep_coupling")
     conflicting_keys = sorted(
-        key for key in overrides if key in managed_keys
+        key
+        for key in overrides
+        if key in _VIDEO_ACTION_SEQUENCE_CONTRACT_MANAGED_OVERRIDE_KEYS
     )
     if conflicting_keys:
         joined = ", ".join(f"`{key}`" for key in conflicting_keys)
@@ -469,11 +439,3 @@ def validate_video_action_sequence_contract_override_keys(
             f"`policy_variant.sequence_contract={contract.value}` owns {joined}; "
             "drop the contract or drop the individual override(s)."
         )
-
-
-# Checkpoint-era import aliases. New code uses architecture-independent names.
-apply_parallel_sequence_contract = apply_video_action_sequence_contract
-expand_parallel_sequence_contract = expand_video_action_sequence_contract
-validate_parallel_sequence_contract_override_keys = (
-    validate_video_action_sequence_contract_override_keys
-)

@@ -12,13 +12,17 @@ import yaml
 from torch.utils.data import DataLoader, Dataset, TensorDataset
 from torch.utils.data.distributed import DistributedSampler
 
+import open_wam.training.data_loading as data_loading_module
 import open_wam.training.runtime as runtime_module
 from open_wam.configs import (
+    EXPERIMENT_CONFIG_SCHEMA_VERSION,
     AuxiliaryValidationTaskConfig,
+    DynamicsObjective,
     TrainingConfig,
     load_experiment_config,
 )
-from open_wam.configs.enums import BatchAdapterName, CheckpointMode
+from open_wam.configs.enums import BatchAdapterName, CheckpointMode, SampleOrderMode
+from open_wam.contracts import DYNAMICS_ROUTING_MODE_METADATA_KEY
 from open_wam.data import (
     LatentWAMSample,
     WAMBatch,
@@ -33,7 +37,11 @@ from open_wam.training.auxiliary_validation import (
     build_auxiliary_validation_runs,
 )
 from open_wam.training.checkpoints import CheckpointManager
-from open_wam.training.data_loading import _validate_dynamics_source_sampling
+from open_wam.training.data_loading import (
+    _validate_dynamics_source_sampling,
+    build_runtime_dataloaders,
+    preflight_runtime_dataset_artifacts,
+)
 from open_wam.training.loop_policies import StepLoopPolicy
 from open_wam.training.optim import _normalize_optimizer_state_dtypes
 from open_wam.training.state import TrainState
@@ -447,12 +455,33 @@ def test_dynamics_source_sampling_runtime_guard_rejects_non_uniform_weights() ->
             config.data,
             sample_construction=replace(
                 config.data.sample_construction,
+                sample_order_mode=SampleOrderMode.REPLACEMENT,
                 sample_weight_mode="valid_action_steps",
             ),
         ),
     )
 
     with pytest.raises(ValueError, match="sample_weight_mode"):
+        _validate_dynamics_source_sampling(config)
+
+
+def test_dynamics_source_sampling_runtime_guard_rejects_epoch_order() -> None:
+    config = load_experiment_config(
+        REPO_ROOT
+        / "configs/experiments/dual_expert_libero_generalist_joint_denoising.yaml"
+    )
+    config = replace(
+        config,
+        data=replace(
+            config.data,
+            sample_construction=replace(
+                config.data.sample_construction,
+                sample_order_mode=SampleOrderMode.EPOCH_ORDER,
+            ),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="sample_order_mode.*replacement"):
         _validate_dynamics_source_sampling(config)
 
 
@@ -559,26 +588,38 @@ def test_auxiliary_validation_dataset_forces_generalist_metadata_and_drops_text(
     assert sample.task_text == "put the mug on the plate"
 
 
-def test_auxiliary_validation_source_can_select_pure_counterfactual_dataset() -> None:
-    class MixedDataset(Dataset):
+def test_auxiliary_validation_source_uses_source_view_protocol() -> None:
+    class RoutedDataset(Dataset):
         def __init__(self) -> None:
-            self.real_dataset = TensorDataset(torch.ones(1, 1))
             self.counterfactual_dataset = TensorDataset(torch.zeros(1, 1))
 
         def __len__(self) -> int:
             return 1
 
         def __getitem__(self, index: int):
-            return self.real_dataset[index]
+            return self.counterfactual_dataset[index]
 
-    mixed = MixedDataset()
+        def has_route(self, *, source: str, mode: str) -> bool:
+            del mode
+            return source == "counterfactual_dynamics"
+
+        def build_source_view(self, **kwargs):
+            assert kwargs == {
+                "source": "counterfactual_dynamics",
+                "mode": "joint",
+                "bucket_name": "fdm_val",
+                "spread_indices": True,
+            }
+            return self.counterfactual_dataset
+
+    routed = RoutedDataset()
     task = AuxiliaryValidationTaskConfig(
         name="fdm_val", source="counterfactual_dynamics"
     )
 
-    selected, resolved_source = _resolve_auxiliary_validation_source(mixed, task=task)
+    selected, resolved_source = _resolve_auxiliary_validation_source(routed, task=task)
 
-    assert selected is mixed.counterfactual_dataset
+    assert selected is routed.counterfactual_dataset
     assert resolved_source == "counterfactual_dynamics"
     with pytest.raises(ValueError, match="does not expose"):
         _resolve_auxiliary_validation_source(TensorDataset(torch.ones(1, 1)), task=task)
@@ -599,27 +640,235 @@ def test_auxiliary_validation_source_can_fallback_when_counterfactual_is_unavail
 
 
 @pytest.mark.parametrize(
-    ("fixed_mode", "expected_task"),
+    "fixed_mode",
     [
-        ("action_conditioned_video", "fdm_val"),
-        ("video_conditioned_action", "idm_val"),
+        "action_conditioned_video",
+        "video_conditioned_action",
     ],
 )
-def test_pure_gjd_validation_keeps_only_matching_conditional_probe(
+def test_single_route_gjd_validation_preserves_explicit_conditional_probes(
     fixed_mode: str,
-    expected_task: str,
 ) -> None:
+    class RoutedDataset(Dataset):
+        def __len__(self) -> int:
+            return 1
+
+        def __getitem__(self, index: int):
+            del index
+            return LatentWAMSample(
+                video_latents=torch.zeros(2, 3),
+                actions=torch.zeros(4, 7),
+            )
+
+        def has_route(self, *, source: str, mode: str) -> bool:
+            del mode
+            return source == "real_demo"
+
+        def build_source_view(self, **kwargs):
+            return self
+
     config = load_experiment_config(
         REPO_ROOT / "configs/experiments/dual_expert_libero_generalist_joint_denoising.yaml"
     )
-    probabilities = {
-        "joint": 0.0,
-        "action_conditioned_video": float(fixed_mode == "action_conditioned_video"),
-        "video_conditioned_action": float(fixed_mode == "video_conditioned_action"),
+    config = apply_config_overrides(
+        config,
+        {
+            "data.dynamics_routing.routes": [
+                {"source": "real_demo", "mode": fixed_mode, "weight": 1.0}
+            ]
+        },
+    )
+    loader = DataLoader(RoutedDataset(), batch_size=1)
+
+    runs = build_auxiliary_validation_runs(
+        config,
+        SimpleNamespace(distributed=False, world_size=1, rank=0),
+        train_loader=loader,
+        val_loader=loader,
+    )
+
+    assert [run.config.name for run in runs] == ["fdm_val", "idm_val"]
+
+
+@pytest.mark.parametrize(
+    ("program", "expected_mode"),
+    [
+        ("forward_dynamics", "action_conditioned_video"),
+        ("inverse_dynamics", "video_conditioned_action"),
+    ],
+)
+def test_strict_dynamics_validation_inherits_program_mode(
+    program: str,
+    expected_mode: str,
+) -> None:
+    class RecordingMixture(Dataset):
+        def __init__(self) -> None:
+            self.source_view_kwargs: dict[str, object] | None = None
+
+        def __len__(self) -> int:
+            return 1
+
+        def __getitem__(self, index: int):
+            del index
+            return LatentWAMSample(
+                video_latents=torch.zeros(2, 3),
+                actions=torch.zeros(4, 7),
+                task_text="task",
+                text_context=torch.ones(1, 2),
+                negative_text_context=torch.zeros(1, 2),
+            )
+
+        def has_route(self, *, source: str, mode: str) -> bool:
+            del mode
+            return source == "real_demo"
+
+        def build_source_view(self, **kwargs):
+            self.source_view_kwargs = kwargs
+            return self
+
+    config = load_experiment_config(
+        REPO_ROOT / "configs/experiments/dual_expert_libero_conditional_dynamics.yaml"
+    )
+    route = {
+        "source": "real_demo",
+        "mode": expected_mode,
+        "weight": 1.0,
     }
     config = apply_config_overrides(
         config,
-        {"policy_variant.generalist_denoising_mode_probs": probabilities},
+        {
+            "policy_variant.program": program,
+            "data.dynamics_routing.routes": [route],
+            "validation.auxiliary_tasks": [
+                {
+                    "name": "strict_val",
+                    "source": "real_demo",
+                    "max_batches": 1,
+                    "report_prefix": "val_strict",
+                }
+            ],
+        },
+    )
+    dataset = RecordingMixture()
+    loader = DataLoader(dataset, batch_size=1)
+
+    (run,) = build_auxiliary_validation_runs(
+        config,
+        SimpleNamespace(distributed=False, world_size=1, rank=0),
+        train_loader=loader,
+        val_loader=loader,
+    )
+
+    assert run.config.mode_override == DynamicsObjective(expected_mode)
+    assert dataset.source_view_kwargs == {
+        "source": "real_demo",
+        "mode": expected_mode,
+        "bucket_name": "strict_val",
+        "spread_indices": True,
+    }
+    sample = run.loader.dataset[0]
+    assert sample.task_text is None
+    assert sample.metadata[DYNAMICS_ROUTING_MODE_METADATA_KEY] == expected_mode
+
+
+def test_strict_dynamics_dataloader_does_not_build_planning_dataset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class OneSampleDataset(Dataset):
+        def __len__(self) -> int:
+            return 1
+
+        def __getitem__(self, index: int) -> LatentWAMSample:
+            del index
+            return LatentWAMSample(
+                video_latents=torch.zeros(2, 2, 2, 2),
+                actions=torch.zeros(8, 7),
+                action_mask=torch.ones(8, 7),
+            )
+
+    config = load_experiment_config(
+        REPO_ROOT / "configs/experiments/dual_expert_libero_conditional_dynamics.yaml"
+    )
+    config = replace(config, data=replace(config.data, num_workers=0))
+    routed = OneSampleDataset()
+
+    monkeypatch.setattr(
+        data_loading_module,
+        "build_train_val_latent_datasets",
+        lambda _: pytest.fail("conditional-only routes must not build planning data"),
+    )
+
+    def build_routed(**kwargs):
+        assert kwargs["train_dataset"] is None
+        assert kwargs["val_dataset"] is None
+        return routed, routed
+
+    monkeypatch.setattr(
+        data_loading_module,
+        "build_dynamics_routing_datasets",
+        build_routed,
+    )
+
+    train_loader, val_loader = build_runtime_dataloaders(
+        config,
+        SimpleNamespace(distributed=False, world_size=1, rank=0),
+    )
+
+    assert train_loader.dataset is routed
+    assert val_loader.dataset is routed
+
+
+def test_strict_dynamics_preflight_checks_only_encoded_inputs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = load_experiment_config(
+        REPO_ROOT / "configs/experiments/dual_expert_libero_conditional_dynamics.yaml"
+    )
+    observed: list[tuple[object, tuple[object, ...]]] = []
+    monkeypatch.setattr(
+        data_loading_module,
+        "preflight_dataset_artifacts",
+        lambda _: pytest.fail("conditional-only routes must not preflight planning data"),
+    )
+    monkeypatch.setattr(
+        data_loading_module,
+        "preflight_encoded_dynamics_artifact",
+        lambda root, *, sources, config_path: observed.append((root, sources)) or (),
+    )
+
+    statuses = preflight_runtime_dataset_artifacts(config)
+
+    assert statuses == ()
+    assert len(observed) == 2
+    assert all(len(sources) == 2 for _, sources in observed)
+
+
+@pytest.mark.parametrize(
+    "task_overrides",
+    [
+        {"enabled": False, "max_batches": 1},
+        {"enabled": True, "max_batches": 0},
+    ],
+)
+def test_disabled_strict_dynamics_probe_is_ignored(
+    task_overrides: dict[str, object],
+) -> None:
+    config = load_experiment_config(
+        REPO_ROOT / "configs/experiments/dual_expert_libero_conditional_dynamics.yaml"
+    )
+    config = apply_config_overrides(
+        config,
+        {
+            "validation.auxiliary_tasks": [
+                {
+                    "name": "disabled_idm_probe",
+                    "source": "real_demo",
+                    "mode_override": "video_conditioned_action",
+                    "report_prefix": "val_disabled_idm",
+                    **task_overrides,
+                }
+            ]
+        },
     )
     loader = DataLoader(TensorDataset(torch.ones(1, 1)), batch_size=1)
 
@@ -630,10 +879,16 @@ def test_pure_gjd_validation_keeps_only_matching_conditional_probe(
         val_loader=loader,
     )
 
-    assert [run.config.name for run in runs] == [expected_task]
+    assert runs == ()
 
 
-def test_training_runtime_runs_primary_and_auxiliary_validation_phases() -> None:
+@pytest.mark.parametrize(
+    "dynamics_metric_namespace",
+    ("joint_denoise", "dual_expert_generalist"),
+)
+def test_training_runtime_runs_primary_and_auxiliary_validation_phases(
+    dynamics_metric_namespace: str,
+) -> None:
     task = AuxiliaryValidationTaskConfig(
         name="fdm_val",
         mode_override="action_conditioned_video",
@@ -646,6 +901,7 @@ def test_training_runtime_runs_primary_and_auxiliary_validation_phases() -> None
         SimpleNamespace(config=task, loader=[2, 4, 6]),
     )
     runtime.model = SimpleNamespace(eval=lambda: None)
+    runtime.dynamics_metric_namespace = dynamics_metric_namespace
     runtime.strategy = SimpleNamespace(
         device=torch.device("cpu"),
         autocast_context=lambda: nullcontext(),
@@ -672,9 +928,9 @@ def test_training_runtime_runs_primary_and_auxiliary_validation_phases() -> None
                 loss=value,
                 metrics={
                     "loss": value,
-                    "joint_denoise/action_loss_active": torch.tensor(0.0),
-                    "joint_denoise/latent_loss_active": torch.tensor(1.0),
-                    "joint_denoise/action_conditioned_video/count": torch.tensor(1.0),
+                    f"{dynamics_metric_namespace}/action_loss_active": torch.tensor(0.0),
+                    f"{dynamics_metric_namespace}/latent_loss_active": torch.tensor(1.0),
+                    f"{dynamics_metric_namespace}/action_conditioned_video/count": torch.tensor(1.0),
                 },
             )
 
@@ -687,9 +943,9 @@ def test_training_runtime_runs_primary_and_auxiliary_validation_phases() -> None
         7,
         {
             "loss": 1.0,
-            "joint_denoise/action_loss_active": 0.0,
-            "joint_denoise/latent_loss_active": 1.0,
-            "joint_denoise/action_conditioned_video/count": 1.0,
+            f"{dynamics_metric_namespace}/action_loss_active": 0.0,
+            f"{dynamics_metric_namespace}/latent_loss_active": 1.0,
+            f"{dynamics_metric_namespace}/action_conditioned_video/count": 1.0,
         },
     )
     assert logged[1][0] == "val_fdm"
@@ -820,8 +1076,11 @@ def test_generalist_checkpoint_writes_yaml_safe_enum_dict_keys(tmp_path: Path) -
     resolved_text = (checkpoint_dir / "resolved_config.yaml").read_text(
         encoding="utf-8"
     )
-    assert "generalist_denoising_mode_probs:" in resolved_text
-    assert "joint:" in resolved_text
+    assert f"schema_version: {EXPERIMENT_CONFIG_SCHEMA_VERSION}" in resolved_text
+    assert "routes:" in resolved_text
+    assert "source: real_demo" in resolved_text
+    assert "mode: joint" in resolved_text
+    assert "python/object" not in resolved_text
 
 
 def test_model_only_checkpoint_does_not_collect_optimizer_state(

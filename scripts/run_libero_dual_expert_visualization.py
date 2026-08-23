@@ -131,19 +131,6 @@ def main() -> None:
         ),
     )
     parser.add_argument(
-        "--dual-expert-generalist-rollout-mode",
-        "--mot-generalist-rollout-mode",
-        dest="dual_expert_generalist_rollout_mode",
-        metavar="{joint,vanilla_joint_rollout}",
-        default=None,
-        help=(
-            "Optional dual-expert GJD rollout mode forwarded to PolicyInferContext. "
-            "Live sim rollout supports only joint/vanilla modes; FDM/IDM and "
-            "clean-action diagnostic modes require offline GT action/video tensors. "
-            "`--dual-expert-action-only-rollout` is not an IDM substitute."
-        ),
-    )
-    parser.add_argument(
         "--dual-expert-gjd-action-route",
         "--mot-gjd-action-route",
         dest="dual_expert_gjd_action_route",
@@ -252,7 +239,6 @@ def main() -> None:
             dual_expert_inference_window_size=args.dual_expert_inference_window_size,
             dual_expert_rollout_frame_chunk_size=args.dual_expert_rollout_frame_chunk_size,
             dual_expert_action_only_rollout=bool(args.dual_expert_action_only_rollout),
-            dual_expert_generalist_rollout_mode=args.dual_expert_generalist_rollout_mode,
             dual_expert_gjd_action_route=args.dual_expert_gjd_action_route,
             execute_action_steps=args.execute_action_steps,
             execute_frame_chunk_size=args.execute_frame_chunk_size,
@@ -293,7 +279,6 @@ def main() -> None:
         dual_expert_rollout_frame_chunk_size=args.dual_expert_rollout_frame_chunk_size,
         dual_expert_inference_window_size=args.dual_expert_inference_window_size,
         dual_expert_action_only_rollout=bool(args.dual_expert_action_only_rollout),
-        dual_expert_generalist_rollout_mode=args.dual_expert_generalist_rollout_mode,
         dual_expert_gjd_action_route=args.dual_expert_gjd_action_route,
         reset_policy_state_each_chunk=bool(args.reset_policy_state_each_chunk),
         max_imagined_latent_frames=args.max_imagined_latent_frames,

@@ -4,9 +4,30 @@ Executable policy behavior lives in role-owned modules beside this facade.
 New code should import those owners directly.
 """
 
+from open_wam.models.common.dynamics_objectives import (
+    dynamics_objective_attention_window_size as _window_size_for_generalist_conditioning,
+)
+from open_wam.models.common.dynamics_objectives import (
+    dynamics_objective_rollout_chunk_size as _rollout_chunk_size_for_generalist_conditioning,
+)
+from open_wam.models.common.dynamics_objectives import (
+    is_conditional_dynamics_objective as _is_conditional_joint_denoise_mode,
+)
+from open_wam.models.common.dynamics_objectives import (
+    resolve_dynamics_objective as _generalist_mode_for_action_conditioning,
+)
 from open_wam.models.common.flow_schedule import (
     FlowMatchScheduler,
     sample_timestep_id,
+)
+from open_wam.models.common.video_conditioning import (
+    build_repeated_first_frame_condition as _build_clean_video_condition_from_anchor,
+)
+from open_wam.models.common.video_conditioning import (
+    resolve_full_window_condition_latents as _resolve_full_condition_latents,
+)
+from open_wam.models.common.video_conditioning import (
+    select_first_frame_condition_latents as _select_first_frame_condition_latents,
 )
 from open_wam.models.common.video_geometry import (
     unpatchify_video_sequence as data_seq_to_patch,
@@ -58,31 +79,16 @@ from .clean_cache_write import (
     write_joint_clean_tokens_to_exact_cache as _write_joint_clean_tokens_to_exact_cache,
 )
 from .conditional_rollout import (
-    generalist_conditioning_chunk_size as _chunk_size_for_generalist_conditioning,
+    dynamics_rollout_prefix_visibility_mode as _prefix_visibility_mode_for_generalist_conditioning,
 )
 from .conditional_rollout import (
-    generalist_conditioning_history_stream_visibility as _history_stream_visibility_for_generalist_conditioning,
+    select_dynamics_warmup_history_suffix as _select_conditional_warmup_history_suffix,
 )
 from .conditional_rollout import (
-    generalist_conditioning_prefix_visibility_mode as _prefix_visibility_mode_for_generalist_conditioning,
+    slice_dynamics_conditioning_chunk as _slice_conditioning_chunk,
 )
 from .conditional_rollout import (
-    generalist_conditioning_window_size as _window_size_for_generalist_conditioning,
-)
-from .conditional_rollout import (
-    is_conditional_joint_denoise_mode as _is_conditional_joint_denoise_mode,
-)
-from .conditional_rollout import (
-    resolve_action_conditioning_mode as _generalist_mode_for_action_conditioning,
-)
-from .conditional_rollout import (
-    select_conditional_warmup_history_suffix as _select_conditional_warmup_history_suffix,
-)
-from .conditional_rollout import (
-    slice_conditioning_chunk as _slice_conditioning_chunk,
-)
-from .conditional_rollout import (
-    uses_generalist_mode_text_token as _uses_generalist_mode_text_token,
+    uses_dynamics_mode_text_token as _uses_generalist_mode_text_token,
 )
 from .exact_cache import (
     ExactCacheContext,
@@ -131,15 +137,6 @@ from .forward_execution import (
 from .forward_execution import (
     run_parallel_exact_dual_stream_forward as _run_parallel_exact_joint_forward_manual,
 )
-from .generalist_training import (
-    apply_generalist_joint_denoise_training_mode as _apply_generalist_joint_denoise_training_mode,
-)
-from .generalist_training import (
-    apply_generalist_legacy_prefix_joint_training_mode as _apply_generalist_legacy_prefix_joint_training_mode,
-)
-from .generalist_training import (
-    sample_generalist_joint_denoise_training_mode as _sample_joint_denoise_training_mode,
-)
 from .inference_artifacts import (
     LingbotParallelInferArtifacts,
     ParallelInferArtifacts,
@@ -150,26 +147,11 @@ from .inference_conditioning import (
 from .inference_conditioning import (
     repeat_parallel_exact_input_for_cfg as _repeat_joint_input_for_cfg,
 )
-from .latent_conditioning import (
-    build_repeated_first_frame_condition as _build_clean_video_condition_from_anchor,
-)
-from .latent_conditioning import (
-    resolve_full_window_condition_latents as _resolve_full_condition_latents,
-)
-from .latent_conditioning import (
-    select_first_frame_condition_latents as _select_first_frame_condition_latents,
-)
 from .packed_rollout import (
     _run_parallel_packed_inference_rollout_impl as _run_parallel_action_conditioned_inference_rollout_impl,
 )
 from .packed_rollout import (
-    run_parallel_packed_action_override_rollout as run_parallel_action_conditioned_action_override_inference_rollout,
-)
-from .packed_rollout import (
     run_parallel_packed_inference_rollout as run_parallel_action_conditioned_inference_rollout,
-)
-from .proprio_conditioning import (
-    apply_parallel_chunk_proprio_context as _apply_parallel_chunk_proprio_context,
 )
 from .proprio_conditioning import (
     build_single_stream_hidden_proprio_context as _single_stream_hidden_proprio_context,
@@ -241,8 +223,7 @@ _COMPATIBILITY_EXPORTS = (
     _write_joint_clean_tokens_to_exact_cache,
     _maybe_commit_initial_observed_video_context,
     run_parallel_exact_cache_warmup,
-    _chunk_size_for_generalist_conditioning,
-    _history_stream_visibility_for_generalist_conditioning,
+    _rollout_chunk_size_for_generalist_conditioning,
     _prefix_visibility_mode_for_generalist_conditioning,
     _window_size_for_generalist_conditioning,
     _is_conditional_joint_denoise_mode,
@@ -267,9 +248,6 @@ _COMPATIBILITY_EXPORTS = (
     run_parallel_action_conditioned_train,
     _run_parallel_exact_joint_forward_manual,
     run_parallel_exact_train,
-    _apply_generalist_joint_denoise_training_mode,
-    _apply_generalist_legacy_prefix_joint_training_mode,
-    _sample_joint_denoise_training_mode,
     LingbotParallelInferArtifacts,
     ParallelInferArtifacts,
     _inject_generalist_mode_text_context,
@@ -278,9 +256,7 @@ _COMPATIBILITY_EXPORTS = (
     _resolve_full_condition_latents,
     _select_first_frame_condition_latents,
     _run_parallel_action_conditioned_inference_rollout_impl,
-    run_parallel_action_conditioned_action_override_inference_rollout,
     run_parallel_action_conditioned_inference_rollout,
-    _apply_parallel_chunk_proprio_context,
     _single_stream_hidden_proprio_context,
     _inject_proprio_text_context,
     _attention_profile_name_for_current_block_coupling,

@@ -57,7 +57,9 @@ class DualExpertTrainingLayout:
         end_key: str = "loss_frame_end",
         fallback_to_generic: bool = True,
     ) -> tuple[int, int] | None:
-        sample_metadata = SampleConstructionMetadata.from_batch_metadata(batch.extra.get("metadata"))
+        sample_metadata = SampleConstructionMetadata.from_batch_metadata(
+            batch.extra.get("metadata")
+        )
         if sample_metadata is None:
             return None
         return sample_metadata.optional_frame_range(
@@ -74,7 +76,9 @@ class DualExpertTrainingLayout:
         batch: PolicyTrainBatch,
         observed_num_frames: int,
     ) -> int:
-        sample_metadata = SampleConstructionMetadata.from_batch_metadata(batch.extra.get("metadata"))
+        sample_metadata = SampleConstructionMetadata.from_batch_metadata(
+            batch.extra.get("metadata")
+        )
         resolved_history_frames: int | None = None
         if sample_metadata is not None:
             resolved_history_frames = sample_metadata.history_frames
@@ -86,7 +90,10 @@ class DualExpertTrainingLayout:
             resolved_history_frames = int(loss_frame_range[0])
         if resolved_history_frames is None:
             resolved_history_frames = int(self.policy_config.video_prefix_frames)
-        if resolved_history_frames <= 0 or resolved_history_frames >= observed_num_frames:
+        if (
+            resolved_history_frames <= 0
+            or resolved_history_frames >= observed_num_frames
+        ):
             raise ValueError(
                 "DualExpert training requires at least one history frame and one current frame, "
                 f"got resolved_history_frames={resolved_history_frames}, observed_num_frames={observed_num_frames}."
@@ -120,7 +127,9 @@ class DualExpertTrainingLayout:
             else base_mask.to(dtype=torch.float32)
         )
         frame_mask = torch.zeros_like(effective_mask)
-        frame_mask[:, loss_frame_start * action_per_frame : loss_frame_end * action_per_frame] = 1.0
+        frame_mask[
+            :, loss_frame_start * action_per_frame : loss_frame_end * action_per_frame
+        ] = 1.0
         return effective_mask * frame_mask
 
     def build_effective_video_loss_mask(
@@ -171,19 +180,25 @@ class DualExpertTrainingLayout:
         batch: PolicyTrainBatch,
         observed_num_frames: int,
     ) -> int | None:
-        sample_metadata = SampleConstructionMetadata.from_batch_metadata(batch.extra.get("metadata"))
+        sample_metadata = SampleConstructionMetadata.from_batch_metadata(
+            batch.extra.get("metadata")
+        )
         if sample_metadata is None:
             return None
         return sample_metadata.sampled_chunk_size_for(observed_num_frames)
 
     @staticmethod
     def resolve_sampled_window_size(*, batch: PolicyTrainBatch) -> int | None:
-        sample_metadata = SampleConstructionMetadata.from_batch_metadata(batch.extra.get("metadata"))
+        sample_metadata = SampleConstructionMetadata.from_batch_metadata(
+            batch.extra.get("metadata")
+        )
         return None if sample_metadata is None else sample_metadata.sampled_window_size
 
     @staticmethod
     def resolve_frame_shift(*, batch: PolicyTrainBatch) -> int:
-        sample_metadata = SampleConstructionMetadata.from_batch_metadata(batch.extra.get("metadata"))
+        sample_metadata = SampleConstructionMetadata.from_batch_metadata(
+            batch.extra.get("metadata")
+        )
         if sample_metadata is None or sample_metadata.frame_shift is None:
             return 0
         return int(sample_metadata.frame_shift)
@@ -194,19 +209,14 @@ class DualExpertTrainingLayout:
         batch: PolicyTrainBatch,
         observed_num_frames: int,
     ) -> int:
-        sample_metadata = SampleConstructionMetadata.from_batch_metadata(batch.extra.get("metadata"))
+        sample_metadata = SampleConstructionMetadata.from_batch_metadata(
+            batch.extra.get("metadata")
+        )
         if sample_metadata is None:
             return 0
-        explicit_chunk_origin = sample_metadata.raw.get("chunk_origin_frame")
-        if explicit_chunk_origin is not None:
-            return int(explicit_chunk_origin)
-        if str(sample_metadata.raw.get("target_alignment", "")) != "next_after_context":
-            return 0
-        loss_frame_start, _ = sample_metadata.frame_range_or_default(
+        return sample_metadata.chunk_origin_frame_for(
             observed_num_frames=observed_num_frames,
-            error_label="dual-expert train chunk-origin metadata",
         )
-        return int(loss_frame_start)
 
     @staticmethod
     def resolve_singleton_chunk_frame(
@@ -214,30 +224,14 @@ class DualExpertTrainingLayout:
         batch: PolicyTrainBatch,
         observed_num_frames: int,
     ) -> int | None:
-        sample_metadata = SampleConstructionMetadata.from_batch_metadata(batch.extra.get("metadata"))
+        sample_metadata = SampleConstructionMetadata.from_batch_metadata(
+            batch.extra.get("metadata")
+        )
         if sample_metadata is None:
             return None
-        raw = sample_metadata.raw
-        if raw.get("generalist_gjd_chunk_contract") != "t0_singleton":
-            return None
-        singleton_frame = raw.get("singleton_chunk_frame", raw.get("target_observation_frame_in_sample"))
-        if singleton_frame is None:
-            return None
-        resolved = int(singleton_frame)
-        if resolved < 0 or resolved >= int(observed_num_frames):
-            raise ValueError(
-                "Invalid GJD singleton chunk frame, "
-                f"got {resolved} for observed_num_frames={int(observed_num_frames)}."
-            )
-        return resolved
-
-    @staticmethod
-    def resolve_conditional_history_policy(*, batch: PolicyTrainBatch) -> str | None:
-        sample_metadata = SampleConstructionMetadata.from_batch_metadata(batch.extra.get("metadata"))
-        if sample_metadata is None:
-            return None
-        policy = sample_metadata.raw.get("generalist_conditional_history_policy")
-        return None if policy is None else str(policy)
+        return sample_metadata.singleton_chunk_frame_for(
+            observed_num_frames=observed_num_frames,
+        )
 
     def sample_full_segment_geometry(
         self,
@@ -248,16 +242,28 @@ class DualExpertTrainingLayout:
         """Draw the parallel-stream-compatible chunk, window, and history geometry."""
 
         cs_max = max(1, int(self.training_config.chunk_size))
-        sampled_chunk_size = int(torch.randint(1, cs_max + 1, (1,), device=device).item())
+        sampled_chunk_size = int(
+            torch.randint(1, cs_max + 1, (1,), device=device).item()
+        )
         if int(self.training_config.window_size) >= 4:
             sampled_window_size = int(
-                torch.randint(4, int(self.training_config.window_size) + 1, (1,), device=device).item()
+                torch.randint(
+                    4, int(self.training_config.window_size) + 1, (1,), device=device
+                ).item()
             )
         else:
             sampled_window_size = max(1, int(self.training_config.window_size))
         max_history_chunks = max(1, observed_num_frames // sampled_chunk_size - 1)
-        history_chunks = int(torch.randint(1, max_history_chunks + 1, (1,), device=device).item())
-        history_frames = max(1, min(history_chunks * sampled_chunk_size, observed_num_frames - sampled_chunk_size))
+        history_chunks = int(
+            torch.randint(1, max_history_chunks + 1, (1,), device=device).item()
+        )
+        history_frames = max(
+            1,
+            min(
+                history_chunks * sampled_chunk_size,
+                observed_num_frames - sampled_chunk_size,
+            ),
+        )
         return sampled_chunk_size, sampled_window_size, history_frames
 
     @staticmethod
@@ -277,6 +283,8 @@ class DualExpertTrainingLayout:
         if history_action_tokens <= 0:
             return train_artifacts
         history_action_tokens = min(history_action_tokens, int(actions.shape[1]))
-        train_artifacts.noisy_actions[:, :history_action_tokens] = actions[:, :history_action_tokens]
+        train_artifacts.noisy_actions[:, :history_action_tokens] = actions[
+            :, :history_action_tokens
+        ]
         train_artifacts.timesteps[:, :history_action_tokens] = 0.0
         return train_artifacts

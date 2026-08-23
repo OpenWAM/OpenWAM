@@ -6,39 +6,23 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from open_wam.configs import GeneralistDenoisingMode
+from open_wam.configs import DualExpertPolicyConfig, VideoActionProgram
 from open_wam.evals import libero_dual_expert_runtime as runtime
 
 
 def test_live_sim_rejects_standalone_conditional_program_default() -> None:
-    with pytest.raises(ValueError, match="fixed conditional mode.*offline diagnostic mode"):
-        runtime._validate_live_sim_dual_expert_generalist_rollout_mode(
-            None,
-            policy_config=SimpleNamespace(program="forward_dynamics"),
+    with pytest.raises(ValueError, match="action_conditioned_video.*offline diagnostic program"):
+        runtime._validate_live_sim_dynamics_program(
+            DualExpertPolicyConfig(program=VideoActionProgram.FORWARD_DYNAMICS),
         )
 
 
-def test_live_sim_cannot_override_standalone_conditional_program_to_joint() -> None:
-    with pytest.raises(ValueError, match="fixed conditional mode.*offline diagnostic mode"):
-        runtime._validate_live_sim_dual_expert_generalist_rollout_mode(
-            "joint",
-            policy_config=SimpleNamespace(program="forward_dynamics"),
-        )
-
-
-def test_live_sim_rejects_one_hot_gjd_conditional_default() -> None:
-    with pytest.raises(ValueError, match="fixed conditional mode.*offline diagnostic mode"):
-        runtime._validate_live_sim_dual_expert_generalist_rollout_mode(
-            None,
-            policy_config=SimpleNamespace(
-                program="generalist_joint_denoising",
-                generalist_denoising_mode_probs={
-                    GeneralistDenoisingMode.JOINT: 0.0,
-                    GeneralistDenoisingMode.ACTION_CONDITIONED_VIDEO: 1.0,
-                    GeneralistDenoisingMode.VIDEO_CONDITIONED_ACTION: 0.0,
-                },
-            ),
-        )
+def test_live_sim_does_not_infer_rollout_mode_from_training_routes() -> None:
+    runtime._validate_live_sim_dynamics_program(
+        DualExpertPolicyConfig(
+            program=VideoActionProgram.GENERALIST_JOINT_DENOISING
+        ),
+    )
 
 
 class _FakePipeline:
@@ -65,7 +49,9 @@ def test_load_dual_expert_libero_runtime_preserves_composition_order_and_contrac
     config_path = tmp_path / "resolved_config.yaml"
     checkpoint_path = tmp_path / "checkpoint_step_10" / "model_state.pt"
     config = SimpleNamespace(
-        policy_variant=SimpleNamespace(name="dual_expert", program="video_then_action"),
+        policy_variant=DualExpertPolicyConfig(
+            program=VideoActionProgram.VIDEO_THEN_ACTION
+        ),
         backbone=SimpleNamespace(transformer_subdir="/unused/transformer"),
         data=SimpleNamespace(
             num_frames=4,
@@ -136,7 +122,6 @@ def test_load_dual_expert_libero_runtime_preserves_composition_order_and_contrac
             dual_expert_inference_window_size=30,
             dual_expert_rollout_frame_chunk_size=None,
             dual_expert_action_only_rollout=False,
-            dual_expert_generalist_rollout_mode="joint",
             dual_expert_gjd_action_route="joint",
             execute_action_steps=None,
             execute_frame_chunk_size=None,
@@ -201,5 +186,5 @@ def test_load_dual_expert_libero_runtime_preserves_composition_order_and_contrac
     assert calls[0] == (
         "load_config",
         config_path,
-        {"checkpoint_runtime_compat": True},
+        {"checkpoint_runtime_compat": False},
     )

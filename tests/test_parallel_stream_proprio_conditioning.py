@@ -5,17 +5,38 @@ import torch
 
 from open_wam.models.policy_variants.parallel_stream import reference_runtime
 from open_wam.models.policy_variants.parallel_stream.proprio_conditioning import (
-    apply_parallel_chunk_proprio_context,
     build_single_stream_hidden_proprio_context,
+    build_single_stream_hidden_proprio_history_context,
     inject_deprecated_proprio_text_context,
+)
+from open_wam.models.visual_tower.sequence_adapters import (
+    _apply_packed_video_action_proprio_context,
 )
 
 
-def test_reference_runtime_proprio_names_alias_canonical_contract() -> None:
-    assert (
-        reference_runtime._apply_parallel_chunk_proprio_context
-        is apply_parallel_chunk_proprio_context
+def _apply_test_packed_context(
+    transformer: object,
+    *,
+    hidden_states: torch.Tensor,
+    split_list: tuple[int, ...],
+    input_dict: dict[str, object],
+) -> torch.Tensor:
+    encode_context = getattr(transformer, "encode_proprio_hidden_context", None)
+    if encode_context is None:
+
+        def encode_context(*_args, **_kwargs):
+            raise ValueError("Packed proprio context needs a state encoder.")
+
+    return _apply_packed_video_action_proprio_context(
+        hidden_states=hidden_states,
+        stream_lengths=split_list,
+        payload=input_dict,
+        patch_size=getattr(transformer, "patch_size", (1, 1, 1)),
+        encode_context=encode_context,
     )
+
+
+def test_reference_runtime_proprio_names_alias_canonical_contract() -> None:
     assert (
         reference_runtime._single_stream_hidden_proprio_context
         is build_single_stream_hidden_proprio_context
@@ -87,7 +108,7 @@ def test_absent_proprio_context_is_an_identity_operation() -> None:
     assert negative is negative_text_emb
 
     hidden_states = torch.zeros(1, 4, 3)
-    output = apply_parallel_chunk_proprio_context(
+    output = _apply_test_packed_context(
         torch.nn.Identity(),
         hidden_states=hidden_states,
         split_list=(1, 1, 1, 1),
@@ -141,9 +162,7 @@ def test_single_stream_video_context_uses_latest_anchor_and_patch_geometry() -> 
     assert output.shape == (1, 8, 2)
     torch.testing.assert_close(
         output,
-        torch.tensor([3.0, 4.0], dtype=torch.float64)
-        .reshape(1, 1, 2)
-        .expand(1, 8, 2),
+        torch.tensor([3.0, 4.0], dtype=torch.float64).reshape(1, 1, 2).expand(1, 8, 2),
         rtol=0.0,
         atol=0.0,
     )
@@ -194,6 +213,34 @@ def test_single_stream_action_context_uses_unpatched_action_tokens() -> None:
     )
 
 
+def test_single_stream_history_context_preserves_per_frame_state() -> None:
+    class _HiddenContextTransformer:
+        patch_size = (1, 1, 1)
+
+        @staticmethod
+        def encode_proprio_hidden_context(
+            frame_state: torch.Tensor,
+            *,
+            device: torch.device,
+            dtype: torch.dtype,
+        ) -> torch.Tensor:
+            return frame_state.to(device=device, dtype=dtype)
+
+    history = torch.tensor([[[1.0], [2.0], [3.0]]], requires_grad=True)
+    stream_latents = torch.zeros(1, 2, 3, 1, 1)
+
+    output = build_single_stream_hidden_proprio_history_context(
+        _HiddenContextTransformer(),
+        proprio_history=history,
+        stream_latents=stream_latents,
+        action_mode=False,
+    )
+
+    torch.testing.assert_close(output, history)
+    output.sum().backward()
+    torch.testing.assert_close(history.grad, torch.ones_like(history))
+
+
 def test_packed_context_preserves_values_and_exact_gradients() -> None:
     class _HiddenContextTransformer:
         patch_size = (1, 1, 1)
@@ -219,7 +266,7 @@ def test_packed_context_preserves_values_and_exact_gradients() -> None:
     )
     expected_context = proprio_state.detach().expand(1, 2, 2)
 
-    output = apply_parallel_chunk_proprio_context(
+    output = _apply_test_packed_context(
         _HiddenContextTransformer(),
         hidden_states=hidden_states,
         split_list=(2, 2, 2, 2),
@@ -270,7 +317,7 @@ def test_packed_context_applies_frame_boundaries_to_pre_target_prefix() -> None:
         ) -> torch.Tensor:
             return frame_state.to(device=device, dtype=dtype).expand(-1, -1, 4)
 
-    output = apply_parallel_chunk_proprio_context(
+    output = _apply_test_packed_context(
         _ContextTransformer(),
         hidden_states=torch.zeros(1, 16, 4),
         split_list=(4, 4, 4, 4),
@@ -284,9 +331,7 @@ def test_packed_context_applies_frame_boundaries_to_pre_target_prefix() -> None:
             "action_dict": {
                 "noisy_latents": torch.zeros(1, 1, 4, 1, 1),
             },
-            "per_chunk_proprio_state": torch.tensor(
-                [[[1.0], [2.0], [3.0], [4.0]]]
-            ),
+            "per_chunk_proprio_state": torch.tensor([[[1.0], [2.0], [3.0], [4.0]]]),
         },
     )
 
@@ -314,7 +359,7 @@ def test_legacy_prefix_context_skips_video_branches() -> None:
         ) -> torch.Tensor:
             return frame_state.to(device=device, dtype=dtype).expand(-1, -1, 4)
 
-    output = apply_parallel_chunk_proprio_context(
+    output = _apply_test_packed_context(
         _ContextTransformer(),
         hidden_states=torch.zeros(1, 18, 4),
         split_list=(5, 5, 4, 4),
@@ -357,7 +402,7 @@ def test_legacy_prefix_context_accepts_chunk_level_state() -> None:
         ) -> torch.Tensor:
             return frame_state.to(device=device, dtype=dtype).expand(-1, -1, 4)
 
-    output = apply_parallel_chunk_proprio_context(
+    output = _apply_test_packed_context(
         _ContextTransformer(),
         hidden_states=torch.zeros(1, 18, 4),
         split_list=(5, 5, 4, 4),
@@ -372,9 +417,7 @@ def test_legacy_prefix_context_accepts_chunk_level_state() -> None:
             "action_dict": {
                 "noisy_latents": torch.zeros(1, 1, 4, 1, 1),
             },
-            "per_chunk_proprio_state": torch.tensor(
-                [[[1.0], [2.0], [4.0]]]
-            ),
+            "per_chunk_proprio_state": torch.tensor([[[1.0], [2.0], [4.0]]]),
         },
     )
 
@@ -400,7 +443,7 @@ def test_chunk_size_one_treats_state_as_chunk_level() -> None:
         ) -> torch.Tensor:
             return frame_state.to(device=device, dtype=dtype).expand(-1, -1, 4)
 
-    output = apply_parallel_chunk_proprio_context(
+    output = _apply_test_packed_context(
         _ContextTransformer(),
         hidden_states=torch.zeros(1, 12, 4),
         split_list=(3, 3, 3, 3),
@@ -412,9 +455,7 @@ def test_chunk_size_one_treats_state_as_chunk_level() -> None:
             "action_dict": {
                 "noisy_latents": torch.zeros(1, 1, 3, 1, 1),
             },
-            "per_chunk_proprio_state": torch.tensor(
-                [[[10.0], [20.0], [30.0]]]
-            ),
+            "per_chunk_proprio_state": torch.tensor([[[10.0], [20.0], [30.0]]]),
         },
     )
 
@@ -507,8 +548,8 @@ def test_packed_context_rejects_non_tensor_and_unknown_granularity() -> None:
             "noisy_latents": torch.zeros(1, 1, 1, 1, 1),
         },
     }
-    with pytest.raises(ValueError, match="must be a tensor"):
-        apply_parallel_chunk_proprio_context(
+    with pytest.raises(TypeError, match="must be a tensor"):
+        _apply_test_packed_context(
             _HiddenContextTransformer(),
             hidden_states=torch.zeros(1, 4, 3),
             split_list=(1, 1, 1, 1),
@@ -522,7 +563,7 @@ def test_packed_context_rejects_non_tensor_and_unknown_granularity() -> None:
         ValueError,
         match="per_chunk_proprio_state_granularity",
     ):
-        apply_parallel_chunk_proprio_context(
+        _apply_test_packed_context(
             _HiddenContextTransformer(),
             hidden_states=torch.zeros(1, 4, 3),
             split_list=(1, 1, 1, 1),

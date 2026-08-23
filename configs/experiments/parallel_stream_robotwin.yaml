@@ -29,8 +29,8 @@ backbone:
 
 policy_variant:
   name: parallel_stream
+  program: video_then_action
   hidden_size: 3072
-  runtime_mode: lingbot_exact
   frame_chunk_size: 2
   action_per_frame: 2
   attn_window: 8

@@ -165,8 +165,6 @@ def build_libero_rollout_command(
         "--allow-deprecated-libero-config",
         *_override_arguments(overrides),
     ]
-    if method.is_gjd:
-        command.extend(["--dual-expert-generalist-rollout-mode", "joint"])
     return command
 
 
@@ -396,10 +394,10 @@ def _runtime_asset_overrides(
             )
         overrides.update(
             {
-                "data.generalist_dynamics_mixture.train_latent_root": str(
+                "data.dynamics_routing.train_latent_root": str(
                     assets.counterfactual_train_root
                 ),
-                "data.generalist_dynamics_mixture.val_latent_root": str(
+                "data.dynamics_routing.val_latent_root": str(
                     assets.counterfactual_val_root
                 ),
             }

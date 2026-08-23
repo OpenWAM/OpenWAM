@@ -7,6 +7,7 @@ import torch
 
 from open_wam.configs import (
     CurrentBlockCoupling,
+    HistoryStreamVisibility,
     ParallelExactCacheWriteMode,
     SharedVideoTransformerConfig,
 )
@@ -55,7 +56,7 @@ def _write_kwargs() -> dict[str, object]:
         "chunk_size": 1,
         "window_size": 4,
         "current_block_coupling": CurrentBlockCoupling.JOINT,
-        "preserve_video_pretrain_history": True,
+        "history_stream_visibility": HistoryStreamVisibility.VIDEO_QUERIES_VIDEO_ONLY,
     }
 
 
@@ -111,7 +112,10 @@ def test_joint_packed_write_delegates_without_mutating_inputs(
     assert call["cache_name"] == "cache"
     assert call["frame_start"] == 3
     assert call["current_block_coupling"] == CurrentBlockCoupling.JOINT
-    assert call["preserve_video_pretrain_history"] is True
+    assert (
+        call["history_stream_visibility"]
+        == HistoryStreamVisibility.VIDEO_QUERIES_VIDEO_ONLY
+    )
 
 
 def test_cache_write_rejects_unknown_interface_before_model_execution() -> None:
@@ -139,7 +143,7 @@ def test_slot_pool_summary_reports_cached_and_prediction_tokens() -> None:
 
     class _Transformer:
         @staticmethod
-        def _resolve_exact_cache_state(cache_name: str):
+        def get_runtime_cache_state(cache_name: str):
             assert cache_name == "cache"
             return cache_state
 
@@ -153,15 +157,15 @@ def test_slot_pool_summary_reports_cached_and_prediction_tokens() -> None:
 @pytest.mark.parametrize(
     "transformer",
     [
-        object(),
+        SimpleNamespace(get_runtime_cache_state=lambda _name: None),
         SimpleNamespace(
-            _resolve_exact_cache_state=lambda _name: SimpleNamespace(
+            get_runtime_cache_state=lambda _name: SimpleNamespace(
                 backend_name="merged_prefix",
                 backend_payload=None,
             )
         ),
         SimpleNamespace(
-            _resolve_exact_cache_state=lambda _name: SimpleNamespace(
+            get_runtime_cache_state=lambda _name: SimpleNamespace(
                 backend_name="slot_pool_exact",
                 backend_payload=SimpleNamespace(layer_states=[]),
             )

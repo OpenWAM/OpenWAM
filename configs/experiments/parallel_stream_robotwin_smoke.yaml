@@ -28,8 +28,8 @@ backbone:
 policy_variant:
   # Exact parallel-stream chunk layout knobs
   name: parallel_stream
+  program: video_then_action
   hidden_size: 256
-  runtime_mode: lingbot_exact
   frame_chunk_size: 2
   action_per_frame: 2
   attn_window: 8

@@ -8,7 +8,7 @@ from .coercion import coerce_enum, coerce_optional_enum
 from .enums import (
     AuxiliaryValidationSource,
     DataSplit,
-    GeneralistDenoisingMode,
+    DynamicsObjective,
     coerce_fields,
 )
 
@@ -18,7 +18,7 @@ class AuxiliaryValidationTaskConfig:
     """One optional validation probe run alongside the primary validation set."""
 
     name: str
-    mode_override: GeneralistDenoisingMode | None = None
+    mode_override: DynamicsObjective | None = None
     dataset_split: DataSplit = DataSplit.VAL
     source: AuxiliaryValidationSource = AuxiliaryValidationSource.DATASET
     max_batches: int | None = 16
@@ -30,7 +30,7 @@ class AuxiliaryValidationTaskConfig:
         coerce_fields(
             self,
             enum_fields={"dataset_split": DataSplit, "source": AuxiliaryValidationSource},
-            optional_enum_fields={"mode_override": GeneralistDenoisingMode},
+            optional_enum_fields={"mode_override": DynamicsObjective},
         )
         if not isinstance(self.name, str) or not self.name:
             raise ValueError("`validation.auxiliary_tasks[].name` must be non-empty.")
@@ -47,6 +47,15 @@ class AuxiliaryValidationTaskConfig:
             raise ValueError("`validation.auxiliary_tasks[].enabled` must be boolean.")
         if self.drop_text_conditioning is not None and not isinstance(self.drop_text_conditioning, bool):
             raise ValueError("`validation.auxiliary_tasks[].drop_text_conditioning` must be boolean or null.")
+        if (
+            self.mode_override is not None
+            and self.mode_override.is_conditional
+            and self.drop_text_conditioning is not None
+        ):
+            raise ValueError(
+                "Conditional FDM/IDM validation always removes task text; "
+                "do not set `validation.auxiliary_tasks[].drop_text_conditioning`."
+            )
 
     @property
     def phase(self) -> str:
@@ -54,12 +63,9 @@ class AuxiliaryValidationTaskConfig:
 
     @property
     def should_drop_text(self) -> bool:
-        if self.drop_text_conditioning is not None:
-            return bool(self.drop_text_conditioning)
-        return self.mode_override in {
-            GeneralistDenoisingMode.ACTION_CONDITIONED_VIDEO,
-            GeneralistDenoisingMode.VIDEO_CONDITIONED_ACTION,
-        }
+        if self.mode_override is not None and self.mode_override.is_conditional:
+            return True
+        return bool(self.drop_text_conditioning)
 
 
 @dataclass(frozen=True)
@@ -105,7 +111,7 @@ def parse_validation_config(raw_value: Mapping[str, Any] | None) -> ValidationCo
             AuxiliaryValidationTaskConfig(
                 name=item["name"],
                 mode_override=coerce_optional_enum(
-                    GeneralistDenoisingMode,
+                    DynamicsObjective,
                     item.get("mode_override"),
                 ),
                 dataset_split=coerce_enum(

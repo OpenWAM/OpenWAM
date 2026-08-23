@@ -44,7 +44,7 @@ Open-WAM provides:
 
 | Architecture | Topology | Maintained programs |
 | --- | --- | --- |
-| `parallel_stream` | Video and action tokens share one transformer. | Six standard programs and GJD; includes the exact LingBot-compatible runtime. |
+| `parallel_stream` | Video and action tokens share one transformer. | Six standard programs, GJD, and standalone conditional FDM/IDM through the exact LingBot-compatible runtime. |
 | `dual_expert` | Video and action use separate transformer experts. | Six standard programs, GJD, and standalone conditional FDM/IDM. |
 | `causal_video_prediction` | The visual model runs without action supervision. | Video-only prediction. |
 
@@ -155,7 +155,7 @@ uv run --extra train torchrun --standalone --nproc-per-node=4 \
 step state. `model_state.pt` is an inference artifact or warm start, not an
 exact resume. Every checkpoint stores its resolved config.
 
-Conditional FDM/IDM uses the `dynamics_routed` data paradigm. The maintained
+Conditional FDM/IDM uses the dynamics-routing data adapter. The maintained
 config mixes real demonstrations with encoded counterfactual train and
 validation roots; a real-demo-only ablation is also supported. Read the
 [data prerequisites](docs/running_experiments.md#data-prerequisites) before
@@ -218,7 +218,7 @@ ExperimentConfig -> VariantPipeline -> VisualTower -> PolicyVariant -> ActionDec
 | `ExperimentConfig` | Typed architecture, program, data, sequence, runtime, and optimization choices. |
 | `VariantPipeline` | Shared training and inference orchestration. |
 | `VisualTower` | Frontend encoding, visual backbone execution, decode stages, and runtime hooks. |
-| `PolicyVariant` | Parameter topology, sequence semantics, conditioning, and recurrent state. |
+| `PolicyVariant` | Parameter topology, architecture-specific packing, conditioning adapters, and recurrent state. |
 | `ActionDecoder` | Final supervised outputs, masks, losses, metrics, and committed actions. |
 
 This boundary keeps the visual stack stable while experiments vary one owned

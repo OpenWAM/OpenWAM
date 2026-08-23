@@ -77,15 +77,8 @@ def move_attention_profile(
         )
         if all(key in metadata for key in required_keys) and (
             "current_block_coupling" in metadata
-            or "allow_joint_noisy_block_attention" in metadata
         ):
-            current_block_coupling = metadata.get("current_block_coupling")
-            if current_block_coupling is None:
-                current_block_coupling = (
-                    "joint"
-                    if bool(metadata["allow_joint_noisy_block_attention"])
-                    else "video_then_action"
-                )
+            current_block_coupling = metadata["current_block_coupling"]
             return build_chunked_temporal_exact_attention_profile(
                 latent_shape=tuple(int(v) for v in metadata["latent_shape"]),
                 action_shape=tuple(int(v) for v in metadata["action_shape"]),
@@ -123,9 +116,6 @@ def move_attention_profile(
                 ),
                 build_flex_masks=True,
                 current_block_coupling=str(current_block_coupling),
-                preserve_video_pretrain_history=bool(
-                    metadata.get("preserve_video_pretrain_history", False)
-                ),
                 history_stream_visibility=metadata.get("history_stream_visibility"),
                 conditional_history_policy=metadata.get("conditional_history_policy"),
             )

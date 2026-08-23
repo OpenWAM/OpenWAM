@@ -71,6 +71,7 @@ from tests.characterization.dual_expert_refactor_worker import (
     _distributed_optimizer_digest,
     _execute_characterization_optimizer_step,
     _load_pipeline_checkpoint,
+    _migrate_frozen_counterfactual_fixture_contract,
     _resume_update_differences,
     _resume_update_report_contract,
     _runtime_state_contract_differences,
@@ -336,7 +337,9 @@ def test_ground_truth_profile_overrides_exclude_machine_and_tracking_state() -> 
 
 def test_example_asset_manifest_keeps_video_base_and_transformer_distinct() -> None:
     manifest = (
-        Path(__file__).resolve().parent / "characterization" / "dual_expert_assets.example.yaml"
+        Path(__file__).resolve().parent
+        / "characterization"
+        / "dual_expert_assets.example.yaml"
     ).read_text(encoding="utf-8")
 
     assert "base_model_root: ${OPEN_WAM_LINGBOT_VA_BASE}" in manifest
@@ -481,24 +484,18 @@ def test_gjd_characterization_matrix_covers_expected_training_modes(method) -> N
 
     config = apply_gjd_ablation(_load_method_config(method.config_name), method)
     assert config.policy_variant.generalist_mode_text_token is method.mode_token
-    assert set(config.policy_variant.generalist_denoising_mode_probs) == set(
-        GJDTrainingMode
-    )
+    mode_probabilities = {
+        mode.value: probability
+        for mode, probability in (
+            config.data.dynamics_routing.mode_probabilities().items()
+        )
+    }
     if method.gjd_ablation == "pure_joint":
-        assert config.policy_variant.generalist_training_paradigm.value == "demo_only"
-        assert (
-            config.policy_variant.generalist_denoising_mode_probs[
-                GJDTrainingMode.JOINT
-            ]
-            == 1.0
-        )
+        assert config.data.dynamics_routing.routes == ()
+        assert set(mode_probabilities.values()) == {0.0}
     else:
-        assert (
-            config.policy_variant.generalist_denoising_mode_probs[
-                GJDTrainingMode.JOINT
-            ]
-            == 0.6
-        )
+        assert set(mode_probabilities) == {mode.value for mode in GJDTrainingMode}
+        assert mode_probabilities[GJDTrainingMode.JOINT.value] == 0.6
 
 
 @pytest.mark.parametrize("method", GJD_METHODS, ids=lambda method: method.asset_id)
@@ -512,7 +509,7 @@ def test_gjd_standard_resolves_strict_m5_training_contract() -> None:
     method = METHOD_BY_ASSET_ID["gjd_vanilla"]
     config = apply_gjd_ablation(_load_method_config(method.config_name), method)
     sample = config.data.sample_construction
-    mixture = config.data.generalist_dynamics_mixture
+    mixture = config.data.dynamics_routing
 
     assert (
         config.policy_variant.sequence_contract.value
@@ -543,19 +540,15 @@ def test_gjd_standard_resolves_strict_m5_training_contract() -> None:
     assert config.inference.frame_chunk_size == 4
     assert config.data.action_schema.action_horizon == 16
     assert config.trainer.checkpoint_mode.value == "full_training_state"
-    assert {
-        "real_joint": mixture.real_joint_weight,
-        "real_fdm": mixture.real_action_conditioned_video_weight,
-        "real_idm": mixture.real_video_conditioned_action_weight,
-        "counterfactual_fdm": mixture.counterfactual_action_conditioned_video_weight,
-        "counterfactual_idm": mixture.counterfactual_video_conditioned_action_weight,
-    } == {
-        "real_joint": 0.6,
-        "real_fdm": 0.1,
-        "real_idm": 0.1,
-        "counterfactual_fdm": 0.1,
-        "counterfactual_idm": 0.1,
-    }
+    assert [
+        (route.source.value, route.mode.value, route.weight) for route in mixture.routes
+    ] == [
+        ("real_demo", "joint", 0.6),
+        ("real_demo", "action_conditioned_video", 0.1),
+        ("real_demo", "video_conditioned_action", 0.1),
+        ("counterfactual_dynamics", "action_conditioned_video", 0.1),
+        ("counterfactual_dynamics", "video_conditioned_action", 0.1),
+    ]
 
 
 def test_ground_truth_inference_contract_matches_supplied_eval_commands() -> None:
@@ -596,9 +589,6 @@ def test_checkpoint_provenance_accepts_schema_v1_field_aliases(
     contract["policy_variant.parallel_sequence_contract"] = contract.pop(
         "policy_variant.sequence_contract"
     )
-    contract["policy_variant.mot_generalist_training_mode_probs"] = contract.pop(
-        "policy_variant.generalist_denoising_mode_probs"
-    )
     _write_dotted_contract(config_path, contract)
 
     report = checkpoint_provenance_report(
@@ -613,13 +603,17 @@ def test_checkpoint_provenance_accepts_schema_v1_field_aliases(
     assert_checkpoint_provenance(report, asset_id=method.asset_id)
 
 
-def test_checkpoint_provenance_accepts_legacy_enum_value_aliases(
+def test_checkpoint_provenance_derives_omitted_coupling_from_program(
     tmp_path: Path,
 ) -> None:
-    method = METHOD_BY_ASSET_ID["gjd_mode_token"]
-    config = apply_gjd_ablation(_load_method_config(method.config_name), method)
+    method = METHOD_BY_ASSET_ID["mot_joint"]
+    config = apply_ground_truth_training_profile(
+        _load_method_config(method.config_name),
+        DualExpertTrainingProfile.FULL_SEGMENT_W64,
+    )
     contract = expected_checkpoint_contract(method=method, config=config)
-    contract["policy_variant.generalist_training_paradigm"] = "mixed_dynamics"
+    contract.pop("policy_variant.current_block_coupling")
+    contract["policy_variant.program"] = config.policy_variant.program.value
     config_path = tmp_path / "resolved_config.yaml"
     _write_dotted_contract(config_path, contract)
 
@@ -631,7 +625,63 @@ def test_checkpoint_provenance_accepts_legacy_enum_value_aliases(
 
     assert report["strict_match"] is True
     assert report["mismatches"] == []
-    assert_checkpoint_provenance(report, asset_id=method.asset_id)
+
+
+@pytest.mark.parametrize("route_schema", ["weights", "routes"])
+def test_checkpoint_provenance_accepts_historical_gjd_route_schemas(
+    tmp_path: Path,
+    route_schema: str,
+) -> None:
+    method = METHOD_BY_ASSET_ID["gjd_mode_token"]
+    config = apply_gjd_ablation(_load_method_config(method.config_name), method)
+    contract = expected_checkpoint_contract(method=method, config=config)
+    routes = contract.pop("data.dynamics_routing.routes")
+    if route_schema == "weights":
+        fields = {
+            ("real_demo", "joint"): "real_joint_weight",
+            (
+                "real_demo",
+                "action_conditioned_video",
+            ): "real_action_conditioned_video_weight",
+            (
+                "real_demo",
+                "video_conditioned_action",
+            ): "real_video_conditioned_action_weight",
+            (
+                "counterfactual_dynamics",
+                "action_conditioned_video",
+            ): "counterfactual_action_conditioned_video_weight",
+            (
+                "counterfactual_dynamics",
+                "video_conditioned_action",
+            ): "counterfactual_video_conditioned_action_weight",
+        }
+        for route in routes:
+            field = fields[(route["source"], route["mode"])]
+            contract[f"data.generalist_dynamics_mixture.{field}"] = route["weight"]
+    else:
+        contract["data.generalist_dynamics_mixture.routes"] = [
+            {
+                **route,
+                "source": (
+                    "counterfactual"
+                    if route["source"] == "counterfactual_dynamics"
+                    else route["source"]
+                ),
+            }
+            for route in routes
+        ]
+    config_path = tmp_path / "resolved_config.yaml"
+    _write_dotted_contract(config_path, contract)
+
+    report = checkpoint_provenance_report(
+        method=method,
+        expected_config=config,
+        resolved_config_path=config_path,
+    )
+
+    assert report["strict_match"] is True
+    assert report["mismatches"] == []
 
 
 def test_checkpoint_provenance_rejects_architecture_compatible_stale_contract(
@@ -710,7 +760,9 @@ def test_checkpoint_provenance_rejects_pre_cf_gjd_contract(
     config = apply_gjd_ablation(_load_method_config(method.config_name), method)
     contract = expected_checkpoint_contract(method=method, config=config)
     contract["policy_variant.generalist_training_paradigm"] = "demo_only"
-    contract["data.generalist_dynamics_mixture.conditional_history_frames"] = 16
+    contract["data.dynamics_routing.routes"] = [
+        {"source": "real_demo", "mode": "joint", "weight": 1.0}
+    ]
     config_path = tmp_path / "resolved_config.yaml"
     _write_dotted_contract(config_path, contract)
 
@@ -721,10 +773,9 @@ def test_checkpoint_provenance_rejects_pre_cf_gjd_contract(
     )
 
     assert {item["field"] for item in report["mismatches"]} == {
-        "policy_variant.generalist_training_paradigm",
-        "data.generalist_dynamics_mixture.conditional_history_frames",
+        "data.dynamics_routing.routes",
     }
-    with pytest.raises(AssertionError, match="demo_only"):
+    with pytest.raises(AssertionError, match="dynamics_routing.routes"):
         assert_checkpoint_provenance(report, asset_id=method.asset_id)
 
 
@@ -800,6 +851,91 @@ def test_latent_fixture_round_trip_is_hash_verified(tmp_path: Path) -> None:
         )
 
 
+def _counterfactual_fixture_batch(
+    *,
+    context_prefix_frames_in_sample: int | None = None,
+    layout: str = "target_only_t0_observation_plus_future",
+) -> LatentWAMBatch:
+    metadata = {
+        "generalist_conditional_contract": layout,
+        "generalist_gjd_chunk_contract": "t0_singleton",
+        "generalist_conditional_history_policy": "previous_boundary_video_only",
+        "history_frames": 1,
+        "loss_frame_start": 1,
+        "latent_loss_frame_start": 1,
+        "action_loss_frame_start": 1,
+        "chunk_origin_frame": 1,
+        "target_observation_frame_in_sample": 0,
+        "singleton_chunk_frame": 0,
+    }
+    if context_prefix_frames_in_sample is not None:
+        metadata["context_prefix_frames_in_sample"] = context_prefix_frames_in_sample
+    return LatentWAMBatch(
+        video_latents=torch.zeros(1, 1, 2, 1, 1),
+        actions=torch.zeros(1, 8, 7),
+        metadata=(metadata,),
+    )
+
+
+def test_characterization_migrates_only_approved_frozen_cf_contract() -> None:
+    batch = _counterfactual_fixture_batch()
+
+    migrated = _migrate_frozen_counterfactual_fixture_contract(
+        batch,
+        source="counterfactual_dynamics",
+    )
+
+    assert migrated is not batch
+    assert migrated.metadata[0]["context_prefix_frames_in_sample"] == 1
+    assert "context_prefix_frames_in_sample" not in batch.metadata[0]
+
+
+def test_characterization_cf_fixture_migration_is_idempotent() -> None:
+    batch = _counterfactual_fixture_batch(context_prefix_frames_in_sample=1)
+
+    migrated = _migrate_frozen_counterfactual_fixture_contract(
+        batch,
+        source="counterfactual_dynamics",
+    )
+
+    assert migrated.metadata == batch.metadata
+
+
+def test_characterization_does_not_migrate_real_fixture() -> None:
+    batch = _counterfactual_fixture_batch()
+
+    migrated = _migrate_frozen_counterfactual_fixture_contract(
+        batch,
+        source="real_demo",
+    )
+
+    assert migrated is batch
+
+
+@pytest.mark.parametrize(
+    ("batch", "message"),
+    (
+        (
+            _counterfactual_fixture_batch(layout="unrecognized"),
+            "does not match the approved target-only contract",
+        ),
+        (
+            _counterfactual_fixture_batch(context_prefix_frames_in_sample=2),
+            "conflicting context_prefix_frames_in_sample",
+        ),
+    ),
+)
+def test_characterization_rejects_unapproved_cf_fixture_migration(
+    batch: LatentWAMBatch,
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        _migrate_frozen_counterfactual_fixture_contract(
+            batch,
+            source="counterfactual_dynamics",
+        )
+
+
 def test_tensor_fingerprint_records_shape_statistics_and_stable_probes() -> None:
     tensor = torch.arange(100, dtype=torch.float32)
     fingerprint = tensor_fingerprint(tensor, probe_count=5)
@@ -866,9 +1002,7 @@ def test_characterization_tolerance_is_limited_to_distributed_numeric_fields() -
                 "gradients": {"video_backbone": {"absolute_sum": 3.0}},
                 "optimizer_step": {
                     "distributed_numeric": {
-                        "parameter_groups": {
-                            "video_backbone": {"after": {"sum": 4.0}}
-                        }
+                        "parameter_groups": {"video_backbone": {"after": {"sum": 4.0}}}
                     },
                     "scheduler": {"lr": 5.0e-6},
                 },
@@ -913,7 +1047,7 @@ def test_characterization_tolerance_is_limited_to_distributed_numeric_fields() -
 
     actual["scenarios"]["sample"]["optimizer_step"]["distributed_numeric"][
         "parameter_groups"
-    ]["video_backbone"]["after"]["sum"] = 4.3
+    ]["video_backbone"]["after"]["sum"] = 4.6
     differences = compare_characterization_reports(
         expected,
         actual,
@@ -936,12 +1070,15 @@ def test_distributed_gradient_tolerance_bounds_nccl_reduction_drift() -> None:
     changed = {"gradients": {"mode_token": {"absolute_sum": 1.0071}}}
     resolver = _numeric_tolerance_resolver(DISTRIBUTED_GRADIENT_TOLERANCE)
 
-    assert compare_characterization_reports(
-        expected,
-        accepted,
-        tolerance=ComparisonTolerance(absolute=0.0, relative=0.0),
-        tolerance_for_path=resolver,
-    ) == []
+    assert (
+        compare_characterization_reports(
+            expected,
+            accepted,
+            tolerance=ComparisonTolerance(absolute=0.0, relative=0.0),
+            tolerance_for_path=resolver,
+        )
+        == []
+    )
     assert compare_characterization_reports(
         expected,
         changed,
@@ -954,9 +1091,7 @@ def test_characterization_delta_tolerance_propagates_aggregate_error() -> None:
     expected = {
         "optimizer_step": {
             "distributed_numeric": {
-                "parameter_groups": {
-                    "video_backbone": {"delta": {"absolute_sum": 1.0}}
-                }
+                "parameter_groups": {"video_backbone": {"delta": {"absolute_sum": 1.0}}}
             }
         }
     }
@@ -964,19 +1099,22 @@ def test_characterization_delta_tolerance_propagates_aggregate_error() -> None:
     delta = actual["optimizer_step"]["distributed_numeric"]["parameter_groups"][
         "video_backbone"
     ]["delta"]
-    delta["absolute_sum"] = 1.5
+    delta["absolute_sum"] = 2.0
 
     resolver = _numeric_tolerance_resolver(
         ComparisonTolerance(absolute=0.0, relative=0.0)
     )
-    assert compare_characterization_reports(
-        expected,
-        actual,
-        tolerance=ComparisonTolerance(absolute=0.0, relative=0.0),
-        tolerance_for_path=resolver,
-    ) == []
+    assert (
+        compare_characterization_reports(
+            expected,
+            actual,
+            tolerance=ComparisonTolerance(absolute=0.0, relative=0.0),
+            tolerance_for_path=resolver,
+        )
+        == []
+    )
 
-    delta["absolute_sum"] = 1.500001
+    delta["absolute_sum"] = 2.000001
     assert compare_characterization_reports(
         expected,
         actual,
@@ -987,15 +1125,15 @@ def test_characterization_delta_tolerance_propagates_aggregate_error() -> None:
 
 def test_resume_post_update_metrics_have_narrow_cross_job_tolerance() -> None:
     expected = {
-        "uninterrupted_update": {
-            "scenario": {"metrics": {"action_mse": 0.0002}}
-        },
+        "uninterrupted_update": {"scenario": {"metrics": {"action_mse": 0.0002}}},
         "resumed_update": {"scenario": {"metrics": {"action_mse": 0.0002}}},
         "first_update": {"scenario": {"metrics": {"action_mse": 0.0002}}},
     }
     actual = json.loads(json.dumps(expected))
     accepted_delta = RESUME_POST_UPDATE_METRIC_TOLERANCE.absolute
-    actual["uninterrupted_update"]["scenario"]["metrics"]["action_mse"] += accepted_delta
+    actual["uninterrupted_update"]["scenario"]["metrics"]["action_mse"] += (
+        accepted_delta
+    )
     actual["resumed_update"]["scenario"]["metrics"]["action_mse"] += accepted_delta
 
     differences = compare_characterization_reports(
@@ -1019,7 +1157,9 @@ def test_resume_post_update_metrics_have_narrow_cross_job_tolerance() -> None:
         ),
         path="gjd_mode_token.resume.json",
     )
-    assert any(".resumed_update.scenario.metrics.action_mse" in item for item in differences)
+    assert any(
+        ".resumed_update.scenario.metrics.action_mse" in item for item in differences
+    )
 
     actual = json.loads(json.dumps(expected))
     actual["first_update"]["scenario"]["metrics"]["action_mse"] += 1e-9
@@ -1032,7 +1172,9 @@ def test_resume_post_update_metrics_have_narrow_cross_job_tolerance() -> None:
         ),
         path="gjd_mode_token.resume.json",
     )
-    assert any(".first_update.scenario.metrics.action_mse" in item for item in differences)
+    assert any(
+        ".first_update.scenario.metrics.action_mse" in item for item in differences
+    )
 
 
 def test_resume_report_uses_stable_output_schema_version() -> None:
@@ -1667,17 +1809,15 @@ def test_training_cli_smoke_command_uses_real_entrypoint_and_one_update(
     assert overrides["trainer.enable_jsonl_logging"] == "true"
     if not method.is_gjd:
         assert overrides["data.sample_construction.window_size"] == "64"
-        assert not any(
-            key.startswith("data.generalist_dynamics_mixture.") for key in overrides
-        )
+        assert not any(key.startswith("data.dynamics_routing.") for key in overrides)
     elif method.gjd_ablation == "pure_joint":
-        assert overrides["data.generalist_dynamics_mixture.train_latent_root"] == "null"
-        assert overrides["data.generalist_dynamics_mixture.val_latent_root"] == "null"
+        assert overrides["data.dynamics_routing.train_latent_root"] == "null"
+        assert overrides["data.dynamics_routing.val_latent_root"] == "null"
     else:
-        assert overrides["data.generalist_dynamics_mixture.train_latent_root"] == str(
+        assert overrides["data.dynamics_routing.train_latent_root"] == str(
             assets.counterfactual_train_root
         )
-        assert overrides["data.generalist_dynamics_mixture.val_latent_root"] == str(
+        assert overrides["data.dynamics_routing.val_latent_root"] == str(
             assets.counterfactual_val_root
         )
     if method.is_gjd:
@@ -1714,9 +1854,7 @@ def test_libero_rollout_command_matches_maintained_contract(
     assert _option_value(command, "--startup-model-obs-frames") == "1"
     assert _option_value(command, "--startup-env-init-steps") == "5"
     assert "--execute-action-steps" not in command
-    assert ("--dual-expert-generalist-rollout-mode" in command) is method.is_gjd
-    if method.is_gjd:
-        assert _option_value(command, "--dual-expert-generalist-rollout-mode") == "joint"
+    assert "--dual-expert-generalist-rollout-mode" not in command
 
 
 def test_model_only_cli_stage_does_not_expose_sibling_training_state(
@@ -1884,9 +2022,7 @@ def test_comparison_projection_uses_tensor_content_as_portable_identity() -> Non
         "std": 0.5,
     }
     second = json.loads(json.dumps(first))
-    second.update(
-        {"l1": 3.0001, "l2": 2.2359, "mean": 1.5001, "std": 0.4999}
-    )
+    second.update({"l1": 3.0001, "l2": 2.2359, "mean": 1.5001, "std": 0.4999})
 
     assert _comparison_projection(first) == _comparison_projection(second)
 
@@ -1909,9 +2045,7 @@ def test_comparison_projection_normalizes_only_schema_v1_metadata() -> None:
                 "policy_variant.parallel_sequence_contract",
                 "policy_variant.generalist_training_paradigm",
             ],
-            "actual": {
-                "policy_variant.generalist_training_paradigm": "mixed_dynamics"
-            },
+            "actual": {"policy_variant.generalist_training_paradigm": "mixed_dynamics"},
             "expected": {
                 "policy_variant.parallel_sequence_contract": "legacy_prefix",
                 "policy_variant.generalist_training_paradigm": "mixed_dynamics",
@@ -1926,14 +2060,10 @@ def test_comparison_projection_normalizes_only_schema_v1_metadata() -> None:
         "checkpoint_provenance": {
             "contract_fields": [
                 "policy_variant.sequence_contract",
-                "policy_variant.generalist_training_paradigm",
             ],
-            "actual": {
-                "policy_variant.generalist_training_paradigm": "dynamics_routed"
-            },
+            "actual": {},
             "expected": {
                 "policy_variant.sequence_contract": "legacy_prefix",
-                "policy_variant.generalist_training_paradigm": "dynamics_routed",
             },
         },
         "state": {"type": "DualExpertRuntimeState"},
@@ -1943,6 +2073,126 @@ def test_comparison_projection_normalizes_only_schema_v1_metadata() -> None:
     assert _comparison_projection(legacy) == _comparison_projection(canonical)
     canonical["loss"] = 1.250001
     assert _comparison_projection(legacy) != _comparison_projection(canonical)
+
+
+@pytest.mark.parametrize(
+    "legacy_routing_prefix",
+    ["data.generalist_dynamics_mixture", "data.dynamics_routing"],
+)
+def test_comparison_projection_normalizes_legacy_gjd_weights_to_routes(
+    legacy_routing_prefix: str,
+) -> None:
+    legacy_contract = {
+        "policy_variant.generalist_denoising_mode_probs": {
+            "joint": 0.6,
+            "action_conditioned_video": 0.2,
+            "video_conditioned_action": 0.2,
+        },
+        f"{legacy_routing_prefix}.real_joint_weight": 0.6,
+        f"{legacy_routing_prefix}.real_action_conditioned_video_weight": 0.1,
+        f"{legacy_routing_prefix}.real_video_conditioned_action_weight": 0.1,
+        f"{legacy_routing_prefix}.counterfactual_action_conditioned_video_weight": 0.1,
+        f"{legacy_routing_prefix}.counterfactual_video_conditioned_action_weight": 0.1,
+        f"{legacy_routing_prefix}.conditional_history_frames": None,
+        "trainer.checkpoint_mode": "model_only",
+    }
+    route_contract = {
+        "data.dynamics_routing.routes": [
+            {"source": "real_demo", "mode": "joint", "weight": 0.6},
+            {
+                "source": "real_demo",
+                "mode": "action_conditioned_video",
+                "weight": 0.1,
+            },
+            {
+                "source": "real_demo",
+                "mode": "video_conditioned_action",
+                "weight": 0.1,
+            },
+            {
+                "source": "counterfactual_dynamics",
+                "mode": "action_conditioned_video",
+                "weight": 0.1,
+            },
+            {
+                "source": "counterfactual_dynamics",
+                "mode": "video_conditioned_action",
+                "weight": 0.1,
+            },
+        ],
+        "trainer.checkpoint_mode": "model_only",
+    }
+    legacy = {
+        "checkpoint_provenance": {
+            "contract_fields": list(legacy_contract),
+            "actual": legacy_contract,
+            "expected": legacy_contract,
+            "mismatches": [],
+            "strict_match": True,
+            "accepted_origin_mismatch_fields": [],
+            "unaccepted_origin_mismatch_fields": [],
+            "unused_accepted_origin_mismatch_fields": [],
+            "accepted_for_characterization": True,
+        }
+    }
+    canonical = {
+        "checkpoint_provenance": {
+            "contract_fields": list(route_contract),
+            "actual": route_contract,
+            "expected": route_contract,
+            "mismatches": [],
+            "strict_match": True,
+            "accepted_origin_mismatch_fields": [],
+            "unaccepted_origin_mismatch_fields": [],
+            "unused_accepted_origin_mismatch_fields": [],
+            "accepted_for_characterization": True,
+        }
+    }
+
+    assert _comparison_projection(legacy) == _comparison_projection(canonical)
+    canonical["checkpoint_provenance"]["actual"]["data.dynamics_routing.routes"][0][
+        "weight"
+    ] = 0.5
+    assert _comparison_projection(legacy) != _comparison_projection(canonical)
+
+
+def test_comparison_projection_normalizes_intermediate_route_schema() -> None:
+    legacy_routes = [
+        {"source": "real_demo", "mode": "joint", "weight": 0.6},
+        {
+            "source": "counterfactual",
+            "mode": "action_conditioned_video",
+            "weight": 0.4,
+        },
+    ]
+    canonical_routes = [
+        {"source": "real_demo", "mode": "joint", "weight": 0.6},
+        {
+            "source": "counterfactual_dynamics",
+            "mode": "action_conditioned_video",
+            "weight": 0.4,
+        },
+    ]
+    legacy = {
+        "checkpoint_provenance": {
+            "contract_fields": ["data.generalist_dynamics_mixture.routes"],
+            "actual": {"data.generalist_dynamics_mixture.routes": legacy_routes},
+            "expected": {"data.generalist_dynamics_mixture.routes": legacy_routes},
+            "mismatches": [],
+            "strict_match": True,
+        }
+    }
+    canonical = {
+        "checkpoint_provenance": {
+            "contract_fields": ["data.dynamics_routing.routes"],
+            "actual": {"data.dynamics_routing.routes": canonical_routes},
+            "expected": {"data.dynamics_routing.routes": canonical_routes},
+            "mismatches": [],
+            "strict_match": True,
+        }
+    }
+
+    assert _comparison_projection(legacy) == _comparison_projection(canonical)
 
 
 def test_comparison_projection_normalizes_retired_dual_expert_route_metadata() -> None:

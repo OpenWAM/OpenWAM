@@ -9,18 +9,16 @@ from typing import Any
 import numpy as np
 import torch
 
-from open_wam.configs import ExperimentConfig, load_experiment_config
+from open_wam.configs import (
+    DynamicsObjective,
+    DynamicsSource,
+    ExperimentConfig,
+    load_experiment_config,
+)
 from open_wam.data import (
-    build_generalist_dynamics_mixture_datasets,
+    build_dynamics_routing_datasets,
     build_train_val_latent_datasets,
     collate_latent_wam_samples,
-)
-from open_wam.data.generalist_dynamics import (
-    ACTION_CONDITIONED_VIDEO_MODE,
-    COUNTERFACTUAL_DYNAMICS_SOURCE,
-    JOINT_MODE,
-    REAL_DEMO_SOURCE,
-    VIDEO_CONDITIONED_ACTION_MODE,
 )
 from open_wam.data.lerobot_video import (
     LeRobotV2VideoWindowDataset,
@@ -69,10 +67,10 @@ def configure_characterization_paths(
             )
         overrides.update(
             {
-                "data.generalist_dynamics_mixture.train_latent_root": str(
+                "data.dynamics_routing.train_latent_root": str(
                     assets.counterfactual_train_root
                 ),
-                "data.generalist_dynamics_mixture.val_latent_root": str(
+                "data.dynamics_routing.val_latent_root": str(
                     assets.counterfactual_val_root
                 ),
             }
@@ -172,53 +170,48 @@ def _build_gjd_fixtures(
     config = _load_gjd_fixture_config(assets)
     _seed_everything(seed)
     real_train, real_val = build_train_val_latent_datasets(config.data)
-    train_mixture, _ = build_generalist_dynamics_mixture_datasets(
+    train_mixture, _ = build_dynamics_routing_datasets(
         data_config=config.data,
         train_dataset=real_train,
         val_dataset=real_val,
     )
     source_specs = (
-        ("gjd_real_joint", REAL_DEMO_SOURCE, JOINT_MODE, False),
+        ("gjd_real_joint", DynamicsSource.REAL_DEMO, DynamicsObjective.JOINT),
         (
             "gjd_real_fdm",
-            REAL_DEMO_SOURCE,
-            ACTION_CONDITIONED_VIDEO_MODE,
-            True,
+            DynamicsSource.REAL_DEMO,
+            DynamicsObjective.ACTION_CONDITIONED_VIDEO,
         ),
         (
             "gjd_real_idm",
-            REAL_DEMO_SOURCE,
-            VIDEO_CONDITIONED_ACTION_MODE,
-            True,
+            DynamicsSource.REAL_DEMO,
+            DynamicsObjective.VIDEO_CONDITIONED_ACTION,
         ),
         (
             "gjd_counterfactual_fdm",
-            COUNTERFACTUAL_DYNAMICS_SOURCE,
-            ACTION_CONDITIONED_VIDEO_MODE,
-            True,
+            DynamicsSource.COUNTERFACTUAL_DYNAMICS,
+            DynamicsObjective.ACTION_CONDITIONED_VIDEO,
         ),
         (
             "gjd_counterfactual_idm",
-            COUNTERFACTUAL_DYNAMICS_SOURCE,
-            VIDEO_CONDITIONED_ACTION_MODE,
-            True,
+            DynamicsSource.COUNTERFACTUAL_DYNAMICS,
+            DynamicsObjective.VIDEO_CONDITIONED_ACTION,
         ),
     )
     generated: dict[str, Path] = {}
     real_source_index = _representative_source_index(real_train)
-    for fixture_offset, (fixture_id, source, mode, drop_text) in enumerate(
+    for fixture_offset, (fixture_id, source, mode) in enumerate(
         source_specs
     ):
         source_view = train_mixture.build_source_view(
             source=source,
             mode=mode,
             bucket_name=fixture_id,
-            drop_text=drop_text,
         )
         _seed_everything(seed + fixture_offset)
         sample_index = (
             real_source_index
-            if source == REAL_DEMO_SOURCE
+            if source == DynamicsSource.REAL_DEMO
             else _representative_counterfactual_source_index(source_view)
         )
         sample = source_view[sample_index]
@@ -231,9 +224,9 @@ def _build_gjd_fixtures(
                 "seed": seed + fixture_offset,
                 "sample_index": sample_index,
                 "config_name": method.artifact_config_name,
-                "source": source,
-                "mode": mode,
-                "drop_text": drop_text,
+                "source": source.value,
+                "mode": mode.value,
+                "drop_text": mode.is_conditional,
                 "resolved_contract": _resolved_training_contract(config),
                 "source_metadata": sample.metadata,
             },

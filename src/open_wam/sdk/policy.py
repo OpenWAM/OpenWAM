@@ -5,6 +5,10 @@ from open_wam.models.action_decoders.base import (
     ActionDecoderInferOutput,
     ActionDecoderTrainOutput,
 )
+from open_wam.models.common.attention_contracts import (
+    AttentionProfileSpec,
+    PreparedAttentionProfile,
+)
 from open_wam.models.policy_variants.base import PolicyVariant
 from open_wam.models.policy_variants.contracts import (
     DecoderArtifactEnvelope,
@@ -13,13 +17,11 @@ from open_wam.models.policy_variants.contracts import (
     PolicyInferState,
     PolicyObservedHistory,
     PolicyObservedHistoryOutput,
+    PolicyPipelineRequirements,
     PolicyPreparedInputs,
     PolicyTrainBatch,
     PolicyTrainOutput,
-)
-from open_wam.models.common.attention_contracts import (
-    AttentionProfileSpec,
-    PreparedAttentionProfile,
+    PolicyVisualStage,
 )
 from open_wam.models.visual_tower.contracts import (
     VisualCoreInput,
@@ -28,6 +30,7 @@ from open_wam.models.visual_tower.contracts import (
 )
 from open_wam.models.visual_tower.runtime_programs import (
     RuntimeProgramSpec,
+    RuntimeSequenceFamily,
     RuntimeStepInput,
     RuntimeStepOutput,
     build_dense_runtime_program,
@@ -51,12 +54,15 @@ __all__ = [
     "PolicyInferState",
     "PolicyObservedHistory",
     "PolicyObservedHistoryOutput",
+    "PolicyPipelineRequirements",
     "PolicyPreparedInputs",
     "PolicyTrainBatch",
     "PolicyTrainOutput",
     "PolicyVariant",
+    "PolicyVisualStage",
     "PreparedAttentionProfile",
     "RuntimeProgramSpec",
+    "RuntimeSequenceFamily",
     "RuntimeStepInput",
     "RuntimeStepOutput",
     "VisualCoreInput",

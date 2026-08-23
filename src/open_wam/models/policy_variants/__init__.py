@@ -2,17 +2,25 @@
 
 from typing import TYPE_CHECKING
 
-from .base import PolicyVariant
+from .base import PolicyVariant, VideoActionPolicyVariant
 from .contracts import (
     DecoderArtifactEnvelope,
+    DynamicsRolloutRequest,
+    PolicyGenerationActionOrigin,
     PolicyInferContext,
     PolicyInferOutput,
     PolicyInferState,
+    PolicyModuleTopology,
+    PolicyObservationWindowSessionPolicy,
     PolicyObservedHistory,
     PolicyObservedHistoryOutput,
+    PolicyPipelineRequirements,
     PolicyPreparedInputs,
+    PolicyRolloutContract,
+    PolicyStateDictOverlay,
     PolicyTrainBatch,
     PolicyTrainOutput,
+    PolicyVisualStage,
     RolloutCursor,
 )
 
@@ -25,18 +33,27 @@ __all__ = [
     "CausalVideoPredictionPolicyVariant",
     "DecoderArtifactEnvelope",
     "DualExpertPolicyVariant",
+    "DynamicsRolloutRequest",
     "MoTPolicyVariant",
     "ParallelStreamPolicyVariant",
+    "PolicyGenerationActionOrigin",
     "PolicyInferContext",
     "PolicyInferOutput",
     "PolicyInferState",
+    "PolicyModuleTopology",
+    "PolicyObservationWindowSessionPolicy",
     "PolicyObservedHistory",
     "PolicyObservedHistoryOutput",
+    "PolicyPipelineRequirements",
     "PolicyPreparedInputs",
+    "PolicyRolloutContract",
+    "PolicyStateDictOverlay",
     "PolicyTrainBatch",
     "PolicyTrainOutput",
     "PolicyVariant",
+    "PolicyVisualStage",
     "RolloutCursor",
+    "VideoActionPolicyVariant",
 ]
 
 

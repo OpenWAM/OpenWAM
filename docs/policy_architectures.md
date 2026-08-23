@@ -21,7 +21,7 @@ simulator integrations do not branch on architecture nicknames.
 
 | Architecture | Parameter topology | Maintained programs |
 | --- | --- | --- |
-| `parallel_stream` | Video and action tokens share one transformer and exact packed-stream cache lifecycle. | Six standard video/action programs and GJD; the exact LingBot backend is its primary compatibility profile. |
+| `parallel_stream` | Video and action tokens share one transformer and exact packed-stream cache lifecycle. | Six standard video/action programs, GJD, and conditional FDM/IDM through the maintained exact packed backend. |
 | `dual_expert` | Video and action have separate transformer experts that execute paired blocks. | Six standard video/action programs, GJD, and conditional FDM/IDM. |
 | `causal_video_prediction` | The visual model runs without action supervision. | Video-only prediction. |
 
@@ -38,7 +38,7 @@ The six standard video/action programs are:
 conditional FDM/IDM layout is a separate sequence contract, not another model
 architecture.
 
-The dual-expert architecture also exposes those conditional submodes as fixed
+Both video/action architectures expose the conditional submodes as fixed
 standalone programs:
 
 - `forward_dynamics`: clean actions condition video prediction; only video loss
@@ -46,14 +46,19 @@ standalone programs:
 - `inverse_dynamics`: clean video conditions action prediction; only action loss
   is active.
 
-These programs compile to exactly the same conditional runtime as one-hot GJD.
-The canonical `dual_expert_libero_conditional_dynamics.yaml` config composes that
-program with the existing sequence and data contracts: one clean t0 latent in
-its own singleton chunk, only the most recent clean video/proprio boundary as
-rolling history, the sampled 1-4 frame size for following chunks, no task text,
-and only matching real-demo/counterfactual sources. They are not separate model
-architectures and do not introduce another trainer, attention implementation,
-or decoder.
+These programs compile to exactly the same shared training and rollout plans as
+the corresponding single-mode GJD route. The plan fixes one clean t0 latent in
+its own singleton chunk, the most recent clean video/proprio boundary as rolling
+history, the sampled 1-4 frame size for following training chunks, no task text,
+and only matching real-demo/counterfactual sources. Each architecture then packs
+that plan for its own topology and cache backend. Fixed dynamics does not add a
+trainer, attention implementation, or decoder.
+
+`dual_expert_libero_conditional_dynamics.yaml` is a convenience experiment
+profile, not the owner of these semantics. For either architecture, its GJD
+profile can be switched atomically to `forward_dynamics` or `inverse_dynamics`
+with matching `data.dynamics_routing.routes` and one fixed-mode validation
+probe.
 
 `forward_dynamics` and `inverse_dynamics` are first-class program selectors,
 but they are conditional training and offline-inference objectives. Unlike VTA,
@@ -61,8 +66,9 @@ ATV, joint, and the other standard programs, they require future clean
 conditioning tensors and are not live simulator policy rollouts. The maintained
 config defaults to a `1:1` real-demo/counterfactual mixture and therefore
 requires encoded counterfactual train and validation roots. See the
-[data prerequisites](running_experiments.md#data-prerequisites), including the
-explicit real-demo-only ablation.
+[data prerequisites](running_experiments.md#data-prerequisites). A real-only
+ablation still uses those encoded roots, selecting only their rollout-local
+`gt` branch.
 
 ## Shared Execution Boundary
 
@@ -74,12 +80,45 @@ ExperimentConfig -> VariantPipeline -> VisualTower -> PolicyVariant -> ActionDec
 
 - `VariantPipeline` owns common train and inference orchestration.
 - `VisualTower` owns the shared visual frontend and transformer-facing runtime.
-- `PolicyVariant` owns architecture and program semantics.
+- Shared program contracts own architecture-independent conditioning and
+  supervision semantics.
+- `PolicyVariant` declares model-space geometry and translates those contracts
+  into architecture-specific packing, execution, and recurrent state.
 - `ActionDecoder` owns final outputs and losses.
 
 Architecture implementations do not import one another. Shared behavior lives
 in typed config, sequence, attention, scheduler, and decoder-artifact
 contracts.
+
+Before modules are allocated, the typed policy config returns one
+`PolicyConditioningRequirements` value so the shared tower can create its
+proprio and dynamics-mode adapters in deterministic checkpoint order. After
+allocation, the policy returns `PolicyPipelineRequirements`; the factory checks
+that its model-space geometry and conditioning match the already assembled
+tower and decoder. When model and source action spaces differ, this latter
+contract declares every accepted source action shape and carries the
+source-channel projection into the decoder. Shared factories validate that
+contract without inspecting a backend's action adapter.
+
+Dynamics-capable programs additionally share five typed boundaries:
+
+- `DynamicsSamplePlan` resolves program, routed objective, and sequence layout
+  before an architecture prepares training tensors.
+- `DynamicsTrainingPlan` owns clean/noisy slots, timesteps, text removal, and
+  loss activation.
+- `DynamicsRolloutRequest` carries the clean modality and committed action
+  history into either recurrent backend.
+- `DynamicsRolloutGeometry` resolves chunk size, attention window, history
+  stream visibility, and conditional-history policy once for either backend.
+- `HiddenProprioContext` preserves frame-versus-chunk sampling granularity and
+  projects both architectures onto the same chunk-boundary state sequence.
+
+Replacing `dual_expert` with `parallel_stream` therefore keeps the program,
+route metadata, sequence layout, rollout request, and resolved rollout geometry
+unchanged. The expected differences are parameter topology, model-space action
+packing, attention execution, and cache storage. A backend may reject geometry
+its native runtime cannot represent, but it must not reinterpret shared
+semantics.
 
 ## Selecting A Program
 
@@ -110,7 +149,7 @@ See [Add A Policy Architecture](cookbooks/new_policy_architecture.md) and the
 
 ## Compatibility Names
 
-Historical names are accepted only at explicit compatibility boundaries:
+Historical naming aliases are accepted at explicit compatibility boundaries:
 
 | Historical input | Canonical meaning |
 | --- | --- |
@@ -120,6 +159,10 @@ Historical names are accepted only at explicit compatibility boundaries:
 | `mot_decoder` | `dual_expert_decoder` |
 | `lingbot_parallel_decoder` | `parallel_stream_decoder` |
 
-Old YAML names, import paths, and checkpoint-local resolved configs continue to
-load with deprecation warnings. New code, configs, runs, and documentation must
-use canonical names.
+Old config names and import paths continue to resolve with deprecation warnings.
+Checkpoint-local resolved configs can migrate the retired semantic fields that
+map unambiguously onto the current contract through
+`checkpoint_runtime_compat=True`. This is not a guarantee that arbitrary
+historical M1 configs remain executable. New YAML, CLI overrides, and Python
+configs must use canonical semantic fields; ordinary config loading does not
+translate them.

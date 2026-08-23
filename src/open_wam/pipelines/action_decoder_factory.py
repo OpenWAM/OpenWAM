@@ -7,15 +7,11 @@ from open_wam.configs import (
     ExperimentConfig,
     ExtensionActionDecoderConfig,
 )
-from open_wam.configs.policy_parallel_stream import ParallelStreamPolicyConfig
 from open_wam.models.action_decoders import (
     ActionDecoder,
     DualExpertActionDecoder,
     ParallelStreamActionDecoder,
     VideoOnlyActionDecoder,
-)
-from open_wam.models.policy_variants.parallel_stream.action_adapter import (
-    build_action_adapter_spec,
 )
 
 from .registries import _EXTENSION_ACTION_DECODER_BUILDERS, ACTION_DECODER_BUILDERS
@@ -23,14 +19,6 @@ from .registries import _EXTENSION_ACTION_DECODER_BUILDERS, ACTION_DECODER_BUILD
 
 def _build_parallel_stream_action_decoder(config: ExperimentConfig):
     decoder_config = config.action_decoder
-    source_action_channel_ids: tuple[int, ...] = ()
-    if isinstance(config.policy_variant, ParallelStreamPolicyConfig):
-        adapter_spec = build_action_adapter_spec(
-            config.policy_variant,
-            model_action_dim=decoder_config.action_dim,
-        )
-        if adapter_spec is not None:
-            source_action_channel_ids = adapter_spec.used_action_channel_ids
     action_normalization = config.data.action_target.normalization
     source_action_mean: tuple[float, ...] = ()
     source_action_std: tuple[float, ...] = ()
@@ -45,7 +33,6 @@ def _build_parallel_stream_action_decoder(config: ExperimentConfig):
         recovered_osc_loss_weight=decoder_config.recovered_osc_loss_weight,
         recovered_osc_position_scale=decoder_config.recovered_osc_position_scale,
         recovered_osc_rotation_scale=decoder_config.recovered_osc_rotation_scale,
-        source_action_channel_ids=source_action_channel_ids,
         source_action_mean=source_action_mean,
         source_action_std=source_action_std,
     )

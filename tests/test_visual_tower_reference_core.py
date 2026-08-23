@@ -46,6 +46,7 @@ def test_visual_tower_can_initialize_replica_core_from_reference_weights(tmp_pat
     reference_model.save_pretrained(transformer_dir)
 
     tower = VisualTower(backbone_config, action_dim=4)
+    tower.initialize_configured_weights()
 
     assert tower.reference_core_load_report is not None
     assert torch.equal(

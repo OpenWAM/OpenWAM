@@ -59,9 +59,8 @@ def _apply_composable_fsdp_sharding(
 ) -> nn.Module:
     from torch.distributed.fsdp import fully_shard
 
-    # Optional CPU offload of params + grads + optimizer state. Enabled via
-    # `OPEN_WAM_FSDP_CPU_OFFLOAD=1`. Useful when the dual-expert packed-coupling path
-    # makes both video DiT and action expert trainable on a 4×L40S box.
+    # Optional CPU offload of parameters, gradients, and optimizer state.
+    # Enabled via `OPEN_WAM_FSDP_CPU_OFFLOAD=1` for memory-constrained runs.
     cpu_offload = os.environ.get("OPEN_WAM_FSDP_CPU_OFFLOAD", "0") == "1"
     offload_policy = None
     if cpu_offload:
@@ -94,33 +93,11 @@ def _apply_composable_fsdp_sharding(
                 fully_shard(block.ffn, **_shard_kwargs())
             fully_shard(block, **_shard_kwargs())
 
-    visual_tower = getattr(model, "visual_tower", None)
-    core = getattr(visual_tower, "core", None) if visual_tower is not None else None
-    policy_variant = getattr(model, "policy_variant", None)
-    action_expert = (
-        getattr(policy_variant, "action_expert", None)
-        if policy_variant is not None
-        else None
-    )
-
-    # DualExpert packed-coupling path: blocks have been transferred from
-    # core.blocks / action_expert.blocks into a DualExpertPackedBlockStack at
-    # pipeline-build time. FSDP wraps each DualExpertPackedBlock as one unit so the
-    # joint video+action attention runs through standard FSDP pre/post-forward
-    # hooks (no manual `summon_full_parameters` / `linear_with_materialized_params`
-    # bypass during forward, which was causing
-    # `setStorage out of bounds for storage of size 0` during backward).
-    packed_block_stack = getattr(policy_variant, "packed_block_stack", None)
-    if packed_block_stack is not None:
-        for packed_block in packed_block_stack.packed_blocks:
-            fully_shard(packed_block, **_shard_kwargs())
-        # core.blocks and action_expert.blocks are intentionally empty in this
-        # path; calling `_shard_block_stack` on them is a no-op.
-        _shard_block_stack(core)
-        _shard_block_stack(action_expert)
-    else:
-        _shard_block_stack(core)
-        _shard_block_stack(action_expert)
+    topology = model.module_topology()
+    for atomic_module in topology.fsdp_atomic_modules:
+        fully_shard(atomic_module, **_shard_kwargs())
+    for block_stack in topology.fsdp_block_stacks:
+        _shard_block_stack(block_stack)
 
     # FSDP2 expects a bottom-up hierarchy: leaf blocks first, then the root.
     # The root owns embeddings, projections, conditioning encoders, mode

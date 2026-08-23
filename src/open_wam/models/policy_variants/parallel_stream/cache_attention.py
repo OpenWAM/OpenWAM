@@ -24,7 +24,6 @@ def build_joint_clean_cache_attention_mask(
     chunk_size: int,
     window_size: int,
     current_block_coupling: CurrentBlockCoupling | str,
-    preserve_video_pretrain_history: bool,
     history_stream_visibility: HistoryStreamVisibility | str | None = None,
 ) -> torch.Tensor:
     """Materialize the self-attention mask for one clean joint cache write."""
@@ -37,7 +36,6 @@ def build_joint_clean_cache_attention_mask(
         chunk_size=chunk_size,
         window_size=window_size,
         current_block_coupling=current_block_coupling,
-        preserve_video_pretrain_history=preserve_video_pretrain_history,
         history_stream_visibility=history_stream_visibility,
     )
     if profile.self_attention_mask is None:
@@ -55,7 +53,6 @@ def build_joint_clean_cache_attention_profile(
     chunk_size: int,
     window_size: int,
     current_block_coupling: CurrentBlockCoupling | str,
-    preserve_video_pretrain_history: bool,
     history_stream_visibility: HistoryStreamVisibility | str | None = None,
 ) -> PreparedAttentionProfile:
     """Project the dual-slot training profile onto clean cache-write tokens."""
@@ -89,9 +86,6 @@ def build_joint_clean_cache_attention_profile(
         current_block_coupling=CurrentBlockCoupling(
             current_block_coupling
         ).value,
-        preserve_video_pretrain_history=bool(
-            preserve_video_pretrain_history
-        ),
         history_stream_visibility=(
             None
             if history_stream_visibility is None

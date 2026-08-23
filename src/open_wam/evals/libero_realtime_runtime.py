@@ -242,12 +242,9 @@ def run_sequence_replan_job(
         )
         reset_session_for_replan = inference_session is not session
         infer_extra = rollout_runtime.build_sequence_rollout_infer_extra(
-            config=config,
+            policy_variant=runner.pipeline.policy_variant,
             prompt=options.prompt,
-            generation_action_start=int(options.generation_action_start),
             runtime_device=options.runtime_device,
-            task_id=int(options.task_id),
-            episode_idx=int(options.episode_idx),
         )
         dual_expert_runtime_route = resolve_dual_expert_runtime_route(config)
         if (

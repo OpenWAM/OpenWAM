@@ -6,9 +6,19 @@ import torch
 
 from open_wam.configs import (
     ContextConditionLatentSource,
+    DynamicsObjective,
     ProprioContextMode,
+    VideoActionProgram,
 )
 from open_wam.configs.policy_parallel_stream import ParallelStreamPolicyConfig
+from open_wam.contracts import ConditionalDynamicsSequenceLayout
+from open_wam.models.common.dynamics_objectives import (
+    DynamicsSamplePlan,
+)
+from open_wam.models.common.proprio_conditioning import (
+    HiddenProprioContext,
+    ProprioContextGranularity,
+)
 from open_wam.models.policy_variants.contracts import PolicyTrainBatch
 from open_wam.models.policy_variants.parallel_stream.conditioning import (
     ParallelStreamConditioning,
@@ -18,6 +28,7 @@ from open_wam.models.policy_variants.parallel_stream.conditioning import (
 def _conditioning() -> ParallelStreamConditioning:
     return ParallelStreamConditioning(
         ParallelStreamPolicyConfig(
+            program=VideoActionProgram.VIDEO_THEN_ACTION,
             proprio_context_mode=ProprioContextMode.PER_CHUNK_ADDITIVE,
         )
     )
@@ -41,16 +52,15 @@ def test_train_hidden_proprio_context_prefers_frame_state_and_applies_mask() -> 
         label="test",
     )
     assert standard_payload is not None
-    standard_state, standard_granularity = standard_payload
     torch.testing.assert_close(
-        standard_state,
+        standard_payload.values,
         torch.tensor([[[1.0], [0.0]]]),
         rtol=0.0,
         atol=0.0,
     )
-    assert standard_granularity == "frame"
+    assert standard_payload.granularity.value == "frame"
 
-    standard_state.sum().backward()
+    standard_payload.values.sum().backward()
     torch.testing.assert_close(frame_state.grad, frame_mask, rtol=0.0, atol=0.0)
 
 
@@ -87,7 +97,10 @@ def test_prefix_hidden_proprio_alignment_keeps_condition_frame_separate() -> Non
         artifacts,
         batch=batch,
         video_latents=video_latents,
-        payload=(target_state, "frame"),
+        payload=HiddenProprioContext(
+            values=target_state,
+            granularity=ProprioContextGranularity.FRAME,
+        ),
     )
 
     torch.testing.assert_close(
@@ -101,7 +114,10 @@ def test_prefix_hidden_proprio_alignment_keeps_condition_frame_separate() -> Non
 
 def test_train_condition_latents_preserve_values_dtype_and_storage() -> None:
     conditioning = ParallelStreamConditioning(
-        ParallelStreamPolicyConfig(use_condition_latents=True)
+        ParallelStreamPolicyConfig(
+            program=VideoActionProgram.VIDEO_THEN_ACTION,
+            use_condition_latents=True,
+        )
     )
     video_latents = torch.zeros(1, 2, 3, 4, 5, dtype=torch.float64)
     condition_latents = torch.arange(
@@ -123,24 +139,59 @@ def test_train_condition_latents_preserve_values_dtype_and_storage() -> None:
 
 
 def test_external_condition_prefix_is_selected_by_resolved_sample_layout() -> None:
-    aligned = ParallelStreamConditioning(ParallelStreamPolicyConfig())
+    aligned = ParallelStreamConditioning(
+        ParallelStreamPolicyConfig(program=VideoActionProgram.VIDEO_THEN_ACTION)
+    )
     external = ParallelStreamConditioning(
         ParallelStreamPolicyConfig(
+            program=VideoActionProgram.VIDEO_THEN_ACTION,
             context_condition_latent_source=(
                 ContextConditionLatentSource.SINGLE_FRAME_CONDITION_LATENT
             ),
+            use_condition_latents=True,
+            require_condition_latents=True,
         )
     )
 
-    assert aligned.uses_external_condition_prefix(
-        context_prefix_frames_in_sample=0
-    ) is False
-    assert external.uses_external_condition_prefix(
-        context_prefix_frames_in_sample=None
-    ) is True
-    assert external.uses_external_condition_prefix(
-        context_prefix_frames_in_sample=0
-    ) is True
-    assert external.uses_external_condition_prefix(
-        context_prefix_frames_in_sample=1
-    ) is False
+    assert (
+        aligned.uses_external_condition_prefix(context_prefix_frames_in_sample=0)
+        is False
+    )
+    assert (
+        external.uses_external_condition_prefix(context_prefix_frames_in_sample=None)
+        is True
+    )
+    assert (
+        external.uses_external_condition_prefix(context_prefix_frames_in_sample=0)
+        is True
+    )
+    assert (
+        external.uses_external_condition_prefix(context_prefix_frames_in_sample=1)
+        is False
+    )
+
+    target_only_plan = DynamicsSamplePlan(
+        program=VideoActionProgram.GENERALIST_JOINT_DENOISING,
+        objective=DynamicsObjective.ACTION_CONDITIONED_VIDEO,
+        routed_objective=DynamicsObjective.ACTION_CONDITIONED_VIDEO,
+        drop_text_conditioning=True,
+        source="real_demo",
+        sequence=ConditionalDynamicsSequenceLayout(),
+    )
+    dynamics = ParallelStreamConditioning(
+        ParallelStreamPolicyConfig(
+            program=VideoActionProgram.GENERALIST_JOINT_DENOISING,
+            context_condition_latent_source=(
+                ContextConditionLatentSource.SINGLE_FRAME_CONDITION_LATENT
+            ),
+            use_condition_latents=True,
+            require_condition_latents=True,
+        )
+    )
+    assert (
+        dynamics.uses_external_condition_prefix(
+            context_prefix_frames_in_sample=None,
+            dynamics_sample_plan=target_only_plan,
+        )
+        is False
+    )

@@ -26,7 +26,8 @@ from open_wam.data.distributed_sampling import (
     stable_int_seed,
     weighted_choice_index,
 )
-from open_wam.data.generalist_dynamics import GeneralistDynamicsMixtureTrainSampler
+from open_wam.data.dynamics_routing import DynamicsRoutingDistributedSampler
+from open_wam.data.factory import resolve_dataset_loader_spec
 from open_wam.data.lerobot_consortium import ConsortiumTrainSampler
 from open_wam.data.lerobot_v2_latent import (
     HierarchicalFixedSegmentTaskSpec as LegacyHierarchicalTaskSpec,
@@ -162,7 +163,31 @@ def test_dataset_samplers_are_thin_generic_contract_adapters() -> None:
     assert issubclass(HierarchicalFixedSegmentTrainSampler, EpochOffsetDistributedSampler)
     assert issubclass(MixedVideoTrainSampler, EpochOrderDistributedSampler)
     assert issubclass(ConsortiumTrainSampler, UnpaddedEpochOrderDistributedSampler)
-    assert issubclass(GeneralistDynamicsMixtureTrainSampler, PaddedEpochOffsetDistributedSampler)
+    assert issubclass(
+        DynamicsRoutingDistributedSampler,
+        PaddedEpochOffsetDistributedSampler,
+    )
+
+
+def test_loader_spec_uses_dataset_validation_sampler_hook() -> None:
+    class _ValidationSamplerDataset(_SizedDataset):
+        def build_validation_sampler(self, *, world_size: int, rank: int):
+            return PaddedEpochOffsetDistributedSampler(
+                self,
+                world_size=world_size,
+                rank=rank,
+            )
+
+    spec = resolve_dataset_loader_spec(
+        _ValidationSamplerDataset(5),
+        split="val",
+        world_size=4,
+        rank=2,
+    )
+
+    assert spec.shuffle is False
+    assert isinstance(spec.sampler, PaddedEpochOffsetDistributedSampler)
+    assert list(spec.sampler) == [2, 6]
 
 
 def test_local_latent_sampling_compatibility_exports_preserve_identity() -> None:

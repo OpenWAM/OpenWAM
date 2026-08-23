@@ -25,8 +25,7 @@ from .enums import (
     DualExpertActionExpertInitMode,
     DualExpertConditionMode,
     EvalMode,
-    GeneralistDenoisingMode,
-    GeneralistTrainingParadigm,
+    DynamicsObjective,
     HistoryStreamVisibility,
     JointTimestepCoupling,
     LatentTemporalLayout,
@@ -50,11 +49,7 @@ from .enums import (
     VideoActionSequenceContract,
     WindowSamplingMode,
 )
-from .policy_compatibility import (
-    LEGACY_VIDEO_ACTION_POLICY_FIELD_ALIASES,
-    LEGACY_VIDEO_ACTION_POLICY_FIELDS,
-    normalize_video_action_config_fields,
-)
+from .policy_compatibility import normalize_video_action_config_fields
 from .static_validation_contracts import (
     StaticConfigIssue,
     StaticConfigReport,
@@ -68,7 +63,6 @@ from .static_validation_primitives import (
     _validate_local_path_placeholders,
 )
 from .static_validation_rules import _validate_eval_config, _validate_experiment_config
-from .variant_semantics import probability_map_static_issues
 
 
 def validate_config_file(path: str | Path, *, repo_root: str | Path | None = None) -> StaticConfigReport:
@@ -78,17 +72,6 @@ def validate_config_file(path: str | Path, *, repo_root: str | Path | None = Non
     root = Path(repo_root).expanduser().resolve() if repo_root is not None else _find_repo_root(source_path)
     raw = _read_yaml_mapping(source_path)
     builder = _IssueBuilder(source_path=source_path, repo_root=root)
-    raw_policy = raw.get("policy_variant")
-    if isinstance(raw_policy, dict):
-        for legacy_name in sorted(LEGACY_VIDEO_ACTION_POLICY_FIELDS.intersection(raw_policy)):
-            canonical_name = LEGACY_VIDEO_ACTION_POLICY_FIELD_ALIASES.get(
-                legacy_name,
-                "joint_timestep_coupling",
-            )
-            builder.warning(
-                f"policy_variant.{legacy_name}",
-                f"Deprecated field; use `policy_variant.{canonical_name}`.",
-            )
     try:
         raw = normalize_video_action_config_fields(raw, warn=False)
     except (TypeError, ValueError) as exc:
@@ -146,8 +129,7 @@ _STATIC_SCHEMA_COMPATIBILITY_EXPORTS = (
     DataSplit,
     ENUM_VALUE_ALIASES,
     EvalMode,
-    GeneralistTrainingParadigm,
-    GeneralistDenoisingMode,
+    DynamicsObjective,
     JointTimestepCoupling,
     LOCAL_PATH_PATTERN,
     LatentTemporalLayout,
@@ -174,7 +156,6 @@ _STATIC_SCHEMA_COMPATIBILITY_EXPORTS = (
     TrainerPrecision,
     VideoActionProgram,
     WindowSamplingMode,
-    probability_map_static_issues,
 )
 
 __all__ = [

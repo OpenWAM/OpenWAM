@@ -18,7 +18,7 @@ from open_wam.configs.backbone import (
 from open_wam.configs.enums import (
     ContextConditionLatentSource,
     CurrentBlockCoupling,
-    GeneralistDenoisingMode,
+    DynamicsObjective,
     JointTimestepCoupling,
     ParallelStreamVariantProfile,
 )
@@ -33,20 +33,14 @@ from open_wam.models.common.modality_slots import (
     force_clean_noisy_slot,
     zero_condition_slot,
 )
-from open_wam.models.visual_tower.reference_transformer import preferred_reference_dtype
-
-from .generalist_training import (
-    apply_generalist_joint_denoise_training_mode as _apply_generalist_joint_denoise_training_mode,
-)
-from .generalist_training import (
-    apply_generalist_legacy_prefix_joint_training_mode as _apply_generalist_legacy_prefix_joint_training_mode,
-)
-from .latent_conditioning import (
+from open_wam.models.common.video_conditioning import (
     resolve_full_window_condition_latents as _resolve_full_condition_latents,
 )
-from .latent_conditioning import (
+from open_wam.models.common.video_conditioning import (
     select_first_frame_condition_latents as _select_first_frame_condition_latents,
 )
+from open_wam.models.visual_tower.reference_transformer import preferred_reference_dtype
+
 from .runtime_semantics import (
     attention_profile_name_for_current_block_coupling as _attention_profile_name_for_current_block_coupling,
 )
@@ -82,10 +76,11 @@ from .training_noise import (
 from .training_prefix_artifacts import (
     prepare_parallel_prefix_condition_exact_train_artifacts,
 )
+
 (
     CurrentBlockCoupling,
     FlowMatchScheduler,
-    GeneralistDenoisingMode,
+    DynamicsObjective,
     JointTimestepCoupling,
     ContextConditionLatentSource,
     ParallelStreamPolicyConfig,
@@ -93,8 +88,6 @@ from .training_prefix_artifacts import (
     SharedVideoTransformerConfig,
     TrainingConfig,
     _add_noise,
-    _apply_generalist_joint_denoise_training_mode,
-    _apply_generalist_legacy_prefix_joint_training_mode,
     _attention_profile_name_for_current_block_coupling,
     _resolve_full_condition_latents,
     _sample_coupled_timestep_values,

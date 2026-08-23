@@ -26,8 +26,12 @@ def _build_pipeline(config_path: Path) -> tuple:
             config,
             inference=replace(
                 config.inference,
-                video_num_inference_steps=min(config.inference.video_num_inference_steps, 2),
-                action_num_inference_steps=min(config.inference.action_num_inference_steps, 2),
+                video_num_inference_steps=min(
+                    config.inference.video_num_inference_steps, 2
+                ),
+                action_num_inference_steps=min(
+                    config.inference.action_num_inference_steps, 2
+                ),
                 joint_num_inference_steps=(
                     min(config.inference.joint_num_inference_steps, 2)
                     if config.inference.joint_num_inference_steps is not None
@@ -37,7 +41,9 @@ def _build_pipeline(config_path: Path) -> tuple:
         )
     pipeline = build_variant_pipeline_from_config(config)
     batch = build_synthetic_batch(config.data, batch_size=2)
-    train_batch = PolicyTrainBatch(actions=batch.actions, action_mask=batch.action_mask, state=batch.state)
+    train_batch = PolicyTrainBatch(
+        actions=batch.actions, action_mask=batch.action_mask, state=batch.state
+    )
     return config, pipeline, batch, train_batch
 
 
@@ -48,7 +54,9 @@ def _build_pipeline(config_path: Path) -> tuple:
         ("dual_expert_robotwin_smoke.yaml", 8),
     ],
 )
-def test_variant_pipeline_train_and_infer_shapes(config_name: str, expected_horizon: int) -> None:
+def test_variant_pipeline_train_and_infer_shapes(
+    config_name: str, expected_horizon: int
+) -> None:
     config_path = REPO_ROOT / "configs/experiments" / config_name
     config, pipeline, batch, train_batch = _build_pipeline(config_path)
 
@@ -82,7 +90,9 @@ def test_variant_pipeline_train_and_infer_shapes(config_name: str, expected_hori
         ("parallel_stream_libero_raw_smoke.yaml", 16),
     ],
 )
-def test_raw_libero_variant_pipeline_train_and_infer_shapes(config_name: str, expected_horizon: int) -> None:
+def test_raw_libero_variant_pipeline_train_and_infer_shapes(
+    config_name: str, expected_horizon: int
+) -> None:
     config_path = REPO_ROOT / "configs/experiments" / config_name
     config, pipeline, batch, train_batch = _build_pipeline(config_path)
 
@@ -117,7 +127,9 @@ def test_raw_libero_variant_pipeline_train_and_infer_shapes(config_name: str, ex
         ("dual_expert_robotwin_smoke.yaml", 8),
     ],
 )
-def test_variant_pipeline_train_from_latents_shapes(config_name: str, expected_horizon: int) -> None:
+def test_variant_pipeline_train_from_latents_shapes(
+    config_name: str, expected_horizon: int
+) -> None:
     config_path = REPO_ROOT / "configs/experiments" / config_name
     config = load_experiment_config(config_path)
     pipeline = build_variant_pipeline_from_config(config)
@@ -148,10 +160,11 @@ def test_variant_pipeline_train_from_latents_shapes(config_name: str, expected_h
     )
 
 
-
 def test_causal_video_prediction_pipeline_trains_from_latents(tmp_path: Path) -> None:
     del tmp_path
-    config_path = REPO_ROOT / "configs/experiments/causal_video_prediction_robotwin_smoke.yaml"
+    config_path = (
+        REPO_ROOT / "configs/experiments/causal_video_prediction_robotwin_smoke.yaml"
+    )
     config = load_experiment_config(config_path)
     pipeline = build_variant_pipeline_from_config(config)
     latent_batch = build_synthetic_latent_batch(config.data, batch_size=2)
@@ -174,7 +187,11 @@ def test_causal_video_prediction_pipeline_trains_from_latents(tmp_path: Path) ->
         negative_text_context=latent_batch.negative_text_context,
     )
 
-    assert train_output.decoder_output.action_pred.shape == (2, 0, config.action_decoder.action_dim)
+    assert train_output.decoder_output.action_pred.shape == (
+        2,
+        0,
+        config.action_decoder.action_dim,
+    )
     assert "latent_mse" in train_output.decoder_output.metrics
     assert "predicted_latents" in train_output.decoder_output.aux
 
@@ -193,5 +210,26 @@ def test_causal_video_prediction_pipeline_trains_from_latents(tmp_path: Path) ->
         negative_text_context=infer_batch.negative_text_context,
     )
 
-    assert infer_output.decoder_output.action_pred.shape == (1, 0, config.action_decoder.action_dim)
+    assert infer_output.decoder_output.action_pred.shape == (
+        1,
+        0,
+        config.action_decoder.action_dim,
+    )
     assert "predicted_latents" in infer_output.decoder_output.aux
+
+
+def test_variant_pipeline_rejects_unknown_visual_stage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = load_experiment_config(
+        REPO_ROOT / "configs/experiments/dual_expert_robotwin_smoke.yaml"
+    )
+    pipeline = build_variant_pipeline_from_config(config)
+    monkeypatch.setattr(
+        type(pipeline.policy_variant),
+        "required_visual_stages",
+        lambda _self: ("typo",),
+    )
+
+    with pytest.raises(ValueError, match="unsupported visual stage"):
+        pipeline._complete_visual_outputs(object())

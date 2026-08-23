@@ -12,6 +12,10 @@ import pytest
 
 from open_wam.configs import ActionTargetRepresentation
 from open_wam.models.action_decoders import ActionDecoder
+from open_wam.models.policy_variants import (
+    PolicyGenerationActionOrigin,
+    PolicyRolloutContract,
+)
 
 
 class _RealtimeTestActionDecoder(ActionDecoder):
@@ -24,6 +28,20 @@ class _RealtimeTestActionDecoder(ActionDecoder):
 
     def forward_infer(self, policy_output, previous_state=None):
         raise NotImplementedError
+
+
+class _ZeroOriginRolloutPolicy:
+    """Minimal policy test double implementing the public rollout contract."""
+
+    rollout_contract = PolicyRolloutContract(
+        generation_action_origin=PolicyGenerationActionOrigin.ZERO,
+    )
+
+    @staticmethod
+    def build_rollout_infer_extra(*, runtime_device):
+        if runtime_device is None:
+            return {}
+        return {"action_device": str(runtime_device)}
 
 
 def _load_sandbox_module():
@@ -1456,20 +1474,20 @@ def test_generated_future_rollout_defaults_initial_generation_start_to_zero() ->
 def test_dual_expert_rollout_defaults_initial_generation_start_to_zero() -> None:
     sandbox = _load_sandbox_module()
 
-    config = SimpleNamespace(
-        policy_variant=SimpleNamespace(name="dual_expert", program="video_then_action")
-    )
+    policy_variant = _ZeroOriginRolloutPolicy()
     initial_obs_window = [
         {"image": np.zeros((2, 2, 3), dtype=np.uint8)} for _ in range(15)
     ]
 
-    assert sandbox.rollout_runtime.uses_zero_based_generation_start(config) is True
+    assert (
+        sandbox.rollout_runtime.uses_zero_based_generation_start(policy_variant) is True
+    )
     assert (
         sandbox.rollout_runtime.resolve_initial_generation_action_start(
             initial_obs_window,
             initial_generation_action_start=None,
             rollout_starts_at_action_zero=sandbox.rollout_runtime.uses_zero_based_generation_start(
-                config
+                policy_variant
             ),
         )
         == 0
@@ -1647,14 +1665,10 @@ def test_dual_expert_startup_open_loop_validation_runs_before_pipeline_setup(mon
 
 def test_sequence_rollout_infer_extra_matches_dual_expert_contract() -> None:
     sandbox = _load_sandbox_module()
-    dual_expert_config = SimpleNamespace(
-        policy_variant=SimpleNamespace(name="dual_expert", program="video_then_action")
-    )
 
     dual_expert_extra = sandbox.rollout_runtime.build_sequence_rollout_infer_extra(
-        config=dual_expert_config,
+        policy_variant=_ZeroOriginRolloutPolicy(),
         prompt="task",
-        generation_action_start=7,
         runtime_device=sandbox.torch.device("cpu"),
     )
 
@@ -1874,6 +1888,7 @@ def test_strict_split_cache_dual_expert_realtime_init_calls_env_with_single_fram
     class FakePipeline:
         visual_tower = FakeVisualTower()
         action_decoder = SimpleNamespace(rollout_chunk_steps=16)
+        policy_variant = _ZeroOriginRolloutPolicy()
 
         def to(self, device):
             del device
@@ -2069,6 +2084,7 @@ def test_strict_split_cache_dual_expert_startup_replan_trace_reports_origin(monk
             super().__init__(
                 SimpleNamespace(
                     action_decoder=_RealtimeTestActionDecoder(rollout_chunk_steps=16),
+                    policy_variant=_ZeroOriginRolloutPolicy(),
                 )
             )
 

@@ -1576,6 +1576,7 @@ def test_hierarchical_fixed_segment_samples_padded_start_range_and_masks_targets
             sample_construction=replace(
                 config.data.sample_construction,
                 mode=WindowSamplingMode.HIERARCHICAL_FIXED_SEGMENT,
+                sample_order_mode=SampleOrderMode.EPOCH_ORDER,
                 segment_frames=4,
                 start_padding_frames=3,
                 task_start_power=0.5,
@@ -1682,6 +1683,7 @@ def test_hierarchical_fixed_segment_rejects_multi_sample_compact_batches(tmp_pat
             sample_construction=replace(
                 config.data.sample_construction,
                 mode=WindowSamplingMode.HIERARCHICAL_FIXED_SEGMENT,
+                sample_order_mode=SampleOrderMode.EPOCH_ORDER,
                 segment_frames=4,
                 start_padding_frames=3,
             ),
@@ -1711,6 +1713,7 @@ def test_hierarchical_fixed_segment_randomizes_chunk_geometry(tmp_path: Path) ->
             sample_construction=replace(
                 config.data.sample_construction,
                 mode=WindowSamplingMode.HIERARCHICAL_FIXED_SEGMENT,
+                sample_order_mode=SampleOrderMode.EPOCH_ORDER,
                 segment_frames=8,
                 chunk_size=4,
                 window_size=30,
@@ -1786,6 +1789,7 @@ def test_hierarchical_fixed_segment_rollout_context_prefix_masks_context(tmp_pat
             sample_construction=replace(
                 config.data.sample_construction,
                 mode=WindowSamplingMode.HIERARCHICAL_FIXED_SEGMENT,
+                sample_order_mode=SampleOrderMode.EPOCH_ORDER,
                 segment_frames=8,
                 chunk_size=2,
                 window_size=4,
@@ -1887,6 +1891,7 @@ def test_hierarchical_fixed_segment_context_prefix_aligns_loss_to_chunk_boundary
             sample_construction=replace(
                 config.data.sample_construction,
                 mode=WindowSamplingMode.HIERARCHICAL_FIXED_SEGMENT,
+                sample_order_mode=SampleOrderMode.EPOCH_ORDER,
                 segment_frames=16,
                 chunk_size=4,
                 window_size=4,
@@ -1938,6 +1943,7 @@ def test_hierarchical_fixed_segment_without_context_keeps_geometry_history_frame
             sample_construction=replace(
                 config.data.sample_construction,
                 mode=WindowSamplingMode.HIERARCHICAL_FIXED_SEGMENT,
+                sample_order_mode=SampleOrderMode.EPOCH_ORDER,
                 segment_frames=8,
                 chunk_size=2,
                 window_size=4,
@@ -1983,6 +1989,7 @@ def test_hierarchical_fixed_segment_rollout_parity_uses_one_context_frame(tmp_pa
             sample_construction=replace(
                 config.data.sample_construction,
                 mode=WindowSamplingMode.HIERARCHICAL_FIXED_SEGMENT,
+                sample_order_mode=SampleOrderMode.EPOCH_ORDER,
                 segment_frames=4,
                 chunk_size=4,
                 window_size=30,
@@ -2076,6 +2083,7 @@ def test_hierarchical_fixed_segment_rollout_parity_history_stays_outside_target_
             sample_construction=replace(
                 config.data.sample_construction,
                 mode=WindowSamplingMode.HIERARCHICAL_FIXED_SEGMENT,
+                sample_order_mode=SampleOrderMode.EPOCH_ORDER,
                 segment_frames=8,
                 chunk_size=4,
                 window_size=6,
@@ -2279,6 +2287,7 @@ def test_hierarchical_exact_actions_use_wan_causal_latent_anchors(tmp_path: Path
             sample_construction=replace(
                 config.data.sample_construction,
                 mode=WindowSamplingMode.HIERARCHICAL_FIXED_SEGMENT,
+                sample_order_mode=SampleOrderMode.EPOCH_ORDER,
                 segment_frames=4,
                 segment_min_frames=None,
                 segment_max_frames=None,
@@ -2287,7 +2296,6 @@ def test_hierarchical_exact_actions_use_wan_causal_latent_anchors(tmp_path: Path
                 randomize_segment_length=False,
                 randomize_segment_start=False,
                 require_full_segment=False,
-                sample_order_mode=SampleOrderMode.EPOCH_ORDER,
                 start_padding_frames=0,
                 target_alignment=SampleTargetAlignment.LEGACY,
             ),
@@ -2415,6 +2423,7 @@ def test_uniform_segment_sampler_round_robins_trajectory_blocks(tmp_path: Path) 
                 segment_min_frames=2,
                 segment_max_frames=2,
                 segment_locality_block_size=1,
+                sample_order_mode=SampleOrderMode.EPOCH_ORDER,
             ),
         ),
     )
@@ -2557,6 +2566,7 @@ def test_hierarchical_fixed_segment_task_power_is_explicit_task_mass(tmp_path: P
             sample_construction=replace(
                 config.data.sample_construction,
                 mode=WindowSamplingMode.HIERARCHICAL_FIXED_SEGMENT,
+                sample_order_mode=SampleOrderMode.EPOCH_ORDER,
                 segment_frames=2,
                 task_start_power=0.5,
                 demo_count_power=0.0,
@@ -2612,6 +2622,7 @@ def test_hierarchical_fixed_segment_dataloader_samples_stepwise_valid_keys(tmp_p
             sample_construction=replace(
                 config.data.sample_construction,
                 mode=WindowSamplingMode.HIERARCHICAL_FIXED_SEGMENT,
+                sample_order_mode=SampleOrderMode.EPOCH_ORDER,
                 segment_frames=2,
                 task_start_power=0.5,
                 demo_count_power=0.0,

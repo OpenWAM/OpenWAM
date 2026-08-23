@@ -95,7 +95,6 @@ def write_exact_cache_chunk(
     window_size: int,
     current_block_coupling: CurrentBlockCoupling
     | str = CurrentBlockCoupling.VIDEO_THEN_ACTION,
-    preserve_video_pretrain_history: bool = False,
     history_stream_visibility: HistoryStreamVisibility | str | None = None,
     video_hidden_context: torch.Tensor | None = None,
     action_hidden_context: torch.Tensor | None = None,
@@ -119,7 +118,6 @@ def write_exact_cache_chunk(
             chunk_size=chunk_size,
             window_size=window_size,
             current_block_coupling=current_block_coupling,
-            preserve_video_pretrain_history=preserve_video_pretrain_history,
             history_stream_visibility=history_stream_visibility,
             video_hidden_context=video_hidden_context,
             action_hidden_context=action_hidden_context,
@@ -324,9 +322,6 @@ def write_exact_cache_chunk(
                         chunk_size=chunk_size,
                         window_size=window_size,
                         current_block_coupling=current_block_coupling,
-                        preserve_video_pretrain_history=(
-                            preserve_video_pretrain_history
-                        ),
                         history_stream_visibility=(
                             history_stream_visibility
                         ),

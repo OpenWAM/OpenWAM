@@ -59,7 +59,7 @@ checkpoint run. Its config, five training scenarios, and three inference routes
 remain statically asserted. Mode-token checkpoint training exercises real
 joint, real FDM, real IDM, counterfactual FDM, and counterfactual IDM buckets.
 Pure-joint exercises the real joint bucket. Standalone conditional FDM/IDM has
-exact loss, output, and parameter-gradient parity tests against one-hot GJD, so
+exact loss, output, and parameter-gradient parity tests against single-mode GJD, so
 it does not require duplicate immutable checkpoints. Inference exercises joint,
 FDM, and IDM routing for each available GJD checkpoint. The default exact
 checkpoint matrix therefore remains six entries: VTA, ATV, joint, decoupled,
@@ -70,9 +70,11 @@ The inference fixture uses the maintained streaming contract:
 - LingBot streaming VAE
 - one startup model observation and five simulator initialization steps
 - W30 model inference
-- four generated latent frames
-- four actions per latent frame, for a 16-action model horizon
+- four generated latent frames for planning programs
+- four actions per latent frame, for a 16-action planning horizon
 - all 16 actions selected for execution by the supplied non-GJD command
+- one generated latent frame and four actions for recurrent FDM/IDM
+  diagnostics, matching their rollout-local one-history-frame contract
 - non-GJD rollout limits of 800 timesteps / 50 chunks
 - GJD rollout limits of 1500 timesteps / 100 chunks
 
@@ -82,6 +84,12 @@ one and two consume the previous predicted latent chunk while carrying the
 same `PolicyInferState`; this isolates recurrent policy/cache parity from
 simulator variation. A separate LIBERO gate runs the real
 streaming-observation replacement and packed-history warmup path.
+
+The original schema-v1 GJD inference goldens predate the one-frame conditional
+rollout contract and contain four-frame FDM/IDM diagnostics. They remain valid
+for training and joint-planning parity, but are not an oracle for current
+conditional rollout outputs. After reviewing that migration, establish a new
+versioned golden root; do not add tolerances or suppress those scenario fields.
 
 Two shared-infrastructure sentinels cover behavior that does not need to be
 multiplied across the program matrix:
@@ -234,8 +242,8 @@ both files. For separately copied weights, use the explicit mapping shown in
 the example manifest. Before any model allocation, the runner hashes that file
 and compares behavior-defining fields against the exercised contract. This
 catches architecture-compatible semantic drift such as an ATV checkpoint
-trained with `sequence_contract=default`, or a pre-CF GJD checkpoint
-trained with `generalist_training_paradigm=demo_only`. A multi-asset run
+trained with `sequence_contract=default`, or a pre-CF GJD checkpoint whose
+route list omits the conditional real/CF objectives. A multi-asset run
 collects all source-contract failures before staging any checkpoint.
 
 When an approved trained checkpoint is used only as the numerical weight

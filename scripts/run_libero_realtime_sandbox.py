@@ -1777,7 +1777,7 @@ def _run_sequence_policy_realtime_rollout(
                         initial_obs_window,
                         initial_generation_action_start=initial_generation_action_start,
                         rollout_starts_at_action_zero=rollout_runtime.uses_zero_based_generation_start(
-                            config
+                            pipeline.policy_variant
                         ),
                     ),
                     source="startup_plan",

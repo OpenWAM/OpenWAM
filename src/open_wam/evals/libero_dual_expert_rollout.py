@@ -18,25 +18,20 @@ from typing import Any
 import numpy as np
 import torch
 
+from open_wam.configs import DynamicsObjective
 from open_wam.evals.libero_dual_expert_inputs import (
     _build_infer_context,
-    _encode_video_window_offline,
     _prepare_dual_expert_visual_outputs,
-    _prepare_visual_outputs_offline,
     _select_model_obs_window,
 )
 from open_wam.evals.libero_dual_expert_runtime import (
     CURRENT_FRONTEND_ENCODE_MODE,
     DEPRECATED_FRONTEND_ENCODE_MODE,
     DUAL_EXPERT_GJD_ACTION_ROUTES,
-    LIVE_SIM_DUAL_EXPERT_GENERALIST_ROLLOUT_MODES,
-    OFFLINE_DIAGNOSTIC_DUAL_EXPERT_GENERALIST_ROLLOUT_MODES,
     DualExpertLiberoLoadOptions,
     DualExpertLiberoRuntime,
     _action_per_frame,
     _frame_chunk_size,
-    _maybe_merge_checkpoint_runtime_config,
-    _require_current_frontend_encode_mode,
     load_dual_expert_libero_runtime,
     print_rollout_event,
 )
@@ -65,6 +60,7 @@ from open_wam.models.common.rollout_history import (
 from open_wam.models.common.rollout_history import (
     resolve_execute_action_steps as _resolve_shared_execute_action_steps,
 )
+from open_wam.models.policy_variants import DynamicsRolloutRequest
 from open_wam.models.policy_variants.contracts import PolicyInferOutput
 from open_wam.models.policy_variants.dual_expert.decoder_artifacts import (
     DUAL_EXPERT_DECODER_ARTIFACT_CONTRACT,
@@ -75,25 +71,12 @@ from open_wam.utils import seed_everywhere
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
 LIBERO_OBS_KEYS = LIBERO_ROLLOUT_VIEW_KEYS
-_build_executed_action_history_tensor = (
-    _build_shared_executed_action_history_tensor
-)
+_build_executed_action_history_tensor = _build_shared_executed_action_history_tensor
 _extract_obs = extract_libero_rollout_observation
 _init_single_env = initialize_libero_observation_window
 _obs_list_to_views = libero_observation_window_to_views
 _resolve_execute_action_steps = _resolve_shared_execute_action_steps
 _print_log = print_rollout_event
-_DUAL_EXPERT_RUNTIME_COMPATIBILITY_EXPORTS = (
-    LIVE_SIM_DUAL_EXPERT_GENERALIST_ROLLOUT_MODES,
-    OFFLINE_DIAGNOSTIC_DUAL_EXPERT_GENERALIST_ROLLOUT_MODES,
-    _maybe_merge_checkpoint_runtime_config,
-    _require_current_frontend_encode_mode,
-)
-_DUAL_EXPERT_INPUT_COMPATIBILITY_EXPORTS = (
-    _encode_video_window_offline,
-    _prepare_visual_outputs_offline,
-)
-
 __all__ = [
     "CURRENT_FRONTEND_ENCODE_MODE",
     "DEPRECATED_FRONTEND_ENCODE_MODE",
@@ -133,7 +116,6 @@ class DualExpertLiberoEpisodeOptions:
     dual_expert_rollout_frame_chunk_size: int | None
     dual_expert_inference_window_size: int | None
     dual_expert_action_only_rollout: bool
-    dual_expert_generalist_rollout_mode: str | None
     dual_expert_gjd_action_route: str
     reset_policy_state_each_chunk: bool
     max_imagined_latent_frames: int | None
@@ -183,7 +165,9 @@ def run_dual_expert_libero_episode(
     """Execute one exact dual-expert/GJD LIBERO episode with loaded resources."""
 
     if env is None:
-        raise RuntimeError("Failed to construct LIBERO OffScreenRenderEnv after 5 retries.")
+        raise RuntimeError(
+            "Failed to construct LIBERO OffScreenRenderEnv after 5 retries."
+        )
     task_id = int(args.task_id)
     episode_idx = int(args.episode_idx)
     seed = args.seed
@@ -206,7 +190,9 @@ def run_dual_expert_libero_episode(
     use_lingbot_streaming_vae = bool(resources.use_lingbot_streaming_vae)
 
     try:
-        _print_log("stage", {"name": "init_env_rollout_start", "episode_idx": int(episode_idx)})
+        _print_log(
+            "stage", {"name": "init_env_rollout_start", "episode_idx": int(episode_idx)}
+        )
         initial_obs_window = _init_single_env(
             env,
             init_states[episode_idx % len(init_states)],
@@ -220,12 +206,21 @@ def run_dual_expert_libero_episode(
                 "initial_window": len(initial_obs_window),
                 "startup_model_obs_frames": int(resources.startup_model_obs_frames),
                 "startup_env_init_steps": int(resources.startup_env_init_steps),
-                "startup_env_steps_executed": int(max(resources.startup_env_init_steps, resources.startup_model_obs_frames)),
+                "startup_env_steps_executed": int(
+                    max(
+                        resources.startup_env_init_steps,
+                        resources.startup_model_obs_frames,
+                    )
+                ),
             },
         )
-        frame_window: deque[dict[str, np.ndarray]] = deque(maxlen=resources.raw_window_frames)
+        frame_window: deque[dict[str, np.ndarray]] = deque(
+            maxlen=resources.raw_window_frames
+        )
         for obs in initial_obs_window:
-            frame_window.append({key: np.array(value, copy=True) for key, value in obs.items()})
+            frame_window.append(
+                {key: np.array(value, copy=True) for key, value in obs.items()}
+            )
 
         predicted_latent_chunks: list[torch.Tensor] = []
         rollout_frames: list[dict[str, np.ndarray]] = [
@@ -260,7 +255,10 @@ def run_dual_expert_libero_episode(
                     },
                 )
                 if use_lingbot_streaming_vae and chunk_count > 0:
-                    if streaming_next_visual_outputs is None or streaming_next_obs_window is None:
+                    if (
+                        streaming_next_visual_outputs is None
+                        or streaming_next_obs_window is None
+                    ):
                         raise RuntimeError(
                             "LingBot streaming VAE rollout expected encoded observations from the previous "
                             f"environment chunk before chunk_index={chunk_count}."
@@ -276,20 +274,25 @@ def run_dual_expert_libero_episode(
                         chunk_index=chunk_count,
                         startup_model_obs_frames=resources.startup_model_obs_frames,
                     )
-                    views = _obs_list_to_views(model_obs_window, device=resources.frontend_device)
+                    views = _obs_list_to_views(
+                        model_obs_window, device=resources.frontend_device
+                    )
                     visual_outputs = _prepare_dual_expert_visual_outputs(
                         pipeline,
                         views=views,
                         task_text=(prompt,),
                         frontend_device=resources.frontend_device,
                         runtime_device=resources.runtime_device,
-                        use_streaming_frontend=chunk_count == 0 or use_lingbot_streaming_vae,
+                        use_streaming_frontend=chunk_count == 0
+                        or use_lingbot_streaming_vae,
                         preserve_stream_cache=False,
                         text_context=session.text_context,
                         negative_text_context=session.negative_text_context,
                     )
-                    frontend_path = "lingbot_streaming_vae_init" if use_lingbot_streaming_vae else (
-                        "streaming" if chunk_count == 0 else "offline"
+                    frontend_path = (
+                        "lingbot_streaming_vae_init"
+                        if use_lingbot_streaming_vae
+                        else ("streaming" if chunk_count == 0 else "offline")
                     )
                 _print_log(
                     "stage",
@@ -299,7 +302,9 @@ def run_dual_expert_libero_episode(
                         "chunk_index": int(chunk_count),
                         "env_timestep": int(env.env.timestep),
                         "model_obs_frames": len(model_obs_window),
-                        "video_latent_frames": int(visual_outputs.frontend.video_latents.shape[2]),
+                        "video_latent_frames": int(
+                            visual_outputs.frontend.video_latents.shape[2]
+                        ),
                         "frontend_path": frontend_path,
                     },
                 )
@@ -311,8 +316,9 @@ def run_dual_expert_libero_episode(
                     runtime_device=resources.runtime_device,
                     dual_expert_inference_window_size=args.dual_expert_inference_window_size,
                     dual_expert_rollout_frame_chunk_size=args.dual_expert_rollout_frame_chunk_size,
-                    dual_expert_action_only_rollout=bool(args.dual_expert_action_only_rollout),
-                    dual_expert_generalist_rollout_mode=args.dual_expert_generalist_rollout_mode,
+                    dual_expert_action_only_rollout=bool(
+                        args.dual_expert_action_only_rollout
+                    ),
                 )
                 pre_infer_policy_state = (
                     None
@@ -325,9 +331,7 @@ def run_dual_expert_libero_episode(
                     negative_text_context=session.negative_text_context,
                 )
                 infer_session.policy_state = (
-                    None
-                    if args.reset_policy_state_each_chunk
-                    else session.policy_state
+                    None if args.reset_policy_state_each_chunk else session.policy_state
                 )
                 step_output = runner.infer_prepared_step(
                     session=infer_session,
@@ -337,16 +341,10 @@ def run_dual_expert_libero_episode(
                 infer_output = step_output.infer_output
                 route_predicted_latents = extract_predicted_latents(infer_output)
                 if args.dual_expert_gjd_action_route == "joint_video_then_idm":
-                    if args.dual_expert_generalist_rollout_mode not in (
-                        None,
-                        "joint",
-                        "vanilla_joint_rollout",
+                    if (
+                        not isinstance(route_predicted_latents, torch.Tensor)
+                        or int(route_predicted_latents.shape[2]) <= 0
                     ):
-                        raise ValueError(
-                            "`joint_video_then_idm` must start from joint GJD rollout; "
-                            f"got dual_expert_generalist_rollout_mode={args.dual_expert_generalist_rollout_mode!r}."
-                        )
-                    if not isinstance(route_predicted_latents, torch.Tensor) or int(route_predicted_latents.shape[2]) <= 0:
                         raise RuntimeError(
                             "joint_video_then_idm route requires joint rollout to produce a non-empty predicted video chunk."
                         )
@@ -359,13 +357,13 @@ def run_dual_expert_libero_episode(
                         dual_expert_inference_window_size=args.dual_expert_inference_window_size,
                         dual_expert_rollout_frame_chunk_size=args.dual_expert_rollout_frame_chunk_size,
                         dual_expert_action_only_rollout=False,
-                        dual_expert_generalist_rollout_mode=None,
                     )
-                    idm_context.extra["action_conditioning_mode"] = "video_conditioned_action"
-                    idm_context.extra["dual_expert_generalist_rollout_mode"] = "video_conditioned_action"
-                    idm_context.extra["dual_expert_video_condition_latents"] = route_predicted_latents.detach().to(
-                        device=resources.runtime_device,
-                        dtype=route_predicted_latents.dtype,
+                    idm_context.dynamics = DynamicsRolloutRequest(
+                        objective=DynamicsObjective.VIDEO_CONDITIONED_ACTION,
+                        clean_video=route_predicted_latents.detach().to(
+                            device=resources.runtime_device,
+                            dtype=route_predicted_latents.dtype,
+                        ),
                     )
                     idm_session = runner.reset(
                         task_text=session.task_text,
@@ -390,11 +388,19 @@ def run_dual_expert_libero_episode(
                         **log_coordinates,
                         "chunk_index": int(chunk_count),
                         "env_timestep": int(env.env.timestep),
-                        "dual_expert_gjd_action_route": str(args.dual_expert_gjd_action_route),
+                        "dual_expert_gjd_action_route": str(
+                            args.dual_expert_gjd_action_route
+                        ),
                     },
                 )
             session = step_output.session
-            actions = infer_output.decoder_output.action_pred[0].detach().to(dtype=torch.float32).cpu().numpy()
+            actions = (
+                infer_output.decoder_output.action_pred[0]
+                .detach()
+                .to(dtype=torch.float32)
+                .cpu()
+                .numpy()
+            )
             configured_frame_chunk_size = _frame_chunk_size(config)
             configured_action_per_frame = _action_per_frame(config)
             action_per_frame = configured_action_per_frame
@@ -410,11 +416,18 @@ def run_dual_expert_libero_episode(
                 action_horizon=int(actions.shape[0]),
                 action_per_frame=action_per_frame,
             )
-            frame_actions = actions.reshape(frame_chunk_size, action_per_frame, actions.shape[-1])
+            frame_actions = actions.reshape(
+                frame_chunk_size, action_per_frame, actions.shape[-1]
+            )
             predicted_latents = extract_predicted_latents(infer_output)
-            if args.dual_expert_gjd_action_route == "joint_video_then_idm" and isinstance(route_predicted_latents, torch.Tensor):
+            if (
+                args.dual_expert_gjd_action_route == "joint_video_then_idm"
+                and isinstance(route_predicted_latents, torch.Tensor)
+            ):
                 predicted_latents = route_predicted_latents
-            if not args.skip_comparison_video and isinstance(predicted_latents, torch.Tensor):
+            if not args.skip_comparison_video and isinstance(
+                predicted_latents, torch.Tensor
+            ):
                 append_predicted_latent_chunk(
                     predicted_latent_chunks,
                     predicted_latents,
@@ -429,14 +442,20 @@ def run_dual_expert_libero_episode(
                 "env_timestep_before": int(env.env.timestep),
                 "window_size": len(frame_window),
                 "model_obs_frames": len(model_obs_window),
-                "video_latent_frames": int(visual_outputs.frontend.video_latents.shape[2]),
+                "video_latent_frames": int(
+                    visual_outputs.frontend.video_latents.shape[2]
+                ),
                 "frontend_path": frontend_path,
                 "action_shape": list(actions.shape),
                 "execute_action_steps": int(execute_action_steps),
                 "configured_frame_chunk_size": int(configured_frame_chunk_size),
                 "rollout_frame_chunk_size": int(frame_chunk_size),
-                "execute_frame_chunk_size": int(execute_action_steps // action_per_frame),
-                "predicted_latents_shape": None if not isinstance(predicted_latents, torch.Tensor) else list(predicted_latents.shape),
+                "execute_frame_chunk_size": int(
+                    execute_action_steps // action_per_frame
+                ),
+                "predicted_latents_shape": None
+                if not isinstance(predicted_latents, torch.Tensor)
+                else list(predicted_latents.shape),
                 "dual_expert_gjd_action_route": str(args.dual_expert_gjd_action_route),
                 "first_action_preview": [float(v) for v in actions[0].tolist()],
                 "policy_debug": policy_debug,
@@ -451,31 +470,66 @@ def run_dual_expert_libero_episode(
             generation_frame_start = int(
                 policy_debug.get("generation_frame_start", 0)
                 if "generation_frame_start" in policy_debug
-                else policy_debug.get("dual_expert_cache_debug", {}).get("current_action_frame_start", 0)
+                else policy_debug.get("dual_expert_cache_debug", {}).get(
+                    "current_action_frame_start", 0
+                )
             )
-            start_frame_group = 1 if chunk_count == 0 and generation_frame_start <= 0 else 0
+            start_frame_group = (
+                1 if chunk_count == 0 and generation_frame_start <= 0 else 0
+            )
             max_action_index = min(int(execute_action_steps), int(actions.shape[0]))
             for frame_group in range(start_frame_group, frame_actions.shape[0]):
                 for action_offset, action in enumerate(frame_actions[frame_group]):
-                    absolute_action_index = frame_group * action_per_frame + action_offset
+                    absolute_action_index = (
+                        frame_group * action_per_frame + action_offset
+                    )
                     if absolute_action_index >= max_action_index:
                         break
                     if _raw_env_done(env) or env.env.timestep >= args.max_timestep:
                         terminal = True
                         break
-                    control_action = np.clip(action.astype(np.float32, copy=False), -1.0, 1.0)
+                    control_action = np.clip(
+                        action.astype(np.float32, copy=False), -1.0, 1.0
+                    )
                     executed_control_actions.append(np.array(control_action, copy=True))
                     action_trace.append(np.array(control_action, copy=True))
                     obs, _, step_success, _ = env.step(control_action)
                     done = bool(done or step_success)
                     executed_actions += 1
                     extracted = _extract_obs(obs)
-                    extracted_record = {key: np.array(value, copy=True) for key, value in extracted.items()}
-                    rollout_frames.append({key: np.array(value, copy=True) for key, value in extracted_record.items()})
-                    frame_window.append({key: np.array(value, copy=True) for key, value in extracted_record.items()})
-                    executed_obs_frames.append({key: np.array(value, copy=True) for key, value in extracted_record.items()})
-                    real_future_frames.append({key: np.array(value, copy=True) for key, value in extracted_record.items()})
-                    terminal = bool(done or _raw_env_done(env) or env.env.timestep >= args.max_timestep)
+                    extracted_record = {
+                        key: np.array(value, copy=True)
+                        for key, value in extracted.items()
+                    }
+                    rollout_frames.append(
+                        {
+                            key: np.array(value, copy=True)
+                            for key, value in extracted_record.items()
+                        }
+                    )
+                    frame_window.append(
+                        {
+                            key: np.array(value, copy=True)
+                            for key, value in extracted_record.items()
+                        }
+                    )
+                    executed_obs_frames.append(
+                        {
+                            key: np.array(value, copy=True)
+                            for key, value in extracted_record.items()
+                        }
+                    )
+                    real_future_frames.append(
+                        {
+                            key: np.array(value, copy=True)
+                            for key, value in extracted_record.items()
+                        }
+                    )
+                    terminal = bool(
+                        done
+                        or _raw_env_done(env)
+                        or env.env.timestep >= args.max_timestep
+                    )
                     if terminal:
                         break
                 if terminal:
@@ -483,7 +537,9 @@ def run_dual_expert_libero_episode(
                 next_frame_group_first_action = (frame_group + 1) * action_per_frame
                 if next_frame_group_first_action >= max_action_index:
                     break
-            terminal = bool(done or _raw_env_done(env) or env.env.timestep >= args.max_timestep)
+            terminal = bool(
+                done or _raw_env_done(env) or env.env.timestep >= args.max_timestep
+            )
 
             chunk_result_log = {
                 **log_coordinates,
@@ -494,7 +550,9 @@ def run_dual_expert_libero_episode(
                 "execute_action_steps": int(execute_action_steps),
                 "configured_frame_chunk_size": int(configured_frame_chunk_size),
                 "rollout_frame_chunk_size": int(frame_chunk_size),
-                "execute_frame_chunk_size": int(execute_action_steps // action_per_frame),
+                "execute_frame_chunk_size": int(
+                    execute_action_steps // action_per_frame
+                ),
                 "start_frame_group": int(start_frame_group),
                 "done_after_chunk": bool(terminal),
                 "success_after_chunk": bool(done),
@@ -514,7 +572,9 @@ def run_dual_expert_libero_episode(
                 and not terminal
                 and env.env.timestep < args.max_timestep
             ):
-                streaming_views = _obs_list_to_views(executed_obs_frames, device=resources.frontend_device)
+                streaming_views = _obs_list_to_views(
+                    executed_obs_frames, device=resources.frontend_device
+                )
                 streaming_next_visual_outputs = _prepare_dual_expert_visual_outputs(
                     pipeline,
                     views=streaming_views,
@@ -535,21 +595,32 @@ def run_dual_expert_libero_episode(
                     "chunk_index": chunk_count,
                     "phase": "lingbot_streaming_vae_update",
                     "real_obs_frames": len(streaming_next_obs_window),
-                    "real_latent_frames": int(streaming_next_visual_outputs.frontend.video_latents.shape[2]),
+                    "real_latent_frames": int(
+                        streaming_next_visual_outputs.frontend.video_latents.shape[2]
+                    ),
                 }
                 _print_log(chunk_log_label(chunk_count), streaming_update_log)
                 chunk_logs.append(streaming_update_log)
 
             if (
-                (executed_obs_frames if use_lingbot_streaming_vae else real_future_frames)
+                (
+                    executed_obs_frames
+                    if use_lingbot_streaming_vae
+                    else real_future_frames
+                )
                 and warmup_action_history is not None
                 and not terminal
                 and env.env.timestep < args.max_timestep
                 and "dual_expert_packed_history_debug" in infer_output.policy_output.aux
             ):
                 if use_lingbot_streaming_vae:
-                    if streaming_next_visual_outputs is None or streaming_next_obs_window is None:
-                        raise RuntimeError("Streaming VAE packed warmup expected pre-encoded next observations.")
+                    if (
+                        streaming_next_visual_outputs is None
+                        or streaming_next_obs_window is None
+                    ):
+                        raise RuntimeError(
+                            "Streaming VAE packed warmup expected pre-encoded next observations."
+                        )
                     warmup_outputs = streaming_next_visual_outputs
                     warmup_obs_window = streaming_next_obs_window
                 else:
@@ -613,10 +684,18 @@ def run_dual_expert_libero_episode(
             "condition_mode": str(config.policy_variant.condition_mode),
             "startup_model_obs_frames": int(resources.startup_model_obs_frames),
             "startup_env_init_steps": int(resources.startup_env_init_steps),
-            "startup_env_steps_executed": int(max(resources.startup_env_init_steps, resources.startup_model_obs_frames)),
-            "execute_action_steps": None if args.execute_action_steps is None else int(args.execute_action_steps),
+            "startup_env_steps_executed": int(
+                max(
+                    resources.startup_env_init_steps, resources.startup_model_obs_frames
+                )
+            ),
+            "execute_action_steps": None
+            if args.execute_action_steps is None
+            else int(args.execute_action_steps),
             "execute_frame_chunk_size": (
-                None if args.execute_frame_chunk_size is None else int(args.execute_frame_chunk_size)
+                None
+                if args.execute_frame_chunk_size is None
+                else int(args.execute_frame_chunk_size)
             ),
             "action_count": len(action_trace),
             "checkpoint_file": str(resources.checkpoint_path.resolve()),
@@ -654,6 +733,8 @@ def run_dual_expert_libero_episode(
     finally:
         if close_env_after_rollout:
             env.close()
+
+
 def _resolve_task_spec(benchmark_name: str, task_id: int) -> tuple[LiberoTaskSpec, str]:
     task_spec = resolve_libero_task_by_id(
         benchmark_name,
@@ -681,6 +762,8 @@ def _construct_single_env(task_spec: LiberoTaskSpec):
             time.sleep(5)
             count += 1
     return env
+
+
 def _summarize_policy_debug(policy_output: PolicyInferOutput) -> dict[str, object]:
     """Keep rollout logs readable by replacing large tensors with metadata."""
 

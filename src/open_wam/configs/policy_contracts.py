@@ -6,7 +6,30 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
-from .enums import AttachSite, PolicyVariantName, coerce_fields
+from .enums import (
+    ActionDecoderName,
+    AttachSite,
+    BackboneImplementation,
+    DynamicsObjective,
+    PolicyVariantName,
+    ProprioContextMode,
+    coerce_fields,
+)
+
+
+@dataclass(frozen=True, slots=True)
+class PolicyConditioningRequirements:
+    """Shared visual-stack adapters requested by a policy configuration."""
+
+    proprio_context_mode: ProprioContextMode = ProprioContextMode.NONE
+    dynamics_mode_context_enabled: bool = False
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "proprio_context_mode",
+            ProprioContextMode(self.proprio_context_mode),
+        )
 
 
 @dataclass(frozen=True)
@@ -16,6 +39,32 @@ class PolicyVariantConfig:
     name: PolicyVariantName
     hidden_size: int
     attach_site: AttachSite
+
+    @property
+    def supported_backbone_implementations(
+        self,
+    ) -> tuple[BackboneImplementation, ...]:
+        """Return an empty tuple for no policy-level backbone restriction."""
+
+        return ()
+
+    @property
+    def default_action_decoder(self) -> ActionDecoderName | None:
+        """Return the decoder selected when a config omits that component."""
+
+        return None
+
+    @property
+    def fixed_conditioning_mode(self) -> DynamicsObjective | None:
+        """Return a fixed dynamics objective, when the policy declares one."""
+
+        return None
+
+    @property
+    def conditioning_requirements(self) -> PolicyConditioningRequirements:
+        """Declare shared visual adapters before policy modules are allocated."""
+
+        return PolicyConditioningRequirements()
 
     def __post_init__(self) -> None:
         coerce_fields(
@@ -36,17 +85,35 @@ class ExtensionPolicyConfig(PolicyVariantConfig):
     attach_site: AttachSite = AttachSite.POST_VISUAL_CORE
     extension_type: str = ""
     options: Mapping[str, Any] = field(default_factory=dict)
+    proprio_context_mode: ProprioContextMode = ProprioContextMode.NONE
+    dynamics_mode_context_enabled: bool = False
+
+    @property
+    def conditioning_requirements(self) -> PolicyConditioningRequirements:
+        return PolicyConditioningRequirements(
+            proprio_context_mode=self.proprio_context_mode,
+            dynamics_mode_context_enabled=bool(self.dynamics_mode_context_enabled),
+        )
 
     def __post_init__(self) -> None:
         super().__post_init__()
+        object.__setattr__(
+            self,
+            "proprio_context_mode",
+            ProprioContextMode(self.proprio_context_mode),
+        )
         if self.name != PolicyVariantName.EXTENSION:
             raise ValueError("Extension policy requires `name = extension`.")
         if not isinstance(self.extension_type, str) or not self.extension_type.strip():
-            raise ValueError("Extension policy requires a non-empty `extension_type` string.")
+            raise ValueError(
+                "Extension policy requires a non-empty `extension_type` string."
+            )
         if self.extension_type != self.extension_type.strip():
-            raise ValueError("Extension policy `extension_type` must not have surrounding whitespace.")
+            raise ValueError(
+                "Extension policy `extension_type` must not have surrounding whitespace."
+            )
         if not isinstance(self.options, Mapping):
-            raise ValueError("Extension policy `options` must be a mapping.")
+            raise TypeError("Extension policy `options` must be a mapping.")
         if not all(isinstance(key, str) for key in self.options):
             raise ValueError("Extension policy `options` keys must be strings.")
         object.__setattr__(self, "options", dict(self.options))
@@ -60,6 +127,16 @@ class CausalVideoPredictionPolicyConfig(PolicyVariantConfig):
     hidden_size: int = 256
     attach_site: AttachSite = AttachSite.POST_VISUAL_CORE
 
+    @property
+    def default_action_decoder(self) -> ActionDecoderName:
+        return ActionDecoderName.VIDEO_ONLY
+
+    @property
+    def supported_backbone_implementations(
+        self,
+    ) -> tuple[BackboneImplementation, ...]:
+        return (BackboneImplementation.SHARED_TRANSFORMER,)
+
     def __post_init__(self) -> None:
         super().__post_init__()
         if self.attach_site != AttachSite.POST_VISUAL_CORE:
@@ -70,7 +147,8 @@ class CausalVideoPredictionPolicyConfig(PolicyVariantConfig):
 
 
 __all__ = [
-    "PolicyVariantConfig",
-    "ExtensionPolicyConfig",
     "CausalVideoPredictionPolicyConfig",
+    "ExtensionPolicyConfig",
+    "PolicyConditioningRequirements",
+    "PolicyVariantConfig",
 ]

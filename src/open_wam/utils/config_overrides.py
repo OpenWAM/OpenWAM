@@ -6,7 +6,15 @@ from typing import Any
 
 import yaml
 
-from open_wam.configs import ExperimentConfig
+from open_wam.configs import (
+    ExperimentConfig,
+    VideoActionSequenceContract,
+    apply_video_action_sequence_contract,
+    validate_video_action_sequence_contract_override_keys,
+)
+from open_wam.configs.policy_compatibility import (
+    normalize_video_action_override_keys,
+)
 
 
 def parse_override_assignments(tokens: tuple[str, ...] | list[str]) -> dict[str, Any]:
@@ -18,14 +26,23 @@ def parse_override_assignments(tokens: tuple[str, ...] | list[str]) -> dict[str,
 
 
 def apply_config_overrides(config: ExperimentConfig, overrides: Mapping[str, Any]) -> ExperimentConfig:
+    normalized_overrides = normalize_video_action_override_keys(overrides)
+    validate_video_action_sequence_contract_override_keys(
+        normalized_overrides,
+        contract_value=getattr(
+            config.policy_variant,
+            "sequence_contract",
+            VideoActionSequenceContract.DEFAULT,
+        ),
+    )
     updated = config
     grouped_overrides: dict[tuple[str, ...], dict[str, Any]] = {}
-    for key, value in overrides.items():
+    for key, value in normalized_overrides.items():
         parts = tuple(key.split("."))
         grouped_overrides.setdefault(parts[:-1], {})[parts[-1]] = value
     for parent_path, values in sorted(grouped_overrides.items(), key=lambda item: len(item[0]), reverse=True):
         updated = _replace_dataclass_fields(updated, list(parent_path), values)
-    return updated
+    return apply_video_action_sequence_contract(updated)
 
 
 def _split_override_token(token: str) -> tuple[str, str]:

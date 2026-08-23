@@ -4,7 +4,11 @@ from pathlib import Path
 
 import torch
 
-from open_wam.configs import ParallelStreamPolicyConfig, TrainingConfig
+from open_wam.configs import (
+    ParallelStreamPolicyConfig,
+    TrainingConfig,
+    VideoActionProgram,
+)
 from open_wam.models.policy_variants.parallel_stream.reference_runtime import run_parallel_exact_train
 from open_wam.models.policy_variants.parallel_stream.training_artifacts import (
     prepare_parallel_exact_train_artifacts,
@@ -78,8 +82,8 @@ def test_exact_train_runtime_matches_reference_transformer_forward_train(tmp_pat
     )
     transformer = tower.get_runtime_backbone(action_dim=4).to(dtype=torch.bfloat16)
     policy_config = ParallelStreamPolicyConfig(
+        program=VideoActionProgram.VIDEO_THEN_ACTION,
         hidden_size=32,
-        runtime_mode="lingbot_exact",
         frame_chunk_size=2,
         action_per_frame=2,
         attn_window=8,

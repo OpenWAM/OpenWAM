@@ -12,7 +12,6 @@ import warnings
 
 from ..dual_expert import DualExpertPolicyVariant
 
-
 warnings.warn(
     "`open_wam.models.policy_variants.mot` is deprecated; use `dual_expert`.",
     FutureWarning,
@@ -30,7 +29,6 @@ _SUBMODULES = (
     "contracts",
     "coupling_semantics",
     "dual_stream_execution",
-    "generalist_modes",
     "inference_backend",
     "inference_layout",
     "modules",

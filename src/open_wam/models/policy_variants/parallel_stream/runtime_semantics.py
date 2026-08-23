@@ -5,7 +5,6 @@ from open_wam.configs.enums import (
     CurrentBlockCoupling,
     HistoryStreamVisibility,
     JointTimestepCoupling,
-    ParallelRuntimeMode,
     VideoActionSequenceContract,
 )
 from open_wam.configs.policy_parallel_stream import ParallelStreamPolicyConfig
@@ -15,6 +14,7 @@ from open_wam.models.common import (
 
 __all__ = [
     "attention_profile_name_for_current_block_coupling",
+    "prefix_visibility_mode_for_history_visibility",
     "prefix_visibility_mode_for_policy",
     "resolve_parallel_context_condition_latent_source",
     "resolve_parallel_current_block_coupling",
@@ -23,23 +23,21 @@ __all__ = [
     "uses_legacy_prefix_per_chunk_proprio_contract",
 ]
 
+_PREFIX_VISIBILITY_MODE_BY_HISTORY_VISIBILITY = {
+    HistoryStreamVisibility.FULL: "full_history",
+    HistoryStreamVisibility.VIDEO_QUERIES_VIDEO_ONLY: (
+        HistoryStreamVisibility.VIDEO_QUERIES_VIDEO_ONLY.value
+    ),
+    HistoryStreamVisibility.VIDEO_ONLY: "video_history_only",
+}
+
 
 def resolve_parallel_history_stream_visibility(
     policy_config: ParallelStreamPolicyConfig,
 ) -> HistoryStreamVisibility:
-    """Resolve the typed history visibility, including its legacy alias."""
+    """Return the canonical clean-history stream visibility."""
 
-    value = getattr(
-        policy_config,
-        "history_stream_visibility",
-        HistoryStreamVisibility.FULL,
-    )
-    resolved = HistoryStreamVisibility(value)
-    if resolved == HistoryStreamVisibility.FULL and bool(
-        getattr(policy_config, "preserve_video_pretrain_history", False)
-    ):
-        return HistoryStreamVisibility.VIDEO_QUERIES_VIDEO_ONLY
-    return resolved
+    return policy_config.history_stream_visibility
 
 
 def prefix_visibility_mode_for_policy(
@@ -47,19 +45,19 @@ def prefix_visibility_mode_for_policy(
 ) -> str:
     """Map policy history semantics to the exact-cache visibility contract."""
 
-    history_visibility = resolve_parallel_history_stream_visibility(policy_config)
-    if history_visibility == HistoryStreamVisibility.VIDEO_ONLY:
-        return "video_history_only"
-    if (
-        history_visibility
-        == HistoryStreamVisibility.VIDEO_QUERIES_VIDEO_ONLY
-    ):
-        return "preserve_video_pretrain_history"
-    return (
-        "preserve_video_pretrain_history"
-        if bool(getattr(policy_config, "preserve_video_pretrain_history", False))
-        else "full_history"
+    return prefix_visibility_mode_for_history_visibility(
+        resolve_parallel_history_stream_visibility(policy_config)
     )
+
+
+def prefix_visibility_mode_for_history_visibility(
+    visibility: HistoryStreamVisibility | str,
+) -> str:
+    """Translate shared history semantics into the exact-cache wire value."""
+
+    return _PREFIX_VISIBILITY_MODE_BY_HISTORY_VISIBILITY[
+        HistoryStreamVisibility(visibility)
+    ]
 
 
 def uses_legacy_prefix_per_chunk_proprio_contract(
@@ -68,9 +66,7 @@ def uses_legacy_prefix_per_chunk_proprio_contract(
     """Return whether the compatibility prefix/proprio layout is selected."""
 
     return (
-        VideoActionSequenceContract(
-            policy_config.sequence_contract
-        )
+        VideoActionSequenceContract(policy_config.sequence_contract)
         == VideoActionSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO
     )
 
@@ -80,42 +76,23 @@ def resolve_parallel_context_condition_latent_source(
 ) -> ContextConditionLatentSource:
     """Resolve the clean condition-latent source for exact execution."""
 
-    return ContextConditionLatentSource(
-        getattr(
-            policy_config,
-            "context_condition_latent_source",
-            ContextConditionLatentSource.VIDEO_LATENTS,
-        )
-    )
+    return policy_config.context_condition_latent_source
 
 
 def resolve_parallel_current_block_coupling(
     policy_config: ParallelStreamPolicyConfig,
 ) -> CurrentBlockCoupling:
-    """Resolve legacy parallel-stream runtime knobs into an explicit current-block mode."""
+    """Return the low-level coupling derived from the public program."""
 
-    if policy_config.current_block_coupling is not None:
-        return CurrentBlockCoupling(policy_config.current_block_coupling)
-    if (
-        policy_config.runtime_mode
-        == ParallelRuntimeMode.LINGBOT_EXACT_ACTION_CONDITIONED
-    ):
-        return CurrentBlockCoupling.JOINT
-    return CurrentBlockCoupling.VIDEO_THEN_ACTION
+    return policy_config.current_block_coupling
 
 
 def resolve_parallel_joint_timestep_coupling(
     policy_config: ParallelStreamPolicyConfig,
 ) -> JointTimestepCoupling:
-    """Resolve how joint-like programs synchronize video and action clocks."""
+    """Return the validated video/action noise-clock contract."""
 
-    if resolve_parallel_current_block_coupling(policy_config) not in {
-        CurrentBlockCoupling.JOINT,
-        CurrentBlockCoupling.VIDEO_NOISY_TO_ACTION,
-        CurrentBlockCoupling.ACTION_NOISY_TO_VIDEO,
-    }:
-        return JointTimestepCoupling.INDEPENDENT
-    return JointTimestepCoupling(policy_config.joint_timestep_coupling)
+    return policy_config.joint_timestep_coupling
 
 
 def attention_profile_name_for_current_block_coupling(

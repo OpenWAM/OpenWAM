@@ -62,7 +62,7 @@ def test_reference_profile_contract_rejects_each_mismatched_runtime_value(
         validate_reference_profile(profile, runtime)
 
 
-def test_reference_profile_guidance_match_is_generalist_only() -> None:
+def test_reference_profile_guidance_match_is_selected_by_dynamics_runtime() -> None:
     profile = load_reference_profile("libero_joint")
     mismatched_runtime = replace(
         _libero_joint_runtime_contract(),

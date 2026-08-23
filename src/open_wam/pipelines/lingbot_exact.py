@@ -8,10 +8,13 @@ from typing import Any
 import torch
 
 from open_wam.artifacts import load_tensor_artifact
-
 from open_wam.configs import ActionSpace, ParallelRuntimeMode
 from open_wam.models.action_decoders import ActionDecoderInferOutput
-from open_wam.models.policy_variants import PolicyInferOutput, PolicyInferState
+from open_wam.models.policy_variants import (
+    DynamicsRolloutRequest,
+    PolicyInferOutput,
+    PolicyInferState,
+)
 from open_wam.models.policy_variants.parallel_stream import ParallelStreamPolicyVariant
 from open_wam.models.visual_tower import VisualStageOutputs
 
@@ -64,7 +67,9 @@ class LingbotExactArtifactBundle:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
-def save_lingbot_exact_artifact_bundle(path: str | Path, bundle: LingbotExactArtifactBundle) -> None:
+def save_lingbot_exact_artifact_bundle(
+    path: str | Path, bundle: LingbotExactArtifactBundle
+) -> None:
     torch.save(
         {
             "video_latents": bundle.video_latents,
@@ -103,7 +108,9 @@ class LingbotExactRunner:
     def __init__(self, pipeline: VariantPipeline) -> None:
         self.pipeline = pipeline
         if not isinstance(self.pipeline.policy_variant, ParallelStreamPolicyVariant):
-            raise TypeError("LingBot exact runner requires a parallel-stream policy variant.")
+            raise TypeError(
+                "LingBot exact runner requires a parallel-stream policy variant."
+            )
         if self.pipeline.policy_variant.config.runtime_mode not in {
             ParallelRuntimeMode.LINGBOT_EXACT,
             ParallelRuntimeMode.LINGBOT_EXACT_ACTION_CONDITIONED,
@@ -149,8 +156,9 @@ class LingbotExactRunner:
         negative_text_context: torch.Tensor | None = None,
         action_space: ActionSpace | str = ActionSpace.AUTO,
         frame_start_override: int | None = None,
-        action_conditioning_mode: object = "vanilla_joint_rollout",
+        dynamics: DynamicsRolloutRequest | None = None,
         proprio_state: torch.Tensor | None = None,
+        hidden_proprio_history: torch.Tensor | None = None,
     ) -> LingbotExactWarmupOutput:
         # Warmup uses the same shared frontend/runtime owner as the normal
         # pipeline path, while preserving the exact slot-pool cache lifecycle
@@ -171,8 +179,9 @@ class LingbotExactRunner:
             infer_state=session.policy_state,
             action_space=action_space,
             frame_start_override=frame_start_override,
-            action_conditioning_mode=str(getattr(action_conditioning_mode, "value", action_conditioning_mode)),
+            dynamics=dynamics,
             proprio_state=proprio_state,
+            hidden_proprio_history=hidden_proprio_history,
         )
         return LingbotExactWarmupOutput(
             session=LingbotExactSession(
@@ -197,7 +206,7 @@ class LingbotExactRunner:
         proprio_state: torch.Tensor | None = None,
         advance_frame_start: bool = False,
         skip_video_prediction: bool = False,
-        action_conditioning_mode: object = "vanilla_joint_rollout",
+        dynamics: DynamicsRolloutRequest | None = None,
     ) -> LingbotExactChunkOutput:
         visual_outputs = None
         if views is not None or video_latents is not None:
@@ -218,7 +227,11 @@ class LingbotExactRunner:
         resolved_negative_text_context = (
             visual_outputs.frontend.conditioning.negative_text_context
             if visual_outputs is not None
-            else (negative_text_context if negative_text_context is not None else session.negative_text_context)
+            else (
+                negative_text_context
+                if negative_text_context is not None
+                else session.negative_text_context
+            )
         )
         policy_output = self.policy_variant.generate_reference_chunk(
             visual_tower=self.pipeline.visual_tower,
@@ -229,7 +242,7 @@ class LingbotExactRunner:
             proprio_state=proprio_state,
             advance_frame_start=advance_frame_start,
             skip_video_prediction=skip_video_prediction,
-            action_conditioning_mode=str(getattr(action_conditioning_mode, "value", action_conditioning_mode)),
+            dynamics=dynamics,
         )
         decoder_output = self.pipeline.resolve_infer_decoder_output(
             policy_output,
@@ -265,9 +278,13 @@ class LingbotExactRunner:
         preserve_stream_cache: bool,
     ) -> VisualStageOutputs:
         resolved_task_text = self._resolve_task_text(session, task_text)
-        resolved_text_context = text_context if text_context is not None else session.text_context
+        resolved_text_context = (
+            text_context if text_context is not None else session.text_context
+        )
         resolved_negative_text_context = (
-            negative_text_context if negative_text_context is not None else session.negative_text_context
+            negative_text_context
+            if negative_text_context is not None
+            else session.negative_text_context
         )
         if video_latents is not None:
             return self.pipeline.prepare_visual_outputs_from_latents(
@@ -277,7 +294,9 @@ class LingbotExactRunner:
                 negative_text_context=resolved_negative_text_context,
             )
         if views is None:
-            raise ValueError("Exact LingBot warmup/infer requires either `views` or `video_latents`.")
+            raise ValueError(
+                "Exact LingBot warmup/infer requires either `views` or `video_latents`."
+            )
         return self.pipeline.prepare_visual_outputs(
             views,
             task_text=resolved_task_text,

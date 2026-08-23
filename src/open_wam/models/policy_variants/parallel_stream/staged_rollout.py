@@ -11,7 +11,7 @@ from einops import rearrange
 from open_wam.configs.backbone import SharedVideoTransformerConfig
 from open_wam.configs.enums import (
     CurrentBlockCoupling,
-    GeneralistDenoisingMode,
+    DynamicsObjective,
     ParallelExactCacheWriteMode,
 )
 from open_wam.configs.inference import InferenceConfig
@@ -31,7 +31,7 @@ from open_wam.models.visual_tower.exact_runtime import (
 
 from .cache_execution import write_exact_cache_chunk
 from .cache_lifecycle import commit_initial_observed_video_context
-from .conditional_rollout import uses_generalist_mode_text_token
+from .conditional_rollout import uses_dynamics_mode_text_token
 from .exact_cache import (
     build_exact_cache_spec,
     count_single_stream_action_tokens,
@@ -79,7 +79,11 @@ def run_parallel_staged_inference_rollout(
         latent_height = condition_latents.shape[-2]
         latent_width = condition_latents.shape[-1]
     else:
-        if "batch_size" not in infer_cache or "latent_height" not in infer_cache or "latent_width" not in infer_cache:
+        if (
+            "batch_size" not in infer_cache
+            or "latent_height" not in infer_cache
+            or "latent_width" not in infer_cache
+        ):
             raise ValueError(
                 "Exact LingBot inference without condition latents requires cached batch/latent shape metadata."
             )
@@ -100,8 +104,8 @@ def run_parallel_staged_inference_rollout(
         negative_text_emb=negative_text_emb,
     )
     generalist_mode = None
-    if uses_generalist_mode_text_token(policy_config):
-        generalist_mode = GeneralistDenoisingMode.JOINT
+    if uses_dynamics_mode_text_token(policy_config):
+        generalist_mode = DynamicsObjective.JOINT
         text_emb, negative_text_emb = append_generalist_mode_text_context(
             transformer,
             policy_config=policy_config,
@@ -130,8 +134,13 @@ def run_parallel_staged_inference_rollout(
             "Joint-like parallel-stream coupling must use `run_parallel_action_conditioned_inference_rollout`; "
             "the staged exact rollout only supports ordered or decoupled same-step coupling."
         )
-    if skip_video_prediction and current_block_coupling == CurrentBlockCoupling.VIDEO_THEN_ACTION:
-        raise ValueError("`skip_video_prediction` is incompatible with `video_then_action` because action depends on video.")
+    if (
+        skip_video_prediction
+        and current_block_coupling == CurrentBlockCoupling.VIDEO_THEN_ACTION
+    ):
+        raise ValueError(
+            "`skip_video_prediction` is incompatible with `video_then_action` because action depends on video."
+        )
     cache_spec = build_exact_cache_spec(
         write_mode=ParallelExactCacheWriteMode.SINGLE_STREAM_STAGED,
         batch_size=batch_size,
@@ -140,7 +149,9 @@ def run_parallel_staged_inference_rollout(
     )
     if inference_config.use_cache and not cache_context.cache_initialized:
         if condition_latents is None:
-            raise ValueError("Exact LingBot inference requires condition latents on the first chunk when cache is empty.")
+            raise ValueError(
+                "Exact LingBot inference requires condition latents on the first chunk when cache is empty."
+            )
         cache_context = ensure_exact_cache_initialized(
             transformer=transformer,
             policy_config=policy_config,
@@ -158,25 +169,27 @@ def run_parallel_staged_inference_rollout(
     generation_frame_start = current_frame_start
     initial_observed_context_committed = False
     if cache_context.cache_initialized:
-        generation_frame_start, initial_observed_context_committed = commit_initial_observed_video_context(
-            transformer=transformer,
-            cache_spec=cache_spec,
-            cache_name=cache_name,
-            backbone_config=backbone_config,
-            policy_config=policy_config,
-            inference_config=inference_config,
-            condition_latents=condition_latents,
-            text_emb=text_emb,
-            negative_text_emb=negative_text_emb,
-            use_cfg=cache_context.use_cfg and inference_config.use_cache,
-            action_channel_mask=action_channel_mask,
-            action_dim=action_dim,
-            model_dtype=model_dtype,
-            current_frame_start=current_frame_start,
-            step_index=int(infer_cache.get("step_index", 0)),
-            current_block_coupling=current_block_coupling,
-            window_size=int(policy_config.attn_window),
-            hidden_proprio_state=hidden_proprio_state,
+        generation_frame_start, initial_observed_context_committed = (
+            commit_initial_observed_video_context(
+                transformer=transformer,
+                cache_spec=cache_spec,
+                cache_name=cache_name,
+                backbone_config=backbone_config,
+                policy_config=policy_config,
+                inference_config=inference_config,
+                condition_latents=condition_latents,
+                text_emb=text_emb,
+                negative_text_emb=negative_text_emb,
+                use_cfg=cache_context.use_cfg and inference_config.use_cache,
+                action_channel_mask=action_channel_mask,
+                action_dim=action_dim,
+                model_dtype=model_dtype,
+                current_frame_start=current_frame_start,
+                step_index=int(infer_cache.get("step_index", 0)),
+                current_block_coupling=current_block_coupling,
+                window_size=int(policy_config.attn_window),
+                hidden_proprio_state=hidden_proprio_state,
+            )
         )
     latent_cond = None
     if (
@@ -224,10 +237,14 @@ def run_parallel_staged_inference_rollout(
     )
     video_scheduler.set_timesteps(inference_config.video_num_inference_steps)
     action_scheduler.set_timesteps(inference_config.action_num_inference_steps)
-    video_timesteps = F.pad(video_scheduler.timesteps.to(device=device), (0, 1), mode="constant", value=0)
+    video_timesteps = F.pad(
+        video_scheduler.timesteps.to(device=device), (0, 1), mode="constant", value=0
+    )
     if inference_config.video_exec_step != -1:
         video_timesteps = video_timesteps[: inference_config.video_exec_step]
-    action_timesteps = F.pad(action_scheduler.timesteps.to(device=device), (0, 1), mode="constant", value=0)
+    action_timesteps = F.pad(
+        action_scheduler.timesteps.to(device=device), (0, 1), mode="constant", value=0
+    )
 
     action_cond = None
     if generation_frame_start == 0:
@@ -275,7 +292,9 @@ def run_parallel_staged_inference_rollout(
             video_noise_pred = run_exact_single_stream_forward(
                 transformer,
                 input_dict=video_input,
-                update_cache=1 if (last_step and commit_to_cache and inference_config.use_cache) else 0,
+                update_cache=1
+                if (last_step and commit_to_cache and inference_config.use_cache)
+                else 0,
                 cache_name=cache_name,
                 action_mode=False,
                 guidance_scale=inference_config.guidance_scale,
@@ -317,7 +336,9 @@ def run_parallel_staged_inference_rollout(
             action_noise_pred = run_exact_single_stream_forward(
                 transformer,
                 input_dict=action_input,
-                update_cache=1 if (last_step and commit_to_cache and inference_config.use_cache) else 0,
+                update_cache=1
+                if (last_step and commit_to_cache and inference_config.use_cache)
+                else 0,
                 cache_name=cache_name,
                 action_mode=True,
                 guidance_scale=inference_config.action_guidance_scale,
@@ -350,7 +371,9 @@ def run_parallel_staged_inference_rollout(
                 transformer,
                 cache_name=cache_name,
                 updates={
-                    SLOT_POOL_ALLOW_VIDEO_TO_ACTION_PREFIX_TAIL_TOKENS: count_single_stream_action_tokens(actions),
+                    SLOT_POOL_ALLOW_VIDEO_TO_ACTION_PREFIX_TAIL_TOKENS: count_single_stream_action_tokens(
+                        actions
+                    ),
                 },
             )
             try:
@@ -383,23 +406,27 @@ def run_parallel_staged_inference_rollout(
                 chunk_size=inference_config.frame_chunk_size,
                 window_size=policy_config.attn_window,
                 current_block_coupling=current_block_coupling,
-                preserve_video_pretrain_history=bool(
-                    getattr(policy_config, "preserve_video_pretrain_history", False)
+                history_stream_visibility=resolve_parallel_history_stream_visibility(
+                    policy_config
                 ),
-                history_stream_visibility=resolve_parallel_history_stream_visibility(policy_config),
                 video_hidden_context=video_hidden_context,
                 action_hidden_context=action_hidden_context,
             )
     else:  # pragma: no cover - enum guard
-        raise ValueError(f"Unsupported parallel-stream current-block coupling: {current_block_coupling!r}")
+        raise ValueError(
+            f"Unsupported parallel-stream current-block coupling: {current_block_coupling!r}"
+        )
 
     next_cache = {
         "runtime_mode": "lingbot_exact",
         "cache_name": cache_name,
         "cache_backend_name": cache_backend_name,
-        "cache_initialized": cache_context.cache_initialized and inference_config.use_cache,
+        "cache_initialized": cache_context.cache_initialized
+        and inference_config.use_cache,
         "frame_start": int(
-            generation_frame_start + inference_config.frame_chunk_size if advance_frame_start else generation_frame_start
+            generation_frame_start + inference_config.frame_chunk_size
+            if advance_frame_start
+            else generation_frame_start
         ),
         "latent_height": latent_height,
         "latent_width": latent_width,
@@ -422,10 +449,14 @@ def run_parallel_staged_inference_rollout(
         "action_guidance_scale": float(inference_config.action_guidance_scale),
         "cache_write_mode": str(cache_spec.write_mode),
         "skip_video_prediction": bool(skip_video_prediction),
-        "generalist_mode_text_token": None if generalist_mode is None else generalist_mode.value,
+        "generalist_mode_text_token": None
+        if generalist_mode is None
+        else generalist_mode.value,
         "generalist_mode_text_token_count": int(generalist_mode is not None),
     }
-    output_dtype = condition_latents.dtype if condition_latents is not None else model_dtype
+    output_dtype = (
+        condition_latents.dtype if condition_latents is not None else model_dtype
+    )
     action_pred = rearrange(actions, "b c f n 1 -> b (f n) c").to(dtype=output_dtype)
     return ParallelInferArtifacts(
         action_pred=action_pred,

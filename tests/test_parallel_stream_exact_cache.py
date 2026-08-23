@@ -10,6 +10,7 @@ from open_wam.configs import (
     ParallelExactCacheWriteMode,
     ParallelStreamPolicyConfig,
     SharedVideoTransformerConfig,
+    VideoActionProgram,
 )
 from open_wam.models.common import SlotPoolLayerState
 from open_wam.models.policy_variants.parallel_stream import exact_cache
@@ -65,8 +66,7 @@ def test_reference_runtime_exact_cache_names_alias_canonical_contract() -> None:
     )
     assert reference_runtime._resolve_exact_cache_context is resolve_exact_cache_context
     assert (
-        reference_runtime._set_slot_pool_layer_metadata
-        is set_slot_pool_layer_metadata
+        reference_runtime._set_slot_pool_layer_metadata is set_slot_pool_layer_metadata
     )
     assert (
         reference_runtime._validate_existing_exact_cache_attn_window
@@ -125,7 +125,7 @@ def test_slot_pool_layer_metadata_round_trips_existing_and_new_keys() -> None:
     )
 
     class _Transformer(torch.nn.Module):
-        def _resolve_exact_cache_state(self, cache_name: str) -> object:
+        def get_runtime_cache_state(self, cache_name: str) -> object:
             assert cache_name == "session"
             return SimpleNamespace(
                 backend_name="slot_pool_exact",
@@ -152,16 +152,15 @@ def test_slot_pool_layer_metadata_round_trips_existing_and_new_keys() -> None:
 @pytest.mark.parametrize(
     "transformer",
     [
-        torch.nn.Identity(),
-        SimpleNamespace(_resolve_exact_cache_state=lambda _name: None),
+        SimpleNamespace(get_runtime_cache_state=lambda _name: None),
         SimpleNamespace(
-            _resolve_exact_cache_state=lambda _name: SimpleNamespace(
+            get_runtime_cache_state=lambda _name: SimpleNamespace(
                 backend_name="merged_prefix",
                 backend_payload=SimpleNamespace(layer_states=()),
             )
         ),
         SimpleNamespace(
-            _resolve_exact_cache_state=lambda _name: SimpleNamespace(
+            get_runtime_cache_state=lambda _name: SimpleNamespace(
                 backend_name="slot_pool_exact",
                 backend_payload=SimpleNamespace(),
             )
@@ -270,6 +269,7 @@ def test_ensure_exact_cache_initialized_delegates_shared_allocation(
     initialized = ensure_exact_cache_initialized(
         transformer=transformer,
         policy_config=ParallelStreamPolicyConfig(
+            program=VideoActionProgram.VIDEO_THEN_ACTION,
             action_per_frame=4,
             attn_window=12,
         ),
@@ -323,7 +323,7 @@ def test_existing_exact_cache_attention_window_supports_both_backends(
     expected: int | None,
 ) -> None:
     class _Transformer(torch.nn.Module):
-        def _resolve_exact_cache_state(self, cache_name: str) -> object:
+        def get_runtime_cache_state(self, cache_name: str) -> object:
             assert cache_name == "session"
             return cache_state
 
@@ -338,7 +338,7 @@ def test_existing_exact_cache_attention_window_supports_both_backends(
 
 def test_existing_exact_cache_attention_window_rejects_contract_change() -> None:
     class _Transformer(torch.nn.Module):
-        def _resolve_exact_cache_state(self, cache_name: str) -> object:
+        def get_runtime_cache_state(self, cache_name: str) -> object:
             assert cache_name == "session"
             return SimpleNamespace(payload={"attn_window": 7})
 

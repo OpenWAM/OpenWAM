@@ -7,6 +7,10 @@ from typing import Any
 
 import torch
 
+from open_wam.contracts import (
+    DYNAMICS_CONDITIONAL_HISTORY_PREVIOUS_BOUNDARY_VIDEO_ONLY,
+)
+
 try:
     from torch.nn.attention.flex_attention import BlockMask
 except (
@@ -70,7 +74,9 @@ HISTORY_STREAM_VISIBILITY_VIDEO_ONLY = "video_only"
 CONDITIONAL_HISTORY_POLICY_NONE = "none"
 
 
-CONDITIONAL_HISTORY_POLICY_PREVIOUS_BOUNDARY_VIDEO_ONLY = "previous_boundary_video_only"
+CONDITIONAL_HISTORY_POLICY_PREVIOUS_BOUNDARY_VIDEO_ONLY = (
+    DYNAMICS_CONDITIONAL_HISTORY_PREVIOUS_BOUNDARY_VIDEO_ONLY
+)
 
 
 _HISTORY_STREAM_VISIBILITY_VALUES = {
@@ -126,7 +132,7 @@ def normalize_attention_profile_name(name: str | None) -> str | None:
 
 
 def normalize_chunked_temporal_exact_coupling(coupling: str | None) -> str:
-    """Normalize exact parallel-stream current-block coupling names."""
+    """Normalize packed video/action current-block coupling names."""
 
     if coupling is None:
         return VIDEO_THEN_ACTION_COUPLING
@@ -148,19 +154,13 @@ def normalize_chunked_temporal_exact_coupling(coupling: str | None) -> str:
     )
 
 
-def normalize_parallel_history_stream_visibility(
+def normalize_history_stream_visibility(
     visibility: str | None,
-    *,
-    preserve_video_pretrain_history: bool = False,
 ) -> str:
-    """Normalize exact parallel-stream clean-history stream visibility."""
+    """Normalize packed video/action clean-history stream visibility."""
 
     if visibility is None:
-        return (
-            HISTORY_STREAM_VISIBILITY_VIDEO_QUERIES_VIDEO_ONLY
-            if preserve_video_pretrain_history
-            else HISTORY_STREAM_VISIBILITY_FULL
-        )
+        return HISTORY_STREAM_VISIBILITY_FULL
     value = str(getattr(visibility, "value", visibility))
     if value in _HISTORY_STREAM_VISIBILITY_VALUES:
         return value
@@ -220,5 +220,5 @@ __all__ = [
     "normalize_attention_profile_name",
     "normalize_chunked_temporal_exact_coupling",
     "normalize_conditional_history_policy",
-    "normalize_parallel_history_stream_visibility",
+    "normalize_history_stream_visibility",
 ]

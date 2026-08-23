@@ -11,8 +11,7 @@ import yaml
 from open_wam.configs import load_experiment_config
 from open_wam.configs.enums import (
     ContextConditionLatentSource,
-    GeneralistDenoisingMode,
-    GeneralistTrainingParadigm,
+    DynamicsObjective,
     HistoryStreamVisibility,
     JointTimestepCoupling,
     ProprioContextMode,
@@ -356,50 +355,55 @@ def _assert_gjd_ablation_config(
 ) -> None:
     if architecture not in {"parallel_stream", "dual_expert"}:
         raise AssertionError(f"Unexpected architecture {architecture!r}")
-    probs = config.policy_variant.generalist_denoising_mode_probs
-    joint = GeneralistDenoisingMode.JOINT
-    fdm = GeneralistDenoisingMode.ACTION_CONDITIONED_VIDEO
-    idm = GeneralistDenoisingMode.VIDEO_CONDITIONED_ACTION
+    joint = DynamicsObjective.JOINT
+    fdm = DynamicsObjective.ACTION_CONDITIONED_VIDEO
+    idm = DynamicsObjective.VIDEO_CONDITIONED_ACTION
+    mixture = config.data.dynamics_routing
+    probs = mixture.mode_probabilities()
+    if not mixture.active_routes:
+        probs[joint] = 1.0
+    route_weights = {
+        (route.source.value, route.mode): route.weight
+        for route in mixture.active_routes
+    }
 
     if ablation == "pure_joint":
         assert probs[joint] == 1.0
         assert probs[fdm] == 0.0
         assert probs[idm] == 0.0
-        assert config.policy_variant.generalist_training_paradigm == GeneralistTrainingParadigm.DEMO_ONLY
         assert config.data.sample_construction.sample_order_mode == SampleOrderMode.REPLACEMENT
-        assert config.data.generalist_dynamics_mixture.train_latent_root is None
-        assert config.data.generalist_dynamics_mixture.val_latent_root is None
+        assert config.data.dynamics_routing.train_latent_root is None
+        assert config.data.dynamics_routing.val_latent_root is None
         assert config.validation.auxiliary_tasks == ()
     elif ablation == "pure_fdm":
         assert probs[joint] == 0.0
         assert probs[fdm] == 1.0
         assert probs[idm] == 0.0
-        assert config.policy_variant.generalist_training_paradigm == GeneralistTrainingParadigm.DYNAMICS_ROUTED
-        mixture = config.data.generalist_dynamics_mixture
-        assert mixture.real_joint_weight == 0.0
-        assert mixture.real_action_conditioned_video_weight == real_demo_weight
-        assert mixture.real_video_conditioned_action_weight == 0.0
-        assert mixture.counterfactual_action_conditioned_video_weight == counterfactual_weight
-        assert mixture.counterfactual_video_conditioned_action_weight == 0.0
+        assert route_weights == {
+            ("real_demo", fdm): real_demo_weight,
+            ("counterfactual_dynamics", fdm): counterfactual_weight,
+        }
+        assert [task.mode_override for task in config.validation.auxiliary_tasks] == [
+            fdm
+        ]
     elif ablation == "pure_idm":
         assert probs[joint] == 0.0
         assert probs[fdm] == 0.0
         assert probs[idm] == 1.0
-        assert config.policy_variant.generalist_training_paradigm == GeneralistTrainingParadigm.DYNAMICS_ROUTED
-        mixture = config.data.generalist_dynamics_mixture
-        assert mixture.real_joint_weight == 0.0
-        assert mixture.real_action_conditioned_video_weight == 0.0
-        assert mixture.real_video_conditioned_action_weight == real_demo_weight
-        assert mixture.counterfactual_action_conditioned_video_weight == 0.0
-        assert mixture.counterfactual_video_conditioned_action_weight == counterfactual_weight
+        assert route_weights == {
+            ("real_demo", idm): real_demo_weight,
+            ("counterfactual_dynamics", idm): counterfactual_weight,
+        }
+        assert [task.mode_override for task in config.validation.auxiliary_tasks] == [
+            idm
+        ]
     else:
         assert probs[joint] == 0.6
         assert probs[fdm] == 0.2
         assert probs[idm] == 0.2
-        assert config.policy_variant.generalist_training_paradigm == GeneralistTrainingParadigm.DYNAMICS_ROUTED
         assert config.data.sample_construction.sample_order_mode == SampleOrderMode.REPLACEMENT
-        assert config.data.generalist_dynamics_mixture.train_latent_root is not None
-        assert config.data.generalist_dynamics_mixture.val_latent_root is not None
+        assert config.data.dynamics_routing.train_latent_root is not None
+        assert config.data.dynamics_routing.val_latent_root is not None
     assert config.policy_variant.generalist_mode_text_token is (ablation == "mode_token")
 
 
@@ -554,7 +558,7 @@ def _assert_gjd_fullseg_w64_raw_config(raw: dict) -> None:
     assert raw["training"]["gradient_accumulation_steps"] == 10
     assert raw["training"]["num_steps"] == 20000
     assert raw["policy_variant"]["joint_timestep_coupling"] == "independent"
-    assert raw["policy_variant"]["generalist_training_paradigm"] == "dynamics_routed"
+    assert "dynamics_routing_requirement" not in raw["policy_variant"]
     assert raw["policy_variant"]["generalist_mode_text_token"] is False
     assert raw["policy_variant"]["sequence_contract"] == (
         "legacy_prefix_single_frame_perchunk_proprio"
@@ -564,10 +568,16 @@ def _assert_gjd_fullseg_w64_raw_config(raw: dict) -> None:
     assert raw["trainer"]["checkpoint_mode"] == "full_training_state"
     assert raw["trainer"]["save_interval"] == 100
     assert raw["trainer"]["max_checkpoints_to_keep"] == 3
-    mixture = raw["data"]["generalist_dynamics_mixture"]
+    mixture = raw["data"]["dynamics_routing"]
     assert mixture["train_latent_root"] == "${paths.datasets.libero_gjd_counterfactual_train_latent_root}"
     assert mixture["val_latent_root"] == "${paths.datasets.libero_gjd_counterfactual_val_latent_root}"
-    assert mixture["conditional_history_frames"] is None
+    assert mixture["routes"] == [
+        {"source": "real_demo", "mode": "joint", "weight": 0.6},
+        {"source": "real_demo", "mode": "action_conditioned_video", "weight": 0.1},
+        {"source": "real_demo", "mode": "video_conditioned_action", "weight": 0.1},
+        {"source": "counterfactual_dynamics", "mode": "action_conditioned_video", "weight": 0.1},
+        {"source": "counterfactual_dynamics", "mode": "video_conditioned_action", "weight": 0.1},
+    ]
 
 
 def _planning_recipe_snapshot(config) -> tuple:
@@ -676,7 +686,7 @@ def test_parallel_stream_gjd_uses_shared_planning_recipe() -> None:
     _assert_gjd_fullseg_w64_raw_config(raw)
     assert "proprio_context_mode" not in raw["policy_variant"]
     assert raw["policy_variant"]["attn_window"] == 30
-    assert raw["policy_variant"]["preserve_video_pretrain_history"] is True
+    assert "preserve_video_pretrain_history" not in raw["policy_variant"]
 
 
 def test_gjd_launcher_help_describes_shared_planning_and_conditional_contracts() -> None:
@@ -692,7 +702,8 @@ def test_gjd_launcher_help_describes_shared_planning_and_conditional_contracts()
     assert "GJD real-joint samples use the same legacy-prefix" in result.stdout
     assert "context_condition_latent_source=single_frame_condition_latent" in result.stdout
     assert "Dynamics-routed FDM/IDM samples remain target-only" in result.stdout
-    assert "bypass the planning prefix assembler" in result.stdout
+    assert "Both architectures consume the in-sequence t0" in result.stdout
+    assert "external planning-prefix path for these rows" in result.stdout
     assert "parallel_stream rollout uses run_libero_realtime_sandbox.py" in result.stdout
 
 
@@ -722,7 +733,8 @@ def test_parallel_stream_gjd_launcher_prints_shared_contract_notice() -> None:
     assert "shared GJD defaults" in result.stderr
     assert "real_joint uses the configured full-segment W64 recipe" in result.stderr
     assert "Conditional FDM/IDM uses target-only t0 + future layout" in result.stderr
-    assert "bypasses the planning prefix assembler" in result.stderr
+    assert "exposes only t0 as clean history" in result.stderr
+    assert "Both architectures bypass external planning-prefix handling" in result.stderr
     assert "known parallel_stream GJD issue" not in result.stderr
 
 
@@ -871,7 +883,7 @@ def test_legacy_m5_gjd_launcher_delegates_named_ablation_overrides() -> None:
         "scripts/run_mot_gjd_posttrain_libero.sh",
         env_overrides={"M5_GJD_ABLATION": "pure_joint"},
     )
-    assert any(token.startswith("policy_variant.generalist_denoising_mode_probs=") for token in pure_joint)
+    assert "data.dynamics_routing.routes=[]" in pure_joint
     pure_joint_config = _resolved_config_from_train_argv(pure_joint)
     _assert_gjd_ablation_config(
         pure_joint_config,
@@ -883,7 +895,9 @@ def test_legacy_m5_gjd_launcher_delegates_named_ablation_overrides() -> None:
         "scripts/run_mot_gjd_posttrain_libero.sh",
         env_overrides={"M5_GJD_ABLATION": "mode_token"},
     )
-    assert any(token.startswith("policy_variant.generalist_denoising_mode_probs=") for token in mode_token)
+    assert not any(
+        token.startswith("data.dynamics_routing.routes=") for token in mode_token
+    )
     assert "policy_variant.generalist_mode_text_token=true" in mode_token
     _assert_gjd_ablation_config(
         _resolved_config_from_train_argv(mode_token),
@@ -912,9 +926,9 @@ def test_unified_gjd_train_launcher_covers_architecture_and_ablation_surfaces() 
                 "1",
             ]
             assert any(
-                token.startswith("policy_variant.generalist_denoising_mode_probs=")
+                token.startswith("data.dynamics_routing.routes=")
                 for token in argv
-            )
+            ) is (ablation == "pure_joint")
             assert f"policy_variant.generalist_mode_text_token={str(ablation == 'mode_token').lower()}" in argv
             _assert_gjd_ablation_config(
                 _resolved_config_from_train_argv(argv),
@@ -1221,9 +1235,9 @@ def test_unified_gjd_realtime_launcher_covers_architecture_and_ablation_surfaces
                 assert _arg_value(argv, "--max-chunks") == "100"
                 assert "--allow-deprecated-libero-config" not in argv
             assert any(
-                token.startswith("policy_variant.generalist_denoising_mode_probs=")
+                token.startswith("data.dynamics_routing.routes=")
                 for token in argv
-            )
+            ) is (ablation == "pure_joint")
             assert f"policy_variant.generalist_mode_text_token={str(ablation == 'mode_token').lower()}" in argv
             _assert_gjd_ablation_config(
                 _resolved_config_from_realtime_argv(argv),
@@ -1266,20 +1280,20 @@ def test_dual_expert_gjd_realtime_launcher_rejects_deprecated_frontend_encode_mo
 
 
 def test_dual_expert_visualization_deprecates_non_streaming_frontend_encode_modes() -> None:
-    dual_expert_viz = _load_dual_expert_visualization_module()
+    from open_wam.evals import libero_dual_expert_runtime
 
-    dual_expert_viz._require_current_frontend_encode_mode(
+    libero_dual_expert_runtime._require_current_frontend_encode_mode(
         "lingbot_streaming_vae",
         allow_deprecated=False,
         source="test",
     )
     with pytest.raises(ValueError, match="rolling_offline.*deprecated"):
-        dual_expert_viz._require_current_frontend_encode_mode(
+        libero_dual_expert_runtime._require_current_frontend_encode_mode(
             "rolling_offline",
             allow_deprecated=False,
             source="test",
         )
-    dual_expert_viz._require_current_frontend_encode_mode(
+    libero_dual_expert_runtime._require_current_frontend_encode_mode(
         "rolling_offline",
         allow_deprecated=True,
         source="test",

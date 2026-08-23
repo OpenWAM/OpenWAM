@@ -109,9 +109,10 @@ def sample_joint_denoise_timestep_values(
 ) -> JointDenoiseTimestepValues:
     """Sample per-frame timesteps for joint/FDM/IDM denoising.
 
-    ``MATCH_SIGMA`` is the canonical GJD rule: sample the video scheduler and
-    map action timesteps onto that same video-sigma clock. Clean conditional
-    modalities keep timestep 0 and do not receive explicit noising sigmas.
+    ``MATCH_SIGMA`` samples the video scheduler and maps action timesteps onto
+    that same video-sigma clock. The maintained checkpoint-parity configs use
+    ``INDEPENDENT``; the coupled modes are explicit scheduler ablations. Clean
+    conditional modalities keep timestep 0 and do not receive noising sigmas.
     """
 
     coupling = JointTimestepCoupling(coupling)

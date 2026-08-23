@@ -7,17 +7,15 @@ import pytest
 from torch import nn
 
 from open_wam.configs import (
+    DualExpertActionDecoderConfig,
     DualExpertPolicyConfig,
+    ParallelStreamActionDecoderConfig,
     ParallelStreamPolicyConfig,
     TrainingConfig,
     load_experiment_config,
 )
 from open_wam.configs.enums import (
     AttachSite,
-    CurrentBlockCoupling,
-    GeneralistDenoisingMode,
-    GeneralistTrainingParadigm,
-    ParallelRuntimeMode,
     TrainingComponentSelector,
     VideoActionProgram,
 )
@@ -177,6 +175,103 @@ def test_packed_coupling_runtime_backbone_selector_only_trains_video_side() -> N
         not parameter.requires_grad
         for parameter in pipeline.policy_variant.action_expert.action_embedder.parameters()
     )
+
+
+def test_packed_dual_expert_declares_module_ownership_once() -> None:
+    _, pipeline = _build_dual_expert_packed_smoke_pipeline()
+    packed_stack = pipeline.policy_variant.packed_block_stack
+    assert packed_stack is not None
+
+    topology = pipeline.module_topology()
+    packed_blocks = tuple(packed_stack.packed_blocks)
+
+    assert topology.visual_runtime_modules == (
+        pipeline.visual_tower.core,
+        *(block.video_block for block in packed_blocks),
+    )
+    assert topology.action_expert_modules == (
+        pipeline.policy_variant.action_expert,
+        *(block.action_block for block in packed_blocks),
+    )
+    assert topology.fsdp_block_stacks == ()
+    assert topology.fsdp_atomic_modules == packed_blocks
+    assert len(topology.runtime_backbone_state_overlays) == 1
+    assert topology.runtime_backbone_state_overlays[0].module is packed_stack
+
+
+def test_parallel_stream_uses_default_module_topology() -> None:
+    config = load_experiment_config(
+        REPO_ROOT / "configs/experiments/parallel_stream_robotwin_smoke.yaml"
+    )
+    pipeline = build_variant_pipeline_from_config(config)
+
+    topology = pipeline.module_topology()
+
+    assert topology.visual_runtime_modules == (pipeline.visual_tower.core,)
+    assert topology.action_expert_modules == ()
+    assert topology.fsdp_block_stacks == (pipeline.visual_tower.core,)
+    assert topology.fsdp_atomic_modules == ()
+    assert topology.runtime_backbone_state_overlays == ()
+
+
+@pytest.mark.parametrize(
+    ("config_name", "decoder_config_type"),
+    (
+        ("dual_expert_robotwin_smoke.yaml", ParallelStreamActionDecoderConfig),
+        ("parallel_stream_robotwin_smoke.yaml", DualExpertActionDecoderConfig),
+    ),
+)
+def test_pipeline_rejects_mismatched_decoder_artifact_contract(
+    config_name: str,
+    decoder_config_type: type,
+) -> None:
+    config = load_experiment_config(REPO_ROOT / "configs/experiments" / config_name)
+    decoder = decoder_config_type(
+        hidden_size=config.action_decoder.hidden_size,
+        action_dim=config.action_decoder.action_dim,
+        action_horizon=config.action_decoder.action_horizon,
+    )
+
+    with pytest.raises(ValueError, match="artifact contracts do not match"):
+        build_variant_pipeline_from_config(replace(config, action_decoder=decoder))
+
+
+def test_dual_expert_owns_lazy_checkpoint_finalization() -> None:
+    _, pipeline = _build_dual_expert_packed_smoke_pipeline()
+    policy_variant = pipeline.policy_variant
+    policy_variant._action_expert_initialized = False
+    action_keys = frozenset(
+        key
+        for key in pipeline.state_dict()
+        if key.startswith("policy_variant.action_expert.")
+    )
+    assert action_keys
+
+    pipeline.on_checkpoint_loaded(
+        loaded_state_keys=action_keys,
+        missing_state_keys=frozenset(),
+    )
+
+    assert policy_variant._action_expert_initialized is True
+
+
+def test_dual_expert_partial_checkpoint_does_not_finalize_lazy_expert() -> None:
+    _, pipeline = _build_dual_expert_packed_smoke_pipeline()
+    policy_variant = pipeline.policy_variant
+    policy_variant._action_expert_initialized = False
+    action_keys = frozenset(
+        key
+        for key in pipeline.state_dict()
+        if key.startswith("policy_variant.action_expert.")
+    )
+    missing_key = next(iter(action_keys))
+
+    pipeline.on_checkpoint_loaded(
+        loaded_state_keys=action_keys - {missing_key},
+        missing_state_keys=frozenset({missing_key}),
+    )
+
+    assert policy_variant._action_expert_initialized is False
 
 
 def test_packed_coupling_combined_selector_trains_both_sides() -> None:
@@ -342,15 +437,40 @@ class _TinyGeneralistModePipeline(nn.Module):
         self.policy_variant = nn.Module()
         self.policy_variant.config = ParallelStreamPolicyConfig(
             hidden_size=16,
-            runtime_mode=ParallelRuntimeMode.LINGBOT_EXACT_ACTION_CONDITIONED,
-            variant_profile="generalist_joint_denoising",
-            current_block_coupling=CurrentBlockCoupling.JOINT,
-            video_condition_on_action=True,
-            generalist_training_paradigm=GeneralistTrainingParadigm.DYNAMICS_ROUTED,
+            program=VideoActionProgram.GENERALIST_JOINT_DENOISING,
             generalist_mode_text_token=True,
         )
         self.policy_variant.proj = nn.Linear(1, 1)
         self.action_decoder = nn.Linear(1, 1)
+
+
+def test_conditioning_trainability_uses_assembled_core_capabilities() -> None:
+    pipeline = _TinyGeneralistModePipeline()
+    pipeline.visual_tower.core.configure_proprio_hidden_context_encoder(
+        enabled=True,
+        state_dim=2,
+    )
+    pipeline.policy_variant = nn.Linear(1, 1)
+    mode_encoder = pipeline.visual_tower.core.generalist_mode_context_encoder
+    proprio_encoder = pipeline.visual_tower.core.proprio_hidden_context_encoder
+    assert mode_encoder is not None
+    assert proprio_encoder is not None
+
+    report = apply_training_component_controls(
+        pipeline,
+        TrainingConfig(trainable_components=("policy_variant",)),
+    )
+
+    assert (
+        TrainingComponentSelector.VISUAL_TOWER_GENERALIST_MODE_CONTEXT_ENCODER
+        in report.trainable_components
+    )
+    assert (
+        TrainingComponentSelector.VISUAL_TOWER_PROPRIO_CONTEXT_ENCODER
+        in report.trainable_components
+    )
+    assert all(parameter.requires_grad for parameter in mode_encoder.parameters())
+    assert all(parameter.requires_grad for parameter in proprio_encoder.parameters())
 
 
 def test_generalist_mode_context_encoder_trains_with_frozen_backbone_selector() -> None:
@@ -374,8 +494,7 @@ def test_dual_expert_generalist_mode_context_encoder_trains_with_frozen_backbone
         hidden_size=16,
         attach_site=AttachSite.POST_VISUAL_CORE,
         program=VideoActionProgram.GENERALIST_JOINT_DENOISING,
-        generalist_denoising_mode_probs={GeneralistDenoisingMode.JOINT: 1.0},
-        generalist_mode_text_token=True,
+            generalist_mode_text_token=True,
     )
     encoder = pipeline.visual_tower.core.generalist_mode_context_encoder
     assert encoder is not None

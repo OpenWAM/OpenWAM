@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, fields, replace
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Protocol, runtime_checkable
 
 import torch
 from torch import nn
@@ -15,7 +15,6 @@ from open_wam.runtime.checkpoint_artifacts import (
     CheckpointSearchLayout,
     find_checkpoint_state_file,
 )
-
 
 _PRESERVED_BASE_DATA_FIELDS = frozenset(
     {
@@ -84,6 +83,16 @@ class CheckpointCompatibilityError(RuntimeError):
             f"pipeline ({'; '.join(details)}). Use the matching resolved config, or "
             "select `allow_partial` only for an intentional migration diagnostic."
         )
+
+
+@runtime_checkable
+class _CheckpointLoadLifecycle(Protocol):
+    def on_checkpoint_loaded(
+        self,
+        *,
+        loaded_state_keys: frozenset[str],
+        missing_state_keys: frozenset[str],
+    ) -> None: ...
 
 
 def resolve_checkpoint_file(path: str | Path) -> Path:
@@ -204,11 +213,11 @@ def load_pipeline_checkpoint(
         strict=resolved_compatibility
         is not CheckpointCompatibilityPolicy.ALLOW_PARTIAL,
     )
-    _mark_loaded_lazy_components_initialized(
-        pipeline,
-        loadable_state,
-        missing_keys=missing_keys,
-    )
+    if isinstance(pipeline, _CheckpointLoadLifecycle):
+        pipeline.on_checkpoint_loaded(
+            loaded_state_keys=frozenset(loadable_state),
+            missing_state_keys=frozenset(missing_keys),
+        )
     return report
 
 
@@ -240,26 +249,6 @@ def _checkpoint_shape_mismatches(
                 f"{key} (checkpoint={checkpoint_shape}, runtime={runtime_shape})"
             )
     return tuple(mismatches)
-
-
-def _mark_loaded_lazy_components_initialized(
-    pipeline: nn.Module,
-    state_dict: Mapping[str, torch.Tensor],
-    *,
-    missing_keys: tuple[str, ...] = (),
-) -> None:
-    policy_variant = getattr(pipeline, "policy_variant", None)
-    if policy_variant is None:
-        return
-    prefix = "policy_variant.action_expert."
-    has_action_expert_weights = any(key.startswith(prefix) for key in state_dict)
-    missing_action_expert_weights = any(key.startswith(prefix) for key in missing_keys)
-    if (
-        hasattr(policy_variant, "_action_expert_initialized")
-        and has_action_expert_weights
-        and not missing_action_expert_weights
-    ):
-        policy_variant._action_expert_initialized = True
 
 
 def find_checkpoint_resolved_config(path: str | Path | None) -> Path | None:

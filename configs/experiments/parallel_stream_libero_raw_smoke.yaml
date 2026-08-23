@@ -65,8 +65,8 @@ backbone:
 
 policy_variant:
   name: parallel_stream
+  program: video_then_action
   hidden_size: 256
-  runtime_mode: lingbot_exact
   reference_profile: libero
   frame_chunk_size: 4
   action_per_frame: 4

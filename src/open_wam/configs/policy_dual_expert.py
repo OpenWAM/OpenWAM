@@ -3,52 +3,19 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 from .enums import (
+    ActionDecoderName,
     AttachSite,
-    CurrentBlockCoupling,
     DualExpertActionExpertInitMode,
     DualExpertConditionMode,
     DualExpertPreset,
-    GeneralistDenoisingMode,
-    GeneralistTrainingParadigm,
     PolicyVariantName,
-    VideoActionProgram,
     coerce_fields,
 )
-from .policy_compatibility import resolve_legacy_policy_field
-from .policy_video_action import (
-    VideoActionPolicyConfig,
-    current_block_coupling_for_program,
-    fixed_conditioning_mode_for_program,
-    one_hot_conditioning_mode_probabilities,
-    validate_conditional_denoising_data_paradigm,
-)
-from .variant_semantics import coerce_probability_map
-
-
-def _coerce_generalist_denoising_mode_probs(
-    raw_value: object,
-) -> dict[GeneralistDenoisingMode, float] | None:
-    """Coerce an optional generalist denoising distribution.
-
-    When a mapping is provided, missing modes default to 0 and probabilities
-    are normalized to sum to one.
-    """
-
-    if raw_value is None:
-        return None
-    return coerce_probability_map(
-        raw_value,
-        enum_cls=GeneralistDenoisingMode,
-        field_name="generalist_denoising_mode_probs",
-    )
-
-
-# Historical direct-import alias.
-_coerce_mot_generalist_training_mode_probs = _coerce_generalist_denoising_mode_probs
+from .policy_video_action import VideoActionPolicyConfig
 
 
 @dataclass(frozen=True)
@@ -64,7 +31,9 @@ class DualExpertPolicyConfig(VideoActionPolicyConfig):
     attach_site: AttachSite = AttachSite.POST_VISUAL_CORE
     preset: DualExpertPreset | None = None
     condition_mode: DualExpertConditionMode = DualExpertConditionMode.FIRST_FRAME
-    action_expert_init_mode: DualExpertActionExpertInitMode = DualExpertActionExpertInitMode.VIDEO_WEIGHT_COPY
+    action_expert_init_mode: DualExpertActionExpertInitMode = (
+        DualExpertActionExpertInitMode.VIDEO_WEIGHT_COPY
+    )
     video_prefix_frames: int = 1
     teacher_forcing_video_noise_prob: float = 0.5
     num_action_layers: int = 30
@@ -77,24 +46,10 @@ class DualExpertPolicyConfig(VideoActionPolicyConfig):
     # activations. Only affects two-stream train paths that run through
     # `forward_joint_video_action_denoise`.
     use_activation_checkpointing: bool = False
-    # Prefer reset-cache condition latents from latent datasets when available.
-    # This keeps train-time clean video conditioning aligned with live rollout
-    # observations while preserving fallback compatibility for datasets that
-    # have not been augmented yet.
-    # Constructor/load alias for checkpoint-era `mot` configs.
-    mot_generalist_training_mode_probs: dict[GeneralistDenoisingMode, float] | None = field(
-        default=None,
-        repr=False,
-        compare=False,
-    )
 
     @property
-    def current_block_coupling(self) -> CurrentBlockCoupling:
-        """Low-level attention coupling derived from the public program."""
-
-        if self.program is None:  # guarded by ``__post_init__``
-            raise RuntimeError("DualExpert program has not been resolved.")
-        return current_block_coupling_for_program(self.program)
+    def default_action_decoder(self) -> ActionDecoderName:
+        return ActionDecoderName.DUAL_EXPERT
 
     def normalize_config_override_values(
         self, values: Mapping[str, Any]
@@ -116,28 +71,6 @@ class DualExpertPolicyConfig(VideoActionPolicyConfig):
 
     def __post_init__(self) -> None:
         super().__post_init__()
-        if self.program is None:
-            raise ValueError(
-                "DualExpert policy requires an explicit `policy_variant.program`; "
-                "runtime modes and direct coupling controls are not part of the public contract."
-            )
-        resolved_generalist_probs = resolve_legacy_policy_field(
-            canonical_value=self.generalist_denoising_mode_probs,
-            legacy_value=self.mot_generalist_training_mode_probs,
-            canonical_default=None,
-            canonical_name="generalist_denoising_mode_probs",
-            legacy_name="mot_generalist_training_mode_probs",
-        )
-        fixed_conditioning_mode = fixed_conditioning_mode_for_program(self.program)
-        if fixed_conditioning_mode is not None and resolved_generalist_probs is None:
-            resolved_generalist_probs = one_hot_conditioning_mode_probabilities(
-                fixed_conditioning_mode
-            )
-        object.__setattr__(
-            self,
-            "generalist_denoising_mode_probs",
-            resolved_generalist_probs,
-        )
         if self.attach_site != AttachSite.POST_VISUAL_CORE:
             raise ValueError(
                 "DualExpert policy requires `attach_site = post_visual_core`, "
@@ -175,67 +108,7 @@ class DualExpertPolicyConfig(VideoActionPolicyConfig):
                 "action_expert_init_mode": DualExpertActionExpertInitMode,
             },
             optional_enum_fields={"preset": DualExpertPreset},
-            transforms={
-                "generalist_denoising_mode_probs": _coerce_generalist_denoising_mode_probs,
-            },
         )
-        object.__setattr__(
-            self,
-            "mot_generalist_training_mode_probs",
-            None,
-        )
-        validate_conditional_denoising_data_paradigm(
-            probabilities=self.generalist_denoising_mode_probs,
-            paradigm=self.generalist_training_paradigm,
-        )
-        if self.generalist_denoising_mode_probs is not None:
-            if (
-                self.program != VideoActionProgram.GENERALIST_JOINT_DENOISING
-                and fixed_conditioning_mode is None
-            ):
-                raise ValueError(
-                    "`generalist_denoising_mode_probs` is owned by "
-                    "`program = generalist_joint_denoising`; standard programs "
-                    "cannot opt into GJD implicitly."
-                )
-            if self.current_block_coupling != CurrentBlockCoupling.JOINT:
-                raise ValueError(
-                    "`generalist_denoising_mode_probs` requires `current_block_coupling = joint`, "
-                    f"got current_block_coupling={self.current_block_coupling!r}."
-                )
-        elif self.program == VideoActionProgram.GENERALIST_JOINT_DENOISING:
-            raise ValueError(
-                "`program = generalist_joint_denoising` requires "
-                "`generalist_denoising_mode_probs`."
-            )
-        if fixed_conditioning_mode is not None:
-            expected_probs = one_hot_conditioning_mode_probabilities(
-                fixed_conditioning_mode
-            )
-            if self.generalist_denoising_mode_probs != expected_probs:
-                raise ValueError(
-                    f"`program = {self.program.value}` owns a fixed one-hot "
-                    f"{fixed_conditioning_mode.value!r} conditioning mode; do not set a "
-                    "conflicting `generalist_denoising_mode_probs` distribution."
-                )
-            if bool(self.generalist_mode_text_token):
-                raise ValueError(
-                    f"`program = {self.program.value}` does not use a GJD mode token; "
-                    "set `generalist_mode_text_token = false`."
-                )
-        if bool(self.generalist_mode_text_token) and self.generalist_denoising_mode_probs is None:
-            raise ValueError(
-                "`generalist_mode_text_token = true` requires `generalist_denoising_mode_probs` "
-                "so the runtime has a sampled or forced GJD mode token."
-            )
-        if (
-            self.generalist_training_paradigm == GeneralistTrainingParadigm.DYNAMICS_ROUTED
-            and self.generalist_denoising_mode_probs is None
-        ):
-            raise ValueError(
-                "`generalist_training_paradigm = dynamics_routed` requires "
-                "`generalist_denoising_mode_probs` so the runtime can consume forced GJD modes."
-            )
 
 
 __all__ = [

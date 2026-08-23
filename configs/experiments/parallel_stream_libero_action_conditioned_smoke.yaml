@@ -65,8 +65,8 @@ backbone:
 policy_variant:
   # parallel-stream exact runtime where video denoising can also attend to action tokens
   name: parallel_stream
+  program: joint
   hidden_size: 256
-  runtime_mode: lingbot_exact_action_conditioned
   reference_profile: libero_joint
   frame_chunk_size: 4
   action_per_frame: 4
@@ -74,10 +74,9 @@ policy_variant:
   sequence_order: [video_noisy, video_condition, action_noisy, action_condition]
   mask_mode: lingbot_chunked
   cache_mode: metadata_only
-  video_condition_on_action: true
   video_action_condition_source: noisy_action
   video_action_attention_scope: block_local
-  joint_timestep_coupling: match_sigma
+  joint_timestep_coupling: independent
 
 action_decoder:
   name: parallel_stream_decoder

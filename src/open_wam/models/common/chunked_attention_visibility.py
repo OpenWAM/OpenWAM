@@ -63,6 +63,54 @@ def _previous_boundary_frame_ids(
     return int(chunk_origin_frame) + chunk_ids * max(1, int(chunk_size)) - 1
 
 
+def align_frame_context_to_previous_chunk_boundary(
+    frame_context: torch.Tensor,
+    *,
+    num_frames: int,
+    chunk_origin_frame: int,
+    chunk_size: int,
+) -> torch.Tensor:
+    """Project frame context onto the causal boundary visible to each chunk."""
+
+    if frame_context.ndim != 3:
+        raise ValueError(
+            "Chunk-boundary frame context expects shape [B, frames, D], "
+            f"got {tuple(frame_context.shape)}."
+        )
+    num_frames = int(num_frames)
+    if num_frames < 0:
+        raise ValueError(f"Chunk-boundary frame count must be non-negative, got {num_frames}.")
+    context_frames = int(frame_context.shape[1])
+    if context_frames <= 0 and num_frames > 0:
+        raise ValueError("Chunk-boundary frame context requires at least one source frame.")
+
+    frame_ids = torch.arange(
+        num_frames,
+        device=frame_context.device,
+        dtype=torch.long,
+    )
+    # Frames before the first target chunk, including an in-sequence singleton
+    # t0, use the earliest available causal boundary.
+    boundary_ids = _previous_boundary_frame_ids(
+        frame_ids.clamp_min(int(chunk_origin_frame)),
+        chunk_origin_frame=int(chunk_origin_frame),
+        chunk_size=int(chunk_size),
+    )
+    aligned = frame_context.new_zeros(
+        frame_context.shape[0],
+        num_frames,
+        frame_context.shape[2],
+    )
+    valid = boundary_ids >= 0
+    if bool(valid.any()):
+        source_ids = boundary_ids[valid].clamp(
+            min=0,
+            max=context_frames - 1,
+        )
+        aligned[:, valid, :] = frame_context.index_select(dim=1, index=source_ids)
+    return aligned
+
+
 def _build_chunked_self_attention_visibility(
     *,
     q_seq: torch.Tensor,

@@ -73,19 +73,19 @@ data:
     include_gripper: true
     gripper_representation: action_command
     gripper_action_index: -1
-  # Default GJD mixed-dynamics sampler. Keep this in parity with the maintained
-  # dual-expert full-segment W64 joint recipe: replacement source draws,
-  # uniform weights, no extra conditional-history cap.
-  generalist_dynamics_mixture:
+  # Default GJD mixed-dynamics sampler. Joint rows use ordinary planning data;
+  # conditional real/CF rows select gt/perturbed views from the rollout-local
+  # encoded roots. Routes are the sole source/mode sampling authority.
+  dynamics_routing:
     train_latent_root: "${paths.datasets.libero_gjd_counterfactual_train_latent_root}"
     val_latent_root: "${paths.datasets.libero_gjd_counterfactual_val_latent_root}"
     allow_train_latent_root_for_val: false
-    real_joint_weight: 0.6
-    real_action_conditioned_video_weight: 0.1
-    real_video_conditioned_action_weight: 0.1
-    counterfactual_action_conditioned_video_weight: 0.1
-    counterfactual_video_conditioned_action_weight: 0.1
-    conditional_history_frames: null
+    routes:
+      - {source: real_demo, mode: joint, weight: 0.6}
+      - {source: real_demo, mode: action_conditioned_video, weight: 0.1}
+      - {source: real_demo, mode: video_conditioned_action, weight: 0.1}
+      - {source: counterfactual_dynamics, mode: action_conditioned_video, weight: 0.1}
+      - {source: counterfactual_dynamics, mode: video_conditioned_action, weight: 0.1}
 
 backbone:
   implementation: shared_transformer
@@ -110,9 +110,6 @@ policy_variant:
   # place the clean supplied modality in its normal noisy slot at timestep 0 and
   # mask that modality's loss.
   name: parallel_stream
-  runtime_mode: lingbot_exact_action_conditioned
-  variant_profile: generalist_joint_denoising
-  generalist_training_paradigm: dynamics_routed
   program: generalist_joint_denoising
   # Real-joint samples use the same planning prefix contract as the shipped
   # joint program. Dynamics-routed FDM/IDM samples retain their target-only t0
@@ -126,7 +123,6 @@ policy_variant:
   sequence_order: [video_noisy, video_condition, action_noisy, action_condition]
   mask_mode: lingbot_chunked
   cache_mode: metadata_only
-  video_condition_on_action: true
   video_action_condition_source: noisy_action
   video_action_attention_scope: block_local
   noisy_video_condition_prob: 0.5
@@ -134,11 +130,6 @@ policy_variant:
   # standard dual-expert W64 joint baseline. Use `match_sigma` only for a
   # sigma-matched ablation.
   joint_timestep_coupling: independent
-  preserve_video_pretrain_history: true
-  generalist_denoising_mode_probs:
-    joint: 0.6
-    action_conditioned_video: 0.2
-    video_conditioned_action: 0.2
   # Ablation knob. Leave false for vanilla/pure-joint; set true for the
   # explicit mode-token parallel-stream GJD ablation.
   generalist_mode_text_token: false

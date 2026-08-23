@@ -5,9 +5,6 @@ from __future__ import annotations
 import numpy as np
 import torch
 
-from open_wam.evals.libero_dual_expert_runtime import (
-    _validate_live_sim_dual_expert_generalist_rollout_mode,
-)
 from open_wam.integrations import build_libero_state_history
 from open_wam.models.policy_variants import PolicyInferContext
 
@@ -21,7 +18,6 @@ def _build_infer_context(
     runtime_device: torch.device,
     dual_expert_inference_window_size: int | None,
     dual_expert_action_only_rollout: bool,
-    dual_expert_generalist_rollout_mode: str | None,
     dual_expert_rollout_frame_chunk_size: int | None = None,
 ):
     extra: dict[str, object] = {
@@ -34,10 +30,6 @@ def _build_infer_context(
         extra["dual_expert_rollout_frame_chunk_size"] = int(dual_expert_rollout_frame_chunk_size)
     if dual_expert_action_only_rollout:
         extra["dual_expert_action_only_rollout"] = True
-    if dual_expert_generalist_rollout_mode is not None:
-        _validate_live_sim_dual_expert_generalist_rollout_mode(dual_expert_generalist_rollout_mode)
-        extra["action_conditioning_mode"] = str(dual_expert_generalist_rollout_mode)
-        extra["dual_expert_generalist_rollout_mode"] = str(dual_expert_generalist_rollout_mode)
     return PolicyInferContext(
         state=build_libero_state_history(
             model_obs_window,

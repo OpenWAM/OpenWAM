@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import torch
 
-from open_wam.configs.enums import GeneralistDenoisingMode
+from open_wam.configs.enums import DynamicsObjective
 from open_wam.configs.policy_parallel_stream import ParallelStreamPolicyConfig
+from open_wam.models.common.dynamics_conditioning import (
+    append_dynamics_mode_context_token,
+)
 
 
 def append_generalist_mode_text_context(
@@ -14,29 +17,21 @@ def append_generalist_mode_text_context(
     policy_config: ParallelStreamPolicyConfig,
     text_emb: torch.Tensor,
     negative_text_emb: torch.Tensor | None,
-    mode: GeneralistDenoisingMode | str,
+    mode: DynamicsObjective | str,
 ) -> tuple[torch.Tensor, torch.Tensor | None]:
-    if not bool(getattr(policy_config, "generalist_mode_text_token", False)):
+    if not bool(policy_config.generalist_mode_text_token):
         return text_emb, negative_text_emb
-    append = getattr(transformer, "append_generalist_mode_context_token", None)
-    if not callable(append):
-        raise ValueError(
-            "Generalist mode text-token ablation requires the runtime transformer "
-            "to support mode-token appending."
-        )
-    mode_value = GeneralistDenoisingMode(mode).value
-    base_text_tokens = int(text_emb.shape[1])
-    text_emb = append(text_emb, mode_value)
-    token_count = int(text_emb.shape[1] - base_text_tokens)
-    if token_count != 1:
-        raise ValueError(
-            "Generalist mode text-token ablation expects the runtime transformer "
-            f"to append exactly one token, got {token_count}."
-        )
+    text_emb, token_count = append_dynamics_mode_context_token(
+        transformer,
+        text_emb,
+        mode,
+    )
     if negative_text_emb is not None:
-        base_negative_tokens = int(negative_text_emb.shape[1])
-        negative_text_emb = append(negative_text_emb, mode_value)
-        negative_token_count = int(negative_text_emb.shape[1] - base_negative_tokens)
+        negative_text_emb, negative_token_count = append_dynamics_mode_context_token(
+            transformer,
+            negative_text_emb,
+            mode,
+        )
         if negative_token_count != token_count:
             raise ValueError(
                 "Generalist mode text-token ablation expects conditioned and CFG-negative "

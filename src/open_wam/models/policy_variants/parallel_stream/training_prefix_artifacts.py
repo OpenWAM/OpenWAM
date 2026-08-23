@@ -9,13 +9,15 @@ from open_wam.configs.backbone import (
     SharedVideoTransformerConfig,
     resolve_stage_attention_mode,
 )
-from open_wam.configs.enums import (
-    GeneralistDenoisingMode,
-    JointTimestepCoupling,
-    ParallelStreamVariantProfile,
-)
+from open_wam.configs.enums import DynamicsObjective, JointTimestepCoupling
 from open_wam.configs.policy_parallel_stream import ParallelStreamPolicyConfig
 from open_wam.configs.training import TrainingConfig
+from open_wam.contracts import SampleConstructionMetadata
+from open_wam.models.common.dynamics_objectives import (
+    DynamicsSamplePlan,
+    compile_dynamics_training_plan,
+    resolve_dynamics_sample_plan,
+)
 from open_wam.models.common.flow_noise_plan import (
     clean_timestep_values,
     sample_joint_denoise_timestep_values,
@@ -23,8 +25,8 @@ from open_wam.models.common.flow_noise_plan import (
 from open_wam.models.common.flow_schedule import FlowMatchScheduler
 from open_wam.models.visual_tower.reference_transformer import preferred_reference_dtype
 
-from .generalist_training import (
-    apply_generalist_legacy_prefix_joint_training_mode as _apply_generalist_legacy_prefix_joint_training_mode,
+from .dynamics_training import (
+    apply_parallel_prefix_dynamics_training_plan,
 )
 from .runtime_semantics import (
     attention_profile_name_for_current_block_coupling as _attention_profile_name_for_current_block_coupling,
@@ -59,9 +61,8 @@ def prepare_parallel_prefix_condition_exact_train_artifacts(
     chunk_origin_frame: int = 0,
     singleton_chunk_frame: int | None = None,
     conditional_history_policy: str | None = None,
-    generalist_training_mode_override: GeneralistDenoisingMode | str | None = None,
-    generalist_drop_text_conditioning: bool | None = None,
-    generalist_training_source: str | None = None,
+    sample_metadata: SampleConstructionMetadata | None = None,
+    dynamics_sample_plan: DynamicsSamplePlan | None = None,
 ) -> ParallelTrainArtifacts:
     """Build exact train artifacts with one clean single-frame video prefix."""
 
@@ -267,9 +268,6 @@ def prepare_parallel_prefix_condition_exact_train_artifacts(
             else int(singleton_chunk_frame),
             "conditional_history_policy": conditional_history_policy,
             "attention_profile_name": attention_profile_name,
-            "preserve_video_pretrain_history": bool(
-                getattr(policy_config, "preserve_video_pretrain_history", False)
-            ),
             "history_stream_visibility": resolve_parallel_history_stream_visibility(
                 policy_config
             ).value,
@@ -289,16 +287,30 @@ def prepare_parallel_prefix_condition_exact_train_artifacts(
         latent_scheduler=latent_scheduler,
         action_scheduler=action_scheduler,
     )
-    if (
-        policy_config.variant_profile
-        == ParallelStreamVariantProfile.GENERALIST_JOINT_DENOISING
-    ):
-        _apply_generalist_legacy_prefix_joint_training_mode(
+    if dynamics_sample_plan is None:
+        dynamics_sample_plan = resolve_dynamics_sample_plan(
+            program=policy_config.program,
+            sample_metadata=sample_metadata,
+        )
+    if dynamics_sample_plan is not None:
+        # External-prefix assembly can represent only the joint objective, so
+        # it compiles deterministically and does not consume a categorical RNG
+        # draw. Conditional plans are rejected by the adapter below.
+        dynamics_training_plan = compile_dynamics_training_plan(
+            objective=(
+                DynamicsObjective.JOINT
+                if dynamics_sample_plan.objective is None
+                else dynamics_sample_plan.objective
+            ),
+            routed_objective=dynamics_sample_plan.routed_objective,
+            drop_text_conditioning=dynamics_sample_plan.drop_text_conditioning,
+            source=dynamics_sample_plan.source,
+            sequence=dynamics_sample_plan.sequence,
+        )
+        apply_parallel_prefix_dynamics_training_plan(
             artifacts=artifacts,
             policy_config=policy_config,
-            training_mode_override=generalist_training_mode_override,
-            drop_text_conditioning=generalist_drop_text_conditioning,
-            training_source=generalist_training_source,
+            plan=dynamics_training_plan,
         )
     return artifacts
 

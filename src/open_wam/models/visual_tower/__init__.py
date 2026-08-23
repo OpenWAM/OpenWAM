@@ -32,13 +32,12 @@ from .runtime_parameter_ops import (
 )
 from .runtime_programs import (
     RuntimeProgramSpec,
+    RuntimeSequenceFamily,
     RuntimeStepInput,
     RuntimeStepOutput,
     build_chunked_dual_stream_exact_inference_program,
     build_chunked_dual_stream_exact_train_program,
     build_dense_runtime_program,
-    build_parallel_stream_exact_inference_program,
-    build_parallel_stream_exact_train_program,
     build_single_stream_exact_runtime_program,
 )
 from .shared_transformer_embeddings import (
@@ -56,6 +55,7 @@ from .tower import VisualTower
 __all__ = [
     "RuntimeCacheLifecycle",
     "RuntimeProgramSpec",
+    "RuntimeSequenceFamily",
     "RuntimeStepInput",
     "RuntimeStepOutput",
     "SharedTransformerAttention",
@@ -73,8 +73,6 @@ __all__ = [
     "build_chunked_dual_stream_exact_inference_program",
     "build_chunked_dual_stream_exact_train_program",
     "build_dense_runtime_program",
-    "build_parallel_stream_exact_inference_program",
-    "build_parallel_stream_exact_train_program",
     "build_reference_mesh_id",
     "build_reference_transformer",
     "build_single_stream_exact_runtime_program",

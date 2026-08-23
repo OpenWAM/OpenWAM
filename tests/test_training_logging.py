@@ -5,7 +5,12 @@ from dataclasses import replace
 from pathlib import Path
 
 import open_wam.training.logging as logging_module
-from open_wam.configs import load_experiment_config
+from open_wam.configs import (
+    DynamicsRouteConfig,
+    DynamicsSource,
+    SampleOrderMode,
+    load_experiment_config,
+)
 from open_wam.training.logging import WandBLogSink
 from open_wam.training.run_tracking import (
     build_default_wandb_project,
@@ -85,7 +90,7 @@ def test_run_tracking_metadata_uses_policy_architectures(tmp_path: Path) -> None
         assert metadata["experiment_name"] == config.name
         assert metadata["run_name"] == config.name
         assert metadata["run_slug"] == config.name
-        assert metadata["tracking_schema_version"] == 2
+        assert metadata["tracking_schema_version"] == 4
         assert metadata["architecture"] == expected_architecture
         assert metadata["policy_variant"] == expected_architecture
         assert metadata["run_title"] == build_run_title(metadata)
@@ -244,7 +249,16 @@ def test_parallel_stream_program_and_segment_sampling_are_tracked(tmp_path: Path
     assert not any(tag.startswith("gjd:") for tag in tags)
 
 
-def test_non_default_sample_order_is_tracked(tmp_path: Path) -> None:
+def test_default_replacement_sample_order_is_tracked(tmp_path: Path) -> None:
+    config = load_experiment_config(REPO_ROOT / "configs/experiments/parallel_stream_robotwin_smoke.yaml")
+
+    metadata = build_run_tracking_metadata(config, run_name=config.name, output_dir=tmp_path / config.name)
+
+    assert metadata["sample_order_mode"] == "replacement"
+    assert "sample_order:replacement" in build_wandb_tags(metadata)
+
+
+def test_explicit_epoch_sample_order_is_tracked(tmp_path: Path) -> None:
     config = load_experiment_config(REPO_ROOT / "configs/experiments/parallel_stream_robotwin_smoke.yaml")
     config = replace(
         config,
@@ -252,15 +266,15 @@ def test_non_default_sample_order_is_tracked(tmp_path: Path) -> None:
             config.data,
             sample_construction=replace(
                 config.data.sample_construction,
-                sample_order_mode="replacement",
+                sample_order_mode=SampleOrderMode.EPOCH_ORDER,
             ),
         ),
     )
 
     metadata = build_run_tracking_metadata(config, run_name=config.name, output_dir=tmp_path / config.name)
 
-    assert metadata["sample_order_mode"] == "replacement"
-    assert "sample_order:replacement" in build_wandb_tags(metadata)
+    assert metadata["sample_order_mode"] == "epoch_order"
+    assert "sample_order:epoch_order" in build_wandb_tags(metadata)
 
 
 def test_parallel_stream_generalist_joint_denoising_tracking_metadata(tmp_path: Path) -> None:
@@ -276,10 +290,10 @@ def test_parallel_stream_generalist_joint_denoising_tracking_metadata(tmp_path: 
 
     assert metadata["architecture"] == "parallel_stream"
     assert metadata["program"] == "generalist_joint_denoising"
-    assert metadata["variant_profile"] == "generalist_joint_denoising"
     assert metadata["gjd_ablation"] == "mode_token"
     assert metadata["generalist_mode_text_token"] is True
-    assert metadata["generalist_denoising_mode_probs"] == {
+    assert metadata["history_stream_visibility"] == "video_only"
+    assert metadata["dynamics_objective_probabilities"] == {
         "joint": 0.6,
         "action_conditioned_video": 0.2,
         "video_conditioned_action": 0.2,
@@ -290,9 +304,9 @@ def test_parallel_stream_generalist_joint_denoising_tracking_metadata(tmp_path: 
     )
     assert "gjd:mode_token" in build_run_title(metadata)
     tags = build_wandb_tags(metadata)
-    assert "variant_profile:generalist_joint_denoising" in tags
     assert "gjd:parallel_stream:mode_token" in tags
     assert "generalist_mode_text_token" in tags
+    assert "history_visibility:video_only" in tags
 
 
 def test_dual_expert_generalist_joint_denoising_tracking_metadata(tmp_path: Path) -> None:
@@ -309,7 +323,7 @@ def test_dual_expert_generalist_joint_denoising_tracking_metadata(tmp_path: Path
     assert metadata["program"] == "generalist_joint_denoising"
     assert metadata["gjd_ablation"] == "mode_token"
     assert metadata["generalist_mode_text_token"] is True
-    assert metadata["generalist_denoising_mode_probs"] == {
+    assert metadata["dynamics_objective_probabilities"] == {
         "joint": 0.6,
         "action_conditioned_video": 0.2,
         "video_conditioned_action": 0.2,
@@ -334,18 +348,22 @@ def test_pure_conditional_gjd_tracking_preserves_gjd_identity(tmp_path: Path) ->
     )
 
     for ablation, selected_mode in cases:
-        probabilities = {
-            "joint": 0.0,
-            "action_conditioned_video": float(selected_mode == "action_conditioned_video"),
-            "video_conditioned_action": float(selected_mode == "video_conditioned_action"),
-        }
         config = replace(
             base,
-            policy_variant=replace(
-                base.policy_variant,
-                generalist_denoising_mode_probs=probabilities,
-                generalist_mode_text_token=False,
+            data=replace(
+                base.data,
+                dynamics_routing=replace(
+                    base.data.dynamics_routing,
+                    routes=(
+                        DynamicsRouteConfig(
+                            source=DynamicsSource.REAL_DEMO,
+                            mode=selected_mode,
+                            weight=1.0,
+                        ),
+                    ),
+                ),
             ),
+            policy_variant=replace(base.policy_variant, generalist_mode_text_token=False),
         )
         metadata = build_run_tracking_metadata(
             config,
@@ -355,7 +373,8 @@ def test_pure_conditional_gjd_tracking_preserves_gjd_identity(tmp_path: Path) ->
 
         assert metadata["program"] == "generalist_joint_denoising"
         assert metadata["gjd_ablation"] == ablation
-        assert metadata["fixed_conditioning_mode"] == selected_mode
+        assert metadata["fixed_conditioning_mode"] is None
+        assert metadata["dynamics_objective_probabilities"][selected_mode] == 1.0
         assert f"gjd:dual_expert:{ablation}" in build_wandb_tags(metadata)
 
 

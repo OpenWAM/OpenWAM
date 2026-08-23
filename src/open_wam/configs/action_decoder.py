@@ -10,7 +10,6 @@ from .data_contracts import DataConfig
 from .enums import ActionDecoderName, coerce_fields
 from .policy_compatibility import normalize_video_action_decoder_fields
 from .policy_contracts import PolicyVariantConfig
-from .policy_parallel_stream import ParallelStreamPolicyConfig
 
 
 @dataclass(frozen=True)
@@ -45,11 +44,15 @@ class ExtensionActionDecoderConfig(ActionDecoderConfig):
         if self.name != ActionDecoderName.EXTENSION:
             raise ValueError("Extension action decoder requires `name = extension`.")
         if not isinstance(self.extension_type, str) or not self.extension_type.strip():
-            raise ValueError("Extension action decoder requires a non-empty `extension_type` string.")
+            raise ValueError(
+                "Extension action decoder requires a non-empty `extension_type` string."
+            )
         if self.extension_type != self.extension_type.strip():
-            raise ValueError("Extension action decoder `extension_type` must not have surrounding whitespace.")
+            raise ValueError(
+                "Extension action decoder `extension_type` must not have surrounding whitespace."
+            )
         if not isinstance(self.options, Mapping):
-            raise ValueError("Extension action decoder `options` must be a mapping.")
+            raise TypeError("Extension action decoder `options` must be a mapping.")
         if not all(isinstance(key, str) for key in self.options):
             raise ValueError("Extension action decoder `options` keys must be strings.")
         object.__setattr__(self, "options", dict(self.options))
@@ -99,29 +102,19 @@ def parse_action_decoder_config(
 ) -> ActionDecoderConfig:
     resolved_raw = normalize_video_action_decoder_fields(action_decoder_raw)
     if not resolved_raw:
-        if policy_variant_config.name == config_enums.PolicyVariantName.DUAL_EXPERT:
-            resolved_raw["name"] = config_enums.ActionDecoderName.DUAL_EXPERT
-        elif policy_variant_config.name == config_enums.PolicyVariantName.CAUSAL_VIDEO_PREDICTION:
-            resolved_raw["name"] = config_enums.ActionDecoderName.VIDEO_ONLY
-        elif (
-            policy_variant_config.name == config_enums.PolicyVariantName.PARALLEL_STREAM
-            and isinstance(policy_variant_config, ParallelStreamPolicyConfig)
-            and policy_variant_config.runtime_mode
-            in {
-                config_enums.ParallelRuntimeMode.LINGBOT_EXACT,
-                config_enums.ParallelRuntimeMode.LINGBOT_EXACT_ACTION_CONDITIONED,
-            }
-        ):
-            resolved_raw["name"] = config_enums.ActionDecoderName.PARALLEL_STREAM
-        else:
+        default_decoder = policy_variant_config.default_action_decoder
+        if default_decoder is None:
             raise ValueError(
                 "Experiment config requires an explicit `action_decoder` mapping for this policy."
             )
+        resolved_raw["name"] = default_decoder
 
     name = _coerce_enum(config_enums.ActionDecoderName, resolved_raw["name"])
     hidden_size = resolved_raw.get("hidden_size", policy_variant_config.hidden_size)
     action_dim = resolved_raw.get("action_dim", data_config.action_schema.action_dim)
-    action_horizon = resolved_raw.get("action_horizon", data_config.action_schema.action_horizon)
+    action_horizon = resolved_raw.get(
+        "action_horizon", data_config.action_schema.action_horizon
+    )
     dropout = resolved_raw.get("dropout", 0.0)
 
     if name == config_enums.ActionDecoderName.PARALLEL_STREAM:
@@ -130,7 +123,9 @@ def parse_action_decoder_config(
             action_dim=action_dim,
             action_horizon=action_horizon,
             dropout=dropout,
-            recovered_osc_loss_weight=resolved_raw.get("recovered_osc_loss_weight", 0.0),
+            recovered_osc_loss_weight=resolved_raw.get(
+                "recovered_osc_loss_weight", 0.0
+            ),
             recovered_osc_position_scale=resolved_raw.get(
                 "recovered_osc_position_scale",
                 ParallelStreamActionDecoderConfig.recovered_osc_position_scale,

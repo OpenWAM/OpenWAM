@@ -99,7 +99,7 @@ policy_variant:
   preset: fastwam_joint
   program: video_noisy_to_action
   sequence_contract: legacy_prefix_single_frame_perchunk_proprio
-  joint_timestep_coupling: match_sigma
+  joint_timestep_coupling: independent
   condition_mode: teacher_forcing_cond_video
   video_prefix_frames: 1
   action_expert_init_mode: video_weight_interpolate

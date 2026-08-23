@@ -10,8 +10,7 @@ import pytest
 from open_wam.configs import (
     BatchAdapterName,
     ContextConditionLatentSource,
-    GeneralistDenoisingMode,
-    GeneralistTrainingParadigm,
+    DynamicsObjective,
     HistoryStreamVisibility,
     JointTimestepCoupling,
     LoopPolicyName,
@@ -326,10 +325,7 @@ def test_cli_legacy_prefix_contract_override_restores_target_only_sampling() -> 
     assert config.data.sample_construction.target_alignment == SampleTargetAlignment.LEGACY
     assert config.data.sample_construction.condition_source_frame_offset == -1
 
-
-
-
-def test_cli_legacy_prefix_contract_allows_scheduler_override() -> None:
+def test_cli_staged_program_rejects_joint_scheduler_override() -> None:
     overrides = TrainCliOverrides(
         config_name="parallel_stream_libero_video_then_action",
         overrides=(
@@ -338,9 +334,8 @@ def test_cli_legacy_prefix_contract_allows_scheduler_override() -> None:
         ),
     )
 
-    config = load_training_cli_config(overrides, env={})
-
-    assert config.policy_variant.joint_timestep_coupling == JointTimestepCoupling.SHARED_VIDEO_SCHEDULE
+    with pytest.raises(ValueError, match="requires.*independent"):
+        load_training_cli_config(overrides, env={})
 
 
 def test_cli_legacy_prefix_contract_allows_noisy_condition_prob_override() -> None:
@@ -357,7 +352,7 @@ def test_cli_legacy_prefix_contract_allows_noisy_condition_prob_override() -> No
     assert config.policy_variant.noisy_video_condition_prob == 0.0
 
 
-def test_cli_legacy_prefix_contract_defaults_joint_coupling_to_independent() -> None:
+def test_cli_sequence_contract_preserves_program_clock_default() -> None:
     overrides = TrainCliOverrides(
         config_name="dual_expert_libero_joint",
         overrides=(
@@ -398,6 +393,24 @@ def test_cli_legacy_prefix_contract_allows_match_sigma_joint_coupling_override()
     assert config.policy_variant.joint_timestep_coupling == JointTimestepCoupling.MATCH_SIGMA
 
 
+@pytest.mark.parametrize(
+    "override",
+    (
+        "policy_variant.parallel_sequence_contract=legacy_prefix_single_frame_perchunk_proprio",
+        "policy_variant.couple_action_to_video_timesteps=false",
+    ),
+)
+def test_cli_rejects_retired_policy_semantic_aliases(override: str) -> None:
+    with pytest.raises(ValueError, match="retired in authored configs"):
+        load_training_cli_config(
+            TrainCliOverrides(
+                config_name="dual_expert_libero_joint",
+                overrides=(override,),
+            ),
+            env={},
+        )
+
+
 def test_cli_contract_override_rejects_managed_field_override() -> None:
     overrides = TrainCliOverrides(
         config_name="parallel_stream_libero_decoupled_same_step",
@@ -435,45 +448,25 @@ def test_package_train_cli_expresses_documented_pure_fdm_gjd_preset() -> None:
                 "dual_expert_libero_generalist_joint_denoising",
                 "--set",
                 (
-                    "policy_variant.generalist_denoising_mode_probs="
-                    "{joint: 0, action_conditioned_video: 1, "
-                    "video_conditioned_action: 0}"
+                    "data.dynamics_routing.routes="
+                    "[{source: real_demo, mode: action_conditioned_video, weight: 3}, "
+                    "{source: counterfactual_dynamics, mode: action_conditioned_video, weight: 1}]"
                 ),
                 "--set",
                 "policy_variant.generalist_mode_text_token=false",
-                "--set",
-                "policy_variant.generalist_training_paradigm=dynamics_routed",
-                "--set",
-                "data.generalist_dynamics_mixture.real_joint_weight=0",
-                "--set",
-                "data.generalist_dynamics_mixture.real_action_conditioned_video_weight=3",
-                "--set",
-                "data.generalist_dynamics_mixture.real_video_conditioned_action_weight=0",
-                "--set",
-                "data.generalist_dynamics_mixture.counterfactual_action_conditioned_video_weight=1",
-                "--set",
-                "data.generalist_dynamics_mixture.counterfactual_video_conditioned_action_weight=0",
             ]
         ),
         env={},
     )
 
-    assert config.policy_variant.generalist_denoising_mode_probs == {
-        GeneralistDenoisingMode.JOINT: 0.0,
-        GeneralistDenoisingMode.ACTION_CONDITIONED_VIDEO: 1.0,
-        GeneralistDenoisingMode.VIDEO_CONDITIONED_ACTION: 0.0,
+    mixture = config.data.dynamics_routing
+    assert mixture.mode_probabilities() == {
+        DynamicsObjective.JOINT: 0.0,
+        DynamicsObjective.ACTION_CONDITIONED_VIDEO: 1.0,
+        DynamicsObjective.VIDEO_CONDITIONED_ACTION: 0.0,
     }
-    assert (
-        config.policy_variant.generalist_training_paradigm
-        == GeneralistTrainingParadigm.DYNAMICS_ROUTED
-    )
     assert config.policy_variant.generalist_mode_text_token is False
-    mixture = config.data.generalist_dynamics_mixture
-    assert mixture.real_joint_weight == 0.0
-    assert mixture.real_action_conditioned_video_weight == 3.0
-    assert mixture.real_video_conditioned_action_weight == 0.0
-    assert mixture.counterfactual_action_conditioned_video_weight == 1.0
-    assert mixture.counterfactual_video_conditioned_action_weight == 0.0
+    assert [route.weight for route in mixture.active_routes] == [3.0, 1.0]
 
 
 def test_default_resume_path_raises_when_checkpoint_root_is_empty(tmp_path: Path) -> None:

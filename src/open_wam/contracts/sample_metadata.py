@@ -1,23 +1,96 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
-
-GENERALIST_TRAINING_MODE_OVERRIDE_METADATA_KEY = "generalist_training_mode_override"
-GENERALIST_TRAINING_DROP_TEXT_METADATA_KEY = "generalist_drop_text_conditioning"
-GENERALIST_TRAINING_SOURCE_METADATA_KEY = "generalist_training_source"
-GENERALIST_TRAINING_BUCKET_METADATA_KEY = "generalist_training_bucket"
+# These wire keys are intentionally stable: existing encoded datasets and
+# immutable parity fixtures already contain them. Public Python names describe
+# the current generic routing contract without rewriting stored metadata.
+DYNAMICS_ROUTING_MODE_METADATA_KEY = "generalist_training_mode_override"
+DYNAMICS_ROUTING_DROP_TEXT_METADATA_KEY = "generalist_drop_text_conditioning"
+DYNAMICS_ROUTING_SOURCE_METADATA_KEY = "generalist_training_source"
+DYNAMICS_ROUTING_BUCKET_METADATA_KEY = "generalist_training_bucket"
+DYNAMICS_CONDITIONAL_LAYOUT_METADATA_KEY = "generalist_conditional_contract"
+DYNAMICS_CONDITIONAL_CHUNK_LAYOUT_METADATA_KEY = "generalist_gjd_chunk_contract"
+DYNAMICS_CONDITIONAL_HISTORY_POLICY_METADATA_KEY = (
+    "generalist_conditional_history_policy"
+)
+DYNAMICS_CONDITIONAL_LAYOUT_TARGET_ONLY_T0_PLUS_FUTURE = (
+    "target_only_t0_observation_plus_future"
+)
+DYNAMICS_CONDITIONAL_CHUNK_LAYOUT_T0_SINGLETON = "t0_singleton"
+DYNAMICS_CONDITIONAL_HISTORY_PREVIOUS_BOUNDARY_VIDEO_ONLY = (
+    "previous_boundary_video_only"
+)
+_TARGET_ALIGNMENT_NEXT_AFTER_CONTEXT = "next_after_context"
 
 
 @dataclass(frozen=True)
-class GeneralistTrainingSampleMetadata:
-    """Typed view over optional generalist-denoising metadata."""
+class DynamicsRoutingSampleMetadata:
+    """Typed view over optional dynamics-routing metadata."""
 
-    mode_override: Any | None = None
+    mode_override: str | None = None
     drop_text_conditioning: bool | None = None
     source: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ConditionalDynamicsSequenceLayout:
+    """Canonical frame and attention layout for conditional dynamics."""
+
+    history_frames: int = field(default=1, init=False)
+    loss_frame_start: int = field(default=1, init=False)
+    chunk_origin_frame: int = field(default=1, init=False)
+    singleton_chunk_frame: int = field(default=0, init=False)
+    context_prefix_frames: int = field(default=1, init=False)
+    history_policy: str = field(
+        default=DYNAMICS_CONDITIONAL_HISTORY_PREVIOUS_BOUNDARY_VIDEO_ONLY,
+        init=False,
+    )
+
+    def loss_frame_range(self, *, observed_num_frames: int) -> tuple[int, int]:
+        if int(observed_num_frames) <= self.loss_frame_start:
+            raise ValueError(
+                "Conditional dynamics requires one observed t0 frame and at "
+                "least one future frame, got "
+                f"observed_num_frames={observed_num_frames}."
+            )
+        return self.loss_frame_start, int(observed_num_frames)
+
+    def contract_metadata(self) -> dict[str, Any]:
+        """Serialize the invariant part of the target-only sequence contract."""
+
+        return {
+            DYNAMICS_CONDITIONAL_LAYOUT_METADATA_KEY: (
+                DYNAMICS_CONDITIONAL_LAYOUT_TARGET_ONLY_T0_PLUS_FUTURE
+            ),
+            DYNAMICS_CONDITIONAL_CHUNK_LAYOUT_METADATA_KEY: (
+                DYNAMICS_CONDITIONAL_CHUNK_LAYOUT_T0_SINGLETON
+            ),
+            DYNAMICS_CONDITIONAL_HISTORY_POLICY_METADATA_KEY: self.history_policy,
+            "history_frames": self.history_frames,
+            "loss_frame_start": self.loss_frame_start,
+            "latent_loss_frame_start": self.loss_frame_start,
+            "action_loss_frame_start": self.loss_frame_start,
+            "chunk_origin_frame": self.chunk_origin_frame,
+            "target_observation_frame_in_sample": self.singleton_chunk_frame,
+            "singleton_chunk_frame": self.singleton_chunk_frame,
+            "context_prefix_frames_in_sample": self.context_prefix_frames,
+        }
+
+    def to_metadata(self, *, observed_num_frames: int) -> dict[str, Any]:
+        """Serialize the complete contract for a materialized sample length."""
+
+        _, loss_frame_end = self.loss_frame_range(
+            observed_num_frames=observed_num_frames
+        )
+        return {
+            **self.contract_metadata(),
+            "loss_frame_end": loss_frame_end,
+            "latent_loss_frame_end": loss_frame_end,
+            "action_loss_frame_end": loss_frame_end,
+        }
 
 
 @dataclass(frozen=True)
@@ -30,7 +103,7 @@ class SampleConstructionMetadata:
     history_frames: int | None = None
     context_prefix_frames_in_sample: int | None = None
     frame_shift: int | None = None
-    generalist: GeneralistTrainingSampleMetadata = GeneralistTrainingSampleMetadata()
+    dynamics_routing: DynamicsRoutingSampleMetadata = DynamicsRoutingSampleMetadata()
 
     @classmethod
     def from_mapping(
@@ -39,10 +112,11 @@ class SampleConstructionMetadata:
     ) -> SampleConstructionMetadata | None:
         if metadata is None:
             return None
-        raw_source = metadata.get(GENERALIST_TRAINING_SOURCE_METADATA_KEY)
+        raw_mode = metadata.get(DYNAMICS_ROUTING_MODE_METADATA_KEY)
+        raw_source = metadata.get(DYNAMICS_ROUTING_SOURCE_METADATA_KEY)
         drop_text_conditioning = (
-            bool(metadata[GENERALIST_TRAINING_DROP_TEXT_METADATA_KEY])
-            if GENERALIST_TRAINING_DROP_TEXT_METADATA_KEY in metadata
+            bool(metadata[DYNAMICS_ROUTING_DROP_TEXT_METADATA_KEY])
+            if DYNAMICS_ROUTING_DROP_TEXT_METADATA_KEY in metadata
             else None
         )
         return cls(
@@ -58,9 +132,11 @@ class SampleConstructionMetadata:
                 metadata.get("context_prefix_frames_in_sample")
             ),
             frame_shift=_optional_int(metadata.get("frame_shift")),
-            generalist=GeneralistTrainingSampleMetadata(
-                mode_override=metadata.get(
-                    GENERALIST_TRAINING_MODE_OVERRIDE_METADATA_KEY
+            dynamics_routing=DynamicsRoutingSampleMetadata(
+                mode_override=(
+                    None
+                    if raw_mode is None
+                    else str(getattr(raw_mode, "value", raw_mode))
                 ),
                 drop_text_conditioning=drop_text_conditioning,
                 source=None if raw_source is None else str(raw_source),
@@ -145,6 +221,81 @@ class SampleConstructionMetadata:
             return None
         return min(self.sampled_chunk_size, int(observed_num_frames))
 
+    def chunk_origin_frame_for(self, *, observed_num_frames: int) -> int:
+        """Resolve the shared chunk-coordinate origin for one sample."""
+
+        explicit = self.raw.get("chunk_origin_frame")
+        if explicit is not None:
+            return int(explicit)
+        if self.raw.get("target_alignment") != _TARGET_ALIGNMENT_NEXT_AFTER_CONTEXT:
+            return 0
+        loss_start, _ = self.frame_range_or_default(
+            observed_num_frames=observed_num_frames,
+            error_label="sample chunk-origin metadata",
+        )
+        return int(loss_start)
+
+    def singleton_chunk_frame_for(
+        self,
+        *,
+        observed_num_frames: int,
+    ) -> int | None:
+        """Resolve an optional singleton frame in the shared chunk layout."""
+
+        if (
+            self.raw.get(DYNAMICS_CONDITIONAL_CHUNK_LAYOUT_METADATA_KEY)
+            != DYNAMICS_CONDITIONAL_CHUNK_LAYOUT_T0_SINGLETON
+        ):
+            return None
+        raw_frame = self.raw.get(
+            "singleton_chunk_frame",
+            self.raw.get("target_observation_frame_in_sample"),
+        )
+        if raw_frame is None:
+            return None
+        frame = int(raw_frame)
+        if frame < 0 or frame >= int(observed_num_frames):
+            raise ValueError(
+                "Invalid singleton chunk frame, "
+                f"got {frame} for observed_num_frames={observed_num_frames}."
+            )
+        return frame
+
+    @property
+    def conditional_history_policy(self) -> str | None:
+        value = self.raw.get(DYNAMICS_CONDITIONAL_HISTORY_POLICY_METADATA_KEY)
+        return None if value is None else str(value)
+
+    @property
+    def is_target_only_conditional_layout(self) -> bool:
+        return (
+            self.raw.get(DYNAMICS_CONDITIONAL_LAYOUT_METADATA_KEY)
+            == DYNAMICS_CONDITIONAL_LAYOUT_TARGET_ONLY_T0_PLUS_FUTURE
+        )
+
+    def require_target_only_conditional_layout(
+        self,
+    ) -> ConditionalDynamicsSequenceLayout:
+        """Validate and return the canonical one-t0 dynamics sequence."""
+
+        layout = ConditionalDynamicsSequenceLayout()
+        expected = layout.contract_metadata()
+        mismatches = {
+            key: (self.raw.get(key), value)
+            for key, value in expected.items()
+            if self.raw.get(key) != value
+        }
+        if mismatches:
+            details = ", ".join(
+                f"{key}={actual!r} (expected {expected_value!r})"
+                for key, (actual, expected_value) in sorted(mismatches.items())
+            )
+            raise ValueError(
+                "Conditional dynamics training requires the canonical target-only "
+                f"t0-plus-future sample contract; {details}."
+            )
+        return layout
+
 
 def single_sample_metadata_mapping(metadata: object) -> Mapping[str, Any] | None:
     """Return one sample metadata mapping from a collated metadata object."""
@@ -183,8 +334,7 @@ def _optional_nonnegative_int(value: Any) -> int | None:
     resolved = int(value)
     if resolved < 0:
         raise ValueError(
-            "Sample metadata integer must be non-negative, "
-            f"got {resolved}."
+            f"Sample metadata integer must be non-negative, got {resolved}."
         )
     return resolved
 

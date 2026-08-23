@@ -9,8 +9,10 @@ from open_wam.configs import (
     JointTimestepCoupling,
     ParallelRuntimeMode,
     ParallelStreamPolicyConfig,
+    VideoActionProgram,
     VideoActionSequenceContract,
 )
+from open_wam.configs.policy_parallel_stream import parallel_runtime_mode_for_program
 from open_wam.models.common import (
     chunked_temporal_exact_profile_name_for_coupling,
 )
@@ -28,10 +30,11 @@ from scripts.research_dynamics import rollout as dynamics_rollout
 
 
 def _policy_config(**overrides: object) -> ParallelStreamPolicyConfig:
+    overrides.setdefault("program", VideoActionProgram.VIDEO_THEN_ACTION)
     return ParallelStreamPolicyConfig(hidden_size=32, **overrides)
 
 
-def test_runtime_semantic_consumers_share_the_canonical_resolver() -> None:
+def test_backend_runtime_semantics_do_not_leak_into_generic_research_tools() -> None:
     assert (
         reference_runtime.resolve_parallel_current_block_coupling
         is resolve_parallel_current_block_coupling
@@ -40,10 +43,7 @@ def test_runtime_semantic_consumers_share_the_canonical_resolver() -> None:
         variant.resolve_parallel_current_block_coupling
         is resolve_parallel_current_block_coupling
     )
-    assert (
-        dynamics_rollout.resolve_parallel_current_block_coupling
-        is resolve_parallel_current_block_coupling
-    )
+    assert not hasattr(dynamics_rollout, "resolve_parallel_current_block_coupling")
 
 
 def test_reference_runtime_semantic_names_alias_canonical_contract() -> None:
@@ -74,59 +74,84 @@ def test_reference_runtime_semantic_names_alias_canonical_contract() -> None:
 
 
 @pytest.mark.parametrize("coupling", list(CurrentBlockCoupling))
-def test_explicit_current_block_coupling_is_preserved(
+def test_program_derives_current_block_coupling(
     coupling: CurrentBlockCoupling,
 ) -> None:
     assert (
         resolve_parallel_current_block_coupling(
-            _policy_config(current_block_coupling=coupling)
+            _policy_config(program=VideoActionProgram(coupling.value))
         )
         == coupling
     )
 
 
 @pytest.mark.parametrize(
-    ("runtime_mode", "expected"),
-    [
+    ("program", "expected_runtime"),
+    (
+        (VideoActionProgram.ACTION_THEN_VIDEO, ParallelRuntimeMode.LINGBOT_EXACT),
         (
+            VideoActionProgram.JOINT,
             ParallelRuntimeMode.LINGBOT_EXACT_ACTION_CONDITIONED,
-            CurrentBlockCoupling.JOINT,
         ),
-        (ParallelRuntimeMode.LINGBOT_EXACT, CurrentBlockCoupling.VIDEO_THEN_ACTION),
-    ],
+    ),
 )
-def test_current_block_coupling_resolves_runtime_compatibility_default(
-    runtime_mode: ParallelRuntimeMode,
-    expected: CurrentBlockCoupling,
+def test_runtime_backend_is_derived_from_program(
+    program: VideoActionProgram,
+    expected_runtime: ParallelRuntimeMode,
 ) -> None:
-    assert (
-        resolve_parallel_current_block_coupling(
-            _policy_config(runtime_mode=runtime_mode)
-        )
-        == expected
+    config = _policy_config(program=program)
+
+    assert config.runtime_mode is expected_runtime
+    assert resolve_parallel_current_block_coupling(config) is CurrentBlockCoupling(
+        program.value
+    )
+
+
+@pytest.mark.parametrize("program", list(VideoActionProgram))
+def test_every_program_has_an_explicit_parallel_backend_mapping(
+    program: VideoActionProgram,
+) -> None:
+    assert isinstance(
+        parallel_runtime_mode_for_program(program),
+        ParallelRuntimeMode,
     )
 
 
 @pytest.mark.parametrize(
-    "coupling",
+    "program",
     [
-        CurrentBlockCoupling.VIDEO_THEN_ACTION,
-        CurrentBlockCoupling.ACTION_THEN_VIDEO,
-        CurrentBlockCoupling.DECOUPLED_SAME_STEP,
+        VideoActionProgram.VIDEO_THEN_ACTION,
+        VideoActionProgram.ACTION_THEN_VIDEO,
+        VideoActionProgram.DECOUPLED_SAME_STEP,
     ],
 )
-def test_non_joint_programs_force_independent_timestep_clocks(
-    coupling: CurrentBlockCoupling,
+def test_single_noisy_stream_programs_default_to_independent_timestep_clocks(
+    program: VideoActionProgram,
 ) -> None:
-    config = _policy_config(
-        current_block_coupling=coupling,
-        joint_timestep_coupling=JointTimestepCoupling.MATCH_SIGMA,
-    )
+    config = _policy_config(program=program)
 
     assert (
         resolve_parallel_joint_timestep_coupling(config)
         == JointTimestepCoupling.INDEPENDENT
     )
+
+
+@pytest.mark.parametrize(
+    "program",
+    [
+        VideoActionProgram.VIDEO_THEN_ACTION,
+        VideoActionProgram.ACTION_THEN_VIDEO,
+        VideoActionProgram.DECOUPLED_SAME_STEP,
+    ],
+)
+def test_single_noisy_stream_programs_reject_inapplicable_clock_coupling(
+    program: VideoActionProgram,
+) -> None:
+    with pytest.raises(ValueError, match="requires.*independent"):
+        _policy_config(
+            program=program,
+            joint_timestep_coupling=JointTimestepCoupling.MATCH_SIGMA,
+        )
 
 
 @pytest.mark.parametrize(
@@ -143,7 +168,7 @@ def test_joint_like_programs_preserve_configured_timestep_coupling(
     timestep_coupling: JointTimestepCoupling,
 ) -> None:
     config = _policy_config(
-        current_block_coupling=coupling,
+        program=VideoActionProgram(coupling.value),
         joint_timestep_coupling=timestep_coupling,
     )
 
@@ -165,10 +190,11 @@ def test_explicit_history_stream_visibility_is_preserved(
     )
 
 
-def test_legacy_preserve_video_history_flag_maps_full_visibility() -> None:
+def test_history_visibility_projects_legacy_runtime_metadata() -> None:
     config = _policy_config(
-        history_stream_visibility=HistoryStreamVisibility.FULL,
-        preserve_video_pretrain_history=True,
+        history_stream_visibility=(
+            HistoryStreamVisibility.VIDEO_QUERIES_VIDEO_ONLY
+        ),
     )
 
     assert (
@@ -177,7 +203,7 @@ def test_legacy_preserve_video_history_flag_maps_full_visibility() -> None:
     )
     assert (
         prefix_visibility_mode_for_policy(config)
-        == "preserve_video_pretrain_history"
+        == "video_queries_video_only"
     )
 
 
@@ -188,7 +214,7 @@ def test_legacy_preserve_video_history_flag_maps_full_visibility() -> None:
         (HistoryStreamVisibility.VIDEO_ONLY, "video_history_only"),
         (
             HistoryStreamVisibility.VIDEO_QUERIES_VIDEO_ONLY,
-            "preserve_video_pretrain_history",
+            "video_queries_video_only",
         ),
     ],
 )
@@ -211,9 +237,20 @@ def test_history_visibility_maps_to_exact_cache_contract(
 def test_context_condition_latent_source_is_preserved(
     source: ContextConditionLatentSource,
 ) -> None:
+    required_flags = (
+        {
+            "use_condition_latents": True,
+            "require_condition_latents": True,
+        }
+        if source == ContextConditionLatentSource.SINGLE_FRAME_CONDITION_LATENT
+        else {}
+    )
     assert (
         resolve_parallel_context_condition_latent_source(
-            _policy_config(context_condition_latent_source=source)
+            _policy_config(
+                context_condition_latent_source=source,
+                **required_flags,
+            )
         )
         == source
     )

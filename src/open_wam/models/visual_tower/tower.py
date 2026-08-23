@@ -5,7 +5,7 @@ from typing import Any
 import torch
 from torch import nn
 
-from open_wam.configs import BackboneImplementation
+from open_wam.configs import BackboneImplementation, ProprioContextMode
 from open_wam.configs.backbone import (
     SharedVideoTransformerConfig,
     normalize_backbone_implementation,
@@ -68,9 +68,6 @@ class VisualTower(nn.Module):
         *,
         action_dim: int | None = None,
         state_dim: int | None = None,
-        proprio_context_state_dim: int | None = None,
-        proprio_hidden_context_state_dim: int | None = None,
-        generalist_mode_context_enabled: bool = False,
     ) -> None:
         super().__init__()
         self.config = config or SharedVideoTransformerConfig()
@@ -79,22 +76,9 @@ class VisualTower(nn.Module):
         implementation = normalize_backbone_implementation(self.config.implementation)
         self.frontend = SharedVideoFrontend(self.config)
         if implementation == BackboneImplementation.SHARED_TRANSFORMER:
-            self.core = SharedVideoTransformerCore(self.config, action_dim=action_dim, state_dim=state_dim)
-            if generalist_mode_context_enabled:
-                configure_mode = getattr(self.core, "configure_generalist_mode_context_encoder", None)
-                if not callable(configure_mode):
-                    raise ValueError("Generalist mode text-token ablation requires a shared transformer core.")
-                configure_mode(enabled=True)
-            if proprio_context_state_dim is not None:
-                configure_proprio = getattr(self.core, "configure_proprio_context_encoder", None)
-                if not callable(configure_proprio):
-                    raise ValueError("Proprio context mode requires a shared transformer core.")
-                configure_proprio(enabled=True, state_dim=int(proprio_context_state_dim))
-            if proprio_hidden_context_state_dim is not None:
-                configure_proprio_hidden = getattr(self.core, "configure_proprio_hidden_context_encoder", None)
-                if not callable(configure_proprio_hidden):
-                    raise ValueError("Per-chunk proprio context mode requires a shared transformer core.")
-                configure_proprio_hidden(enabled=True, state_dim=int(proprio_hidden_context_state_dim))
+            self.core = SharedVideoTransformerCore(
+                self.config, action_dim=action_dim, state_dim=state_dim
+            )
         elif implementation == BackboneImplementation.DUMMY:
             self.core = PackedSequenceVisualCore(self.config)
         else:
@@ -103,12 +87,72 @@ class VisualTower(nn.Module):
                 "Expected 'dummy' or 'shared_transformer'."
             )
         self.reference_core_load_report: BackboneLoadReport | None = None
-        if self.config.load_reference_core_weights:
-            if implementation != BackboneImplementation.SHARED_TRANSFORMER:
-                raise ValueError("`backbone.load_reference_core_weights` requires `backbone.implementation = shared_transformer`.")
-            if self.action_dim is None:
-                raise ValueError("VisualTower requires `action_dim` to load reference weights into the shared core.")
-            self._ensure_runtime_backbone_initialized()
+
+    def initialize_configured_weights(self) -> None:
+        """Load eagerly requested weights after policy adapters are configured."""
+
+        if not self.config.load_reference_core_weights:
+            return
+        if (
+            normalize_backbone_implementation(self.config.implementation)
+            != BackboneImplementation.SHARED_TRANSFORMER
+        ):
+            raise ValueError(
+                "`backbone.load_reference_core_weights` requires "
+                "`backbone.implementation = shared_transformer`."
+            )
+        if self.action_dim is None:
+            raise ValueError(
+                "VisualTower requires `action_dim` to load reference weights "
+                "into the shared core."
+            )
+        self._ensure_runtime_backbone_initialized()
+
+    def configure_policy_conditioning(
+        self,
+        *,
+        proprio_context_mode: ProprioContextMode | str,
+        dynamics_mode_context_enabled: bool,
+    ) -> None:
+        """Configure backbone-facing conditioning hooks for a policy.
+
+        Policy architectures select semantic conditioning modes; the visual
+        tower owns the concrete core capabilities that implement them.
+        """
+
+        if dynamics_mode_context_enabled:
+            configure_mode = getattr(
+                self.core,
+                "configure_generalist_mode_context_encoder",
+                None,
+            )
+            if not callable(configure_mode):
+                raise ValueError(
+                    "Dynamics mode-token conditioning requires a compatible "
+                    "visual core."
+                )
+            configure_mode(enabled=True)
+
+        resolved_proprio_mode = ProprioContextMode(proprio_context_mode)
+        if resolved_proprio_mode == ProprioContextMode.NONE:
+            return
+        state_dim = int(self.state_dim or 0)
+        if state_dim <= 0:
+            raise ValueError(
+                "Proprio conditioning requires positive data.action_schema.state_dim."
+            )
+        hook_name = (
+            "configure_proprio_context_encoder"
+            if resolved_proprio_mode == ProprioContextMode.TEXT_CONTEXT_TOKEN
+            else "configure_proprio_hidden_context_encoder"
+        )
+        configure_proprio = getattr(self.core, hook_name, None)
+        if not callable(configure_proprio):
+            raise TypeError(
+                f"Proprio mode {resolved_proprio_mode.value!r} requires a "
+                "compatible visual core."
+            )
+        configure_proprio(enabled=True, state_dim=state_dim)
 
     def run_frontend(
         self,
@@ -213,40 +257,60 @@ class VisualTower(nn.Module):
             )
         return int(self.action_dim)
 
+    def get_runtime_cache_state(self, cache_name: str) -> CacheState | None:
+        """Return one named backbone cache through the visual runtime boundary."""
+
+        transformer = self.get_runtime_backbone(
+            action_dim=self._runtime_state_action_dim()
+        )
+        return transformer.get_runtime_cache_state(str(cache_name))
+
+    def replace_runtime_cache_state(
+        self,
+        cache_name: str,
+        cache_state: CacheState,
+    ) -> None:
+        """Replace one named backbone cache through the visual runtime boundary."""
+
+        transformer = self.get_runtime_backbone(
+            action_dim=self._runtime_state_action_dim()
+        )
+        transformer.replace_runtime_cache_state(str(cache_name), cache_state)
+
     def run_core(self, core_input: VisualCoreInput):
         core_output = self.core(core_input)
         core_output.aux.setdefault(
             "weight_source",
-            "reference_initialized" if self.reference_core_load_report is not None else "local_init",
+            "reference_initialized"
+            if self.reference_core_load_report is not None
+            else "local_init",
         )
         if self.reference_core_load_report is not None:
-            core_output.aux.setdefault("reference_core_loaded_keys", len(self.reference_core_load_report.loaded_keys))
+            core_output.aux.setdefault(
+                "reference_core_loaded_keys",
+                len(self.reference_core_load_report.loaded_keys),
+            )
         return core_output
 
     def execute_runtime_step(self, step_input: RuntimeStepInput) -> RuntimeStepOutput:
-        if hasattr(self.core, "execute_runtime_step"):
-            step_output = self.core.execute_runtime_step(step_input)
-        else:  # pragma: no cover - defensive fallback for alternate cores
-            if step_input.core_input is None:
-                raise ValueError("VisualTower runtime execution fallback requires `core_input`.")
-            core_output = self.core(step_input.core_input)
-            step_output = RuntimeStepOutput(
-                tokens=core_output.tokens,
-                core_output=core_output,
-                cache_state=core_output.cache_state,
-                aux=dict(core_output.aux),
-            )
+        step_output = self.core.execute_runtime_step(step_input)
         resolved_weight_source = (
-            "reference_initialized" if self.reference_core_load_report is not None else "local_init"
+            "reference_initialized"
+            if self.reference_core_load_report is not None
+            else "local_init"
         )
         step_output.aux.setdefault("weight_source", resolved_weight_source)
         if step_output.core_output is not None:
-            step_output.core_output.aux.setdefault("weight_source", step_output.aux["weight_source"])
+            step_output.core_output.aux.setdefault(
+                "weight_source", step_output.aux["weight_source"]
+            )
         if self.reference_core_load_report is not None:
             loaded_key_count = len(self.reference_core_load_report.loaded_keys)
             step_output.aux.setdefault("reference_core_loaded_keys", loaded_key_count)
             if step_output.core_output is not None:
-                step_output.core_output.aux.setdefault("reference_core_loaded_keys", loaded_key_count)
+                step_output.core_output.aux.setdefault(
+                    "reference_core_loaded_keys", loaded_key_count
+                )
         return step_output
 
     def configure_runtime_devices(
@@ -261,7 +325,9 @@ class VisualTower(nn.Module):
             configure(
                 tuple(torch.device(device) for device in devices),
                 prep_device=None if prep_device is None else torch.device(prep_device),
-                output_device=None if output_device is None else torch.device(output_device),
+                output_device=None
+                if output_device is None
+                else torch.device(output_device),
             )
 
     def project_video_tokens_to_latents(
@@ -272,7 +338,9 @@ class VisualTower(nn.Module):
     ) -> torch.Tensor:
         projector = getattr(self.core, "project_video_tokens_to_latents", None)
         if not callable(projector):
-            raise ValueError("Current visual core does not support direct video-token latent projection.")
+            raise ValueError(
+                "Current visual core does not support direct video-token latent projection."
+            )
         return projector(
             hidden_states=hidden_states,
             token_grid=token_grid,
@@ -310,22 +378,30 @@ class VisualTower(nn.Module):
                 dtype=model_dtype,
             )
         else:
-            text_context = text_context.to(device=noisy_latents.device, dtype=model_dtype)
-        grid_id = build_mesh_id(
-            f=num_frames // self.config.patch_size_t,
-            h=latent_height // self.config.patch_size_h,
-            w=latent_width // self.config.patch_size_w,
-            t=0.0,
-            f_shift=float(frame_start),
-            action=False,
-            device=noisy_latents.device,
-        ).unsqueeze(0).expand(batch_size, -1, -1)
+            text_context = text_context.to(
+                device=noisy_latents.device, dtype=model_dtype
+            )
+        grid_id = (
+            build_mesh_id(
+                f=num_frames // self.config.patch_size_t,
+                h=latent_height // self.config.patch_size_h,
+                w=latent_width // self.config.patch_size_w,
+                t=0.0,
+                f_shift=float(frame_start),
+                action=False,
+                device=noisy_latents.device,
+            )
+            .unsqueeze(0)
+            .expand(batch_size, -1, -1)
+        )
         step_output = self.execute_runtime_step(
             RuntimeStepInput(
                 program=build_single_stream_exact_runtime_program(),
                 payload={
                     "noisy_latents": noisy_latents.to(dtype=model_dtype),
-                    "timesteps": timesteps.to(device=noisy_latents.device, dtype=torch.float32),
+                    "timesteps": timesteps.to(
+                        device=noisy_latents.device, dtype=torch.float32
+                    ),
                     "grid_id": grid_id,
                     "text_emb": text_context,
                     "attention_mask": attention_mask,
@@ -334,7 +410,9 @@ class VisualTower(nn.Module):
             )
         )
         if step_output.tokens is None:
-            raise ValueError("Exact single-stream runtime step did not return video flow tokens.")
+            raise ValueError(
+                "Exact single-stream runtime step did not return video flow tokens."
+            )
         return unpatchify_video_sequence(
             self.core.patch_size,
             step_output.tokens,
@@ -350,7 +428,7 @@ class VisualTower(nn.Module):
         observed_prefix: torch.Tensor,
         text_context: torch.Tensor | None,
         frame_start: int = 0,
-        cache_name: str = "dual_expert_video_prefill",
+        cache_name: str = "exact_video_prefill",
         attention_mask: torch.Tensor | None = None,
         cross_attention_mask: torch.Tensor | None = None,
         detach_cache: bool = True,
@@ -364,7 +442,9 @@ class VisualTower(nn.Module):
             )
         batch_size, _, num_frames, latent_height, latent_width = observed_prefix.shape
         if num_frames <= 0:
-            raise ValueError("Video cache prefill requires at least one observed frame.")
+            raise ValueError(
+                "Video cache prefill requires at least one observed frame."
+            )
         model_dtype = resolve_runtime_module_dtype(self.core)
         if text_context is None:
             text_context = torch.zeros(
@@ -375,7 +455,9 @@ class VisualTower(nn.Module):
                 dtype=model_dtype,
             )
         else:
-            text_context = text_context.to(device=observed_prefix.device, dtype=model_dtype)
+            text_context = text_context.to(
+                device=observed_prefix.device, dtype=model_dtype
+            )
         _, token_grid = self.frontend.tokenize_video_latents(observed_prefix)
         grid_id = build_video_grid_ids(
             token_grid,
@@ -389,25 +471,28 @@ class VisualTower(nn.Module):
             dtype=torch.float32,
         )
         transformer = self.get_runtime_backbone(action_dim=int(self.action_dim))
-        transformer._exact_runtime_caches[cache_name] = CacheState(
-            supported=True,
-            current_start_frame=frame_start,
-            cached_frames=num_frames,
-            chunk_size=num_frames,
-            capability="self_attn_only",
-            backend_name="merged_prefix",
-            backend_payload=None,
-            payload={
-                "cache_name": cache_name,
-                "stage": "dual_expert_video_prefill",
-                "tokens_per_frame": int(token_grid.tokens_per_frame),
-                "detach_self_attention_cache": bool(detach_cache),
-            },
-            self_attention_kv=tuple(),
-            cross_attention_kv=tuple(),
-            update_metadata=CacheUpdateMetadata(
+        transformer.replace_runtime_cache_state(
+            cache_name,
+            CacheState(
+                supported=True,
                 current_start_frame=frame_start,
-                update_kv_cache=True,
+                cached_frames=num_frames,
+                chunk_size=num_frames,
+                capability="self_attn_only",
+                backend_name="merged_prefix",
+                backend_payload=None,
+                payload={
+                    "cache_name": cache_name,
+                    "stage": "exact_video_prefill",
+                    "tokens_per_frame": int(token_grid.tokens_per_frame),
+                    "detach_self_attention_cache": bool(detach_cache),
+                },
+                self_attention_kv=tuple(),
+                cross_attention_kv=tuple(),
+                update_metadata=CacheUpdateMetadata(
+                    current_start_frame=frame_start,
+                    update_kv_cache=True,
+                ),
             ),
         )
         step_output = self.execute_runtime_step(
@@ -492,7 +577,9 @@ class VisualTower(nn.Module):
                 dtype=model_dtype,
             )
         else:
-            text_context = text_context.to(device=video_latents.device, dtype=model_dtype)
+            text_context = text_context.to(
+                device=video_latents.device, dtype=model_dtype
+            )
 
         tokens_per_frame = (latent_height // patch_h) * (latent_width // patch_w)
         # Packed teacher-forced copies share physical frame positions; the
@@ -506,29 +593,36 @@ class VisualTower(nn.Module):
             action=False,
             device=video_latents.device,
         )
-        grid_id = torch.cat([grid_per_copy] * copy_count, dim=1).unsqueeze(0).expand(batch_size, -1, -1)
+        grid_id = (
+            torch.cat([grid_per_copy] * copy_count, dim=1)
+            .unsqueeze(0)
+            .expand(batch_size, -1, -1)
+        )
 
         transformer = self.get_runtime_backbone(action_dim=int(self.action_dim))
-        transformer._exact_runtime_caches[cache_name] = CacheState(
-            supported=True,
-            current_start_frame=frame_start,
-            cached_frames=num_frames,
-            chunk_size=num_frames,
-            capability="self_attn_only",
-            backend_name="merged_prefix",
-            backend_payload=None,
-            payload={
-                "cache_name": cache_name,
-                "stage": "packed_exact_video_forward",
-                "tokens_per_frame": int(tokens_per_frame),
-                "packed_copies": copy_count,
-                "detach_self_attention_cache": bool(detach_cache),
-            },
-            self_attention_kv=tuple(),
-            cross_attention_kv=tuple(),
-            update_metadata=CacheUpdateMetadata(
+        transformer.replace_runtime_cache_state(
+            cache_name,
+            CacheState(
+                supported=True,
                 current_start_frame=frame_start,
-                update_kv_cache=True,
+                cached_frames=num_frames,
+                chunk_size=num_frames,
+                capability="self_attn_only",
+                backend_name="merged_prefix",
+                backend_payload=None,
+                payload={
+                    "cache_name": cache_name,
+                    "stage": "packed_exact_video_forward",
+                    "tokens_per_frame": int(tokens_per_frame),
+                    "packed_copies": copy_count,
+                    "detach_self_attention_cache": bool(detach_cache),
+                },
+                self_attention_kv=tuple(),
+                cross_attention_kv=tuple(),
+                update_metadata=CacheUpdateMetadata(
+                    current_start_frame=frame_start,
+                    update_kv_cache=True,
+                ),
             ),
         )
         step_output = self.execute_runtime_step(
@@ -536,7 +630,9 @@ class VisualTower(nn.Module):
                 program=build_single_stream_exact_runtime_program(),
                 payload={
                     "noisy_latents": video_latents.to(dtype=model_dtype),
-                    "timesteps": timesteps.to(device=video_latents.device, dtype=torch.float32),
+                    "timesteps": timesteps.to(
+                        device=video_latents.device, dtype=torch.float32
+                    ),
                     "grid_id": grid_id,
                     "text_emb": text_context,
                     "attention_mask": attention_mask,
@@ -547,7 +643,9 @@ class VisualTower(nn.Module):
             )
         )
         if step_output.tokens is None:
-            raise ValueError("Packed exact video forward did not return video flow tokens.")
+            raise ValueError(
+                "Packed exact video forward did not return video flow tokens."
+            )
         if step_output.cache_state is None:
             raise ValueError("Packed exact video forward did not return a cache state.")
         flow_pred = unpatchify_video_sequence(
@@ -588,7 +686,10 @@ class VisualTower(nn.Module):
                 "Expected observed_prefix and future_template with shape [B, C, T, H, W], "
                 f"got observed_prefix={tuple(observed_prefix.shape)}, future_template={tuple(future_template.shape)}."
             )
-        if observed_prefix.shape[0] != future_template.shape[0] or observed_prefix.shape[1] != future_template.shape[1]:
+        if (
+            observed_prefix.shape[0] != future_template.shape[0]
+            or observed_prefix.shape[1] != future_template.shape[1]
+        ):
             raise ValueError(
                 "Observed prefix and future template must agree on batch/channel dimensions, "
                 f"got observed_prefix={tuple(observed_prefix.shape)}, future_template={tuple(future_template.shape)}."
@@ -598,7 +699,9 @@ class VisualTower(nn.Module):
 
         transformer = self.core
         model_dtype = resolve_runtime_module_dtype(transformer)
-        batch_size, channels, future_num_frames, latent_height, latent_width = future_template.shape
+        batch_size, channels, future_num_frames, latent_height, latent_width = (
+            future_template.shape
+        )
         total_num_frames = observed_prefix.shape[2] + future_num_frames
         resolved_text_context = text_context
         if resolved_text_context is None:
@@ -610,7 +713,9 @@ class VisualTower(nn.Module):
                 dtype=model_dtype,
             )
         else:
-            resolved_text_context = resolved_text_context.to(device=future_template.device, dtype=model_dtype)
+            resolved_text_context = resolved_text_context.to(
+                device=future_template.device, dtype=model_dtype
+            )
 
         generator = None
         if sample_seed is not None:
@@ -637,8 +742,12 @@ class VisualTower(nn.Module):
         )
         scheduler.set_timesteps(num_inference_steps)
         total_updates = len(scheduler.timesteps)
-        denoise_updates = max(1, min(total_updates, int(round(total_updates * float(denoise_ratio)))))
-        timesteps = scheduler.timesteps[:denoise_updates].to(device=future_template.device)
+        denoise_updates = max(
+            1, min(total_updates, int(round(total_updates * float(denoise_ratio))))
+        )
+        timesteps = scheduler.timesteps[:denoise_updates].to(
+            device=future_template.device
+        )
 
         with torch.inference_mode():
             for timestep in timesteps:
@@ -675,7 +784,10 @@ class VisualTower(nn.Module):
         return latents[:, :, observed_prefix.shape[2] :].to(dtype=future_template.dtype)
 
     def cache_capability(self) -> str:
-        if normalize_backbone_implementation(self.config.implementation) == BackboneImplementation.SHARED_TRANSFORMER:
+        if (
+            normalize_backbone_implementation(self.config.implementation)
+            == BackboneImplementation.SHARED_TRANSFORMER
+        ):
             return "self_attn_plus_cross_attn"
         return "none"
 
@@ -873,7 +985,9 @@ class VisualTower(nn.Module):
             )
         )
         if step_output.core_output is None:
-            raise ValueError("Default dense runtime execution did not return a `core_output`.")
+            raise ValueError(
+                "Default dense runtime execution did not return a `core_output`."
+            )
         return step_output.core_output
 
     def _ensure_runtime_backbone_initialized(self) -> None:
@@ -921,7 +1035,9 @@ class VisualTower(nn.Module):
         if any(buffer.device != device for buffer in self.frontend.buffers()):
             self.frontend.to(device=device)
 
-    def reset_runtime_backbone_cache(self, *, action_dim: int, cache_name: str = "open_wam_exact") -> None:
+    def reset_runtime_backbone_cache(
+        self, *, action_dim: int, cache_name: str = "open_wam_exact"
+    ) -> None:
         """Clear shared-backbone runtime cache state for a named session."""
         transformer = self.get_runtime_backbone(action_dim=action_dim)
         reset_runtime_module_cache(transformer, cache_name=cache_name)
@@ -933,6 +1049,8 @@ class VisualTower(nn.Module):
         placements: tuple[ViewPlacement, ...] | None = None,
         task_text: tuple[str | None, ...] | None = None,
     ) -> VisualStageOutputs:
-        frontend_output = self.run_frontend(canonical_video, placements=placements, task_text=task_text)
+        frontend_output = self.run_frontend(
+            canonical_video, placements=placements, task_text=task_text
+        )
         core_output = self.run_default_core(frontend_output)
         return VisualStageOutputs(frontend=frontend_output, core=core_output)

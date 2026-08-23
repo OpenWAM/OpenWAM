@@ -2,47 +2,37 @@ from __future__ import annotations
 
 import torch
 
-from open_wam.configs import (
-    GeneralistDenoisingMode,
-    InferenceConfig,
-    TrainingConfig,
-)
+from open_wam.configs import InferenceConfig, TrainingConfig
 from open_wam.configs.backbone import SharedVideoTransformerConfig
 from open_wam.configs.policy_dual_expert import DualExpertPolicyConfig
-from open_wam.models.common.joint_conditioning import (
-    resolve_generalist_joint_conditioning_semantics,
+from open_wam.contracts import SampleConstructionMetadata
+from open_wam.models.common.dynamics_objectives import (
+    resolve_dynamics_rollout_plan,
+    resolve_dynamics_sample_plan,
 )
 from open_wam.models.visual_tower import VisualStageOutputs, VisualTower
 
-from ..base import PolicyVariant
+from ..base import VideoActionPolicyVariant
 from ..contracts import (
+    PolicyGenerationActionOrigin,
     PolicyInferContext,
     PolicyInferOutput,
     PolicyInferState,
+    PolicyModuleTopology,
+    PolicyObservationWindowSessionPolicy,
     PolicyObservedHistory,
     PolicyObservedHistoryOutput,
     PolicyPreparedInputs,
+    PolicyRolloutContract,
     PolicyTrainBatch,
     PolicyTrainOutput,
+    PolicyVisualStage,
 )
 from .conditioning import DualExpertConditioning
 from .contracts import DualExpertRuntimeState
-from .generalist_modes import (
-    apply_generalist_training_mode as _apply_dual_expert_generalist_training_mode,
-)
-from .generalist_modes import (
-    generalist_rollout_enabled as _dual_expert_generalist_rollout_enabled,
-)
-from .generalist_modes import (
-    generalist_rollout_mode_from_value as _dual_expert_generalist_rollout_mode_from_value,
-)
-from .generalist_modes import (
-    resolve_generalist_rollout_mode as _resolve_dual_expert_generalist_rollout_mode,
-)
-from .generalist_modes import (
-    sample_generalist_training_mode as _sample_dual_expert_generalist_training_mode,
-)
+from .decoder_artifacts import DUAL_EXPERT_DECODER_ARTIFACT_CONTRACT
 from .inference_backend import ensure_dual_expert_policy_variant_inference_backend
+from .module_topology import build_dual_expert_module_topology
 from .modules import DualExpertActionExpert, init_action_expert_from_video_core
 from .observed_history import reconcile_dual_expert_observed_history
 from .packed_block import DualExpertPackedBlockStack
@@ -51,14 +41,8 @@ from .packed_training import DualExpertPackedTrainingProgram
 from .sequence_layout import DualExpertTrainingLayout
 from .split_cache_inference import DualExpertSplitCacheInferenceProgram
 
-_GENERALIST_MODE_COMPATIBILITY_EXPORTS = (
-    _apply_dual_expert_generalist_training_mode,
-    _dual_expert_generalist_rollout_mode_from_value,
-    _sample_dual_expert_generalist_training_mode,
-)
 
-
-class DualExpertPolicyVariant(PolicyVariant):
+class DualExpertPolicyVariant(VideoActionPolicyVariant):
     """Own dual-expert modules and route execution through policy-local programs."""
 
     def __init__(
@@ -69,7 +53,6 @@ class DualExpertPolicyVariant(PolicyVariant):
         inference_config: InferenceConfig,
         action_dim: int,
         action_horizon: int,
-        state_dim: int,
     ) -> None:
         super().__init__()
         self.config = config
@@ -78,7 +61,6 @@ class DualExpertPolicyVariant(PolicyVariant):
         self.inference_config = inference_config
         self.action_dim = action_dim
         self.action_horizon = action_horizon
-        self.state_dim = state_dim
         self.conditioning = DualExpertConditioning(config)
         self.training_layout = DualExpertTrainingLayout(config, training_config)
         action_hidden_size = (
@@ -95,7 +77,10 @@ class DualExpertPolicyVariant(PolicyVariant):
             ffn_dim=(
                 int(config.action_ffn_dim)
                 if config.action_ffn_dim is not None
-                else (backbone_config.ffn_dim or (backbone_config.hidden_size * backbone_config.mlp_ratio))
+                else (
+                    backbone_config.ffn_dim
+                    or (backbone_config.hidden_size * backbone_config.mlp_ratio)
+                )
             ),
             text_dim=backbone_config.text_dim,
             hidden_context_dim=backbone_config.hidden_size,
@@ -111,8 +96,30 @@ class DualExpertPolicyVariant(PolicyVariant):
         self._packed_block_stack_attached = False
         self._split_cache_inference_blocks_restored = False
 
+    @property
+    def decoder_artifact_contract(self) -> str:
+        return DUAL_EXPERT_DECODER_ARTIFACT_CONTRACT
+
+    @property
+    def rollout_contract(self) -> PolicyRolloutContract:
+        return PolicyRolloutContract(
+            generation_action_origin=PolicyGenerationActionOrigin.ZERO,
+            observation_window_session_policy=(
+                PolicyObservationWindowSessionPolicy.REBUILD_FROM_OBSERVATION_WINDOW
+            ),
+        )
+
+    def build_rollout_infer_extra(
+        self,
+        *,
+        runtime_device: torch.device | None,
+    ) -> dict[str, object]:
+        if runtime_device is None:
+            return {}
+        return {"action_device": str(runtime_device)}
+
     def attach_visual_tower(self, visual_tower: VisualTower) -> None:
-        """Pipeline-time hook: build the packed-coupling block stack.
+        """Build the packed-coupling block stack after visual weight loading.
 
         Must run AFTER both ``visual_tower`` and ``self.action_expert`` exist
         but BEFORE FSDP sharding. Transfers ownership of video core blocks and
@@ -123,18 +130,6 @@ class DualExpertPolicyVariant(PolicyVariant):
         ``self.action_expert.blocks``; after transfer both ModuleLists are
         empty.
         """
-        if self.conditioning.uses_text_proprio_context():
-            configure = getattr(visual_tower.core, "configure_proprio_context_encoder", None)
-            if not callable(configure):
-                raise ValueError(
-                    "Deprecated proprio_context_mode=text_context_token requires a core proprio encoder hook."
-                )
-            configure(enabled=True, state_dim=int(self.state_dim))
-        elif self.conditioning.uses_per_chunk_proprio_context():
-            configure = getattr(visual_tower.core, "configure_proprio_hidden_context_encoder", None)
-            if not callable(configure):
-                raise ValueError("proprio_context_mode=per_chunk_additive requires a core proprio hidden encoder hook.")
-            configure(enabled=True, state_dim=int(self.state_dim))
         if self._packed_block_stack_attached:
             return
         self._packed_block_stack_attached = True
@@ -148,7 +143,9 @@ class DualExpertPolicyVariant(PolicyVariant):
         # across the move (same nn.Parameter objects, just under a new parent),
         # so any optimizer built from `model.parameters()` after this hook runs
         # sees the same set.
-        self.packed_block_stack = DualExpertPackedBlockStack(video_blocks, action_blocks)
+        self.packed_block_stack = DualExpertPackedBlockStack(
+            video_blocks, action_blocks
+        )
         visual_tower.core.blocks = torch.nn.ModuleList()
         self.action_expert.blocks = torch.nn.ModuleList()
 
@@ -167,8 +164,14 @@ class DualExpertPolicyVariant(PolicyVariant):
 
         if self.packed_block_stack is None:
             return False
-        video_blocks = [packed_block.video_block for packed_block in self.packed_block_stack.packed_blocks]
-        action_blocks = [packed_block.action_block for packed_block in self.packed_block_stack.packed_blocks]
+        video_blocks = [
+            packed_block.video_block
+            for packed_block in self.packed_block_stack.packed_blocks
+        ]
+        action_blocks = [
+            packed_block.action_block
+            for packed_block in self.packed_block_stack.packed_blocks
+        ]
         if not video_blocks or not action_blocks:
             return False
         visual_tower.core.blocks = torch.nn.ModuleList(video_blocks)
@@ -190,11 +193,57 @@ class DualExpertPolicyVariant(PolicyVariant):
     def initialize_for_training(self, visual_tower: VisualTower) -> None:
         self._maybe_initialize_action_expert(visual_tower)
 
-    def attach_site(self) -> str:
-        return self.config.attach_site
+    def module_topology(self, visual_tower: VisualTower) -> PolicyModuleTopology:
+        """Describe action/video ownership after packed-block attachment."""
 
-    def required_visual_stages(self) -> tuple[str, ...]:
-        return ("frontend",)
+        return build_dual_expert_module_topology(
+            visual_tower=visual_tower,
+            action_expert=self.action_expert,
+            packed_block_stack=self.packed_block_stack,
+        )
+
+    def on_checkpoint_loaded(
+        self,
+        *,
+        loaded_state_keys: frozenset[str],
+        missing_state_keys: frozenset[str],
+    ) -> None:
+        """Record when checkpoint weights fully initialize the lazy expert."""
+
+        prefix = "action_expert."
+        if any(key.startswith(prefix) for key in loaded_state_keys) and not any(
+            key.startswith(prefix) for key in missing_state_keys
+        ):
+            self._action_expert_initialized = True
+
+    def required_visual_stages(self) -> tuple[PolicyVisualStage, ...]:
+        return (PolicyVisualStage.FRONTEND,)
+
+    def validate_pipeline_assembly(
+        self,
+        *,
+        data_action_dim: int,
+        num_frames: int,
+        backbone_num_layers: int,
+    ) -> None:
+        super().validate_pipeline_assembly(
+            data_action_dim=data_action_dim,
+            num_frames=num_frames,
+            backbone_num_layers=backbone_num_layers,
+        )
+        if self.action_horizon <= 0:
+            raise ValueError("Dual Expert requires a positive action horizon.")
+        if self.config.video_prefix_frames >= num_frames:
+            raise ValueError(
+                "Dual Expert requires `video_prefix_frames < data.num_frames`, "
+                f"got prefix={self.config.video_prefix_frames}, frames={num_frames}."
+            )
+        if self.config.num_action_layers != backbone_num_layers:
+            raise ValueError(
+                "Dual Expert requires one action block per visual backbone block, "
+                f"got action_layers={self.config.num_action_layers}, "
+                f"backbone_layers={backbone_num_layers}."
+            )
 
     def reconcile_observed_history(
         self,
@@ -215,19 +264,31 @@ class DualExpertPolicyVariant(PolicyVariant):
         visual_outputs: VisualStageOutputs,
         batch: PolicyTrainBatch,
     ) -> PolicyPreparedInputs:
+        sample_metadata = SampleConstructionMetadata.from_batch_metadata(
+            batch.extra.get("metadata")
+        )
+        dynamics_sample_plan = resolve_dynamics_sample_plan(
+            program=self.config.program,
+            sample_metadata=sample_metadata,
+        )
         condition_latents = self.conditioning.resolve_train_condition_latents(
             batch,
             video_latents=visual_outputs.frontend.video_latents,
+            dynamics_sample_plan=dynamics_sample_plan,
         )
         proprio_state = self.conditioning.resolve_train_proprio_context(batch)
-        hidden_proprio_state = self.conditioning.resolve_train_hidden_proprio_context(batch)
+        hidden_proprio_context = self.conditioning.resolve_train_hidden_proprio_context(
+            batch
+        )
         return PolicyPreparedInputs(
             batch=batch,
             variant_inputs={
                 "video_latents": visual_outputs.frontend.video_latents,
                 "condition_latents": condition_latents,
+                "sample_metadata": sample_metadata,
+                "dynamics_sample_plan": dynamics_sample_plan,
                 "proprio_state": proprio_state,
-                "hidden_proprio_state": hidden_proprio_state,
+                "hidden_proprio_context": hidden_proprio_context,
                 "text_context": visual_outputs.frontend.conditioning.text_context,
                 "video_tokens_per_frame": visual_outputs.frontend.token_grid.tokens_per_frame,
             },
@@ -300,7 +361,11 @@ class DualExpertPolicyVariant(PolicyVariant):
     ) -> PolicyInferState:
         self._maybe_initialize_action_expert(visual_tower)
         state = previous_state or PolicyInferState()
-        runtime_state = state.variant_state if isinstance(state.variant_state, DualExpertRuntimeState) else DualExpertRuntimeState()
+        runtime_state = (
+            state.variant_state
+            if isinstance(state.variant_state, DualExpertRuntimeState)
+            else DualExpertRuntimeState()
+        )
         action_device_raw = context.extra.get("action_device")
         action_device = (
             next(self.action_expert.parameters()).device
@@ -321,19 +386,17 @@ class DualExpertPolicyVariant(PolicyVariant):
         )
         if hidden_proprio_state is not None:
             runtime_state.hidden_proprio_state = hidden_proprio_state.detach().clone()
-        generalist_rollout_mode = (
-            _resolve_dual_expert_generalist_rollout_mode(context, self.config)
-            if _dual_expert_generalist_rollout_enabled(self.config)
-            else GeneralistDenoisingMode.JOINT
+        dynamics_rollout_plan = resolve_dynamics_rollout_plan(
+            program=self.config.program,
+            request=context.dynamics,
         )
-        generalist_rollout_semantics = resolve_generalist_joint_conditioning_semantics(
-            generalist_rollout_mode,
-            joint_mode=GeneralistDenoisingMode.JOINT,
-            action_conditioned_video_mode=GeneralistDenoisingMode.ACTION_CONDITIONED_VIDEO,
-            video_conditioned_action_mode=GeneralistDenoisingMode.VIDEO_CONDITIONED_ACTION,
-        )
+        generalist_rollout_mode = dynamics_rollout_plan.objective
+        generalist_rollout_semantics = dynamics_rollout_plan.semantics
         infer_text_context = visual_outputs.frontend.conditioning.text_context
-        if generalist_rollout_semantics.drop_text_conditioning and infer_text_context is not None:
+        if (
+            generalist_rollout_semantics.drop_text_conditioning
+            and infer_text_context is not None
+        ):
             infer_text_context = torch.zeros_like(infer_text_context)
         resolved_text_context = self.conditioning.resolve_text_context(
             visual_tower,
@@ -344,17 +407,21 @@ class DualExpertPolicyVariant(PolicyVariant):
             dtype=action_dtype,
             materialize_if_missing=(
                 self.conditioning.uses_proprio_context()
-                or bool(getattr(self.config, "generalist_mode_text_token", False))
+                or self.config.generalist_mode_text_token
             ),
         )
         generalist_mode_text_token_count = 0
-        if bool(getattr(self.config, "generalist_mode_text_token", False)):
+        if self.config.generalist_mode_text_token:
             if resolved_text_context is None:  # pragma: no cover - materialized above
-                raise RuntimeError("dual-expert mode-token rollout expected materialized text context.")
-            resolved_text_context, generalist_mode_text_token_count = self.conditioning.append_generalist_mode_text_token(
-                visual_tower,
-                resolved_text_context,
-                generalist_rollout_mode,
+                raise RuntimeError(
+                    "dual-expert mode-token rollout expected materialized text context."
+                )
+            resolved_text_context, generalist_mode_text_token_count = (
+                self.conditioning.append_generalist_mode_text_token(
+                    visual_tower,
+                    resolved_text_context,
+                    generalist_rollout_mode,
+                )
             )
         runtime_state.generalist_mode_text_token_count = int(
             generalist_mode_text_token_count
@@ -365,8 +432,9 @@ class DualExpertPolicyVariant(PolicyVariant):
         # `forward_infer_step` after the slot-pool warmup + video denoise
         # last-step write, so we don't prefill it here.
         runtime_state.text_context = resolved_text_context
-        runtime_state.video_tokens_per_frame = int(visual_outputs.frontend.token_grid.tokens_per_frame)
-        runtime_state.chunk_advance_frames = max(1, int(self.inference_config.frame_chunk_size))
+        runtime_state.video_tokens_per_frame = int(
+            visual_outputs.frontend.token_grid.tokens_per_frame
+        )
         # Only initialize `next_condition_frame_start` on the first chunk of a
         # session. After that, `forward_infer_step` at the end of each chunk
         # sets it to the current chunk's `generation_frame_start` so the NEXT
@@ -375,12 +443,9 @@ class DualExpertPolicyVariant(PolicyVariant):
         # contiguous). Without this guard, advancing here by
         # `condition_latents.shape[2]` double-advances alongside
         # `cursor.current_start_frame` and leaves a `chunk_frames`-wide gap
-        # of empty rotary slots at every chunk boundary, which desynchronizes
-        # the training-time contiguous rotary assumption from the inference
-        # cache layout (parallel-stream avoids this by using `advance_frame_start=
-        # False` inside its denoise rollout and a separate post-rollout
-        # `warmup_cache` that writes observations at the same frame_start
-        # where the pred just landed).
+        # of empty rotary slots at every chunk boundary. The observation update
+        # therefore overwrites the speculative entries at the same positions
+        # before the cursor advances again.
         if runtime_state.past_clean_latents is None:
             runtime_state.next_condition_frame_start = int(
                 current_condition_frame_start + int(condition_latents.shape[2])
@@ -398,7 +463,9 @@ class DualExpertPolicyVariant(PolicyVariant):
         infer_state: PolicyInferState,
     ) -> PolicyInferOutput:
         runtime_state = (
-            infer_state.variant_state if isinstance(infer_state.variant_state, DualExpertRuntimeState) else DualExpertRuntimeState()
+            infer_state.variant_state
+            if isinstance(infer_state.variant_state, DualExpertRuntimeState)
+            else DualExpertRuntimeState()
         )
         self._maybe_initialize_action_expert(visual_tower)
         dual_expert_inference_backend = (

@@ -106,7 +106,6 @@ policy_variant:
   # Parallel-stream architecture knobs
   # - these control chunk geometry, rollout layout, and exact-runtime behavior
   name: parallel_stream
-  runtime_mode: lingbot_exact
   program: decoupled_same_step
   sequence_contract: legacy_prefix_single_frame_perchunk_proprio
   noisy_video_condition_prob: 0.5
@@ -119,8 +118,6 @@ policy_variant:
   sequence_order: [video_noisy, video_condition, action_noisy, action_condition]
   mask_mode: lingbot_chunked
   cache_mode: metadata_only
-  preserve_video_pretrain_history: true
-
 action_decoder:
   # Decoder surface knobs
   # - the parallel-stream decoder owns final action outputs and losses

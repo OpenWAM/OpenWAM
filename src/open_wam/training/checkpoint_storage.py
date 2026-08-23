@@ -10,14 +10,21 @@ from typing import Any
 import torch
 import torch.distributed as dist
 
-from open_wam.configs import ExperimentConfig, serialize_experiment_config
+from open_wam.configs import (
+    EXPERIMENT_CONFIG_SCHEMA_VERSION,
+    ExperimentConfig,
+    serialize_experiment_config,
+)
 from open_wam.configs.enums import serialize_enum_values
 
 __all__ = []
 
 
 def _serialize_config(config: ExperimentConfig) -> dict[str, Any]:
-    return serialize_experiment_config(config)
+    return {
+        "schema_version": EXPERIMENT_CONFIG_SCHEMA_VERSION,
+        **serialize_experiment_config(config),
+    }
 
 
 def _serialize_runtime_backbone_config(backbone_config: object) -> dict[str, Any]:

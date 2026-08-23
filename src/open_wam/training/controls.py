@@ -6,13 +6,7 @@ from dataclasses import dataclass
 from torch import nn
 
 from open_wam.configs import TrainingConfig
-from open_wam.configs.enums import (
-    ProprioContextMode,
-    TrainingComponentSelector,
-    TrainingObjective,
-)
-from open_wam.configs.policy_dual_expert import DualExpertPolicyConfig
-from open_wam.configs.policy_parallel_stream import ParallelStreamPolicyConfig
+from open_wam.configs.enums import TrainingComponentSelector, TrainingObjective
 from open_wam.configs.training import normalize_enabled_objectives
 
 COMPONENT_ALIASES = {
@@ -194,39 +188,16 @@ def _resolve_component_modules(pipeline: nn.Module, selector: TrainingComponentS
         return [encoder]
 
     def _resolve_policy_action_expert(module: nn.Module) -> list[nn.Module]:
-        action_expert = getattr(module.policy_variant, "action_expert", None)
-        if action_expert is None:
+        action_expert_modules = module.module_topology().action_expert_modules
+        if not action_expert_modules:
             raise ValueError(
-                "Training component selector `policy_variant.action_expert` requires "
-                "`pipeline.policy_variant.action_expert`."
+                "Training component selector `policy_variant.action_expert` is not "
+                "provided by the active policy variant."
             )
-        resolved: list[nn.Module] = [action_expert]
-        # Packed-coupling path: action_expert.blocks is empty after ownership
-        # transfer, so add the per-packed-block action_block children to keep
-        # the action-side selector self-contained. Video blocks live under
-        # _resolve_visual_tower_runtime_backbone — keeping them out of this
-        # resolver preserves "freeze video, train action" semantics.
-        packed_block_stack = getattr(module.policy_variant, "packed_block_stack", None)
-        if packed_block_stack is not None:
-            for packed_block in packed_block_stack.packed_blocks:
-                action_block = getattr(packed_block, "action_block", None)
-                if action_block is not None:
-                    resolved.append(action_block)
-        return resolved
+        return list(action_expert_modules)
 
     def _resolve_visual_tower_runtime_backbone(module: nn.Module) -> list[nn.Module]:
-        resolved: list[nn.Module] = [module.visual_tower.core]
-        # Packed-coupling path: core.blocks is empty after ownership transfer,
-        # so add the per-packed-block video_block children to keep the
-        # video-side selector self-contained. action_block stays under
-        # _resolve_policy_action_expert.
-        packed_block_stack = getattr(getattr(module, "policy_variant", None), "packed_block_stack", None)
-        if packed_block_stack is not None:
-            for packed_block in packed_block_stack.packed_blocks:
-                video_block = getattr(packed_block, "video_block", None)
-                if video_block is not None:
-                    resolved.append(video_block)
-        return resolved
+        return list(module.module_topology().visual_runtime_modules)
 
     resolvers: dict[TrainingComponentSelector, ComponentResolver] = {
         TrainingComponentSelector.VISUAL_TOWER: lambda module: [module.visual_tower],
@@ -260,11 +231,10 @@ def _enable_proprio_context_encoder_when_used(
     """Keep zero-init proprio context trainable unless explicitly disabled.
 
     The proprio encoder is owned by the shared visual core but semantically
-    belongs to the proprio-conditioning adapter. If a run trains only an action
-    expert while freezing the main backbone, leaving this zero-init adapter
-    frozen makes proprio conditioning a permanent zero path. The text-token
-    branch below is deprecated compatibility; current runs use hidden additive
-    context.
+    belongs to the proprio-conditioning adapter. If a run trains only a policy
+    module while freezing the main backbone, leaving this zero-init adapter
+    frozen makes proprio conditioning a permanent zero path. Inspect the
+    assembled core capability so built-in and extension policies behave alike.
     """
 
     if any(
@@ -277,23 +247,20 @@ def _enable_proprio_context_encoder_when_used(
         )
     ):
         return False
-    policy_variant = getattr(pipeline, "policy_variant", None)
-    policy_config = getattr(policy_variant, "config", policy_variant)
-    if not isinstance(policy_config, (DualExpertPolicyConfig, ParallelStreamPolicyConfig)):
-        return False
-    proprio_mode = ProprioContextMode(policy_config.proprio_context_mode)
-    if proprio_mode not in {ProprioContextMode.TEXT_CONTEXT_TOKEN, ProprioContextMode.PER_CHUNK_ADDITIVE}:
-        return False
-    encoder_name = (
-        "proprio_context_encoder"
-        if proprio_mode == ProprioContextMode.TEXT_CONTEXT_TOKEN
-        else "proprio_hidden_context_encoder"
+    core = getattr(getattr(pipeline, "visual_tower", None), "core", None)
+    encoders = tuple(
+        encoder
+        for encoder in (
+            getattr(core, "proprio_context_encoder", None),
+            getattr(core, "proprio_hidden_context_encoder", None),
+        )
+        if isinstance(encoder, nn.Module)
     )
-    encoder = getattr(getattr(pipeline.visual_tower, "core", None), encoder_name, None)
-    if encoder is None:
+    if not encoders:
         return False
-    for parameter in encoder.parameters():
-        parameter.requires_grad = True
+    for encoder in encoders:
+        for parameter in encoder.parameters():
+            parameter.requires_grad = True
     return True
 
 
@@ -314,14 +281,9 @@ def _enable_generalist_mode_context_encoder_when_used(
         )
     ):
         return False
-    policy_variant = getattr(pipeline, "policy_variant", None)
-    policy_config = getattr(policy_variant, "config", policy_variant)
-    if not isinstance(policy_config, (ParallelStreamPolicyConfig, DualExpertPolicyConfig)):
-        return False
-    if not bool(getattr(policy_config, "generalist_mode_text_token", False)):
-        return False
-    encoder = getattr(getattr(pipeline.visual_tower, "core", None), "generalist_mode_context_encoder", None)
-    if encoder is None:
+    core = getattr(getattr(pipeline, "visual_tower", None), "core", None)
+    encoder = getattr(core, "generalist_mode_context_encoder", None)
+    if not isinstance(encoder, nn.Module):
         return False
     for parameter in encoder.parameters():
         parameter.requires_grad = True

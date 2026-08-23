@@ -10,6 +10,7 @@ from torch import nn
 
 from open_wam.models.policy_variants.contracts import (
     PolicyInferOutput,
+    PolicyPipelineRequirements,
     PolicyTrainBatch,
     PolicyTrainOutput,
 )
@@ -83,7 +84,9 @@ class ActionDecoderRolloutPlan:
         }
 
 
-def align_policy_features(policy_features: torch.Tensor, target_length: int) -> torch.Tensor:
+def align_policy_features(
+    policy_features: torch.Tensor, target_length: int
+) -> torch.Tensor:
     """Interpolate `[B, T, D]` features to the action horizon."""
 
     if policy_features.shape[1] == target_length:
@@ -98,6 +101,26 @@ def align_policy_features(policy_features: torch.Tensor, target_length: int) -> 
 
 class ActionDecoder(nn.Module, ABC):
     """Action decoder interface shared across policy variants."""
+
+    @property
+    def dynamics_metric_namespace(self) -> str | None:
+        """Return the decoder-native routed-dynamics metric namespace."""
+
+        return None
+
+    @property
+    def decoder_artifact_contract(self) -> str | None:
+        """Return the typed policy payload contract consumed by this decoder."""
+
+        return None
+
+    def configure_pipeline_requirements(
+        self,
+        requirements: PolicyPipelineRequirements,
+    ) -> None:
+        """Consume optional policy-declared decoder requirements at assembly."""
+
+        del requirements
 
     def build_rollout_plan(
         self,
@@ -172,7 +195,9 @@ class ActionDecoder(nn.Module, ABC):
             self._action_sampler_inactive_value = float(inactive_value)
             return
         if sampler_mask.ndim != 2:
-            raise ValueError(f"Action sampler mask must have shape [H, D], got {tuple(sampler_mask.shape)}.")
+            raise ValueError(
+                f"Action sampler mask must have shape [H, D], got {tuple(sampler_mask.shape)}."
+            )
         mask = sampler_mask.detach().to(dtype=torch.float32).unsqueeze(0)
         if "_action_sampler_mask" in self._buffers:
             self._buffers["_action_sampler_mask"] = mask
@@ -180,12 +205,16 @@ class ActionDecoder(nn.Module, ABC):
             self.register_buffer("_action_sampler_mask", mask, persistent=False)
         self._action_sampler_inactive_value = float(inactive_value)
 
-    def _apply_action_sampler_mask(self, actions: torch.Tensor, *, start_index: int = 0) -> torch.Tensor:
+    def _apply_action_sampler_mask(
+        self, actions: torch.Tensor, *, start_index: int = 0
+    ) -> torch.Tensor:
         sampler_mask = getattr(self, "_action_sampler_mask", None)
         if sampler_mask is None:
             return actions
         if actions.ndim not in {2, 3}:
-            raise ValueError(f"Action sampler mask supports [B, D] or [B, H, D], got {tuple(actions.shape)}.")
+            raise ValueError(
+                f"Action sampler mask supports [B, D] or [B, H, D], got {tuple(actions.shape)}."
+            )
         if actions.shape[-1] != sampler_mask.shape[-1]:
             raise ValueError(
                 f"Action sampler mask dim {sampler_mask.shape[-1]} does not match action dim {actions.shape[-1]}."
@@ -197,14 +226,20 @@ class ActionDecoder(nn.Module, ABC):
                 "Action sampler mask horizon is shorter than the requested action slice, "
                 f"got mask_horizon={sampler_mask.shape[1]}, start_index={start_index}, horizon={horizon}."
             )
-        mask = sampler_mask[:, int(start_index) : end_index].to(device=actions.device, dtype=actions.dtype)
+        mask = sampler_mask[:, int(start_index) : end_index].to(
+            device=actions.device, dtype=actions.dtype
+        )
         if actions.ndim == 2:
             mask = mask[:, 0]
-        inactive = actions.new_full((), float(getattr(self, "_action_sampler_inactive_value", 0.0)))
+        inactive = actions.new_full(
+            (), float(getattr(self, "_action_sampler_inactive_value", 0.0))
+        )
         return actions * mask + inactive * (1.0 - mask)
 
     @abstractmethod
-    def forward_train(self, policy_output: PolicyTrainOutput, batch: PolicyTrainBatch) -> ActionDecoderTrainOutput:
+    def forward_train(
+        self, policy_output: PolicyTrainOutput, batch: PolicyTrainBatch
+    ) -> ActionDecoderTrainOutput:
         """Decode actions and compute loss."""
 
     @abstractmethod
@@ -214,6 +249,7 @@ class ActionDecoder(nn.Module, ABC):
         previous_state: Any | None = None,
     ) -> ActionDecoderInferOutput:
         """Decode actions for one inference step."""
+
 
 def _current_action_tensor_to_chunk(current_action: torch.Tensor) -> torch.Tensor:
     current_action = current_action.detach().to(dtype=torch.float32).cpu()

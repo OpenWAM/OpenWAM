@@ -16,6 +16,7 @@ from open_wam.configs import (
     load_experiment_config,
     read_yaml_with_local_paths,
 )
+from open_wam.configs.policy_dual_expert import DualExpertPolicyConfig
 from open_wam.configs.policy_video_action import resolve_fixed_conditioning_mode
 from open_wam.data.latent_temporal import raw_window_frames_for_latents
 from open_wam.evals.libero_visualization import resolve_device as _resolve_device
@@ -49,26 +50,10 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 
 CURRENT_FRONTEND_ENCODE_MODE = "lingbot_streaming_vae"
 DEPRECATED_FRONTEND_ENCODE_MODE = "rolling_offline"
-LIVE_SIM_DUAL_EXPERT_GENERALIST_ROLLOUT_MODES = frozenset(
-    {
-        "joint",
-        "vanilla_joint_rollout",
-    }
-)
 DUAL_EXPERT_GJD_ACTION_ROUTES = frozenset(
     {
         "joint",
         "joint_video_then_idm",
-    }
-)
-OFFLINE_DIAGNOSTIC_DUAL_EXPERT_GENERALIST_ROLLOUT_MODES = frozenset(
-    {
-        "clean_action_feedback",
-        "forced_action_joint_fdm",
-        "action_conditioned_video",
-        "video_conditioned_action",
-        "fdm",
-        "idm",
     }
 )
 
@@ -122,7 +107,6 @@ class DualExpertLiberoLoadOptions:
     dual_expert_inference_window_size: int | None
     dual_expert_rollout_frame_chunk_size: int | None
     dual_expert_action_only_rollout: bool
-    dual_expert_generalist_rollout_mode: str | None
     dual_expert_gjd_action_route: str
     execute_action_steps: int | None
     execute_frame_chunk_size: int | None
@@ -143,15 +127,12 @@ class DualExpertLiberoLoadOptions:
 def load_dual_expert_libero_runtime(options: DualExpertLiberoLoadOptions) -> DualExpertLiberoRuntime:
     """Load one validated runtime shared by single and batch rollout drivers."""
 
-    _validate_live_sim_dual_expert_generalist_rollout_mode(
-        options.dual_expert_generalist_rollout_mode
-    )
     config_path = Path(options.config)
     if not config_path.is_absolute():
         config_path = (REPO_ROOT / config_path).resolve()
     config = load_experiment_config(
         config_path,
-        checkpoint_runtime_compat=config_path.name == "resolved_config.yaml",
+        checkpoint_runtime_compat=options.allow_deprecated_libero_config,
     )
     _validate_dual_expert_config(config)
     checkpoint_path = _resolve_dual_expert_checkpoint_path(
@@ -174,10 +155,7 @@ def load_dual_expert_libero_runtime(options: DualExpertLiberoLoadOptions) -> Dua
             parse_override_assignments(options.set_overrides),
         )
     _validate_dual_expert_config(config)
-    _validate_live_sim_dual_expert_generalist_rollout_mode(
-        options.dual_expert_generalist_rollout_mode,
-        policy_config=config.policy_variant,
-    )
+    _validate_live_sim_dynamics_program(config.policy_variant)
     require_current_libero_policy_paradigm(
         config,
         config_path=config_path,
@@ -325,7 +303,6 @@ def load_dual_expert_libero_runtime(options: DualExpertLiberoLoadOptions) -> Dua
         dual_expert_inference_window_size=options.dual_expert_inference_window_size,
         dual_expert_rollout_frame_chunk_size=options.dual_expert_rollout_frame_chunk_size,
         dual_expert_action_only_rollout=options.dual_expert_action_only_rollout,
-        dual_expert_generalist_rollout_mode=options.dual_expert_generalist_rollout_mode,
         dual_expert_gjd_action_route=options.dual_expert_gjd_action_route,
     )
     component_report.update(
@@ -403,34 +380,20 @@ def _require_current_frontend_encode_mode(
     )
 
 
-def _validate_live_sim_dual_expert_generalist_rollout_mode(
-    mode: str | None,
-    *,
-    policy_config=None,
+def _validate_live_sim_dynamics_program(
+    policy_config: DualExpertPolicyConfig,
 ) -> None:
-    effective_mode = mode
-    fixed_mode = None
-    if policy_config is not None:
-        fixed_mode = resolve_fixed_conditioning_mode(policy_config)
-        if fixed_mode is not None:
-            effective_mode = fixed_mode.value
-    if effective_mode is None or effective_mode in LIVE_SIM_DUAL_EXPERT_GENERALIST_ROLLOUT_MODES:
+    """Reject programs that require clean future tensors unavailable in sim."""
+
+    fixed_mode = resolve_fixed_conditioning_mode(policy_config)
+    if fixed_mode is None:
         return
-    if effective_mode in OFFLINE_DIAGNOSTIC_DUAL_EXPERT_GENERALIST_ROLLOUT_MODES:
-        supported = ", ".join(sorted(LIVE_SIM_DUAL_EXPERT_GENERALIST_ROLLOUT_MODES))
-        if fixed_mode is not None:
-            mode_source = f"The configured fixed conditional mode resolves to {effective_mode!r}"
-            if mode is not None:
-                mode_source += f" and cannot be replaced by the requested {mode!r} mode"
-        else:
-            mode_source = f"--dual-expert-generalist-rollout-mode={effective_mode!r}"
-        raise ValueError(
-            f"{mode_source} is an offline diagnostic mode, not a live sim rollout mode. "
-            "It requires ground-truth clean action and/or video condition tensors that this LIBERO visualization "
-            f"script does not provide. Use one of [{supported}] here, or use "
-            "scripts/run_joint_denoising_fdm_ablation.py for offline FDM/IDM diagnostics."
-        )
-    raise ValueError(f"Unsupported dual-expert conditioning mode {effective_mode!r}.")
+    raise ValueError(
+        f"The configured {fixed_mode.value!r} dynamics objective is an offline "
+        "diagnostic program, not a live simulator policy. It requires clean future "
+        "action or video tensors that this rollout cannot provide. Use "
+        "scripts/run_joint_denoising_fdm_ablation.py for FDM/IDM evaluation."
+    )
 
 
 def _maybe_merge_checkpoint_runtime_config(
@@ -493,7 +456,6 @@ def _build_component_report(
     dual_expert_inference_window_size: int | None,
     dual_expert_rollout_frame_chunk_size: int | None,
     dual_expert_action_only_rollout: bool,
-    dual_expert_generalist_rollout_mode: str | None,
     dual_expert_gjd_action_route: str,
 ) -> dict[str, object]:
     backbone = config.backbone
@@ -513,7 +475,6 @@ def _build_component_report(
             None if dual_expert_rollout_frame_chunk_size is None else int(dual_expert_rollout_frame_chunk_size)
         ),
         "dual_expert_action_only_rollout": bool(dual_expert_action_only_rollout),
-        "dual_expert_generalist_rollout_mode": dual_expert_generalist_rollout_mode,
         "dual_expert_gjd_action_route": str(dual_expert_gjd_action_route),
         "config_name": config.name,
         "policy_variant_class": policy_variant.__class__.__name__,

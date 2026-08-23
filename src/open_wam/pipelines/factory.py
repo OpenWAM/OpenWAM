@@ -18,6 +18,9 @@ from open_wam.configs.policy_contracts import (
 )
 from open_wam.configs.policy_dual_expert import DualExpertPolicyConfig
 from open_wam.configs.policy_parallel_stream import ParallelStreamPolicyConfig
+from open_wam.configs.resolution import (
+    resolve_experiment_config as _resolve_experiment_config,
+)
 from open_wam.data import build_canonical_video_preprocessor
 from open_wam.data.action_mapping import (
     build_action_sampler_mask,
@@ -49,10 +52,6 @@ from .action_decoder_factory import (
     build_action_decoder,
 )
 from .factory_validation import (
-    _PARALLEL_STREAM_EXACT_MODEL_ACTION_MODES,
-    _resolve_parallel_stream_model_action_dim,
-    _resolve_proprio_context_state_dim,
-    _resolve_proprio_hidden_context_state_dim,
     validate_experiment_config,
 )
 from .lingbot_exact import LingbotExactRunner
@@ -93,7 +92,6 @@ _COMPATIBILITY_EXPORTS = (
     normalize_backbone_implementation,
     _EXTENSION_ACTION_DECODER_BUILDERS,
     _EXTENSION_POLICY_VARIANT_BUILDERS,
-    _PARALLEL_STREAM_EXACT_MODEL_ACTION_MODES,
 )
 
 
@@ -128,8 +126,12 @@ def _register_builtin_pipeline_builders() -> None:
         _build_parallel_stream_action_decoder,
         replace=True,
     )
-    ACTION_DECODER_BUILDERS.register(ActionDecoderName.DUAL_EXPERT, _build_dual_expert_action_decoder, replace=True)
-    ACTION_DECODER_BUILDERS.register(ActionDecoderName.VIDEO_ONLY, _build_video_only_action_decoder, replace=True)
+    ACTION_DECODER_BUILDERS.register(
+        ActionDecoderName.DUAL_EXPERT, _build_dual_expert_action_decoder, replace=True
+    )
+    ACTION_DECODER_BUILDERS.register(
+        ActionDecoderName.VIDEO_ONLY, _build_video_only_action_decoder, replace=True
+    )
     ACTION_DECODER_BUILDERS.register(
         ActionDecoderName.EXTENSION,
         _build_extension_action_decoder,
@@ -141,31 +143,55 @@ _register_builtin_pipeline_builders()
 
 
 def build_variant_pipeline_from_config(config: ExperimentConfig) -> VariantPipeline:
+    config = _resolve_experiment_config(config)
     validate_experiment_config(config)
-    policy_action_dim = _resolve_parallel_stream_model_action_dim(config)
-    proprio_context_state_dim = _resolve_proprio_context_state_dim(config)
-    proprio_hidden_context_state_dim = _resolve_proprio_hidden_context_state_dim(config)
+    action_schema = config.data.action_schema
     visual_tower = VisualTower(
         config.backbone,
-        action_dim=policy_action_dim,
-        state_dim=config.data.action_schema.state_dim,
-        proprio_context_state_dim=proprio_context_state_dim,
-        proprio_hidden_context_state_dim=proprio_hidden_context_state_dim,
-        generalist_mode_context_enabled=bool(
-            getattr(config.policy_variant, "generalist_mode_text_token", False)
+        action_dim=config.action_decoder.action_dim,
+        state_dim=action_schema.state_dim,
+    )
+    conditioning_requirements = config.policy_variant.conditioning_requirements
+    visual_tower.configure_policy_conditioning(
+        proprio_context_mode=conditioning_requirements.proprio_context_mode,
+        dynamics_mode_context_enabled=(
+            conditioning_requirements.dynamics_mode_context_enabled
         ),
     )
+    visual_tower.initialize_configured_weights()
+
     policy_variant = build_policy_variant(config)
-    # Pipeline-time hook for variants that need cross-module surgery (e.g. DualExpert
-    # packed coupling transfers video core/action expert blocks into one
-    # DualExpertPackedBlockStack). Must run before FSDP sharding.
-    if hasattr(policy_variant, "attach_visual_tower"):
-        policy_variant.attach_visual_tower(visual_tower)
+    pipeline_requirements = policy_variant.pipeline_requirements(
+        default_action_dim=config.action_decoder.action_dim,
+        default_action_horizon=config.action_decoder.action_horizon,
+        default_state_dim=action_schema.state_dim,
+    )
+    pipeline_requirements.validate_source_action_shape(
+        action_dim=action_schema.action_dim,
+        action_horizon=action_schema.action_horizon,
+    )
+    pipeline_requirements.validate_action_decoder(
+        action_dim=config.action_decoder.action_dim,
+        action_horizon=config.action_decoder.action_horizon,
+    )
+    pipeline_requirements.validate_visual_tower(
+        action_dim=visual_tower.action_dim,
+        state_dim=visual_tower.state_dim,
+    )
+    pipeline_requirements.validate_conditioning(conditioning_requirements)
+    policy_variant.validate_pipeline_assembly(
+        data_action_dim=action_schema.action_dim,
+        num_frames=config.data.num_frames,
+        backbone_num_layers=config.backbone.num_layers,
+    )
+    # Finalize variant-owned module attachment before distributed wrapping.
+    policy_variant.attach_visual_tower(visual_tower)
     action_decoder = build_action_decoder(config)
+    action_decoder.configure_pipeline_requirements(pipeline_requirements)
     action_sampler_mask = build_action_sampler_mask(
         config.data.action_mapping,
         action_horizon=config.action_decoder.action_horizon,
-        target_dim=config.action_decoder.action_dim,
+        target_dim=pipeline_requirements.action_dim,
     )
     return VariantPipeline(
         visual_tower=visual_tower,
@@ -177,9 +203,13 @@ def build_variant_pipeline_from_config(config: ExperimentConfig) -> VariantPipel
     )
 
 
-def build_lingbot_exact_runner_from_config(config: ExperimentConfig) -> LingbotExactRunner:
+def build_lingbot_exact_runner_from_config(
+    config: ExperimentConfig,
+) -> LingbotExactRunner:
     return LingbotExactRunner(build_variant_pipeline_from_config(config))
 
 
-def build_exact_runtime_runner_from_config(config: ExperimentConfig) -> LingbotExactRunner:
+def build_exact_runtime_runner_from_config(
+    config: ExperimentConfig,
+) -> LingbotExactRunner:
     return build_lingbot_exact_runner_from_config(config)

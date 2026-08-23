@@ -7,7 +7,7 @@ import torch
 from open_wam.configs import (
     ContextConditionLatentSource,
     DualExpertConditionMode,
-    GeneralistDenoisingMode,
+    DynamicsObjective,
     ProprioContextMode,
     VideoActionSequenceContract,
 )
@@ -15,7 +15,20 @@ from open_wam.configs.policy_dual_expert import DualExpertPolicyConfig
 from open_wam.models.common.chunked_attention import (
     build_chunked_text_context_cross_attention_mask,
 )
+from open_wam.models.common.dynamics_conditioning import (
+    append_dynamics_mode_context_token,
+)
+from open_wam.models.common.dynamics_objectives import DynamicsSamplePlan
 from open_wam.models.common.packed_token_layout import frame_chunk_ids_for_origin
+from open_wam.models.common.proprio_conditioning import (
+    HiddenProprioContext,
+    prepend_hidden_proprio_context,
+    resolve_hidden_proprio_context,
+    select_latest_proprio_state,
+)
+from open_wam.models.common.video_conditioning import (
+    resolve_video_condition_latents,
+)
 from open_wam.models.visual_tower import VisualTower
 
 from ..contracts import PolicyTrainBatch
@@ -43,7 +56,8 @@ def resolve_dual_expert_condition_latents(
             training
             and scheduler is not None
             and teacher_forcing_video_noise_prob > 0.0
-            and torch.rand(1, device=video_latents.device).item() < teacher_forcing_video_noise_prob
+            and torch.rand(1, device=video_latents.device).item()
+            < teacher_forcing_video_noise_prob
         ):
             batch_size = cond_latents.shape[0]
             timestep_ids = torch.randint(
@@ -52,7 +66,9 @@ def resolve_dual_expert_condition_latents(
                 size=(batch_size, cond_latents.shape[2]),
                 device=video_latents.device,
             )
-            timesteps = scheduler.timesteps.to(device=video_latents.device)[timestep_ids]
+            timesteps = scheduler.timesteps.to(device=video_latents.device)[
+                timestep_ids
+            ]
             noise = torch.randn_like(cond_latents)
             cond_latents = scheduler.add_noise(cond_latents, noise, timesteps, t_dim=2)
         return cond_latents
@@ -66,32 +82,28 @@ class DualExpertConditioning:
     config: DualExpertPolicyConfig
 
     def uses_proprio_context(self) -> bool:
-        return ProprioContextMode(self.config.proprio_context_mode) != ProprioContextMode.NONE
+        return (
+            ProprioContextMode(self.config.proprio_context_mode)
+            != ProprioContextMode.NONE
+        )
 
     def uses_text_proprio_context(self) -> bool:
         # Deprecated compatibility path; new proprio runs use per-chunk additive context.
-        return ProprioContextMode(self.config.proprio_context_mode) == ProprioContextMode.TEXT_CONTEXT_TOKEN
+        return (
+            ProprioContextMode(self.config.proprio_context_mode)
+            == ProprioContextMode.TEXT_CONTEXT_TOKEN
+        )
 
     def uses_per_chunk_proprio_context(self) -> bool:
-        return ProprioContextMode(self.config.proprio_context_mode) == ProprioContextMode.PER_CHUNK_ADDITIVE
+        return (
+            ProprioContextMode(self.config.proprio_context_mode)
+            == ProprioContextMode.PER_CHUNK_ADDITIVE
+        )
 
     def uses_legacy_prefix_contract(self) -> bool:
         return (
             VideoActionSequenceContract(self.config.sequence_contract)
             == VideoActionSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO
-        )
-
-    @staticmethod
-    def select_anchor_state(state: torch.Tensor | None) -> torch.Tensor | None:
-        if state is None:
-            return None
-        if state.ndim == 2:
-            return state
-        if state.ndim == 3:
-            return state[:, -1, :]
-        raise ValueError(
-            "dual-expert proprio context expects state with shape [B, state_dim] or [B, H, state_dim], "
-            f"got {tuple(state.shape)}."
         )
 
     def resolve_proprio_state(
@@ -103,14 +115,18 @@ class DualExpertConditioning:
     ) -> torch.Tensor | None:
         if not self.uses_text_proprio_context():
             return None
-        selected = self.select_anchor_state(state)
+        selected = select_latest_proprio_state(state)
         if selected is None:
-            selected = self.select_anchor_state(fallback_state)
+            selected = select_latest_proprio_state(fallback_state)
         if selected is None:
-            raise ValueError(f"Proprio context mode is enabled but no state was provided for {label}.")
+            raise ValueError(
+                f"Proprio context mode is enabled but no state was provided for {label}."
+            )
         return selected
 
-    def resolve_train_proprio_context(self, batch: PolicyTrainBatch) -> torch.Tensor | None:
+    def resolve_train_proprio_context(
+        self, batch: PolicyTrainBatch
+    ) -> torch.Tensor | None:
         if not self.uses_text_proprio_context():
             return None
         proprio_context_state = batch.extra.get("proprio_context_state")
@@ -122,15 +138,20 @@ class DualExpertConditioning:
                 )
             proprio_context_state_mask = batch.extra.get("proprio_context_state_mask")
             if isinstance(proprio_context_state_mask, torch.Tensor):
-                if tuple(proprio_context_state_mask.shape) != tuple(proprio_context_state.shape):
+                if tuple(proprio_context_state_mask.shape) != tuple(
+                    proprio_context_state.shape
+                ):
                     raise ValueError(
                         "Per-chunk proprio context mask must match proprio_context_state shape, "
                         f"got mask={tuple(proprio_context_state_mask.shape)}, "
                         f"state={tuple(proprio_context_state.shape)}."
                     )
-                proprio_context_state = proprio_context_state * proprio_context_state_mask.to(
-                    device=proprio_context_state.device,
-                    dtype=proprio_context_state.dtype,
+                proprio_context_state = (
+                    proprio_context_state
+                    * proprio_context_state_mask.to(
+                        device=proprio_context_state.device,
+                        dtype=proprio_context_state.dtype,
+                    )
                 )
             return proprio_context_state
         return self.resolve_proprio_state(
@@ -138,39 +159,16 @@ class DualExpertConditioning:
             label="dual-expert training",
         )
 
-    def resolve_train_hidden_proprio_context(self, batch: PolicyTrainBatch) -> torch.Tensor | None:
+    def resolve_train_hidden_proprio_context(
+        self, batch: PolicyTrainBatch
+    ) -> HiddenProprioContext | None:
         if not self.uses_per_chunk_proprio_context():
             return None
-        value = batch.extra.get("proprio_context_frames")
-        mask = batch.extra.get("proprio_context_frames_mask")
-        if not isinstance(value, torch.Tensor):
-            fallback_value = batch.extra.get("proprio_context_state")
-            if self.uses_legacy_prefix_contract() and isinstance(fallback_value, torch.Tensor):
-                raise ValueError(
-                    "dual-expert legacy-prefix per-chunk additive proprio requires frame-level "
-                    "`proprio_context_frames`; chunk-level `proprio_context_state` cannot be "
-                    "safely aligned to prefix and causal chunk-boundary states."
-                )
-            value = fallback_value
-            mask = batch.extra.get("proprio_context_state_mask")
-        if not isinstance(value, torch.Tensor):
-            raise ValueError(
-                "proprio_context_mode=per_chunk_additive requires dual-expert per-frame "
-                "or per-chunk proprio context."
-            )
-        if value.ndim != 3:
-            raise ValueError(
-                "dual-expert per-chunk additive proprio expects state with shape [B, frames, state_dim], "
-                f"got {tuple(value.shape)}."
-            )
-        if isinstance(mask, torch.Tensor):
-            if tuple(mask.shape) != tuple(value.shape):
-                raise ValueError(
-                    "dual-expert per-chunk additive proprio mask must match state shape, "
-                    f"got mask={tuple(mask.shape)}, state={tuple(value.shape)}."
-                )
-            value = value * mask.to(device=value.device, dtype=value.dtype)
-        return value
+        return resolve_hidden_proprio_context(
+            batch.extra,
+            require_frame_aligned=self.config.requires_frame_aligned_proprio_context,
+            label="dual-expert training",
+        )
 
     def resolve_infer_hidden_proprio_context(
         self,
@@ -180,11 +178,13 @@ class DualExpertConditioning:
     ) -> torch.Tensor | None:
         if not self.uses_per_chunk_proprio_context():
             return None
-        selected = self.select_anchor_state(state)
+        selected = select_latest_proprio_state(state)
         if selected is None:
-            selected = self.select_anchor_state(fallback_state)
+            selected = select_latest_proprio_state(fallback_state)
         if selected is None:
-            raise ValueError("proprio_context_mode=per_chunk_additive requires dual-expert inference state.")
+            raise ValueError(
+                "proprio_context_mode=per_chunk_additive requires dual-expert inference state."
+            )
         return selected
 
     def resolve_text_context(
@@ -216,7 +216,7 @@ class DualExpertConditioning:
             return text_context
         append = getattr(visual_tower.core, "append_proprio_context_tokens", None)
         if not callable(append):
-            raise ValueError(
+            raise TypeError(
                 "Deprecated text-space proprio token mode requires the visual tower core "
                 "to support proprio appending."
             )
@@ -236,7 +236,9 @@ class DualExpertConditioning:
             return None
         encode = getattr(visual_tower.core, "encode_proprio_hidden_context", None)
         if not callable(encode):
-            raise ValueError("proprio_context_mode=per_chunk_additive requires a core hidden proprio encoder hook.")
+            raise TypeError(
+                "proprio_context_mode=per_chunk_additive requires a core hidden proprio encoder hook."
+            )
         if proprio_state.ndim == 2:
             frame_state = proprio_state[:, None, :].expand(-1, int(num_frames), -1)
         elif proprio_state.ndim == 3:
@@ -245,7 +247,9 @@ class DualExpertConditioning:
             elif int(proprio_state.shape[1]) == 1:
                 frame_state = proprio_state.expand(-1, int(num_frames), -1)
             elif chunk_size_frames is not None and int(chunk_size_frames) > 0:
-                expanded = proprio_state.repeat_interleave(int(chunk_size_frames), dim=1)
+                expanded = proprio_state.repeat_interleave(
+                    int(chunk_size_frames), dim=1
+                )
                 if int(expanded.shape[1]) < int(num_frames):
                     raise ValueError(
                         "dual-expert chunk-level hidden proprio context is too short for requested frames, "
@@ -303,7 +307,10 @@ class DualExpertConditioning:
         copies: int = 1,
         chunk_size_frames: int | None = None,
     ) -> torch.Tensor | None:
-        if action_tokens_per_frame <= 0 or int(action_tokens.shape[1]) % int(action_tokens_per_frame) != 0:
+        if (
+            action_tokens_per_frame <= 0
+            or int(action_tokens.shape[1]) % int(action_tokens_per_frame) != 0
+        ):
             raise ValueError(
                 "dual-expert action hidden proprio context requires action length divisible by action_tokens_per_frame, "
                 f"got action_shape={tuple(action_tokens.shape)}, action_tokens_per_frame={action_tokens_per_frame}."
@@ -319,7 +326,9 @@ class DualExpertConditioning:
         )
         if frame_context is None:
             return None
-        token_context = frame_context.repeat_interleave(int(action_tokens_per_frame), dim=1)
+        token_context = frame_context.repeat_interleave(
+            int(action_tokens_per_frame), dim=1
+        )
         return token_context.repeat(1, int(copies), 1)
 
     @staticmethod
@@ -352,7 +361,9 @@ class DualExpertConditioning:
         suffix_token_count = int(global_suffix_token_count)
         if proprio_token_count <= 1 and suffix_token_count <= 0:
             return None
-        gated_proprio_token_count = int(proprio_token_count) if proprio_token_count > 1 else 0
+        gated_proprio_token_count = (
+            int(proprio_token_count) if proprio_token_count > 1 else 0
+        )
         if query_frames_per_copy <= 0 or tokens_per_frame <= 0:
             raise ValueError(
                 "Proprio cross-attention masking requires positive query geometry, "
@@ -370,7 +381,11 @@ class DualExpertConditioning:
             chunk_size=chunk_size,
             singleton_chunk_frame=singleton_chunk_frame,
         ).repeat(int(repeat_copies))
-        base_text_token_count = int(resolved_text_context.shape[1]) - gated_proprio_token_count - suffix_token_count
+        base_text_token_count = (
+            int(resolved_text_context.shape[1])
+            - gated_proprio_token_count
+            - suffix_token_count
+        )
         return build_chunked_text_context_cross_attention_mask(
             query_chunk_ids=query_chunk_ids,
             batch_size=int(resolved_text_context.shape[0]),
@@ -385,60 +400,35 @@ class DualExpertConditioning:
         self,
         visual_tower: VisualTower,
         text_context: torch.Tensor,
-        mode: GeneralistDenoisingMode,
+        mode: DynamicsObjective,
     ) -> tuple[torch.Tensor, int]:
-        if not bool(getattr(self.config, "generalist_mode_text_token", False)):
+        if not bool(self.config.generalist_mode_text_token):
             return text_context, 0
-        append = getattr(visual_tower.core, "append_generalist_mode_context_token", None)
-        if not callable(append):
-            raise ValueError("DualExpert `generalist_mode_text_token=true` requires a visual core mode-token hook.")
-        before_tokens = int(text_context.shape[1])
-        resolved = append(text_context, mode.value)
-        token_count = int(resolved.shape[1]) - before_tokens
-        if token_count != 1:
-            raise ValueError(
-                "DualExpert generalist mode token appending must add exactly one token, "
-                f"got token_count={token_count}."
-            )
-        return resolved, token_count
+        return append_dynamics_mode_context_token(
+            visual_tower.core,
+            text_context,
+            mode,
+        )
 
     def resolve_train_condition_latents(
         self,
         batch: PolicyTrainBatch,
         *,
         video_latents: torch.Tensor,
+        dynamics_sample_plan: DynamicsSamplePlan | None = None,
     ) -> torch.Tensor | None:
-        if not bool(self.config.use_condition_latents):
+        if (
+            dynamics_sample_plan is not None
+            and dynamics_sample_plan.uses_in_sequence_condition
+        ):
             return None
-        condition_latents = batch.extra.get("condition_latents")
-        if condition_latents is None:
-            if bool(self.config.require_condition_latents):
-                raise ValueError(
-                    "dual-expert training was configured with `require_condition_latents=true`, "
-                    "but the latent batch did not provide `condition_latents`."
-                )
-            return None
-        if not isinstance(condition_latents, torch.Tensor):
-            raise ValueError(
-                "dual-expert `condition_latents` must be a tensor when provided, "
-                f"got {type(condition_latents).__name__}."
-            )
-        if condition_latents.ndim == 5 and tuple(condition_latents.shape) != tuple(video_latents.shape):
-            time_first_shape = (
-                video_latents.shape[0],
-                video_latents.shape[2],
-                video_latents.shape[1],
-                video_latents.shape[3],
-                video_latents.shape[4],
-            )
-            if tuple(condition_latents.shape) == tuple(time_first_shape):
-                condition_latents = condition_latents.permute(0, 2, 1, 3, 4).contiguous()
-        if condition_latents.ndim != 5 or tuple(condition_latents.shape) != tuple(video_latents.shape):
-            raise ValueError(
-                "dual-expert `condition_latents` must match video_latents exactly for train-time video conditioning, "
-                f"got condition={tuple(condition_latents.shape)}, video={tuple(video_latents.shape)}."
-            )
-        return condition_latents.to(device=video_latents.device, dtype=video_latents.dtype)
+        return resolve_video_condition_latents(
+            video_latents,
+            batch.extra.get("condition_latents"),
+            enabled=bool(self.config.use_condition_latents),
+            required=bool(self.config.require_condition_latents),
+            label="Training",
+        )
 
     @staticmethod
     def video_condition_source(condition_latents: torch.Tensor | None) -> str:
@@ -453,7 +443,13 @@ class DualExpertConditioning:
         video_latents: torch.Tensor,
         condition_latents: torch.Tensor | None,
         history_frames: int,
+        dynamics_sample_plan: DynamicsSamplePlan | None,
     ) -> tuple[torch.Tensor | None, str]:
+        if (
+            dynamics_sample_plan is not None
+            and dynamics_sample_plan.uses_in_sequence_condition
+        ):
+            return video_latents, "video_latents_target_only"
         if (
             self.context_condition_latent_source()
             != ContextConditionLatentSource.SINGLE_FRAME_CONDITION_LATENT
@@ -469,22 +465,35 @@ class DualExpertConditioning:
                 f"got history_frames={history_frames}."
             )
         clean_condition = video_latents.clone()
-        clean_condition[:, :, : int(history_frames)] = condition_latents[:, :, : int(history_frames)].to(
+        clean_condition[:, :, : int(history_frames)] = condition_latents[
+            :, :, : int(history_frames)
+        ].to(
             device=video_latents.device,
             dtype=video_latents.dtype,
         )
         return clean_condition, "context_condition_latents"
 
-    def prepend_legacy_prefix_video_latents(
+    def prepare_train_video_sequence(
         self,
         *,
         video_latents: torch.Tensor,
         condition_latents: torch.Tensor | None,
-        hidden_proprio_state: torch.Tensor | None,
+        hidden_proprio_context: HiddenProprioContext | None,
         batch: PolicyTrainBatch,
-    ) -> tuple[torch.Tensor, torch.Tensor | None, int, str]:
+        dynamics_sample_plan: DynamicsSamplePlan | None,
+    ) -> tuple[torch.Tensor, HiddenProprioContext | None, int, str]:
+        if (
+            dynamics_sample_plan is not None
+            and dynamics_sample_plan.uses_in_sequence_condition
+        ):
+            return video_latents, hidden_proprio_context, 0, "video_latents_target_only"
         if not self.uses_legacy_prefix_contract():
-            return video_latents, hidden_proprio_state, 0, self.video_condition_source(condition_latents)
+            return (
+                video_latents,
+                hidden_proprio_context,
+                0,
+                self.video_condition_source(condition_latents),
+            )
         if condition_latents is None:
             raise ValueError(
                 "`sequence_contract=legacy_prefix_single_frame_perchunk_proprio` requires "
@@ -501,70 +510,16 @@ class DualExpertConditioning:
             dtype=video_latents.dtype,
         )
         model_video_latents = torch.cat([prefix_latents, video_latents], dim=2)
-        if hidden_proprio_state is not None:
-            if hidden_proprio_state.ndim != 3:
-                raise ValueError(
-                    "dual-expert legacy-prefix per-chunk proprio expects target frame states with shape "
-                    "[B, target_frames, state_dim], "
-                    f"got {tuple(hidden_proprio_state.shape)}."
-                )
-            prefix_state = self.select_anchor_state(batch.state)
-            if prefix_state is None:
-                raise ValueError(
-                    "`sequence_contract=legacy_prefix_single_frame_perchunk_proprio` requires "
-                    "batch.state for the prefix/current proprio frame."
-                )
-            target_frames = int(video_latents.shape[2])
-            if int(hidden_proprio_state.shape[1]) < target_frames:
-                raise ValueError(
-                    "dual-expert legacy-prefix per-chunk proprio expects at least one state per target frame, "
-                    f"got {tuple(hidden_proprio_state.shape)} for target_frames={target_frames}."
-                )
-            hidden_proprio_state = torch.cat(
-                [
-                    prefix_state[:, None, :].to(
-                        device=hidden_proprio_state.device,
-                        dtype=hidden_proprio_state.dtype,
-                    ),
-                    hidden_proprio_state[:, :target_frames, :],
-                ],
-                dim=1,
+        if hidden_proprio_context is not None:
+            hidden_proprio_context = prepend_hidden_proprio_context(
+                hidden_proprio_context,
+                prefix_state=batch.state,
+                target_frame_count=int(video_latents.shape[2]),
+                label="Dual Expert external condition prefix",
             )
-        return model_video_latents, hidden_proprio_state, 1, "condition_latents_prefix"
-
-    @staticmethod
-    def legacy_prefix_action_hidden_proprio_state(
-        hidden_proprio_state: torch.Tensor | None,
-        *,
-        prefix_condition_frames: int,
-        target_num_frames: int,
-        chunk_size_frames: int,
-        chunk_origin_frame: int = 0,
-    ) -> torch.Tensor | None:
-        if hidden_proprio_state is None or int(prefix_condition_frames) <= 0:
-            return hidden_proprio_state
-        if hidden_proprio_state.ndim != 3:
-            raise ValueError(
-                "dual-expert legacy-prefix per-chunk proprio expects frame state shape "
-                "[B, prefix_plus_target_frames, state_dim], "
-                f"got {tuple(hidden_proprio_state.shape)}."
-            )
-        required_frames = int(prefix_condition_frames) + int(target_num_frames)
-        if int(hidden_proprio_state.shape[1]) < required_frames:
-            raise ValueError(
-                "dual-expert legacy-prefix per-chunk proprio expects prefix plus target frame states, "
-                f"got {tuple(hidden_proprio_state.shape)} for required_frames={required_frames}."
-            )
-        chunk_size = max(1, int(chunk_size_frames))
-        target_frame_ids = torch.arange(
-            int(target_num_frames),
-            device=hidden_proprio_state.device,
-            dtype=torch.long,
+        return (
+            model_video_latents,
+            hidden_proprio_context,
+            1,
+            "condition_latents_prefix",
         )
-        chunk_origin = int(chunk_origin_frame)
-        target_boundary_ids = (
-            torch.div(target_frame_ids - chunk_origin, chunk_size, rounding_mode="floor") * chunk_size
-            + chunk_origin
-        )
-        target_boundary_ids = target_boundary_ids.clamp(0, required_frames - 1)
-        return hidden_proprio_state.index_select(dim=1, index=target_boundary_ids)

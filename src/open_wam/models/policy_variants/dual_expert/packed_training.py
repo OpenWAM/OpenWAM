@@ -3,19 +3,22 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import torch
 
 from open_wam.configs import (
-    GeneralistDenoisingMode,
     HistoryStreamVisibility,
     JointTimestepCoupling,
     TrainingConfig,
 )
 from open_wam.configs.policy_dual_expert import DualExpertPolicyConfig
-from open_wam.models.common.attention_contracts import (
-    CONDITIONAL_HISTORY_POLICY_PREVIOUS_BOUNDARY_VIDEO_ONLY,
+from open_wam.contracts import (
+    DYNAMICS_ROUTING_SOURCE_METADATA_KEY,
+)
+from open_wam.models.common.dynamics_objectives import (
+    apply_dynamics_training_plan,
+    resolve_dynamics_training_plan,
 )
 from open_wam.models.common.flow_noise_plan import frame_sigmas_for_timesteps
 from open_wam.models.common.flow_schedule import (
@@ -29,8 +32,9 @@ from open_wam.models.common.flow_training import (
     build_frame_aligned_action_flow_match_train_artifacts,
     build_video_flow_match_train_artifacts,
 )
-from open_wam.models.common.joint_conditioning import (
-    resolve_generalist_joint_conditioning_semantics,
+from open_wam.models.common.proprio_conditioning import (
+    HiddenProprioContext,
+    project_hidden_proprio_context_to_frames,
 )
 from open_wam.models.visual_tower import VisualStageOutputs, VisualTower
 
@@ -48,15 +52,6 @@ from .decoder_artifacts import (
     DualExpertVideoTrainArtifacts,
 )
 from .dual_stream_execution import forward_dual_expert_packed_coupling_denoise
-from .generalist_modes import (
-    apply_generalist_training_mode as _apply_dual_expert_generalist_training_mode,
-)
-from .generalist_modes import (
-    generalist_forces_clean_video_condition as _dual_expert_generalist_forces_clean_video_condition,
-)
-from .generalist_modes import (
-    resolve_generalist_training_mode,
-)
 from .modules import DualExpertActionExpert
 from .packed_block import DualExpertPackedBlockStack
 from .sequence_layout import (
@@ -98,19 +93,36 @@ class DualExpertPackedTrainingProgram:
         condition_latents = prepared_inputs.variant_inputs.get("condition_latents")
         text_context = prepared_inputs.variant_inputs["text_context"]
         proprio_state = prepared_inputs.variant_inputs.get("proprio_state")
-        hidden_proprio_state = prepared_inputs.variant_inputs.get("hidden_proprio_state")
-        video_tokens_per_frame = int(prepared_inputs.variant_inputs["video_tokens_per_frame"])
+        hidden_proprio_context = prepared_inputs.variant_inputs.get(
+            "hidden_proprio_context"
+        )
+        if hidden_proprio_context is not None and not isinstance(
+            hidden_proprio_context,
+            HiddenProprioContext,
+        ):
+            raise TypeError(
+                "Dual Expert hidden proprio input must use HiddenProprioContext, "
+                f"got {type(hidden_proprio_context).__name__}."
+            )
+        video_tokens_per_frame = int(
+            prepared_inputs.variant_inputs["video_tokens_per_frame"]
+        )
         target_video_latents = video_latents
         target_num_video_frames = int(target_video_latents.shape[2])
         num_video_frames = target_num_video_frames
+        sample_metadata = prepared_inputs.variant_inputs.get("sample_metadata")
+        dynamics_sample_plan = prepared_inputs.variant_inputs.get(
+            "dynamics_sample_plan"
+        )
+        dynamics_sequence = (
+            None if dynamics_sample_plan is None else dynamics_sample_plan.sequence
+        )
         # Dataset adapters may stamp sampled geometry into per-sample metadata.
-        # Full-segment samples leave it unset, so draw geometry per step using
-        # the same contract as parallel-stream training.
-        metadata_for_geometry = prepared_inputs.batch.extra.get("metadata")
+        # Full-segment samples leave it unset, so draw geometry per step through
+        # the shared sample-construction contract.
         metadata_has_geometry = (
-            isinstance(metadata_for_geometry, tuple)
-            and len(metadata_for_geometry) > 0
-            and metadata_for_geometry[0].get("sampled_chunk_size") is not None
+            sample_metadata is not None
+            and sample_metadata.sampled_chunk_size is not None
         )
         if metadata_has_geometry:
             history_frames = self.training_layout.resolve_history_frames(
@@ -125,19 +137,28 @@ class DualExpertPackedTrainingProgram:
                 batch=prepared_inputs.batch,
             )
         else:
-            sampled_chunk_size, sampled_window_size, history_frames = (
+            sampled_chunk_size, sampled_window_size, sampled_history_frames = (
                 self.training_layout.sample_full_segment_geometry(
                     observed_num_frames=target_num_video_frames,
                     device=video_latents.device,
                 )
             )
-        video_latents, hidden_proprio_state, prefix_condition_frames, legacy_video_condition_source = (
-            self.conditioning.prepend_legacy_prefix_video_latents(
-                video_latents=target_video_latents,
-                condition_latents=condition_latents,
-                hidden_proprio_state=hidden_proprio_state,
-                batch=prepared_inputs.batch,
+            history_frames = (
+                sampled_history_frames
+                if dynamics_sequence is None
+                else dynamics_sequence.history_frames
             )
+        (
+            video_latents,
+            hidden_proprio_context,
+            prefix_condition_frames,
+            legacy_video_condition_source,
+        ) = self.conditioning.prepare_train_video_sequence(
+            video_latents=target_video_latents,
+            condition_latents=condition_latents,
+            hidden_proprio_context=hidden_proprio_context,
+            batch=prepared_inputs.batch,
+            dynamics_sample_plan=dynamics_sample_plan,
         )
         num_video_frames = int(video_latents.shape[2])
         current_block_coupling = resolve_dual_expert_current_block_coupling(self.config)
@@ -150,14 +171,24 @@ class DualExpertPackedTrainingProgram:
             batch=prepared_inputs.batch,
             observed_num_frames=target_num_video_frames,
         )
-        frame_shift = self.training_layout.resolve_frame_shift(batch=prepared_inputs.batch)
-        chunk_origin_frame = self.training_layout.resolve_chunk_origin_frame(
-            batch=prepared_inputs.batch,
-            observed_num_frames=target_num_video_frames,
+        frame_shift = self.training_layout.resolve_frame_shift(
+            batch=prepared_inputs.batch
         )
-        singleton_chunk_frame = self.training_layout.resolve_singleton_chunk_frame(
-            batch=prepared_inputs.batch,
-            observed_num_frames=target_num_video_frames,
+        chunk_origin_frame = (
+            dynamics_sequence.chunk_origin_frame
+            if dynamics_sequence is not None
+            else self.training_layout.resolve_chunk_origin_frame(
+                batch=prepared_inputs.batch,
+                observed_num_frames=target_num_video_frames,
+            )
+        )
+        singleton_chunk_frame = (
+            dynamics_sequence.singleton_chunk_frame
+            if dynamics_sequence is not None
+            else self.training_layout.resolve_singleton_chunk_frame(
+                batch=prepared_inputs.batch,
+                observed_num_frames=target_num_video_frames,
+            )
         )
 
         if action_tokens_per_frame is None:
@@ -173,39 +204,39 @@ class DualExpertPackedTrainingProgram:
         history_stream_visibility = self._resolve_history_stream_visibility()
         conditional_history_policy = None
 
-        (
-            sampled_generalist_mode,
-            forced_generalist_mode,
-            metadata_drop_text,
-            generalist_source,
-        ) = resolve_generalist_training_mode(
-            self.config,
-            prepared_inputs.batch,
+        dynamics_plan = resolve_dynamics_training_plan(
+            program=self.config.program,
+            sample_metadata=sample_metadata,
             device=video_latents.device,
+            sample_plan=dynamics_sample_plan,
         )
-        if sampled_generalist_mode is not None and int(video_latents.shape[0]) != 1:
+        dynamics_objective = None if dynamics_plan is None else dynamics_plan.objective
+        routed_dynamics_objective = (
+            None if dynamics_plan is None else dynamics_plan.routed_objective
+        )
+        dynamics_source = None if dynamics_plan is None else dynamics_plan.source
+        if dynamics_objective is not None and int(video_latents.shape[0]) != 1:
             raise ValueError(
-                "dual-expert generalist joint denoising currently requires rank-local train_batch_size=1 because "
-                "one GJD mode is sampled/applied per segment forward and per-sample forced modes are only "
+                "Dual Expert routed dynamics training requires rank-local train_batch_size=1 because "
+                "one objective is applied per segment forward and per-sample routed objectives are only "
                 f"unambiguous for batch size 1; got batch_size={int(video_latents.shape[0])}."
             )
-
         joint_timestep_coupling = resolve_dual_expert_joint_timestep_coupling(
-            self.config,
-            current_block_coupling,
+            self.config
         )
         shared_timestep_ids = None
         if joint_timestep_coupling in {
             JointTimestepCoupling.MATCH_INDEX,
             JointTimestepCoupling.SHARED_VIDEO_SCHEDULE,
         }:
-            if int(self.training_config.video_num_train_timesteps) != int(self.training_config.action_num_train_timesteps):
-                if joint_timestep_coupling == JointTimestepCoupling.MATCH_INDEX:
-                    raise ValueError(
-                        "dual-expert index-matched joint denoising requires equal video/action train timestep counts, "
-                        f"got video={self.training_config.video_num_train_timesteps}, "
-                        f"action={self.training_config.action_num_train_timesteps}."
-                    )
+            if joint_timestep_coupling == JointTimestepCoupling.MATCH_INDEX and int(
+                self.training_config.video_num_train_timesteps
+            ) != int(self.training_config.action_num_train_timesteps):
+                raise ValueError(
+                    "dual-expert index-matched joint denoising requires equal video/action train timestep counts, "
+                    f"got video={self.training_config.video_num_train_timesteps}, "
+                    f"action={self.training_config.action_num_train_timesteps}."
+                )
             shared_timestep_ids = sample_timestep_id(
                 batch_size=int(video_latents.shape[0]),
                 sample_shape=(num_video_frames,),
@@ -216,10 +247,13 @@ class DualExpertPackedTrainingProgram:
             clean_video_condition_latents = video_latents
             video_condition_source = legacy_video_condition_source
         else:
-            clean_video_condition_latents, video_condition_source = self.conditioning.train_clean_video_condition_latents(
-                video_latents=video_latents,
-                condition_latents=condition_latents,
-                history_frames=history_frames,
+            clean_video_condition_latents, video_condition_source = (
+                self.conditioning.train_clean_video_condition_latents(
+                    video_latents=video_latents,
+                    condition_latents=condition_latents,
+                    history_frames=history_frames,
+                    dynamics_sample_plan=dynamics_sample_plan,
+                )
             )
 
         video_artifacts = build_video_flow_match_train_artifacts(
@@ -228,18 +262,26 @@ class DualExpertPackedTrainingProgram:
             condition_latents=clean_video_condition_latents,
             timestep_ids=shared_timestep_ids,
             noisy_condition_prob=0.0
-            if _dual_expert_generalist_forces_clean_video_condition(sampled_generalist_mode)
+            if dynamics_plan is not None
+            and dynamics_plan.semantics.force_clean_video_condition
             else float(self.config.noisy_video_condition_prob),
         )
         if prefix_condition_frames > 0:
             prefix_latents = video_latents[:, :, :prefix_condition_frames]
-            video_artifacts.noisy_latents[:, :, :prefix_condition_frames] = prefix_latents
-            video_artifacts.condition_latents[:, :, :prefix_condition_frames] = prefix_latents
+            video_artifacts.noisy_latents[:, :, :prefix_condition_frames] = (
+                prefix_latents
+            )
+            video_artifacts.condition_latents[:, :, :prefix_condition_frames] = (
+                prefix_latents
+            )
             video_artifacts.targets[:, :, :prefix_condition_frames] = 0
             video_artifacts.timesteps[:, :prefix_condition_frames] = 0.0
             video_artifacts.condition_timesteps[:, :prefix_condition_frames] = 0.0
         coupled_action_sigma_values = (
-            frame_sigmas_for_timesteps(video_artifacts.scheduler, video_artifacts.timesteps[:, prefix_condition_frames:])
+            frame_sigmas_for_timesteps(
+                video_artifacts.scheduler,
+                video_artifacts.timesteps[:, prefix_condition_frames:],
+            )
             if joint_timestep_coupling == JointTimestepCoupling.MATCH_SIGMA
             else None
         )
@@ -298,64 +340,83 @@ class DualExpertPackedTrainingProgram:
         # parallel-stream's `_time_embed` repeat-interleave of per-frame timesteps).
         noisy_slot_timesteps = action_artifacts.slot_timesteps
 
-        # ---- A1 generalist mode sampling (strict parallel-stream PR #95 parity) ----
-        # When ``generalist_denoising_mode_probs`` is set, sample one
-        # regime per segment. Sampling lives at the segment top so the same
+        # Apply the one mode selected by the data route (or pure-joint GJD).
+        # Resolution lives at the segment top so the same
         # mode flows through every layer / block of this forward; it must
         # NOT be re-sampled at block granularity (would break attention
         # profile cache + cause same-step layers to disagree).
-        if sampled_generalist_mode is not None:
-            generalist_semantics = resolve_generalist_joint_conditioning_semantics(
-                sampled_generalist_mode,
-                joint_mode=GeneralistDenoisingMode.JOINT,
-                action_conditioned_video_mode=GeneralistDenoisingMode.ACTION_CONDITIONED_VIDEO,
-                video_conditioned_action_mode=GeneralistDenoisingMode.VIDEO_CONDITIONED_ACTION,
-                drop_text_conditioning=metadata_drop_text,
+        if dynamics_plan is not None:
+            training_tensors = apply_dynamics_training_plan(
+                dynamics_plan,
+                clean_video=video_latents,
+                noisy_video=video_artifacts.noisy_latents,
+                video_targets=video_artifacts.targets,
+                video_timesteps=video_artifacts.timesteps,
+                video_loss_mask=future_loss_mask,
+                clean_action=clean_actions,
+                noisy_action=noisy_actions,
+                action_targets=action_artifacts.targets,
+                action_timesteps=noisy_slot_timesteps,
+                action_loss_mask=effective_action_mask,
+                clean_action_mask=clean_action_condition_mask,
             )
-            (
+            video_artifacts = replace(
                 video_artifacts,
-                noisy_actions,
-                clean_actions,
-                noisy_slot_timesteps,
-                future_loss_mask,
-                effective_action_mask,
-            ) = _apply_dual_expert_generalist_training_mode(
-                sampled_mode=sampled_generalist_mode,
-                video_artifacts=video_artifacts,
-                noisy_actions=noisy_actions,
-                clean_actions=clean_actions,
-                noisy_slot_timesteps=noisy_slot_timesteps,
-                future_loss_mask=future_loss_mask,
-                effective_action_mask=effective_action_mask,
-                clean_action_condition_mask=clean_action_condition_mask,
+                noisy_latents=training_tensors.noisy_video,
+                targets=training_tensors.video_targets,
+                timesteps=training_tensors.video_timesteps,
             )
-            if generalist_semantics.is_conditional:
-                # FDM/IDM keep the sampled GJD chunk geometry, but restrict
-                # clean history to the immediately previous video chunk.
-                sampled_window_size = generalist_semantics.attention_window_size(
+            action_artifacts = replace(
+                action_artifacts,
+                targets=training_tensors.action_targets,
+            )
+            noisy_actions = training_tensors.noisy_action
+            noisy_slot_timesteps = training_tensors.action_timesteps
+            future_loss_mask = training_tensors.video_loss_mask
+            effective_action_mask = training_tensors.action_loss_mask
+            if dynamics_plan.semantics.is_conditional:
+                # FDM/IDM keep sampled future chunk geometry while exposing
+                # only the immediately preceding boundary frame as clean history.
+                sampled_window_size = dynamics_plan.semantics.attention_window_size(
                     fallback_window_size=sampled_window_size,
                 )
-                history_stream_visibility = HistoryStreamVisibility.VIDEO_ONLY
-                conditional_history_policy = (
-                    self.training_layout.resolve_conditional_history_policy(batch=prepared_inputs.batch)
-                    or CONDITIONAL_HISTORY_POLICY_PREVIOUS_BOUNDARY_VIDEO_ONLY
+                history_stream_visibility = (
+                    dynamics_plan.semantics.resolve_history_stream_visibility(
+                        fallback=history_stream_visibility,
+                    )
                 )
+                if dynamics_plan.sequence is None:  # pragma: no cover - plan invariant
+                    raise RuntimeError(
+                        "Conditional dynamics training plan is missing its sequence contract."
+                    )
+                conditional_history_policy = dynamics_plan.sequence.history_policy
 
         packed_action_tokens = torch.cat([noisy_actions, clean_actions], dim=1)
-        action_hidden_proprio_state = self.conditioning.legacy_prefix_action_hidden_proprio_state(
-            hidden_proprio_state,
-            prefix_condition_frames=prefix_condition_frames,
-            target_num_frames=target_num_video_frames,
-            chunk_size_frames=sampled_chunk_size,
-            chunk_origin_frame=chunk_origin_frame,
+        projected_hidden_proprio_state = (
+            None
+            if hidden_proprio_context is None
+            else project_hidden_proprio_context_to_frames(
+                hidden_proprio_context,
+                num_frames=num_video_frames,
+                chunk_size=sampled_chunk_size,
+                chunk_origin_frame=chunk_origin_frame,
+                prefix_frames=prefix_condition_frames,
+            )
         )
-        packed_action_hidden_context = self.conditioning.action_hidden_context_for_tokens(
-            visual_tower,
-            action_hidden_proprio_state,
-            action_tokens=noisy_actions,
-            action_tokens_per_frame=int(action_tokens_per_frame),
-            copies=2,
-            chunk_size_frames=sampled_chunk_size,
+        action_hidden_proprio_state = (
+            None
+            if projected_hidden_proprio_state is None
+            else projected_hidden_proprio_state[:, prefix_condition_frames:, :]
+        )
+        packed_action_hidden_context = (
+            self.conditioning.action_hidden_context_for_tokens(
+                visual_tower,
+                action_hidden_proprio_state,
+                action_tokens=noisy_actions,
+                action_tokens_per_frame=int(action_tokens_per_frame),
+                copies=2,
+                chunk_size_frames=sampled_chunk_size,
+            )
         )
         clean_slot_timesteps = torch.zeros_like(noisy_slot_timesteps)
         packed_action_timesteps = torch.cat(
@@ -363,14 +424,8 @@ class DualExpertPackedTrainingProgram:
         )
 
         text_dropped = False
-        if sampled_generalist_mode is not None:
-            text_dropped = resolve_generalist_joint_conditioning_semantics(
-                sampled_generalist_mode,
-                joint_mode=GeneralistDenoisingMode.JOINT,
-                action_conditioned_video_mode=GeneralistDenoisingMode.ACTION_CONDITIONED_VIDEO,
-                video_conditioned_action_mode=GeneralistDenoisingMode.VIDEO_CONDITIONED_ACTION,
-                drop_text_conditioning=metadata_drop_text,
-            ).drop_text_conditioning
+        if dynamics_plan is not None:
+            text_dropped = dynamics_plan.semantics.drop_text_conditioning
         resolved_text = text_context
         if resolved_text is None:
             resolved_text = video_latents.new_zeros(
@@ -390,28 +445,34 @@ class DualExpertPackedTrainingProgram:
             materialize_if_missing=True,
         )
         if resolved_text is None:  # pragma: no cover - materialized above
-            raise RuntimeError("dual-expert packed text context unexpectedly resolved to None.")
+            raise RuntimeError(
+                "dual-expert packed text context unexpectedly resolved to None."
+            )
         generalist_mode_text_token_count = 0
-        if bool(getattr(self.config, "generalist_mode_text_token", False)):
-            if sampled_generalist_mode is None:
+        if bool(self.config.generalist_mode_text_token):
+            if dynamics_objective is None:
                 raise ValueError(
                     "DualExpert `generalist_mode_text_token=true` requires an active sampled or forced GJD mode."
                 )
-            resolved_text, generalist_mode_text_token_count = self.conditioning.append_generalist_mode_text_token(
-                visual_tower,
-                resolved_text,
-                sampled_generalist_mode,
+            resolved_text, generalist_mode_text_token_count = (
+                self.conditioning.append_generalist_mode_text_token(
+                    visual_tower,
+                    resolved_text,
+                    dynamics_objective,
+                )
             )
-        packed_video_cross_attention_mask = self.conditioning.build_proprio_cross_attention_mask(
-            resolved_text_context=resolved_text,
-            proprio_state=proprio_state,
-            query_frames_per_copy=num_video_frames,
-            tokens_per_frame=video_tokens_per_frame,
-            chunk_size_frames=sampled_chunk_size,
-            chunk_origin_frame=chunk_origin_frame,
-            singleton_chunk_frame=singleton_chunk_frame,
-            repeat_copies=2,
-            global_suffix_token_count=generalist_mode_text_token_count,
+        packed_video_cross_attention_mask = (
+            self.conditioning.build_proprio_cross_attention_mask(
+                resolved_text_context=resolved_text,
+                proprio_state=proprio_state,
+                query_frames_per_copy=num_video_frames,
+                tokens_per_frame=video_tokens_per_frame,
+                chunk_size_frames=sampled_chunk_size,
+                chunk_origin_frame=chunk_origin_frame,
+                singleton_chunk_frame=singleton_chunk_frame,
+                repeat_copies=2,
+                global_suffix_token_count=generalist_mode_text_token_count,
+            )
         )
 
         single_action_grid = build_action_grid_ids_for_sequence(
@@ -422,16 +483,18 @@ class DualExpertPackedTrainingProgram:
             frame_shift=frame_shift,
         )  # [B, 4, T_a*ppF_a]
         packed_action_grid = torch.cat([single_action_grid, single_action_grid], dim=-1)
-        packed_action_cross_attention_mask = self.conditioning.build_proprio_cross_attention_mask(
-            resolved_text_context=resolved_text,
-            proprio_state=proprio_state,
-            query_frames_per_copy=num_action_frames,
-            tokens_per_frame=int(action_tokens_per_frame),
-            chunk_size_frames=sampled_chunk_size,
-            chunk_origin_frame=chunk_origin_frame,
-            singleton_chunk_frame=singleton_chunk_frame,
-            repeat_copies=2,
-            global_suffix_token_count=generalist_mode_text_token_count,
+        packed_action_cross_attention_mask = (
+            self.conditioning.build_proprio_cross_attention_mask(
+                resolved_text_context=resolved_text,
+                proprio_state=proprio_state,
+                query_frames_per_copy=num_action_frames,
+                tokens_per_frame=int(action_tokens_per_frame),
+                chunk_size_frames=sampled_chunk_size,
+                chunk_origin_frame=chunk_origin_frame,
+                singleton_chunk_frame=singleton_chunk_frame,
+                repeat_copies=2,
+                global_suffix_token_count=generalist_mode_text_token_count,
+            )
         )
 
         packed_action_pre = self.action_expert.pre_dit(
@@ -463,27 +526,31 @@ class DualExpertPackedTrainingProgram:
             if prefix_condition_frames > 0
             else self.conditioning.video_hidden_context_for_tokens(
                 visual_tower,
-                hidden_proprio_state,
+                projected_hidden_proprio_state,
                 video_latents=video_latents,
                 copies=2,
                 chunk_size_frames=sampled_chunk_size,
             )
         )
-        video_flow_pred, packed_action_hidden = forward_dual_expert_packed_coupling_denoise(
-            visual_tower=visual_tower,
-            noisy_video_latents=video_artifacts.noisy_latents,
-            clean_video_latents=video_artifacts.condition_latents,
-            noisy_video_timesteps=video_artifacts.timesteps,
-            clean_video_timesteps=video_artifacts.condition_timesteps,
-            action_expert=self.action_expert,
-            packed_action_pre=packed_action_pre,
-            attention_profile=packed_attention_profile,
-            text_context=resolved_text,
-            frame_start=frame_shift - prefix_condition_frames,
-            use_activation_checkpointing=bool(self.config.use_activation_checkpointing),
-            packed_block_stack=self.packed_block_stack,
-            video_cross_attention_mask=packed_video_cross_attention_mask,
-            video_hidden_context=packed_video_hidden_context,
+        video_flow_pred, packed_action_hidden = (
+            forward_dual_expert_packed_coupling_denoise(
+                visual_tower=visual_tower,
+                noisy_video_latents=video_artifacts.noisy_latents,
+                clean_video_latents=video_artifacts.condition_latents,
+                noisy_video_timesteps=video_artifacts.timesteps,
+                clean_video_timesteps=video_artifacts.condition_timesteps,
+                action_expert=self.action_expert,
+                packed_action_pre=packed_action_pre,
+                attention_profile=packed_attention_profile,
+                text_context=resolved_text,
+                frame_start=frame_shift - prefix_condition_frames,
+                use_activation_checkpointing=bool(
+                    self.config.use_activation_checkpointing
+                ),
+                packed_block_stack=self.packed_block_stack,
+                video_cross_attention_mask=packed_video_cross_attention_mask,
+                video_hidden_context=packed_video_hidden_context,
+            )
         )
         predicted_latents = denoised_video_latents_from_flow(
             noisy_latents=video_artifacts.noisy_latents,
@@ -491,7 +558,9 @@ class DualExpertPackedTrainingProgram:
             timesteps=video_artifacts.timesteps,
             scheduler=video_artifacts.scheduler,
         )
-        packed_action_flow = self.action_expert.post_dit(packed_action_hidden, packed_action_pre)
+        packed_action_flow = self.action_expert.post_dit(
+            packed_action_hidden, packed_action_pre
+        )
         # Loss from the A_noisy half only (first action_seq_len tokens).
         action_flow_pred = packed_action_flow[:, :action_seq_len]
         denoised_actions = denoised_actions_from_flow(
@@ -533,14 +602,21 @@ class DualExpertPackedTrainingProgram:
 
         batch_size = video_latents.shape[0]
         return PolicyTrainOutput(
-            policy_features=video_latents.new_zeros(batch_size, 0, self.action_expert.hidden_size),
+            policy_features=video_latents.new_zeros(
+                batch_size, 0, self.action_expert.hidden_size
+            ),
             metrics={
-                "dual_expert_history_frames": video_latents.new_tensor(float(history_frames)),
-                "dual_expert_video_prefix_frames": video_latents.new_tensor(float(history_frames)),
+                "dual_expert_history_frames": video_latents.new_tensor(
+                    float(history_frames)
+                ),
+                "dual_expert_video_prefix_frames": video_latents.new_tensor(
+                    float(history_frames)
+                ),
             },
             decoder_artifacts=DecoderArtifactEnvelope(
                 contract=DUAL_EXPERT_DECODER_ARTIFACT_CONTRACT,
                 payload=decoder_payload,
+                dynamics_objective=dynamics_objective,
             ),
             aux={
                 "variant": self.config.name,
@@ -553,21 +629,25 @@ class DualExpertPackedTrainingProgram:
                 "chunk_origin_frame": chunk_origin_frame,
                 "singleton_chunk_frame": singleton_chunk_frame,
                 "conditional_history_policy": conditional_history_policy,
-                "generalist_training_paradigm": self.config.generalist_training_paradigm.value,
-                "generalist_training_source": generalist_source,
+                DYNAMICS_ROUTING_SOURCE_METADATA_KEY: dynamics_source,
                 "video_condition_source": video_condition_source,
                 "dual_expert_generalist_training_mode_override": (
-                    forced_generalist_mode.value if forced_generalist_mode is not None else None
+                    routed_dynamics_objective.value
+                    if routed_dynamics_objective is not None
+                    else None
                 ),
                 "dual_expert_generalist_text_dropped": bool(text_dropped),
                 "dual_expert_generalist_training_mode": (
-                    sampled_generalist_mode.value if sampled_generalist_mode is not None else None
+                    dynamics_objective.value if dynamics_objective is not None else None
                 ),
                 "dual_expert_generalist_mode_text_token": (
-                    sampled_generalist_mode.value
-                    if generalist_mode_text_token_count > 0 and sampled_generalist_mode is not None
+                    dynamics_objective.value
+                    if generalist_mode_text_token_count > 0
+                    and dynamics_objective is not None
                     else None
                 ),
-                "dual_expert_generalist_mode_text_token_count": int(generalist_mode_text_token_count),
+                "dual_expert_generalist_mode_text_token_count": int(
+                    generalist_mode_text_token_count
+                ),
             },
         )

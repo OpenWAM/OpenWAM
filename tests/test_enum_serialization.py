@@ -5,7 +5,7 @@ from pathlib import Path
 
 import yaml
 
-from open_wam.configs import GeneralistDenoisingMode, load_experiment_config
+from open_wam.configs import DynamicsObjective, load_experiment_config
 from open_wam.configs.enums import serialize_enum_values
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -13,8 +13,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 def test_serialize_enum_values_converts_mapping_keys_for_yaml() -> None:
     payload = {
-        GeneralistDenoisingMode.JOINT: {
-            GeneralistDenoisingMode.VIDEO_CONDITIONED_ACTION: 0.25,
+        DynamicsObjective.JOINT: {
+            DynamicsObjective.VIDEO_CONDITIONED_ACTION: 0.25,
         },
     }
 

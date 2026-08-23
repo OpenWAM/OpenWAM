@@ -12,6 +12,7 @@ from open_wam.configs import (
     ParallelStreamPolicyConfig,
     RobotWinDataConfig,
     TrainingConfig,
+    VideoActionProgram,
 )
 from open_wam.data import build_synthetic_batch
 from open_wam.models.policy_variants import PolicyInferContext, PolicyTrainBatch
@@ -65,8 +66,8 @@ def test_lingbot_reference_transformer_weights_load_as_is(tmp_path: Path) -> Non
         ),
         backbone=backbone_config,
         policy_variant=ParallelStreamPolicyConfig(
+            program=VideoActionProgram.VIDEO_THEN_ACTION,
             hidden_size=32,
-            runtime_mode="lingbot_exact",
             frame_chunk_size=2,
             action_per_frame=2,
             attn_window=8,

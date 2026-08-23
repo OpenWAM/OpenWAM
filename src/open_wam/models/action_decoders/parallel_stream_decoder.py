@@ -4,11 +4,12 @@ import torch
 import torch.nn.functional as F
 from einops import rearrange
 
-from open_wam.configs import GeneralistDenoisingMode
-from open_wam.models.common.metric_rollups import add_joint_conditioning_mode_metrics
+from open_wam.configs import DynamicsObjective
+from open_wam.models.common.metric_rollups import add_dynamics_objective_metrics
 from open_wam.models.common.video_geometry import unpatchify_video_sequence
 from open_wam.models.policy_variants.contracts import (
     PolicyInferOutput,
+    PolicyPipelineRequirements,
     PolicyTrainBatch,
     PolicyTrainOutput,
 )
@@ -52,11 +53,29 @@ class ParallelStreamActionDecoder(ActionDecoder):
         self.recovered_osc_loss_weight = float(recovered_osc_loss_weight)
         self.recovered_osc_position_scale = float(recovered_osc_position_scale)
         self.recovered_osc_rotation_scale = float(recovered_osc_rotation_scale)
-        self.source_action_channel_ids = tuple(int(index) for index in source_action_channel_ids)
+        self.source_action_channel_ids = tuple(
+            int(index) for index in source_action_channel_ids
+        )
         self.source_action_mean = tuple(float(value) for value in source_action_mean)
         self.source_action_std = tuple(float(value) for value in source_action_std)
 
-    def forward_train(self, policy_output: PolicyTrainOutput, batch: PolicyTrainBatch) -> ActionDecoderTrainOutput:
+    @property
+    def dynamics_metric_namespace(self) -> str:
+        return "joint_denoise"
+
+    @property
+    def decoder_artifact_contract(self) -> str:
+        return PARALLEL_STREAM_DECODER_ARTIFACT_CONTRACT
+
+    def configure_pipeline_requirements(
+        self,
+        requirements: PolicyPipelineRequirements,
+    ) -> None:
+        self.source_action_channel_ids = requirements.source_action_channel_ids
+
+    def forward_train(
+        self, policy_output: PolicyTrainOutput, batch: PolicyTrainBatch
+    ) -> ActionDecoderTrainOutput:
         decoder_payload = require_decoder_artifact_payload(
             policy_output,
             contract=PARALLEL_STREAM_DECODER_ARTIFACT_CONTRACT,
@@ -86,13 +105,21 @@ class ParallelStreamActionDecoder(ActionDecoder):
             batch_size=latent_pred.shape[0],
         )
 
-        latent_batch_frames, latent_num_frames = input_dict["latent_dict"]["timesteps"].shape
-        action_batch_frames, action_num_frames = input_dict["action_dict"]["timesteps"].shape
-        latent_scheduler_weight = latent_scheduler.training_weight(input_dict["latent_dict"]["timesteps"].flatten()).reshape(
+        latent_batch_frames, latent_num_frames = input_dict["latent_dict"][
+            "timesteps"
+        ].shape
+        action_batch_frames, action_num_frames = input_dict["action_dict"][
+            "timesteps"
+        ].shape
+        latent_scheduler_weight = latent_scheduler.training_weight(
+            input_dict["latent_dict"]["timesteps"].flatten()
+        ).reshape(
             latent_batch_frames,
             latent_num_frames,
         )
-        action_scheduler_weight = action_scheduler.training_weight(input_dict["action_dict"]["timesteps"].flatten()).reshape(
+        action_scheduler_weight = action_scheduler.training_weight(
+            input_dict["action_dict"]["timesteps"].flatten()
+        ).reshape(
             action_batch_frames,
             action_num_frames,
         )
@@ -110,7 +137,11 @@ class ParallelStreamActionDecoder(ActionDecoder):
         latent_loss = latent_loss.permute(0, 2, 3, 4, 1).flatten(0, 1).flatten(1)
         latent_loss_per_frame = latent_loss.sum(dim=1)
         latent_mask_per_frame = (
-            latent_loss_mask.float().permute(0, 2, 3, 4, 1).flatten(0, 1).flatten(1).sum(dim=1)
+            latent_loss_mask.float()
+            .permute(0, 2, 3, 4, 1)
+            .flatten(0, 1)
+            .flatten(1)
+            .sum(dim=1)
         )
         latent_loss = (latent_loss_per_frame / (latent_mask_per_frame + 1e-6)).mean()
 
@@ -123,23 +154,31 @@ class ParallelStreamActionDecoder(ActionDecoder):
         action_loss_mask = input_dict["action_dict"].get("loss_mask")
         if action_loss_mask is None:
             action_loss_mask = torch.ones_like(input_dict["action_dict"]["targets"])
-        effective_action_mask = input_dict["action_dict"]["actions_mask"].float() * action_loss_mask.float()
+        effective_action_mask = (
+            input_dict["action_dict"]["actions_mask"].float() * action_loss_mask.float()
+        )
         action_loss = action_loss * effective_action_mask
         action_loss = action_loss.permute(0, 2, 3, 4, 1).flatten(0, 1).flatten(1)
-        action_mask = effective_action_mask.permute(0, 2, 3, 4, 1).flatten(0, 1).flatten(1)
+        action_mask = (
+            effective_action_mask.permute(0, 2, 3, 4, 1).flatten(0, 1).flatten(1)
+        )
         action_loss_per_frame = action_loss.sum(dim=1)
         action_mask_per_frame = action_mask.sum(dim=1)
         action_loss = (action_loss_per_frame / (action_mask_per_frame + 1e-6)).mean()
 
-        abs_osc_metrics, recovered_osc_loss = self._compute_abs_eef_and_recovered_osc_metrics(
-            action_pred_5d=action_pred_5d,
-            input_dict=input_dict,
-            action_scheduler=action_scheduler,
+        abs_osc_metrics, recovered_osc_loss = (
+            self._compute_abs_eef_and_recovered_osc_metrics(
+                action_pred_5d=action_pred_5d,
+                input_dict=input_dict,
+                action_scheduler=action_scheduler,
+            )
         )
 
         weighted_latent_loss = latent_loss * configured_latent_loss_weight
         weighted_action_loss = action_loss * configured_action_loss_weight
-        weighted_recovered_osc_loss = recovered_osc_loss * self.recovered_osc_loss_weight
+        weighted_recovered_osc_loss = (
+            recovered_osc_loss * self.recovered_osc_loss_weight
+        )
         loss = weighted_latent_loss + weighted_action_loss + weighted_recovered_osc_loss
         metrics = {
             "action_mse": action_loss.detach(),
@@ -150,19 +189,23 @@ class ParallelStreamActionDecoder(ActionDecoder):
             "joint_loss": loss.detach(),
             **abs_osc_metrics,
         }
-        joint_denoise_mode = input_dict.get("joint_denoise_training_mode")
-        if joint_denoise_mode is not None:
-            action_loss_active = (
-                effective_action_mask.float().sum() > 0
-            ).to(dtype=torch.float32)
-            latent_loss_active = (
-                latent_loss_mask.float().sum() > 0
-            ).to(dtype=torch.float32)
-            add_joint_conditioning_mode_metrics(
+        dynamics_objective = (
+            None
+            if policy_output.decoder_artifacts is None
+            else policy_output.decoder_artifacts.dynamics_objective
+        )
+        if dynamics_objective is not None:
+            action_loss_active = (effective_action_mask.float().sum() > 0).to(
+                dtype=torch.float32
+            )
+            latent_loss_active = (latent_loss_mask.float().sum() > 0).to(
+                dtype=torch.float32
+            )
+            add_dynamics_objective_metrics(
                 metrics,
                 namespace="joint_denoise",
-                mode_value=str(joint_denoise_mode),
-                modes=GeneralistDenoisingMode,
+                mode_value=dynamics_objective.value,
+                modes=DynamicsObjective,
                 action_loss=action_loss,
                 latent_loss=latent_loss,
                 action_loss_active=action_loss_active,
@@ -211,11 +254,13 @@ class ParallelStreamActionDecoder(ActionDecoder):
             loss_mask = torch.ones_like(target_clean)
         current_mask = available_mask.float() * loss_mask.float()
 
-        pred_source, target_source, source_available_mask, source_loss_mask = self._extract_source_action_sequences(
-            pred_clean=pred_clean,
-            target_clean=target_clean,
-            available_mask=available_mask.float(),
-            current_mask=current_mask,
+        pred_source, target_source, source_available_mask, source_loss_mask = (
+            self._extract_source_action_sequences(
+                pred_clean=pred_clean,
+                target_clean=target_clean,
+                available_mask=available_mask.float(),
+                current_mask=current_mask,
+            )
         )
         if pred_source is None:
             return {}, zero
@@ -245,7 +290,12 @@ class ParallelStreamActionDecoder(ActionDecoder):
         target_clean: torch.Tensor,
         available_mask: torch.Tensor,
         current_mask: torch.Tensor,
-    ) -> tuple[torch.Tensor | None, torch.Tensor | None, torch.Tensor | None, torch.Tensor | None]:
+    ) -> tuple[
+        torch.Tensor | None,
+        torch.Tensor | None,
+        torch.Tensor | None,
+        torch.Tensor | None,
+    ]:
         pred_seq = rearrange(pred_clean, "b c f n 1 -> b (f n) c")
         target_seq = rearrange(target_clean, "b c f n 1 -> b (f n) c")
         available_seq = rearrange(available_mask, "b c f n 1 -> b (f n) c")
@@ -253,7 +303,9 @@ class ParallelStreamActionDecoder(ActionDecoder):
         if self.source_action_channel_ids:
             if max(self.source_action_channel_ids) >= pred_seq.shape[-1]:
                 return None, None, None, None
-            source_indices = torch.tensor(self.source_action_channel_ids, device=pred_seq.device, dtype=torch.long)
+            source_indices = torch.tensor(
+                self.source_action_channel_ids, device=pred_seq.device, dtype=torch.long
+            )
         elif pred_seq.shape[-1] == 10:
             source_indices = torch.arange(10, device=pred_seq.device, dtype=torch.long)
         else:
@@ -268,10 +320,17 @@ class ParallelStreamActionDecoder(ActionDecoder):
         )
 
     def _denormalize_source_actions(self, actions: torch.Tensor) -> torch.Tensor:
-        if len(self.source_action_mean) != actions.shape[-1] or len(self.source_action_std) != actions.shape[-1]:
+        if (
+            len(self.source_action_mean) != actions.shape[-1]
+            or len(self.source_action_std) != actions.shape[-1]
+        ):
             return actions
-        mean = torch.tensor(self.source_action_mean, device=actions.device, dtype=actions.dtype)
-        std = torch.tensor(self.source_action_std, device=actions.device, dtype=actions.dtype)
+        mean = torch.tensor(
+            self.source_action_mean, device=actions.device, dtype=actions.dtype
+        )
+        std = torch.tensor(
+            self.source_action_std, device=actions.device, dtype=actions.dtype
+        )
         return actions * std.clamp_min(1e-6) + mean
 
     def _source_abs_eef_metrics(
@@ -283,7 +342,9 @@ class ParallelStreamActionDecoder(ActionDecoder):
         zero: torch.Tensor,
     ) -> dict[str, torch.Tensor]:
         return {
-            "abs_eef_mse": self._masked_mse(pred_source, target_source, source_loss_mask, zero=zero).detach(),
+            "abs_eef_mse": self._masked_mse(
+                pred_source, target_source, source_loss_mask, zero=zero
+            ).detach(),
             "abs_eef_position_mse": self._masked_mse(
                 pred_source[..., 0:3],
                 target_source[..., 0:3],
@@ -328,9 +389,15 @@ class ParallelStreamActionDecoder(ActionDecoder):
         available_prev = source_available_mask[:, :-1, :10].amin(dim=-1, keepdim=True)
         supervised_now = source_loss_mask[:, 1:, :10].amin(dim=-1, keepdim=True)
         transition_mask = available_now * available_prev * supervised_now
-        transition_mask_7d = transition_mask.expand_as(pred_osc).to(dtype=pred_osc.dtype)
-        osc_loss = self._masked_mse(pred_train_osc, target_osc, transition_mask_7d, zero=zero)
-        full_osc_mse = self._masked_mse(pred_osc, target_osc, transition_mask_7d, zero=zero)
+        transition_mask_7d = transition_mask.expand_as(pred_osc).to(
+            dtype=pred_osc.dtype
+        )
+        osc_loss = self._masked_mse(
+            pred_train_osc, target_osc, transition_mask_7d, zero=zero
+        )
+        full_osc_mse = self._masked_mse(
+            pred_osc, target_osc, transition_mask_7d, zero=zero
+        )
         metrics = {
             "recovered_osc_train_mse": osc_loss.detach(),
             "recovered_osc_mse": full_osc_mse.detach(),
@@ -358,17 +425,31 @@ class ParallelStreamActionDecoder(ActionDecoder):
         return metrics, osc_loss
 
     def _recover_osc_from_source_sequence(self, source: torch.Tensor) -> torch.Tensor:
-        position_delta = (source[:, 1:, 0:3] - source[:, :-1, 0:3]) / self.recovered_osc_position_scale
-        current_rotation = self._continuous_6d_to_rotation_matrix_stable(source[:, 1:, 3:9])
-        previous_rotation = self._continuous_6d_to_rotation_matrix_stable(source[:, :-1, 3:9])
+        position_delta = (
+            source[:, 1:, 0:3] - source[:, :-1, 0:3]
+        ) / self.recovered_osc_position_scale
+        current_rotation = self._continuous_6d_to_rotation_matrix_stable(
+            source[:, 1:, 3:9]
+        )
+        previous_rotation = self._continuous_6d_to_rotation_matrix_stable(
+            source[:, :-1, 3:9]
+        )
         relative_rotation = current_rotation @ previous_rotation.transpose(-1, -2)
-        rotation_delta = self._rotation_matrix_to_axis_angle_stable(relative_rotation) / self.recovered_osc_rotation_scale
+        rotation_delta = (
+            self._rotation_matrix_to_axis_angle_stable(relative_rotation)
+            / self.recovered_osc_rotation_scale
+        )
         gripper = source[:, 1:, 9:10]
         return torch.cat([position_delta, rotation_delta, gripper], dim=-1)
 
-    def _continuous_6d_to_rotation_matrix_stable(self, rotation_6d: torch.Tensor) -> torch.Tensor:
+    def _continuous_6d_to_rotation_matrix_stable(
+        self, rotation_6d: torch.Tensor
+    ) -> torch.Tensor:
         first = self._normalize_vector_stable(rotation_6d[..., 0:3])
-        second_raw = rotation_6d[..., 3:6] - (first * rotation_6d[..., 3:6]).sum(dim=-1, keepdim=True) * first
+        second_raw = (
+            rotation_6d[..., 3:6]
+            - (first * rotation_6d[..., 3:6]).sum(dim=-1, keepdim=True) * first
+        )
         fallback_seed = torch.zeros_like(first)
         fallback_seed[..., 0] = 1.0
         y_seed = torch.zeros_like(first)
@@ -377,14 +458,20 @@ class ParallelStreamActionDecoder(ActionDecoder):
         fallback_seed = torch.where(near_x_axis, y_seed, fallback_seed)
         fallback = torch.cross(first, fallback_seed, dim=-1)
         second_norm = torch.linalg.vector_norm(second_raw, dim=-1, keepdim=True)
-        second = self._normalize_vector_stable(torch.where(second_norm > 1e-3, second_raw, fallback))
+        second = self._normalize_vector_stable(
+            torch.where(second_norm > 1e-3, second_raw, fallback)
+        )
         third = torch.cross(first, second, dim=-1)
         return torch.stack([first, second, third], dim=-1)
 
     def _normalize_vector_stable(self, vector: torch.Tensor) -> torch.Tensor:
-        return vector / torch.linalg.vector_norm(vector, dim=-1, keepdim=True).clamp_min(1e-3)
+        return vector / torch.linalg.vector_norm(
+            vector, dim=-1, keepdim=True
+        ).clamp_min(1e-3)
 
-    def _rotation_matrix_to_axis_angle_stable(self, matrix: torch.Tensor) -> torch.Tensor:
+    def _rotation_matrix_to_axis_angle_stable(
+        self, matrix: torch.Tensor
+    ) -> torch.Tensor:
         trace = matrix[..., 0, 0] + matrix[..., 1, 1] + matrix[..., 2, 2]
         cos_angle = ((trace - 1.0) * 0.5).clamp(min=-1.0, max=1.0)
         vee = torch.stack(
@@ -422,7 +509,9 @@ class ParallelStreamActionDecoder(ActionDecoder):
         previous_state: object | None = None,
     ) -> ActionDecoderInferOutput:
         del previous_state
-        action_pred = align_policy_features(policy_output.policy_features, self.action_horizon)
+        action_pred = align_policy_features(
+            policy_output.policy_features, self.action_horizon
+        )
         action_pred = self._apply_action_sampler_mask(action_pred)
         aux = {
             "decoder": self.__class__.__name__,
@@ -439,7 +528,9 @@ class ParallelStreamActionDecoder(ActionDecoder):
             )
             raw_chunk_action_pred = decoder_payload.raw_chunk_action_pred
         if isinstance(raw_chunk_action_pred, torch.Tensor):
-            raw_action_pred = align_policy_features(raw_chunk_action_pred, self.action_horizon)
+            raw_action_pred = align_policy_features(
+                raw_chunk_action_pred, self.action_horizon
+            )
             aux["raw_action_pred"] = raw_action_pred
             aux["raw_chunk_action_pred"] = raw_action_pred
             aux["raw_action_space"] = "raw"

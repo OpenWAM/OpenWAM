@@ -311,41 +311,52 @@ def apply_ground_truth_training_profile(
 ) -> ExperimentConfig:
     overrides = ground_truth_training_overrides(profile)
     config = apply_config_overrides(config, overrides)
-    return apply_video_action_sequence_contract(
-        config,
-        explicit_override_keys=set(overrides),
-    )
+    return apply_video_action_sequence_contract(config)
 
 
 def gjd_ablation_overrides(method: DualExpertMethodSpec) -> dict[str, Any]:
     if not method.is_gjd:
         raise ValueError(f"Method {method.asset_id!r} is not a GJD ablation.")
-    vanilla_probs = {
-        "joint": 0.6,
-        "action_conditioned_video": 0.2,
-        "video_conditioned_action": 0.2,
-    }
+    vanilla_routes = [
+        {"source": "real_demo", "mode": "joint", "weight": 0.6},
+        {
+            "source": "real_demo",
+            "mode": "action_conditioned_video",
+            "weight": 0.1,
+        },
+        {
+            "source": "real_demo",
+            "mode": "video_conditioned_action",
+            "weight": 0.1,
+        },
+        {
+            "source": "counterfactual_dynamics",
+            "mode": "action_conditioned_video",
+            "weight": 0.1,
+        },
+        {
+            "source": "counterfactual_dynamics",
+            "mode": "video_conditioned_action",
+            "weight": 0.1,
+        },
+    ]
     if method.gjd_ablation == "vanilla":
         return {
-            "policy_variant.generalist_denoising_mode_probs": vanilla_probs,
+            "data.dynamics_routing.routes": vanilla_routes,
             "policy_variant.generalist_mode_text_token": False,
         }
     if method.gjd_ablation == "pure_joint":
         return {
-            "policy_variant.generalist_denoising_mode_probs": {
-                "joint": 1.0,
-                "action_conditioned_video": 0.0,
-                "video_conditioned_action": 0.0,
-            },
             "policy_variant.generalist_mode_text_token": False,
-            "policy_variant.generalist_training_paradigm": "demo_only",
             "data.sample_construction.sample_order_mode": "replacement",
-            "data.generalist_dynamics_mixture.train_latent_root": None,
-            "data.generalist_dynamics_mixture.val_latent_root": None,
+            "data.dynamics_routing.routes": [],
+            "data.dynamics_routing.train_latent_root": None,
+            "data.dynamics_routing.val_latent_root": None,
+            "validation.auxiliary_tasks": [],
         }
     if method.gjd_ablation == "mode_token":
         return {
-            "policy_variant.generalist_denoising_mode_probs": vanilla_probs,
+            "data.dynamics_routing.routes": vanilla_routes,
             "policy_variant.generalist_mode_text_token": True,
         }
     raise ValueError(f"Unsupported GJD ablation {method.gjd_ablation!r}.")

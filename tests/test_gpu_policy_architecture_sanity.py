@@ -29,7 +29,6 @@ from open_wam.configs import (
     JointTimestepCoupling,
     ParallelActionAttentionScope,
     ParallelActionConditionSource,
-    ParallelRuntimeMode,
     TrainerAccelerator,
     TrainerPrecision,
     VideoActionProgram,
@@ -40,6 +39,8 @@ from open_wam.evals.evaluate import resolve_evaluation_request, run_evaluation
 from open_wam.models.policy_variants import PolicyInferContext, PolicyTrainBatch
 from open_wam.pipelines import build_variant_pipeline_from_config
 from open_wam.training import TrainingRuntime
+
+pytestmark = pytest.mark.gpu
 
 RUN_GPU_SANITY = os.getenv("OPEN_WAM_RUN_GPU_SANITY") == "1"
 if not RUN_GPU_SANITY:
@@ -121,8 +122,7 @@ def _pipeline_case_path(case_name: str, tmp_path: Path) -> Path:
 
 def _mutate_parallel_action_conditioned(raw: dict[str, Any]) -> None:
     policy_variant = raw.setdefault("policy_variant", {})
-    policy_variant["runtime_mode"] = ParallelRuntimeMode.LINGBOT_EXACT_ACTION_CONDITIONED.value
-    policy_variant["video_condition_on_action"] = True
+    policy_variant["program"] = VideoActionProgram.JOINT.value
     policy_variant["video_action_condition_source"] = ParallelActionConditionSource.NOISY_ACTION.value
     policy_variant["video_action_attention_scope"] = ParallelActionAttentionScope.BLOCK_LOCAL.value
     policy_variant["joint_timestep_coupling"] = JointTimestepCoupling.MATCH_SIGMA.value
@@ -306,7 +306,7 @@ def test_gpu_policy_architecture_runtime_train_matrix(
         ),
         ("dual_expert_vta", "dual_expert_robotwin_smoke"),
         ("dual_expert_joint", "dual_expert_robotwin_joint_gpu"),
-        ("dual_expert_decoupled", "dual_expert_robotwin_non_joint_gpu"),
+        ("dual_expert_decoupled", "dual_expert_robotwin_decoupled_gpu"),
     ],
 )
 def test_gpu_policy_architecture_eval_matrix(

@@ -11,9 +11,10 @@ from open_wam.configs import (
     AuxiliaryValidationTaskConfig,
     ExperimentConfig,
     LoopPolicyName,
+    resolve_experiment_config,
+    validate_experiment_config_runtime_contract,
 )
 from open_wam.data.artifacts import DatasetArtifactStatus
-from open_wam.data.registries import preflight_dataset_artifacts
 from open_wam.pipelines import build_variant_pipeline_from_config
 
 from .auxiliary_validation import (
@@ -29,6 +30,7 @@ from .data_loading import (
     _uses_dynamics_routing,
     _validate_dynamics_source_sampling,
     build_runtime_dataloaders,
+    preflight_runtime_dataset_artifacts,
 )
 from .launch import DistributedLaunchContext, validate_training_launch
 from .logging import (
@@ -95,6 +97,7 @@ class TrainingRuntime:
         log_sink: CompositeLogSink,
         train_state: TrainState,
         trainability_report: TrainabilityReport,
+        dynamics_metric_namespace: str | None = None,
         dataset_artifacts: tuple[DatasetArtifactStatus, ...] = (),
         auxiliary_validation_runs: tuple[AuxiliaryValidationRun, ...] = (),
     ) -> None:
@@ -110,6 +113,7 @@ class TrainingRuntime:
         self.log_sink = log_sink
         self.train_state = train_state
         self.trainability_report = trainability_report
+        self.dynamics_metric_namespace = dynamics_metric_namespace
         self.dataset_artifacts = dataset_artifacts
         self.auxiliary_validation_runs = auxiliary_validation_runs
         self._last_validation_optimizer_step: int | None = None
@@ -122,9 +126,12 @@ class TrainingRuntime:
         *,
         launch_context: DistributedLaunchContext | None = None,
     ) -> TrainingRuntime:
+        config = validate_experiment_config_runtime_contract(
+            resolve_experiment_config(config)
+        )
         resolved_launch_context = launch_context or DistributedLaunchContext.from_env()
         validate_training_launch(config.trainer, resolved_launch_context)
-        dataset_artifacts = preflight_dataset_artifacts(config.data)
+        dataset_artifacts = preflight_runtime_dataset_artifacts(config)
         strategy = build_training_strategy(
             config.trainer,
             launch_context=resolved_launch_context,
@@ -142,6 +149,7 @@ class TrainingRuntime:
             # replicated modules all inherit the same initialized weights.
             policy_variant.initialize_for_training(visual_tower)
         trainability_report = apply_training_component_controls(model, config.training)
+        dynamics_metric_namespace = model.action_decoder.dynamics_metric_namespace
         model = strategy.prepare_model(model)
         batch_adapter = build_batch_adapter(config.trainer.batch_adapter)
         step_executor = PipelineTrainStepExecutor(
@@ -183,6 +191,7 @@ class TrainingRuntime:
             log_sink=log_sink,
             train_state=train_state,
             trainability_report=trainability_report,
+            dynamics_metric_namespace=dynamics_metric_namespace,
             dataset_artifacts=dataset_artifacts,
             auxiliary_validation_runs=auxiliary_validation_runs,
         )
@@ -483,6 +492,7 @@ class TrainingRuntime:
                     task=task,
                     metrics=averaged,
                     batch_count=global_batch_count,
+                    dynamics_metric_namespace=self.dynamics_metric_namespace,
                 )
             )
         self.log_sink.log_metrics(step=self.train_state.optimizer_step, phase=phase, metrics=averaged)

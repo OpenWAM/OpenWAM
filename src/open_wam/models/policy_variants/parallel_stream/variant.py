@@ -8,26 +8,33 @@ from open_wam.configs import (
     InferenceConfig,
     ParallelExactCacheWriteMode,
     ParallelRuntimeMode,
-    ParallelStreamVariantProfile,
     TemporalPositionMode,
     TrainingConfig,
 )
 from open_wam.configs.backbone import SharedVideoTransformerConfig
 from open_wam.configs.policy_parallel_stream import ParallelStreamPolicyConfig
+from open_wam.configs.policy_video_action import supports_dynamics_routing
 from open_wam.contracts import SampleConstructionMetadata
+from open_wam.models.common.dynamics_objectives import (
+    DynamicsSamplePlan,
+    resolve_dynamics_rollout_plan,
+    resolve_dynamics_sample_plan,
+)
 from open_wam.models.policy_variants.common.layouts import expand_previous_action
 from open_wam.models.video_backbone.contracts import CacheState
 from open_wam.models.visual_tower import VisualStageOutputs, VisualTower
 
-from ..base import PolicyVariant
+from ..base import VideoActionPolicyVariant
 from ..contracts import (
     DecoderArtifactEnvelope,
+    DynamicsRolloutRequest,
     PolicyInferContext,
     PolicyInferOutput,
     PolicyInferState,
     PolicyPreparedInputs,
     PolicyTrainBatch,
     PolicyTrainOutput,
+    PolicyVisualStage,
     RolloutCursor,
 )
 from .action_adapter import LingbotActionAdapter, build_action_adapter_spec
@@ -56,26 +63,9 @@ from .training_exact_artifacts import (
 from .training_prefix_artifacts import (
     prepare_parallel_prefix_condition_exact_train_artifacts,
 )
-def _resolve_generalist_singleton_chunk_frame(
-    metadata: dict,
-    *,
-    observed_num_frames: int,
-) -> int | None:
-    if metadata.get("generalist_gjd_chunk_contract") != "t0_singleton":
-        return None
-    singleton_frame = metadata.get("singleton_chunk_frame", metadata.get("target_observation_frame_in_sample"))
-    if singleton_frame is None:
-        return None
-    resolved = int(singleton_frame)
-    if resolved < 0 or resolved >= int(observed_num_frames):
-        raise ValueError(
-            "Invalid GJD singleton chunk frame for parallel-stream training, "
-            f"got {resolved} for observed_num_frames={int(observed_num_frames)}."
-        )
-    return resolved
 
 
-class ParallelStreamPolicyVariant(PolicyVariant):
+class ParallelStreamPolicyVariant(VideoActionPolicyVariant):
     """LingBot-style parallel-stream policy variant.
 
     The canonical parallel-stream path is exact-runtime-only. Training and inference
@@ -95,14 +85,6 @@ class ParallelStreamPolicyVariant(PolicyVariant):
         num_frames: int,
     ) -> None:
         super().__init__()
-        if config.runtime_mode not in {
-            ParallelRuntimeMode.LINGBOT_EXACT,
-            ParallelRuntimeMode.LINGBOT_EXACT_ACTION_CONDITIONED,
-        }:
-            raise ValueError(
-                "Parallel-stream now only supports the exact-runtime semantics. "
-                f"Got runtime_mode={config.runtime_mode!r}."
-            )
         self.config = config
         self.conditioning = ParallelStreamConditioning(config)
         self.backbone_config = backbone_config
@@ -114,7 +96,11 @@ class ParallelStreamPolicyVariant(PolicyVariant):
         self.exact_action_adapter = LingbotActionAdapter(
             build_action_adapter_spec(config, model_action_dim=action_dim)
         )
-        self.reference_profile = self.exact_action_adapter.spec.reference_profile if self.exact_action_adapter.spec is not None else None
+        self.reference_profile = (
+            self.exact_action_adapter.spec.reference_profile
+            if self.exact_action_adapter.spec is not None
+            else None
+        )
         validate_reference_profile(
             self.reference_profile,
             LingbotReferenceRuntimeContract(
@@ -125,9 +111,8 @@ class ParallelStreamPolicyVariant(PolicyVariant):
                 inference_frame_chunk_size=self.inference_config.frame_chunk_size,
                 attn_window=self.config.attn_window,
                 guidance_scale=self.inference_config.guidance_scale,
-                require_guidance_scale_match=(
-                    self.config.variant_profile
-                    == ParallelStreamVariantProfile.GENERALIST_JOINT_DENOISING
+                require_guidance_scale_match=supports_dynamics_routing(
+                    self.config.program
                 ),
                 action_guidance_scale=self.inference_config.action_guidance_scale,
                 video_num_inference_steps=self.inference_config.video_num_inference_steps,
@@ -138,11 +123,34 @@ class ParallelStreamPolicyVariant(PolicyVariant):
             ),
         )
 
-    def attach_visual_tower(self, visual_tower: VisualTower) -> None:
-        self.conditioning.configure_visual_tower(visual_tower)
+    @property
+    def decoder_artifact_contract(self) -> str:
+        return PARALLEL_STREAM_DECODER_ARTIFACT_CONTRACT
 
-    def attach_site(self) -> str:
-        return self.config.attach_site
+    @property
+    def source_action_channel_ids(self) -> tuple[int, ...]:
+        """Expose the adapter projection through the shared pipeline contract."""
+
+        adapter_spec = self.exact_action_adapter.spec
+        if adapter_spec is None:
+            return ()
+        return adapter_spec.used_action_channel_ids
+
+    @property
+    def accepted_source_action_shapes(self) -> tuple[tuple[int, int], ...]:
+        """Accept raw or already-adapted actions for exact LingBot profiles."""
+
+        adapter_spec = self.exact_action_adapter.spec
+        if adapter_spec is None:
+            return super().accepted_source_action_shapes
+        return tuple(
+            dict.fromkeys(
+                (
+                    (adapter_spec.raw_action_dim, self.action_horizon),
+                    (adapter_spec.model_action_dim, self.action_horizon),
+                )
+            )
+        )
 
     def _runtime_mode_label(self) -> str:
         return str(self.config.runtime_mode)
@@ -158,8 +166,22 @@ class ParallelStreamPolicyVariant(PolicyVariant):
             return ParallelExactCacheWriteMode.JOINT_PACKED
         return ParallelExactCacheWriteMode.SINGLE_STREAM_STAGED
 
-    def required_visual_stages(self) -> tuple[str, ...]:
-        return ("frontend",)
+    def required_visual_stages(self) -> tuple[PolicyVisualStage, ...]:
+        return (PolicyVisualStage.FRONTEND,)
+
+    def validate_pipeline_assembly(
+        self,
+        *,
+        data_action_dim: int,
+        num_frames: int,
+        backbone_num_layers: int,
+    ) -> None:
+        super().validate_pipeline_assembly(
+            data_action_dim=data_action_dim,
+            num_frames=num_frames,
+            backbone_num_layers=backbone_num_layers,
+        )
+        self._validate_action_layout(self.action_horizon, num_frames=num_frames)
 
     def _validate_action_layout(self, action_horizon: int, *, num_frames: int) -> None:
         expected_horizon = num_frames * self.config.action_per_frame
@@ -176,36 +198,44 @@ class ParallelStreamPolicyVariant(PolicyVariant):
         batch: PolicyTrainBatch,
     ) -> PolicyPreparedInputs:
         observed_num_frames = int(visual_outputs.frontend.video_latents.shape[2])
-        self._validate_action_layout(batch.actions.shape[1], num_frames=observed_num_frames)
+        self._validate_action_layout(
+            batch.actions.shape[1], num_frames=observed_num_frames
+        )
         model_actions, model_action_mask = self._prepare_exact_train_actions(
             batch,
             device=visual_outputs.frontend.video_latents.device,
             dtype=visual_outputs.frontend.video_latents.dtype,
         )
-        sampled_geometry = self._resolve_train_sampling_metadata(batch, observed_num_frames=observed_num_frames)
-        generalist_metadata = self.conditioning.resolve_generalist_training_metadata(batch)
+        sample_metadata = SampleConstructionMetadata.from_batch_metadata(
+            batch.extra.get("metadata")
+        )
+        dynamics_sample_plan = resolve_dynamics_sample_plan(
+            program=self.config.program,
+            sample_metadata=sample_metadata,
+        )
+        sampled_geometry = self._resolve_train_sampling_metadata(
+            sample_metadata=sample_metadata,
+            dynamics_sample_plan=dynamics_sample_plan,
+            observed_num_frames=observed_num_frames,
+        )
         proprio_state = self.conditioning.resolve_train_proprio_context(batch)
-        per_chunk_proprio_payload = self.conditioning.resolve_train_hidden_proprio_context(
-            batch,
-            label="parallel-stream training",
+        per_chunk_proprio_payload = (
+            self.conditioning.resolve_train_hidden_proprio_context(
+                batch,
+                label="parallel-stream training",
+            )
         )
         condition_latents = self.conditioning.resolve_train_condition_latents(
             batch,
             video_latents=visual_outputs.frontend.video_latents,
+            dynamics_sample_plan=dynamics_sample_plan,
         )
         external_condition_prefix = self.conditioning.uses_external_condition_prefix(
             context_prefix_frames_in_sample=sampled_geometry[
                 "context_prefix_frames_in_sample"
-            ]
+            ],
+            dynamics_sample_plan=dynamics_sample_plan,
         )
-        if external_condition_prefix and self.config.runtime_mode not in {
-            ParallelRuntimeMode.LINGBOT_EXACT,
-            ParallelRuntimeMode.LINGBOT_EXACT_ACTION_CONDITIONED,
-        }:
-            raise ValueError(
-                "An external single-frame condition prefix only supports LingBot exact "
-                "dual-stream parallel-stream runtime modes."
-            )
         if external_condition_prefix:
             if not isinstance(condition_latents, torch.Tensor):
                 raise ValueError(
@@ -227,12 +257,16 @@ class ParallelStreamPolicyVariant(PolicyVariant):
                 frame_shift=sampled_geometry["frame_shift"],
                 chunk_origin_frame=sampled_geometry["chunk_origin_frame"],
                 singleton_chunk_frame=sampled_geometry["singleton_chunk_frame"],
-                conditional_history_policy=sampled_geometry["conditional_history_policy"],
-                generalist_training_mode_override=generalist_metadata["mode_override"],
-                generalist_drop_text_conditioning=generalist_metadata["drop_text"],
-                generalist_training_source=generalist_metadata["source"],
+                conditional_history_policy=sampled_geometry[
+                    "conditional_history_policy"
+                ],
+                sample_metadata=sample_metadata,
+                dynamics_sample_plan=dynamics_sample_plan,
             )
-        elif self.config.runtime_mode == ParallelRuntimeMode.LINGBOT_EXACT_ACTION_CONDITIONED:
+        elif (
+            self.config.runtime_mode
+            == ParallelRuntimeMode.LINGBOT_EXACT_ACTION_CONDITIONED
+        ):
             train_artifacts = prepare_parallel_action_conditioned_train_artifacts(
                 backbone_config=self.backbone_config,
                 policy_config=self.config,
@@ -253,10 +287,11 @@ class ParallelStreamPolicyVariant(PolicyVariant):
                 frame_shift=sampled_geometry["frame_shift"],
                 chunk_origin_frame=sampled_geometry["chunk_origin_frame"],
                 singleton_chunk_frame=sampled_geometry["singleton_chunk_frame"],
-                conditional_history_policy=sampled_geometry["conditional_history_policy"],
-                generalist_training_mode_override=generalist_metadata["mode_override"],
-                generalist_drop_text_conditioning=generalist_metadata["drop_text"],
-                generalist_training_source=generalist_metadata["source"],
+                conditional_history_policy=sampled_geometry[
+                    "conditional_history_policy"
+                ],
+                sample_metadata=sample_metadata,
+                dynamics_sample_plan=dynamics_sample_plan,
             )
         else:
             train_artifacts = prepare_parallel_exact_train_artifacts(
@@ -279,7 +314,9 @@ class ParallelStreamPolicyVariant(PolicyVariant):
                 frame_shift=sampled_geometry["frame_shift"],
                 chunk_origin_frame=sampled_geometry["chunk_origin_frame"],
                 singleton_chunk_frame=sampled_geometry["singleton_chunk_frame"],
-                conditional_history_policy=sampled_geometry["conditional_history_policy"],
+                conditional_history_policy=sampled_geometry[
+                    "conditional_history_policy"
+                ],
             )
         if proprio_state is not None:
             train_artifacts.input_dict["proprio_state"] = proprio_state
@@ -298,51 +335,78 @@ class ParallelStreamPolicyVariant(PolicyVariant):
 
     def _resolve_train_sampling_metadata(
         self,
-        batch: PolicyTrainBatch,
         *,
+        sample_metadata: SampleConstructionMetadata | None,
+        dynamics_sample_plan: DynamicsSamplePlan | None,
         observed_num_frames: int,
     ) -> dict[str, int | str | None]:
-        sample_metadata = SampleConstructionMetadata.from_batch_metadata(batch.extra.get("metadata"))
         if sample_metadata is None:
             sample_metadata = SampleConstructionMetadata(raw={})
-        loss_frame_start, loss_frame_end = sample_metadata.frame_range_or_default(
-            observed_num_frames=observed_num_frames,
-            error_label="parallel-stream train loss-frame metadata",
+        dynamics_sequence = (
+            None if dynamics_sample_plan is None else dynamics_sample_plan.sequence
         )
-        latent_loss_frame_start, latent_loss_frame_end = sample_metadata.frame_range_or_default(
-            observed_num_frames=observed_num_frames,
-            start_key="latent_loss_frame_start",
-            end_key="latent_loss_frame_end",
-            default_start=loss_frame_start,
-            default_end=loss_frame_end,
-            error_label="parallel-stream train latent-loss metadata",
-        )
-        action_loss_frame_start, action_loss_frame_end = sample_metadata.frame_range_or_default(
-            observed_num_frames=observed_num_frames,
-            start_key="action_loss_frame_start",
-            end_key="action_loss_frame_end",
-            default_start=loss_frame_start,
-            default_end=loss_frame_end,
-            error_label="parallel-stream train action-loss metadata",
-        )
+        if dynamics_sequence is not None:
+            loss_frame_start, loss_frame_end = dynamics_sequence.loss_frame_range(
+                observed_num_frames=observed_num_frames,
+            )
+            latent_loss_frame_start, latent_loss_frame_end = (
+                loss_frame_start,
+                loss_frame_end,
+            )
+            action_loss_frame_start, action_loss_frame_end = (
+                loss_frame_start,
+                loss_frame_end,
+            )
+        else:
+            loss_frame_start, loss_frame_end = sample_metadata.frame_range_or_default(
+                observed_num_frames=observed_num_frames,
+                error_label="parallel-stream train loss-frame metadata",
+            )
+            latent_loss_frame_start, latent_loss_frame_end = (
+                sample_metadata.frame_range_or_default(
+                    observed_num_frames=observed_num_frames,
+                    start_key="latent_loss_frame_start",
+                    end_key="latent_loss_frame_end",
+                    default_start=loss_frame_start,
+                    default_end=loss_frame_end,
+                    error_label="parallel-stream train latent-loss metadata",
+                )
+            )
+            action_loss_frame_start, action_loss_frame_end = (
+                sample_metadata.frame_range_or_default(
+                    observed_num_frames=observed_num_frames,
+                    start_key="action_loss_frame_start",
+                    end_key="action_loss_frame_end",
+                    default_start=loss_frame_start,
+                    default_end=loss_frame_end,
+                    error_label="parallel-stream train action-loss metadata",
+                )
+            )
         frame_shift = (
             int(sample_metadata.frame_shift)
             if self.config.temporal_position_mode == TemporalPositionMode.GLOBAL_SHIFTED
             and sample_metadata.frame_shift is not None
             else 0
         )
-        explicit_chunk_origin = sample_metadata.raw.get("chunk_origin_frame")
-        if explicit_chunk_origin is not None:
-            chunk_origin_frame = int(explicit_chunk_origin)
-        elif str(sample_metadata.raw.get("target_alignment", "")) == "next_after_context":
-            chunk_origin_frame = int(loss_frame_start)
-        else:
-            chunk_origin_frame = 0
-        singleton_chunk_frame = _resolve_generalist_singleton_chunk_frame(
-            sample_metadata.raw,
-            observed_num_frames=observed_num_frames,
+        chunk_origin_frame = (
+            dynamics_sequence.chunk_origin_frame
+            if dynamics_sequence is not None
+            else sample_metadata.chunk_origin_frame_for(
+                observed_num_frames=observed_num_frames,
+            )
         )
-        conditional_history_policy = sample_metadata.raw.get("generalist_conditional_history_policy")
+        singleton_chunk_frame = (
+            dynamics_sequence.singleton_chunk_frame
+            if dynamics_sequence is not None
+            else sample_metadata.singleton_chunk_frame_for(
+                observed_num_frames=observed_num_frames,
+            )
+        )
+        conditional_history_policy = (
+            dynamics_sequence.history_policy
+            if dynamics_sequence is not None
+            else sample_metadata.conditional_history_policy
+        )
         return {
             "chunk_size": sample_metadata.sampled_chunk_size_for(observed_num_frames),
             "window_size": sample_metadata.sampled_window_size,
@@ -353,12 +417,14 @@ class ParallelStreamPolicyVariant(PolicyVariant):
             "action_loss_frame_start": action_loss_frame_start,
             "action_loss_frame_end": action_loss_frame_end,
             "frame_shift": frame_shift,
-            "context_prefix_frames_in_sample": sample_metadata.context_prefix_frames_in_sample,
+            "context_prefix_frames_in_sample": (
+                dynamics_sequence.context_prefix_frames
+                if dynamics_sequence is not None
+                else sample_metadata.context_prefix_frames_in_sample
+            ),
             "chunk_origin_frame": chunk_origin_frame,
             "singleton_chunk_frame": singleton_chunk_frame,
-            "conditional_history_policy": (
-                None if conditional_history_policy is None else str(conditional_history_policy)
-            ),
+            "conditional_history_policy": conditional_history_policy,
         }
 
     def _prepare_exact_train_actions(
@@ -374,10 +440,16 @@ class ParallelStreamPolicyVariant(PolicyVariant):
                     "Exact LingBot training expects model-space supervision when no action adapter is configured, "
                     f"got action dim {batch.actions.shape[-1]} and model action dim {self.action_dim}."
                 )
-            action_mask = batch.action_mask.to(device=device, dtype=dtype) if batch.action_mask is not None else None
+            action_mask = (
+                batch.action_mask.to(device=device, dtype=dtype)
+                if batch.action_mask is not None
+                else None
+            )
             return batch.actions.to(device=device, dtype=dtype), action_mask
 
-        resolved_action_space = self.exact_action_adapter.infer_action_space(batch.actions)
+        resolved_action_space = self.exact_action_adapter.infer_action_space(
+            batch.actions
+        )
         model_actions = self.exact_action_adapter.to_model_action_sequence(
             batch.actions,
             action_space=resolved_action_space,
@@ -408,7 +480,11 @@ class ParallelStreamPolicyVariant(PolicyVariant):
         if self.exact_action_adapter.spec is None:
             return None
         mask = torch.zeros(self.action_dim, device=device, dtype=dtype)
-        used_ids = torch.tensor(self.exact_action_adapter.spec.used_action_channel_ids, device=device, dtype=torch.long)
+        used_ids = torch.tensor(
+            self.exact_action_adapter.spec.used_action_channel_ids,
+            device=device,
+            dtype=torch.long,
+        )
         mask.index_fill_(0, used_ids, 1.0)
         return mask.view(1, self.action_dim, 1, 1, 1)
 
@@ -428,11 +504,18 @@ class ParallelStreamPolicyVariant(PolicyVariant):
             device=prepared_inputs.batch.actions.device,
         )
         train_artifacts = prepared_inputs.variant_inputs["parallel_train_artifacts"]
-        self.conditioning.append_generalist_mode_text_token(reference_transformer, train_artifacts)
-        self.conditioning.append_train_proprio_text_context(reference_transformer, train_artifacts)
+        self.conditioning.append_generalist_mode_text_token(
+            reference_transformer, train_artifacts
+        )
+        self.conditioning.append_train_proprio_text_context(
+            reference_transformer, train_artifacts
+        )
         runtime_input_dict = dict(train_artifacts.input_dict)
         runtime_input_dict.pop("proprio_state", None)
-        if self.config.runtime_mode == ParallelRuntimeMode.LINGBOT_EXACT_ACTION_CONDITIONED:
+        if (
+            self.config.runtime_mode
+            == ParallelRuntimeMode.LINGBOT_EXACT_ACTION_CONDITIONED
+        ):
             latent_pred, action_pred = run_parallel_action_conditioned_train(
                 reference_transformer,
                 runtime_input_dict,
@@ -459,10 +542,15 @@ class ParallelStreamPolicyVariant(PolicyVariant):
         )
         return PolicyTrainOutput(
             policy_features=action_pred,
-            metrics={"packed_sequence_length": torch.tensor(float(action_pred.shape[1]), device=action_pred.device)},
+            metrics={
+                "packed_sequence_length": torch.tensor(
+                    float(action_pred.shape[1]), device=action_pred.device
+                )
+            },
             decoder_artifacts=DecoderArtifactEnvelope(
                 contract=PARALLEL_STREAM_DECODER_ARTIFACT_CONTRACT,
                 payload=decoder_payload,
+                dynamics_objective=train_artifacts.dynamics_objective,
             ),
             aux={
                 "variant": self.config.name,
@@ -488,7 +576,11 @@ class ParallelStreamPolicyVariant(PolicyVariant):
         if previous_state is not None:
             return previous_state
         del visual_outputs, context
-        cursor = RolloutCursor(current_start_frame=0, block_index=0, chunk_size=self.inference_config.frame_chunk_size)
+        cursor = RolloutCursor(
+            current_start_frame=0,
+            block_index=0,
+            chunk_size=self.inference_config.frame_chunk_size,
+        )
         return PolicyInferState(
             step_index=0,
             cursor=cursor,
@@ -512,8 +604,14 @@ class ParallelStreamPolicyVariant(PolicyVariant):
         visual_tower: VisualTower,
         cache_name: str = "open_wam_exact",
     ) -> PolicyInferState:
-        visual_tower.reset_runtime_backbone_cache(action_dim=self.action_dim, cache_name=cache_name)
-        cursor = RolloutCursor(current_start_frame=0, block_index=0, chunk_size=self.inference_config.frame_chunk_size)
+        visual_tower.reset_runtime_backbone_cache(
+            action_dim=self.action_dim, cache_name=cache_name
+        )
+        cursor = RolloutCursor(
+            current_start_frame=0,
+            block_index=0,
+            chunk_size=self.inference_config.frame_chunk_size,
+        )
         return PolicyInferState(
             step_index=0,
             cursor=cursor,
@@ -540,8 +638,9 @@ class ParallelStreamPolicyVariant(PolicyVariant):
         infer_state: PolicyInferState,
         action_space: ActionSpace | str = ActionSpace.AUTO,
         frame_start_override: int | None = None,
-        action_conditioning_mode: object = "vanilla_joint_rollout",
+        dynamics: DynamicsRolloutRequest | None = None,
         proprio_state: torch.Tensor | None = None,
+        hidden_proprio_history: torch.Tensor | None = None,
     ) -> PolicyInferState:
         # Warmup mirrors the original LingBot server lifecycle: observed video
         # and aligned action history are committed to the exact cache before any
@@ -563,10 +662,16 @@ class ParallelStreamPolicyVariant(PolicyVariant):
             label="parallel-stream cache warmup",
             infer_cache=infer_state.cache,
         )
-        resolved_hidden_proprio_state = self.conditioning.resolve_infer_hidden_proprio_context(
-            proprio_state,
-            label="parallel-stream cache warmup",
-            infer_cache=infer_state.cache,
+        resolved_hidden_proprio_state = (
+            self.conditioning.resolve_infer_hidden_proprio_context(
+                proprio_state,
+                label="parallel-stream cache warmup",
+                infer_cache=infer_state.cache,
+            )
+        )
+        dynamics_plan = resolve_dynamics_rollout_plan(
+            program=self.config.program,
+            request=dynamics,
         )
         next_cache = run_parallel_exact_cache_warmup(
             transformer=reference_transformer,
@@ -584,29 +689,70 @@ class ParallelStreamPolicyVariant(PolicyVariant):
             infer_cache=infer_state.cache,
             cache_write_mode=self.exact_cache_write_mode(),
             frame_start_override=frame_start_override,
-            action_conditioning_mode=str(getattr(action_conditioning_mode, "value", action_conditioning_mode)),
+            dynamics_objective=dynamics_plan.objective,
             proprio_state=resolved_proprio_state,
             hidden_proprio_state=resolved_hidden_proprio_state,
+            hidden_proprio_history=(
+                hidden_proprio_history
+                if self.conditioning.uses_per_chunk_proprio_context()
+                else None
+            ),
         )
         self.conditioning.cache_infer_proprio_state(
             next_cache,
-            resolved_proprio_state if resolved_proprio_state is not None else resolved_hidden_proprio_state,
+            resolved_proprio_state
+            if resolved_proprio_state is not None
+            else resolved_hidden_proprio_state,
         )
         next_cache["backbone_cache"] = visual_tower.resolve_runtime_cache_state(
-            next_cache.get("backbone_cache") if isinstance(next_cache.get("backbone_cache"), CacheState) else None,
+            next_cache.get("backbone_cache")
+            if isinstance(next_cache.get("backbone_cache"), CacheState)
+            else None,
             cursor=infer_state.cursor,
             stage="parallel_stream_lingbot_exact",
-            payload={"cache_name": str(next_cache.get("cache_name", infer_state.cache.get("cache_name", "open_wam_exact")))},
+            payload={
+                "cache_name": str(
+                    next_cache.get(
+                        "cache_name",
+                        infer_state.cache.get("cache_name", "open_wam_exact"),
+                    )
+                )
+            },
         )
-        frame_start = int(next_cache.get("frame_start", infer_state.cursor.current_start_frame))
+        frame_start = int(
+            next_cache.get("frame_start", infer_state.cursor.current_start_frame)
+        )
         return PolicyInferState(
             step_index=int(next_cache["step_index"]),
             cursor=RolloutCursor(
                 current_start_frame=frame_start,
                 block_index=int(next_cache.get("step_index", infer_state.step_index)),
-                chunk_size=int(next_cache.get("frame_chunk_size", self.inference_config.frame_chunk_size)),
+                chunk_size=int(
+                    next_cache.get(
+                        "frame_chunk_size", self.inference_config.frame_chunk_size
+                    )
+                ),
             ),
             cache=next_cache,
+        )
+
+    def _pack_dynamics_action(
+        self,
+        value: torch.Tensor | None,
+        *,
+        reference_transformer: torch.nn.Module,
+    ) -> torch.Tensor | None:
+        """Translate the shared model-action sequence into Parallel packing."""
+
+        if value is None:
+            return None
+        parameter = next(reference_transformer.parameters())
+        return self.exact_action_adapter.to_model_action_latents(
+            value,
+            action_per_frame=self.config.action_per_frame,
+            action_space=ActionSpace.MODEL,
+            device=parameter.device,
+            dtype=parameter.dtype,
         )
 
     def generate_reference_chunk(
@@ -620,7 +766,7 @@ class ParallelStreamPolicyVariant(PolicyVariant):
         proprio_state: torch.Tensor | None = None,
         advance_frame_start: bool = False,
         skip_video_prediction: bool = False,
-        action_conditioning_mode: object = "vanilla_joint_rollout",
+        dynamics: DynamicsRolloutRequest | None = None,
     ) -> PolicyInferOutput:
         # Chunk generation stays exact-runtime-native as well. This keeps the
         # canonical parallel-stream policy variant small: the variant owns rollout
@@ -633,32 +779,56 @@ class ParallelStreamPolicyVariant(PolicyVariant):
             )
             condition_latents = visual_outputs.frontend.video_latents
             text_emb = visual_outputs.frontend.conditioning.text_context
-            negative_text_emb = visual_outputs.frontend.conditioning.negative_text_context
+            negative_text_emb = (
+                visual_outputs.frontend.conditioning.negative_text_context
+            )
             output_dtype = condition_latents.dtype
         else:
-            reference_transformer = visual_tower.get_runtime_backbone(action_dim=self.action_dim)
+            reference_transformer = visual_tower.get_runtime_backbone(
+                action_dim=self.action_dim
+            )
             parameter = next(reference_transformer.parameters())
             condition_latents = None
             text_emb = text_context
             negative_text_emb = negative_text_context
-            output_dtype = torch.float32 if parameter.device.type == "cpu" else parameter.dtype
+            output_dtype = (
+                torch.float32 if parameter.device.type == "cpu" else parameter.dtype
+            )
         resolved_proprio_state = self.conditioning.resolve_infer_proprio_context(
             proprio_state,
             label="parallel-stream inference",
             infer_cache=infer_state.cache,
         )
-        resolved_hidden_proprio_state = self.conditioning.resolve_infer_hidden_proprio_context(
-            proprio_state,
-            label="parallel-stream inference",
-            infer_cache=infer_state.cache,
+        resolved_hidden_proprio_state = (
+            self.conditioning.resolve_infer_hidden_proprio_context(
+                proprio_state,
+                label="parallel-stream inference",
+                infer_cache=infer_state.cache,
+            )
         )
-        if resolve_parallel_current_block_coupling(self.config) in {
+        dynamics_plan = resolve_dynamics_rollout_plan(
+            program=self.config.program,
+            request=dynamics,
+        )
+        packed_coupling = resolve_parallel_current_block_coupling(self.config) in {
             CurrentBlockCoupling.JOINT,
             CurrentBlockCoupling.VIDEO_NOISY_TO_ACTION,
             CurrentBlockCoupling.ACTION_NOISY_TO_VIDEO,
-        }:
+        }
+        if packed_coupling:
             if skip_video_prediction:
-                raise ValueError("`skip_video_prediction` is only supported by staged exact parallel-stream rollout modes.")
+                raise ValueError(
+                    "`skip_video_prediction` is only supported by staged exact parallel-stream rollout modes."
+                )
+            dynamics_plan.require_generation_inputs()
+            clean_action_latents = self._pack_dynamics_action(
+                dynamics_plan.clean_action,
+                reference_transformer=reference_transformer,
+            )
+            commit_action_latents = self._pack_dynamics_action(
+                dynamics_plan.history_action,
+                reference_transformer=reference_transformer,
+            )
             infer_artifacts = run_parallel_packed_inference_rollout(
                 transformer=reference_transformer,
                 backbone_config=self.backbone_config,
@@ -670,16 +840,33 @@ class ParallelStreamPolicyVariant(PolicyVariant):
                 text_emb=text_emb,
                 negative_text_emb=negative_text_emb,
                 action_channel_mask=self._reference_action_channel_mask(
-                    device=parameter.device if visual_outputs is None else condition_latents.device,
+                    device=parameter.device
+                    if visual_outputs is None
+                    else condition_latents.device,
                     dtype=output_dtype,
                 ),
                 infer_cache=infer_state.cache,
                 advance_frame_start=advance_frame_start,
-                action_conditioning_mode=action_conditioning_mode,
+                forced_action_latents=clean_action_latents,
+                commit_action_latents=commit_action_latents,
+                forced_video_latents=dynamics_plan.clean_video,
+                dynamics_objective=dynamics_plan.objective,
                 proprio_state=resolved_proprio_state,
                 hidden_proprio_state=resolved_hidden_proprio_state,
             )
         else:
+            if any(
+                value is not None
+                for value in (
+                    dynamics_plan.clean_action,
+                    dynamics_plan.clean_video,
+                    dynamics_plan.history_action,
+                )
+            ):
+                raise ValueError(
+                    "Staged Parallel Stream programs do not accept dynamics "
+                    "clean-modality overrides."
+                )
             infer_artifacts = run_parallel_staged_inference_rollout(
                 transformer=reference_transformer,
                 backbone_config=self.backbone_config,
@@ -691,7 +878,9 @@ class ParallelStreamPolicyVariant(PolicyVariant):
                 text_emb=text_emb,
                 negative_text_emb=negative_text_emb,
                 action_channel_mask=self._reference_action_channel_mask(
-                    device=parameter.device if visual_outputs is None else condition_latents.device,
+                    device=parameter.device
+                    if visual_outputs is None
+                    else condition_latents.device,
                     dtype=output_dtype,
                 ),
                 infer_cache=infer_state.cache,
@@ -702,26 +891,51 @@ class ParallelStreamPolicyVariant(PolicyVariant):
             )
         self.conditioning.cache_infer_proprio_state(
             infer_artifacts.next_cache,
-            resolved_proprio_state if resolved_proprio_state is not None else resolved_hidden_proprio_state,
+            resolved_proprio_state
+            if resolved_proprio_state is not None
+            else resolved_hidden_proprio_state,
         )
         next_cursor = RolloutCursor(
             current_start_frame=int(
-                infer_artifacts.next_cache.get("frame_start", infer_state.cursor.current_start_frame)
+                infer_artifacts.next_cache.get(
+                    "frame_start", infer_state.cursor.current_start_frame
+                )
             ),
-            block_index=int(infer_artifacts.next_cache.get("step_index", infer_state.step_index)),
-            chunk_size=int(infer_artifacts.next_cache.get("frame_chunk_size", self.inference_config.frame_chunk_size)),
-        )
-        infer_artifacts.next_cache["backbone_cache"] = visual_tower.advance_runtime_cache_state(
-            visual_tower.resolve_runtime_cache_state(
-                infer_state.cache.get("backbone_cache"),
-                cursor=infer_state.cursor,
-                stage="parallel_stream_lingbot_exact",
-                payload={"cache_name": str(infer_state.cache.get("cache_name", "open_wam_exact"))},
+            block_index=int(
+                infer_artifacts.next_cache.get("step_index", infer_state.step_index)
             ),
-            next_cursor=next_cursor,
-            payload_updates={"cache_name": str(infer_artifacts.next_cache.get("cache_name", infer_state.cache.get("cache_name", "open_wam_exact")))},
+            chunk_size=int(
+                infer_artifacts.next_cache.get(
+                    "frame_chunk_size", self.inference_config.frame_chunk_size
+                )
+            ),
         )
-        raw_chunk_action = self.exact_action_adapter.to_raw_action_sequence(infer_artifacts.action_pred)
+        infer_artifacts.next_cache["backbone_cache"] = (
+            visual_tower.advance_runtime_cache_state(
+                visual_tower.resolve_runtime_cache_state(
+                    infer_state.cache.get("backbone_cache"),
+                    cursor=infer_state.cursor,
+                    stage="parallel_stream_lingbot_exact",
+                    payload={
+                        "cache_name": str(
+                            infer_state.cache.get("cache_name", "open_wam_exact")
+                        )
+                    },
+                ),
+                next_cursor=next_cursor,
+                payload_updates={
+                    "cache_name": str(
+                        infer_artifacts.next_cache.get(
+                            "cache_name",
+                            infer_state.cache.get("cache_name", "open_wam_exact"),
+                        )
+                    )
+                },
+            )
+        )
+        raw_chunk_action = self.exact_action_adapter.to_raw_action_sequence(
+            infer_artifacts.action_pred
+        )
         decoder_payload = ParallelDecoderInferArtifacts(
             predicted_latents=infer_artifacts.predicted_latents,
             raw_chunk_action_pred=raw_chunk_action,
@@ -736,6 +950,7 @@ class ParallelStreamPolicyVariant(PolicyVariant):
             decoder_artifacts=DecoderArtifactEnvelope(
                 contract=PARALLEL_STREAM_DECODER_ARTIFACT_CONTRACT,
                 payload=decoder_payload,
+                dynamics_objective=dynamics_plan.objective,
             ),
             aux={
                 "variant": self.config.name,
@@ -756,7 +971,6 @@ class ParallelStreamPolicyVariant(PolicyVariant):
     ) -> PolicyInferOutput:
         warmed_state = infer_state
         condition_outputs: VisualStageOutputs | None = visual_outputs
-        action_conditioning_mode = context.extra.get("action_conditioning_mode", "vanilla_joint_rollout")
         if context.previous_action is not None:
             batch_size = visual_outputs.frontend.video_latents.shape[0]
             device = visual_outputs.frontend.video_latents.device
@@ -774,8 +988,10 @@ class ParallelStreamPolicyVariant(PolicyVariant):
                 action_history=previous_actions,
                 infer_state=infer_state,
                 action_space=ActionSpace.MODEL,
-                action_conditioning_mode=str(getattr(action_conditioning_mode, "value", action_conditioning_mode)),
-                proprio_state=self.conditioning.select_rollout_proprio_state(context.state),
+                dynamics=context.dynamics,
+                proprio_state=self.conditioning.select_rollout_proprio_state(
+                    context.state
+                ),
             )
             condition_outputs = None
         return self.generate_reference_chunk(
@@ -783,5 +999,5 @@ class ParallelStreamPolicyVariant(PolicyVariant):
             visual_outputs=condition_outputs,
             infer_state=warmed_state,
             proprio_state=self.conditioning.select_rollout_proprio_state(context.state),
-            action_conditioning_mode=str(getattr(action_conditioning_mode, "value", action_conditioning_mode)),
+            dynamics=context.dynamics,
         )

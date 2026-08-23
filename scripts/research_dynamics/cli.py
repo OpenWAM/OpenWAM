@@ -10,12 +10,9 @@ from typing import Any
 
 import torch
 
-from open_wam.configs import GeneralistDenoisingMode, ReplayStatusPolicy
+from open_wam.configs import DynamicsObjective, ReplayStatusPolicy
 from open_wam.configs.policy_video_action import resolve_fixed_conditioning_mode
-from open_wam.runtime.checkpoints import (
-    CheckpointCompatibilityPolicy,
-    load_pipeline_checkpoint,
-)
+from open_wam.runtime.checkpoints import CheckpointCompatibilityPolicy
 from open_wam.utils import (
     load_experiment_config,
     merge_runtime_config_from_checkpoint,
@@ -37,8 +34,10 @@ from .metrics import (
     summarize_metric_rows,
 )
 from .rollout import (
-    DualExpertGeneralistDenoisingFdmRollout,
-    JointDenoisingFdmRollout,
+    DynamicsRolloutAdapter,
+    build_dynamics_rollout_adapter,
+    resolve_action_per_frame,
+    resolve_dynamics_rollout_frame_chunk_size,
     should_drop_task_text_for_fdm_mode,
 )
 from .sampling import (
@@ -52,12 +51,11 @@ from .sampling import (
 from .types import FdmAblationMode, FdmStartPolicy
 from .visualization import decode_latent_video, write_prediction_video
 
-
 _DIAGNOSTIC_MODE_BY_FIXED_CONDITIONING_MODE = {
-    GeneralistDenoisingMode.ACTION_CONDITIONED_VIDEO: (
+    DynamicsObjective.ACTION_CONDITIONED_VIDEO: (
         FdmAblationMode.FORCED_ACTION_JOINT_FDM
     ),
-    GeneralistDenoisingMode.VIDEO_CONDITIONED_ACTION: (
+    DynamicsObjective.VIDEO_CONDITIONED_ACTION: (
         FdmAblationMode.VIDEO_CONDITIONED_ACTION
     ),
 }
@@ -72,7 +70,9 @@ def main(argv: list[str] | None = None) -> None:
     checkpoint_dir = checkpoint_file.parent
     transformer_dir = resolve_transformer_dir_override(checkpoint_dir)
     base_config = load_experiment_config(config_path)
-    config, resolved_checkpoint_config = merge_runtime_config_from_checkpoint(base_config, checkpoint_file)
+    config, resolved_checkpoint_config = merge_runtime_config_from_checkpoint(
+        base_config, checkpoint_file
+    )
     config = _repair_runtime_config_for_local_eval(
         config=config,
         base_config=base_config,
@@ -94,9 +94,9 @@ def main(argv: list[str] | None = None) -> None:
     output_root = Path(args.output_dir).expanduser().resolve() / run_id
     output_root.mkdir(parents=True, exist_ok=True)
 
-    action_per_frame = _resolve_action_per_frame(config)
+    action_per_frame = resolve_action_per_frame(config)
     selection_fit_target_start_offset_frames = max(
-        (_target_start_offset_for_config_mode(config, mode) for mode in modes),
+        (_target_start_offset_for_mode(mode) for mode in modes),
         default=0,
     )
     dataset_source: dict[str, Any]
@@ -115,7 +115,9 @@ def main(argv: list[str] | None = None) -> None:
         )
         dataset_source = {
             "type": "encoded_counterfactual_dynamics",
-            "counterfactual_latent_root": str(Path(args.counterfactual_latent_root).expanduser().resolve()),
+            "counterfactual_latent_root": str(
+                Path(args.counterfactual_latent_root).expanduser().resolve()
+            ),
             "counterfactual_split": str(args.counterfactual_split),
         }
     else:
@@ -153,7 +155,9 @@ def main(argv: list[str] | None = None) -> None:
         "config_path": str(config_path),
         "checkpoint_file": str(checkpoint_file),
         "checkpoint_dir": str(checkpoint_dir),
-        "checkpoint_resolved_config": None if resolved_checkpoint_config is None else str(resolved_checkpoint_config),
+        "checkpoint_resolved_config": None
+        if resolved_checkpoint_config is None
+        else str(resolved_checkpoint_config),
         "transformer_dir": str(transformer_dir),
         "output_root": str(output_root),
         "horizon_frames": int(args.horizon_frames),
@@ -167,24 +171,33 @@ def main(argv: list[str] | None = None) -> None:
         "dataset_source": dataset_source,
         "frame_chunk_size": int(config.inference.frame_chunk_size),
         "action_per_frame": int(action_per_frame),
-        "selection_fit_target_start_offset_frames": int(selection_fit_target_start_offset_frames),
+        "selection_fit_target_start_offset_frames": int(
+            selection_fit_target_start_offset_frames
+        ),
         "dataset_length": len(dataset),
         "selection_count": len(selections),
         "sample_start": int(args.sample_start),
         "max_samples": args.max_samples,
-        "selections": [selection_to_manifest_row(selection) for selection in selections],
+        "selections": [
+            selection_to_manifest_row(selection) for selection in selections
+        ],
     }
     _write_json(output_root / "manifest.json", manifest)
     _write_jsonl(output_root / "samples.jsonl", manifest["selections"])
 
     if args.plan_only:
-        print(json.dumps({"status": "plan_only", "manifest": str(output_root / "manifest.json")}, indent=2))
+        print(
+            json.dumps(
+                {"status": "plan_only", "manifest": str(output_root / "manifest.json")},
+                indent=2,
+            )
+        )
         return
 
     runtime_device = torch.device(args.runtime_device)
     decode_device = torch.device(args.decode_device or args.runtime_device)
     runtime_dtype = _resolve_runtime_dtype(args.runtime_dtype)
-    fdm_rollout = _build_fdm_rollout_for_config(
+    fdm_rollout = build_dynamics_rollout_adapter(
         config=config,
         checkpoint_file=checkpoint_file,
         runtime_device=runtime_device,
@@ -227,7 +240,10 @@ def main(argv: list[str] | None = None) -> None:
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
         sample_summaries.append(sample_summary)
-        _write_json(output_root / "latest_progress.json", {"completed_samples": len(sample_summaries), "total": len(selections)})
+        _write_json(
+            output_root / "latest_progress.json",
+            {"completed_samples": len(sample_summaries), "total": len(selections)},
+        )
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
@@ -241,7 +257,9 @@ def main(argv: list[str] | None = None) -> None:
         "metrics_per_step": str(output_root / "metrics_per_step.csv"),
         "metrics_summary": str(output_root / "metrics_summary.csv"),
         "sample_results": str(output_root / "sample_results.jsonl"),
-        "video_count": len(list((output_root / "videos").glob("*.mp4"))) if (output_root / "videos").exists() else 0,
+        "video_count": len(list((output_root / "videos").glob("*.mp4")))
+        if (output_root / "videos").exists()
+        else 0,
         "summary_rows": summary_rows,
     }
     _write_json(output_root / "summary.json", summary)
@@ -251,7 +269,7 @@ def main(argv: list[str] | None = None) -> None:
 @torch.inference_mode()
 def _run_one_selection_mode(
     *,
-    fdm_rollout: JointDenoisingFdmRollout | DualExpertGeneralistDenoisingFdmRollout,
+    fdm_rollout: DynamicsRolloutAdapter,
     selection,
     sample,
     mode: FdmAblationMode,
@@ -264,16 +282,23 @@ def _run_one_selection_mode(
 ) -> dict[str, Any]:
     seed_everywhere(seed)
     action_per_frame = fdm_rollout.action_per_frame
-    frame_chunk_size = fdm_rollout.frame_chunk_size
-    video_latents = sample.video_latents.unsqueeze(0).to(device=runtime_device, dtype=torch.float32)
+    frame_chunk_size = resolve_dynamics_rollout_frame_chunk_size(
+        mode,
+        configured_frame_chunk_size=fdm_rollout.frame_chunk_size,
+    )
+    video_latents = sample.video_latents.unsqueeze(0).to(
+        device=runtime_device, dtype=torch.float32
+    )
     actions = sample.actions.unsqueeze(0).to(device=runtime_device, dtype=torch.float32)
     text_context = _optional_batch_tensor(sample.text_context, runtime_device)
-    negative_text_context = _optional_batch_tensor(sample.negative_text_context, runtime_device)
+    negative_text_context = _optional_batch_tensor(
+        sample.negative_text_context, runtime_device
+    )
     drop_text_conditioning = should_drop_task_text_for_fdm_mode(mode)
 
     mode_selection = replace(
         selection,
-        target_start_offset_frames=_target_start_offset_for_rollout_mode(fdm_rollout, mode),
+        target_start_offset_frames=_target_start_offset_for_mode(mode),
     )
     t0 = int(mode_selection.t0_frame)
     target_start_offset = int(mode_selection.target_start_offset_frames)
@@ -302,13 +327,19 @@ def _run_one_selection_mode(
             "FDM rollout action source starts before frame zero: "
             f"target_start_frame={target_start_frame}, target_start_offset_frames={target_start_offset}."
         )
-    video_context = video_latents[:, :, mode_selection.context_start_frame:target_start_frame]
+    video_context = video_latents[
+        :, :, mode_selection.context_start_frame : target_start_frame
+    ]
     action_context = actions[
-        :, mode_selection.context_start_frame * action_per_frame : target_start_frame * action_per_frame
+        :,
+        mode_selection.context_start_frame * action_per_frame : target_start_frame
+        * action_per_frame,
     ]
     if target_start_offset > 0:
         action_context = torch.zeros_like(action_context)
-    warmup_proprio_state = _optional_proprio_state_at_frame(sample, action_source_start_frame, runtime_device)
+    warmup_proprio_state = _optional_proprio_state_at_frame(
+        sample, action_source_start_frame, runtime_device
+    )
     warmup_hidden_proprio_history = _optional_proprio_state_sequence(
         sample,
         start_frame=int(mode_selection.context_start_frame),
@@ -323,7 +354,7 @@ def _run_one_selection_mode(
         negative_text_context=negative_text_context,
         context_start_frame=int(mode_selection.context_start_frame),
         action_space="raw",
-        action_conditioning_mode=mode.value,
+        mode=mode,
         drop_text_conditioning=drop_text_conditioning,
         proprio_state=warmup_proprio_state,
         hidden_proprio_history=warmup_hidden_proprio_history,
@@ -345,7 +376,9 @@ def _run_one_selection_mode(
         raw_action_chunk = actions[:, action_start:action_end]
         video_condition_chunk = None
         if mode == FdmAblationMode.VIDEO_CONDITIONED_ACTION:
-            video_condition_chunk = video_latents[:, :, chunk_frame_start : chunk_frame_start + frame_chunk_size]
+            video_condition_chunk = video_latents[
+                :, :, chunk_frame_start : chunk_frame_start + frame_chunk_size
+            ]
         chunk = fdm_rollout.infer_chunk(
             session=session,
             mode=mode,
@@ -353,7 +386,9 @@ def _run_one_selection_mode(
             video_condition_latents=video_condition_chunk,
             seed=seed + frame_offset,
             drop_text_conditioning=drop_text_conditioning,
-            proprio_state=_optional_proprio_state_at_frame(sample, chunk_action_source_start, runtime_device),
+            proprio_state=_optional_proprio_state_at_frame(
+                sample, chunk_action_source_start, runtime_device
+            ),
         )
         predicted_chunks.append(chunk.predicted_latents.detach().cpu())
         if chunk.raw_action_sequence is not None:
@@ -363,8 +398,14 @@ def _run_one_selection_mode(
 
     is_idm_mode = mode == FdmAblationMode.VIDEO_CONDITIONED_ACTION
     predicted_latents = torch.cat(predicted_chunks, dim=2)[:, :, :target_horizon].cpu()
-    target_latents = video_latents[:, :, target_start_frame : target_start_frame + target_horizon].detach().cpu()
-    latent_mse = None if is_idm_mode else latent_mse_per_frame(predicted_latents, target_latents)
+    target_latents = (
+        video_latents[:, :, target_start_frame : target_start_frame + target_horizon]
+        .detach()
+        .cpu()
+    )
+    latent_mse = (
+        None if is_idm_mode else latent_mse_per_frame(predicted_latents, target_latents)
+    )
     action_mse = None
     if is_idm_mode:
         if not predicted_action_chunks:
@@ -372,11 +413,17 @@ def _run_one_selection_mode(
         predicted_actions = torch.cat(predicted_action_chunks, dim=1)[
             :, : target_horizon * action_per_frame
         ].cpu()
-        target_actions = actions[
-            :,
-            action_source_start_frame * action_per_frame : (action_source_start_frame + target_horizon)
-            * action_per_frame,
-        ].detach().cpu()
+        target_actions = (
+            actions[
+                :,
+                action_source_start_frame * action_per_frame : (
+                    action_source_start_frame + target_horizon
+                )
+                * action_per_frame,
+            ]
+            .detach()
+            .cpu()
+        )
         action_mse = action_mse_per_frame(
             predicted_actions,
             target_actions,
@@ -386,8 +433,12 @@ def _run_one_selection_mode(
     predicted_rgb = None
     target_rgb = None
     if not is_idm_mode:
-        predicted_rgb = decode_latent_video(fdm_rollout.runner.pipeline, predicted_latents, decode_device=decode_device)
-        target_rgb = decode_latent_video(fdm_rollout.runner.pipeline, target_latents, decode_device=decode_device)
+        predicted_rgb = decode_latent_video(
+            fdm_rollout.pipeline, predicted_latents, decode_device=decode_device
+        )
+        target_rgb = decode_latent_video(
+            fdm_rollout.pipeline, target_latents, decode_device=decode_device
+        )
     rgb_mse = None
     rgb_ssim = None
     video_path = None
@@ -395,7 +446,10 @@ def _run_one_selection_mode(
         rgb_mse = rgb_mse_per_frame(predicted_rgb, target_rgb)
         rgb_ssim = simple_ssim_per_frame(predicted_rgb, target_rgb)
         if write_video:
-            video_path = video_dir / f"task_{selection.task_rank:02d}_{mode.value}_sample_{selection.sample_index:03d}.mp4"
+            video_path = (
+                video_dir
+                / f"task_{selection.task_rank:02d}_{mode.value}_sample_{selection.sample_index:03d}.mp4"
+            )
             write_prediction_video(
                 output_path=video_path,
                 target_rgb=target_rgb[:target_horizon],
@@ -410,92 +464,36 @@ def _run_one_selection_mode(
     metric_rows = build_metric_rows(
         selection=mode_selection,
         mode=mode,
-        latent_mse=_latent_mse_for_metric_rows(latent_mse=latent_mse, rgb_mse=rgb_mse, action_mse=action_mse),
+        latent_mse=_latent_mse_for_metric_rows(
+            latent_mse=latent_mse, rgb_mse=rgb_mse, action_mse=action_mse
+        ),
         rgb_mse=rgb_mse,
         rgb_ssim=rgb_ssim,
         action_mse=action_mse,
     )
     summary = {
         "metric_target": "action" if is_idm_mode else "video",
-        "selection_target_start_offset_frames": int(getattr(selection, "target_start_offset_frames", 0)),
-        "latent_mse_mean": None if latent_mse is None else float(sum(latent_mse) / len(latent_mse)),
+        "selection_target_start_offset_frames": int(
+            getattr(selection, "target_start_offset_frames", 0)
+        ),
+        "latent_mse_mean": None
+        if latent_mse is None
+        else float(sum(latent_mse) / len(latent_mse)),
         "rgb_mse_mean": None if rgb_mse is None else float(sum(rgb_mse) / len(rgb_mse)),
-        "action_mse_mean": None if action_mse is None else float(sum(action_mse) / len(action_mse)),
+        "action_mse_mean": None
+        if action_mse is None
+        else float(sum(action_mse) / len(action_mse)),
         "video_path": None if video_path is None else str(video_path),
         "chunk_debug": chunk_debug,
         "target_start_frame": target_start_frame,
         "target_start_offset_frames": target_start_offset,
         "action_source_start_frame": action_source_start_frame,
     }
-    return {"metric_rows": metric_rows, "summary": summary, "video_path": None if video_path is None else str(video_path)}
-
-
-def _build_fdm_rollout_for_config(
-    *,
-    config,
-    checkpoint_file: Path,
-    runtime_device: torch.device,
-    runtime_dtype: torch.dtype | None,
-    checkpoint_compatibility: CheckpointCompatibilityPolicy = (
-        CheckpointCompatibilityPolicy.ALLOW_CHECKPOINT_SUPERSET
-    ),
-) -> JointDenoisingFdmRollout | DualExpertGeneralistDenoisingFdmRollout:
-    if _is_dual_expert_policy_config(config):
-        from open_wam.pipelines import (
-            VariantRolloutRunner,
-            build_variant_pipeline_from_config,
-        )
-
-        pipeline = build_variant_pipeline_from_config(config)
-        _load_pipeline_checkpoint_for_fdm_rollout(
-            pipeline,
-            checkpoint_file,
-            map_location=torch.device("cpu"),
-            compatibility=checkpoint_compatibility,
-        )
-        if runtime_dtype is None:
-            pipeline.to(runtime_device)
-        else:
-            pipeline.to(device=runtime_device, dtype=runtime_dtype)
-        pipeline.eval()
-        return DualExpertGeneralistDenoisingFdmRollout(VariantRolloutRunner(pipeline))
-
-    if runtime_dtype is not None:
-        raise ValueError(
-            "`--runtime-dtype` is currently supported only for dual-expert "
-            "FDM/IDM evaluation."
-        )
-    from open_wam.pipelines import build_exact_runtime_runner_from_config
-
-    return JointDenoisingFdmRollout(build_exact_runtime_runner_from_config(config))
-
-
-def _is_dual_expert_policy_config(config) -> bool:
-    raw_name = getattr(config.policy_variant, "name", None)
-    return str(getattr(raw_name, "value", raw_name)) == "dual_expert"
-
-
-def _resolve_action_per_frame(config) -> int:
-    raw_action_per_frame = getattr(config.policy_variant, "action_per_frame", None)
-    if raw_action_per_frame is not None:
-        action_per_frame = int(raw_action_per_frame)
-        if action_per_frame <= 0:
-            raise ValueError(f"policy_variant.action_per_frame must be positive, got {raw_action_per_frame!r}.")
-        return action_per_frame
-
-    action_horizon = int(config.action_decoder.action_horizon)
-    frame_chunk_size = int(config.inference.frame_chunk_size)
-    if frame_chunk_size <= 0:
-        raise ValueError(f"inference.frame_chunk_size must be positive, got {frame_chunk_size}.")
-    if action_horizon <= 0:
-        raise ValueError(f"action_decoder.action_horizon must be positive, got {action_horizon}.")
-    if action_horizon % frame_chunk_size != 0:
-        raise ValueError(
-            "Cannot infer action_per_frame: action_decoder.action_horizon must be divisible by "
-            f"inference.frame_chunk_size, got action_horizon={action_horizon}, "
-            f"frame_chunk_size={frame_chunk_size}."
-        )
-    return action_horizon // frame_chunk_size
+    return {
+        "metric_rows": metric_rows,
+        "summary": summary,
+        "video_path": None if video_path is None else str(video_path),
+    }
 
 
 def _resolve_runtime_dtype(value: str | None) -> torch.dtype | None:
@@ -508,22 +506,11 @@ def _resolve_runtime_dtype(value: str | None) -> torch.dtype | None:
     raise ValueError(f"Unsupported runtime dtype {value!r}.")
 
 
-def _target_start_offset_for_config_mode(config, mode: FdmAblationMode) -> int:
-    if not _is_dual_expert_policy_config(config):
-        return 0
-    return 1 if _is_target_only_m5_gjd_mode(mode) else 0
+def _target_start_offset_for_mode(mode: FdmAblationMode) -> int:
+    return 1 if _is_target_only_conditional_mode(mode) else 0
 
 
-def _target_start_offset_for_rollout_mode(
-    fdm_rollout: JointDenoisingFdmRollout | DualExpertGeneralistDenoisingFdmRollout,
-    mode: FdmAblationMode,
-) -> int:
-    if not isinstance(fdm_rollout, DualExpertGeneralistDenoisingFdmRollout):
-        return 0
-    return 1 if _is_target_only_m5_gjd_mode(mode) else 0
-
-
-def _is_target_only_m5_gjd_mode(mode: FdmAblationMode) -> bool:
+def _is_target_only_conditional_mode(mode: FdmAblationMode) -> bool:
     return FdmAblationMode(mode) in {
         FdmAblationMode.FORCED_ACTION_JOINT_FDM,
         FdmAblationMode.VIDEO_CONDITIONED_ACTION,
@@ -531,34 +518,15 @@ def _is_target_only_m5_gjd_mode(mode: FdmAblationMode) -> bool:
 
 
 def _validate_counterfactual_eval_modes(modes: tuple[FdmAblationMode, ...]) -> None:
-    unsupported = [mode.value for mode in modes if not _is_target_only_m5_gjd_mode(mode)]
+    unsupported = [
+        mode.value for mode in modes if not _is_target_only_conditional_mode(mode)
+    ]
     if unsupported:
         raise ValueError(
             "Encoded counterfactual dynamics evaluation is target-only and supports only "
             "`forced_action_joint_fdm` and `video_conditioned_action`; got unsupported modes "
             f"{unsupported}."
         )
-
-
-def _load_pipeline_checkpoint_for_fdm_rollout(
-    pipeline: torch.nn.Module,
-    checkpoint_path: Path,
-    *,
-    map_location: torch.device,
-    compatibility: CheckpointCompatibilityPolicy = (
-        CheckpointCompatibilityPolicy.ALLOW_CHECKPOINT_SUPERSET
-    ),
-) -> None:
-    report = load_pipeline_checkpoint(
-        pipeline,
-        checkpoint_path,
-        map_location=map_location,
-        compatibility=compatibility,
-    )
-    if report.missing_keys:
-        print(f"fdm_eval.checkpoint_missing_keys {len(report.missing_keys)}")
-    if report.unexpected_keys:
-        print(f"fdm_eval.checkpoint_unexpected_keys {len(report.unexpected_keys)}")
 
 
 def _repair_runtime_config_for_local_eval(
@@ -587,20 +555,30 @@ def _repair_runtime_config_for_local_eval(
         config = replace(config, data=replace(config.data, **data_updates))
 
     backbone_updates: dict[str, Any] = {"transformer_subdir": str(transformer_dir)}
-    base_pretrained = Path(str(base_config.backbone.pretrained_model_name_or_path)).expanduser()
-    current_pretrained = Path(str(config.backbone.pretrained_model_name_or_path)).expanduser()
+    base_pretrained = Path(
+        str(base_config.backbone.pretrained_model_name_or_path)
+    ).expanduser()
+    current_pretrained = Path(
+        str(config.backbone.pretrained_model_name_or_path)
+    ).expanduser()
     if base_pretrained.exists() and not current_pretrained.exists():
         backbone_updates["pretrained_model_name_or_path"] = str(base_pretrained)
     if reference_assets_device_policy is not None:
-        backbone_updates["reference_assets_device_policy"] = reference_assets_device_policy
+        backbone_updates["reference_assets_device_policy"] = (
+            reference_assets_device_policy
+        )
     config = replace(config, backbone=replace(config.backbone, **backbone_updates))
     inference_updates: dict[str, Any] = {}
     if video_num_inference_steps is not None:
         inference_updates["video_num_inference_steps"] = int(video_num_inference_steps)
     if action_num_inference_steps is not None:
-        inference_updates["action_num_inference_steps"] = int(action_num_inference_steps)
+        inference_updates["action_num_inference_steps"] = int(
+            action_num_inference_steps
+        )
     if inference_updates:
-        config = replace(config, inference=replace(config.inference, **inference_updates))
+        config = replace(
+            config, inference=replace(config.inference, **inference_updates)
+        )
     return config
 
 
@@ -616,7 +594,9 @@ def _resolve_existing_path_override(
     return path
 
 
-def _optional_batch_tensor(value: torch.Tensor | None, device: torch.device) -> torch.Tensor | None:
+def _optional_batch_tensor(
+    value: torch.Tensor | None, device: torch.device
+) -> torch.Tensor | None:
     if value is None:
         return None
     if value.ndim == 2:
@@ -644,8 +624,12 @@ def _optional_proprio_state_sequence(
     start_frame = int(start_frame)
     end_frame = int(end_frame)
     if end_frame <= start_frame:
-        return value.new_empty((1, 0, int(value.shape[-1])), dtype=torch.float32).to(device=device)
-    indices = torch.arange(start_frame, end_frame, device=value.device, dtype=torch.long)
+        return value.new_empty((1, 0, int(value.shape[-1])), dtype=torch.float32).to(
+            device=device
+        )
+    indices = torch.arange(
+        start_frame, end_frame, device=value.device, dtype=torch.long
+    )
     indices = indices.clamp(0, int(value.shape[0]) - 1)
     state = value.index_select(0, indices).to(device=device, dtype=torch.float32)
     if isinstance(mask, torch.Tensor):
@@ -654,11 +638,15 @@ def _optional_proprio_state_sequence(
                 f"FDM eval {mask_name} must match {source_name} shape, "
                 f"got mask={tuple(mask.shape)} and state={tuple(value.shape)}."
             )
-        state = state * mask.index_select(0, indices).to(device=device, dtype=torch.float32)
+        state = state * mask.index_select(0, indices).to(
+            device=device, dtype=torch.float32
+        )
     return state.unsqueeze(0)
 
 
-def _optional_proprio_state_at_frame(sample, frame_index: int, device: torch.device) -> torch.Tensor | None:
+def _optional_proprio_state_at_frame(
+    sample, frame_index: int, device: torch.device
+) -> torch.Tensor | None:
     sequence = _optional_proprio_state_sequence(
         sample,
         start_frame=int(frame_index),
@@ -670,7 +658,9 @@ def _optional_proprio_state_at_frame(sample, frame_index: int, device: torch.dev
     return sequence[:, -1, :]
 
 
-def _optional_proprio_frame_source(sample) -> tuple[torch.Tensor | None, torch.Tensor | None, str, str]:
+def _optional_proprio_frame_source(
+    sample,
+) -> tuple[torch.Tensor | None, torch.Tensor | None, str, str]:
     for source_name, mask_name in (
         ("proprio_context_frames", "proprio_context_frames_mask"),
         ("proprio_context_state", "proprio_context_state_mask"),
@@ -873,7 +863,9 @@ def _resolve_requested_diagnostic_modes(
         return tuple(FdmAblationMode(value) for value in values)
 
     expected_mode = _DIAGNOSTIC_MODE_BY_FIXED_CONDITIONING_MODE.get(fixed_mode)
-    if expected_mode is None:  # pragma: no cover - fixed resolver only returns conditional modes.
+    if (
+        expected_mode is None
+    ):  # pragma: no cover - fixed resolver only returns conditional modes.
         raise ValueError(
             f"Unsupported fixed conditioning mode for offline diagnostics: {fixed_mode.value!r}."
         )

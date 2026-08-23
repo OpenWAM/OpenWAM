@@ -7,6 +7,7 @@ import pytest
 import torch
 
 import open_wam.models.common.chunked_attention as chunked_attention
+from open_wam.configs import HistoryStreamVisibility
 from open_wam.models.common.attention_profiles import (
     build_chunked_temporal_exact_attention_profile,
     normalize_chunked_temporal_exact_coupling,
@@ -398,7 +399,9 @@ def test_chunked_temporal_exact_action_context_mask_hides_startup_action_tokens(
         device=torch.device("cpu"),
         build_dense_masks=True,
         build_flex_masks=False,
-        preserve_video_pretrain_history=True,
+        history_stream_visibility=(
+            HistoryStreamVisibility.VIDEO_QUERIES_VIDEO_ONLY
+        ),
     )
 
     assert profile.self_attention_mask is not None
@@ -698,7 +701,7 @@ def test_chunked_temporal_exact_decoupled_hides_same_step_cross_stream_context()
     assert bool(mask[a_clean_0, v_clean_0].item()) is False
 
 
-def test_preserve_video_pretrain_history_filters_video_queries_only() -> None:
+def test_video_query_only_history_visibility_filters_video_queries() -> None:
     profile = build_chunked_temporal_exact_attention_profile(
         latent_shape=(1, 1, 4, 1, 1),
         action_shape=(1, 1, 4, 1, 1),
@@ -711,7 +714,9 @@ def test_preserve_video_pretrain_history_filters_video_queries_only() -> None:
         build_dense_masks=True,
         build_flex_masks=False,
         current_block_coupling="joint",
-        preserve_video_pretrain_history=True,
+        history_stream_visibility=(
+            HistoryStreamVisibility.VIDEO_QUERIES_VIDEO_ONLY
+        ),
     )
     assert profile.self_attention_mask is not None
     mask = profile.self_attention_mask
@@ -725,10 +730,13 @@ def test_preserve_video_pretrain_history_filters_video_queries_only() -> None:
     assert bool(mask[v_clean_chunk1, a_clean_history].item()) is False
     assert bool(mask[a_noisy_chunk1, v_clean_history].item()) is True
     assert bool(mask[a_noisy_chunk1, a_clean_history].item()) is True
-    assert profile.metadata["preserve_video_pretrain_history"] is True
+    assert (
+        profile.metadata["history_stream_visibility"]
+        == HistoryStreamVisibility.VIDEO_QUERIES_VIDEO_ONLY.value
+    )
 
 
-def test_preserve_video_pretrain_history_keeps_staged_current_condition_visible() -> None:
+def test_video_query_only_history_keeps_staged_current_condition_visible() -> None:
     video_then_action = build_chunked_temporal_exact_attention_profile(
         latent_shape=(1, 1, 2, 1, 1),
         action_shape=(1, 1, 2, 1, 1),
@@ -741,7 +749,9 @@ def test_preserve_video_pretrain_history_keeps_staged_current_condition_visible(
         build_dense_masks=True,
         build_flex_masks=False,
         current_block_coupling="video_then_action",
-        preserve_video_pretrain_history=True,
+        history_stream_visibility=(
+            HistoryStreamVisibility.VIDEO_QUERIES_VIDEO_ONLY
+        ),
     )
     action_then_video = build_chunked_temporal_exact_attention_profile(
         latent_shape=(1, 1, 2, 1, 1),
@@ -755,7 +765,9 @@ def test_preserve_video_pretrain_history_keeps_staged_current_condition_visible(
         build_dense_masks=True,
         build_flex_masks=False,
         current_block_coupling="action_then_video",
-        preserve_video_pretrain_history=True,
+        history_stream_visibility=(
+            HistoryStreamVisibility.VIDEO_QUERIES_VIDEO_ONLY
+        ),
     )
     assert video_then_action.self_attention_mask is not None
     assert action_then_video.self_attention_mask is not None

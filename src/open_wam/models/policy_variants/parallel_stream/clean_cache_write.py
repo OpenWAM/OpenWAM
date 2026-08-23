@@ -49,7 +49,6 @@ def write_joint_clean_tokens_to_exact_cache(
     chunk_size: int,
     window_size: int,
     current_block_coupling: CurrentBlockCoupling | str,
-    preserve_video_pretrain_history: bool,
     history_stream_visibility: HistoryStreamVisibility | str | None = None,
     video_hidden_context: torch.Tensor | None = None,
     action_hidden_context: torch.Tensor | None = None,
@@ -81,9 +80,7 @@ def write_joint_clean_tokens_to_exact_cache(
         action_cache_input["hidden_context"] = action_hidden_context
     if use_cfg:
         if negative_text_emb is None:
-            raise ValueError(
-                "Joint cache commit with CFG requires negative_text_emb."
-            )
+            raise ValueError("Joint cache commit with CFG requires negative_text_emb.")
         video_cache_input = repeat_exact_single_stream_input_for_cfg(
             video_cache_input,
             negative_text_emb=negative_text_emb,
@@ -93,30 +90,33 @@ def write_joint_clean_tokens_to_exact_cache(
             negative_text_emb=negative_text_emb,
         )
 
-    latent_hidden_states = transformer._input_embed(
-        video_cache_input["noisy_latents"].to(dtype=model_dtype),
-        input_type="latent",
-    ).contiguous().clone()
-    action_hidden_states = transformer._input_embed(
-        action_cache_input["noisy_latents"].to(dtype=model_dtype),
-        input_type="action",
-    ).contiguous().clone()
+    latent_hidden_states = (
+        transformer._input_embed(
+            video_cache_input["noisy_latents"].to(dtype=model_dtype),
+            input_type="latent",
+        )
+        .contiguous()
+        .clone()
+    )
+    action_hidden_states = (
+        transformer._input_embed(
+            action_cache_input["noisy_latents"].to(dtype=model_dtype),
+            input_type="action",
+        )
+        .contiguous()
+        .clone()
+    )
     latent_hidden_context = video_cache_input.get("hidden_context")
     if latent_hidden_context is not None:
-        if tuple(latent_hidden_context.shape) != tuple(
-            latent_hidden_states.shape
-        ):
+        if tuple(latent_hidden_context.shape) != tuple(latent_hidden_states.shape):
             raise ValueError(
                 "Joint clean cache video hidden_context must match embedded hidden states, "
                 f"got hidden_context={tuple(latent_hidden_context.shape)}, "
                 f"hidden_states={tuple(latent_hidden_states.shape)}."
             )
-        latent_hidden_states = (
-            latent_hidden_states
-            + latent_hidden_context.to(
-                device=latent_hidden_states.device,
-                dtype=latent_hidden_states.dtype,
-            )
+        latent_hidden_states = latent_hidden_states + latent_hidden_context.to(
+            device=latent_hidden_states.device,
+            dtype=latent_hidden_states.dtype,
         )
     action_hidden_context_input = action_cache_input.get("hidden_context")
     if action_hidden_context_input is not None:
@@ -128,12 +128,9 @@ def write_joint_clean_tokens_to_exact_cache(
                 f"got hidden_context={tuple(action_hidden_context_input.shape)}, "
                 f"hidden_states={tuple(action_hidden_states.shape)}."
             )
-        action_hidden_states = (
-            action_hidden_states
-            + action_hidden_context_input.to(
-                device=action_hidden_states.device,
-                dtype=action_hidden_states.dtype,
-            )
+        action_hidden_states = action_hidden_states + action_hidden_context_input.to(
+            device=action_hidden_states.device,
+            dtype=action_hidden_states.dtype,
         )
     hidden_states = torch.cat(
         [latent_hidden_states, action_hidden_states],
@@ -145,15 +142,19 @@ def write_joint_clean_tokens_to_exact_cache(
         device=hidden_states.device,
     )
 
-    text_hidden_states = transformer._exact_text_hidden_states(
-        video_cache_input["text_emb"],
-        dtype=model_dtype,
-    ).contiguous().clone()
+    text_hidden_states = (
+        transformer._exact_text_hidden_states(
+            video_cache_input["text_emb"],
+            dtype=model_dtype,
+        )
+        .contiguous()
+        .clone()
+    )
     latent_grid_id = video_cache_input["grid_id"].contiguous().clone()
     action_grid_id = action_cache_input["grid_id"].contiguous().clone()
-    rotary_emb = transformer.rope(
-        torch.cat([latent_grid_id, action_grid_id], dim=2)
-    )[:, :, None]
+    rotary_emb = transformer.rope(torch.cat([latent_grid_id, action_grid_id], dim=2))[
+        :, :, None
+    ]
 
     latent_time_steps = video_cache_input["timesteps"].contiguous().clone()
     action_time_steps = action_cache_input["timesteps"].contiguous().clone()
@@ -183,27 +184,20 @@ def write_joint_clean_tokens_to_exact_cache(
         chunk_size=chunk_size,
         window_size=window_size,
         current_block_coupling=current_block_coupling,
-        preserve_video_pretrain_history=preserve_video_pretrain_history,
         history_stream_visibility=history_stream_visibility,
     )
 
-    cache_state = transformer._resolve_exact_cache_state(cache_name)
-    cache_backend_name = (
-        cache_state.backend_name if cache_state is not None else None
-    )
+    cache_state = transformer.get_runtime_cache_state(cache_name)
+    cache_backend_name = cache_state.backend_name if cache_state is not None else None
     cache_backend_payload = (
         cache_state.backend_payload if cache_state is not None else None
     )
     metadata_previous: list[tuple[Any, dict[str, tuple[bool, Any]]]] = []
-    if int(update_cache) != 0 and bool(
-        allow_cache_prefix_during_update_write
-    ):
+    if int(update_cache) != 0 and bool(allow_cache_prefix_during_update_write):
         metadata_previous = set_slot_pool_layer_metadata(
             transformer,
             cache_name=cache_name,
-            updates={
-                SLOT_POOL_DEFER_EVICTION_UNTIL_AFTER_WRITE_ATTENTION: True
-            },
+            updates={SLOT_POOL_DEFER_EVICTION_UNTIL_AFTER_WRITE_ATTENTION: True},
         )
     try:
         for layer_index, block in enumerate(transformer.blocks):
@@ -218,8 +212,7 @@ def write_joint_clean_tokens_to_exact_cache(
                     cache_backend_payload.layer_states[layer_index]
                     if cache_backend_uses_slot_pool(cache_backend_name)
                     and cache_backend_payload is not None
-                    and layer_index
-                    < len(cache_backend_payload.layer_states)
+                    and layer_index < len(cache_backend_payload.layer_states)
                     else None
                 ),
                 self_attention_cache_update_mode=update_cache,
@@ -228,24 +221,23 @@ def write_joint_clean_tokens_to_exact_cache(
     finally:
         restore_slot_pool_layer_metadata(metadata_previous)
 
-    if cache_state is not None and cache_backend_uses_slot_pool(
-        cache_backend_name
-    ):
-        materialized_entries = materialize_cache_backend_entries(
-            cache_backend_payload
-        )
-        transformer._exact_runtime_caches[cache_name] = CacheState(
-            supported=cache_state.supported,
-            current_start_frame=cache_state.current_start_frame,
-            cached_frames=cache_state.cached_frames,
-            chunk_size=cache_state.chunk_size,
-            capability=cache_state.capability,
-            backend_name=cache_state.backend_name,
-            backend_payload=cache_backend_payload,
-            payload=dict(cache_state.payload),
-            self_attention_kv=materialized_entries,
-            cross_attention_kv=cache_state.cross_attention_kv,
-            update_metadata=cache_state.update_metadata,
+    if cache_state is not None and cache_backend_uses_slot_pool(cache_backend_name):
+        materialized_entries = materialize_cache_backend_entries(cache_backend_payload)
+        transformer.replace_runtime_cache_state(
+            cache_name,
+            CacheState(
+                supported=cache_state.supported,
+                current_start_frame=cache_state.current_start_frame,
+                cached_frames=cache_state.cached_frames,
+                chunk_size=cache_state.chunk_size,
+                capability=cache_state.capability,
+                backend_name=cache_state.backend_name,
+                backend_payload=cache_backend_payload,
+                payload=dict(cache_state.payload),
+                self_attention_kv=materialized_entries,
+                cross_attention_kv=cache_state.cross_attention_kv,
+                update_metadata=cache_state.update_metadata,
+            ),
         )
 
 

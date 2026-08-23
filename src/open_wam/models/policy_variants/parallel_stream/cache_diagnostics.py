@@ -15,9 +15,7 @@ def summarize_slot_pool_cache_state(
 ) -> dict[str, int] | None:
     """Summarize the first slot-pool layer for rollout diagnostics."""
 
-    if not hasattr(transformer, "_resolve_exact_cache_state"):
-        return None
-    cache_state = transformer._resolve_exact_cache_state(cache_name)
+    cache_state = transformer.get_runtime_cache_state(cache_name)
     if cache_state is None or not cache_backend_uses_slot_pool(
         cache_state.backend_name
     ):
@@ -34,11 +32,7 @@ def summarize_slot_pool_cache_state(
         return None
     cached_tokens = int(layer_state.slot_mask.sum().item())
     prediction_tokens = (
-        int(
-            layer_state.prediction_mask[layer_state.slot_mask]
-            .sum()
-            .item()
-        )
+        int(layer_state.prediction_mask[layer_state.slot_mask].sum().item())
         if layer_state.prediction_mask is not None
         else 0
     )

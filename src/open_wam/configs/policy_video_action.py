@@ -3,14 +3,14 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 from .enums import (
+    BackboneImplementation,
     ContextConditionLatentSource,
     CurrentBlockCoupling,
-    GeneralistDenoisingMode,
-    GeneralistTrainingParadigm,
+    DynamicsObjective,
     HistoryStreamVisibility,
     JointTimestepCoupling,
     ProprioContextMode,
@@ -18,135 +18,106 @@ from .enums import (
     VideoActionSequenceContract,
     coerce_fields,
 )
-from .policy_compatibility import resolve_legacy_policy_field
-from .policy_contracts import PolicyVariantConfig
+from .policy_contracts import PolicyConditioningRequirements, PolicyVariantConfig
 
-_FIXED_CONDITIONING_MODE_BY_PROGRAM = {
-    VideoActionProgram.FORWARD_DYNAMICS: GeneralistDenoisingMode.ACTION_CONDITIONED_VIDEO,
-    VideoActionProgram.INVERSE_DYNAMICS: GeneralistDenoisingMode.VIDEO_CONDITIONED_ACTION,
+
+@dataclass(frozen=True, slots=True)
+class _VideoActionProgramSemantics:
+    """Complete shared meaning of one public video/action program."""
+
+    current_block_coupling: CurrentBlockCoupling
+    supports_dynamics_routing: bool = False
+    fixed_conditioning_mode: DynamicsObjective | None = None
+    has_joint_noise_clock: bool = True
+
+
+_PROGRAM_SEMANTICS = {
+    VideoActionProgram.VIDEO_THEN_ACTION: _VideoActionProgramSemantics(
+        CurrentBlockCoupling.VIDEO_THEN_ACTION,
+        has_joint_noise_clock=False,
+    ),
+    VideoActionProgram.ACTION_THEN_VIDEO: _VideoActionProgramSemantics(
+        CurrentBlockCoupling.ACTION_THEN_VIDEO,
+        has_joint_noise_clock=False,
+    ),
+    VideoActionProgram.JOINT: _VideoActionProgramSemantics(
+        CurrentBlockCoupling.JOINT,
+    ),
+    VideoActionProgram.DECOUPLED_SAME_STEP: _VideoActionProgramSemantics(
+        CurrentBlockCoupling.DECOUPLED_SAME_STEP,
+        has_joint_noise_clock=False,
+    ),
+    VideoActionProgram.VIDEO_NOISY_TO_ACTION: _VideoActionProgramSemantics(
+        CurrentBlockCoupling.VIDEO_NOISY_TO_ACTION,
+    ),
+    VideoActionProgram.ACTION_NOISY_TO_VIDEO: _VideoActionProgramSemantics(
+        CurrentBlockCoupling.ACTION_NOISY_TO_VIDEO,
+    ),
+    VideoActionProgram.GENERALIST_JOINT_DENOISING: _VideoActionProgramSemantics(
+        CurrentBlockCoupling.JOINT,
+        supports_dynamics_routing=True,
+    ),
+    VideoActionProgram.FORWARD_DYNAMICS: _VideoActionProgramSemantics(
+        CurrentBlockCoupling.JOINT,
+        supports_dynamics_routing=True,
+        fixed_conditioning_mode=DynamicsObjective.ACTION_CONDITIONED_VIDEO,
+        has_joint_noise_clock=False,
+    ),
+    VideoActionProgram.INVERSE_DYNAMICS: _VideoActionProgramSemantics(
+        CurrentBlockCoupling.JOINT,
+        supports_dynamics_routing=True,
+        fixed_conditioning_mode=DynamicsObjective.VIDEO_CONDITIONED_ACTION,
+        has_joint_noise_clock=False,
+    ),
 }
-_CONDITIONAL_DENOISING_MODES = (
-    GeneralistDenoisingMode.ACTION_CONDITIONED_VIDEO,
-    GeneralistDenoisingMode.VIDEO_CONDITIONED_ACTION,
-)
+_DEFAULT_JOINT_TIMESTEP_COUPLING = JointTimestepCoupling.INDEPENDENT
+
+
+def _program_semantics(
+    program: VideoActionProgram | str,
+) -> _VideoActionProgramSemantics:
+    return _PROGRAM_SEMANTICS[VideoActionProgram(program)]
 
 
 def fixed_conditioning_mode_for_program(
     program: VideoActionProgram | str | None,
-) -> GeneralistDenoisingMode | None:
+) -> DynamicsObjective | None:
     """Return the fixed conditional mode selected by a standalone program."""
 
     if program is None:
         return None
-    return _FIXED_CONDITIONING_MODE_BY_PROGRAM.get(VideoActionProgram(program))
+    return _program_semantics(program).fixed_conditioning_mode
 
 
-def fixed_conditioning_mode_from_probabilities(
-    probabilities: Mapping[GeneralistDenoisingMode, float] | None,
-) -> GeneralistDenoisingMode | None:
-    """Resolve a one-hot conditional distribution, if one is configured."""
-
-    if probabilities is None:
-        return None
-    active = tuple(
-        mode
-        for mode in _CONDITIONAL_DENOISING_MODES
-        if float(probabilities.get(mode, 0.0)) > 0.0
-    )
-    if len(active) != 1:
-        return None
-    selected = active[0]
-    if abs(float(probabilities.get(selected, 0.0)) - 1.0) > 1e-9:
-        return None
-    if abs(float(probabilities.get(GeneralistDenoisingMode.JOINT, 0.0))) > 1e-9:
-        return None
-    return selected
-
-
-def conditional_denoising_modes_enabled(
-    probabilities: Mapping[GeneralistDenoisingMode | str, object] | None,
+def supports_dynamics_routing(
+    program: VideoActionProgram | str | None,
 ) -> bool:
-    """Return whether a distribution assigns positive FDM or IDM mass."""
+    """Return whether a program supports source-and-objective routes."""
 
-    if probabilities is None:
+    if program is None:
         return False
-    for mode in _CONDITIONAL_DENOISING_MODES:
-        value = probabilities.get(mode, probabilities.get(mode.value, 0.0))
-        if isinstance(value, bool):
-            continue
-        try:
-            if float(value) > 0.0:
-                return True
-        except (TypeError, ValueError):
-            continue
-    return False
-
-
-def is_dynamics_routed_paradigm(
-    paradigm: object,
-) -> bool:
-    """Return whether samples use the dynamics source-routing adapter."""
-
     try:
-        return (
-            GeneralistTrainingParadigm(paradigm)
-            == GeneralistTrainingParadigm.DYNAMICS_ROUTED
-        )
-    except (TypeError, ValueError):
+        return _program_semantics(program).supports_dynamics_routing
+    except ValueError:
         return False
-
-
-def validate_conditional_denoising_data_paradigm(
-    *,
-    probabilities: Mapping[GeneralistDenoisingMode | str, object] | None,
-    paradigm: GeneralistTrainingParadigm | str,
-) -> None:
-    """Require the target-only data projection whenever FDM or IDM is active."""
-
-    if (
-        conditional_denoising_modes_enabled(probabilities)
-        and not is_dynamics_routed_paradigm(paradigm)
-    ):
-        raise ValueError(
-            "Positive FDM/IDM `generalist_denoising_mode_probs` require "
-            "`generalist_training_paradigm = dynamics_routed` so real and optional "
-            "counterfactual samples use the target-only t0 contract. A zero "
-            "counterfactual source weight is supported; pure joint may use `demo_only`."
-        )
 
 
 def resolve_fixed_conditioning_mode(
-    policy_config: object,
-) -> GeneralistDenoisingMode | None:
-    """Resolve a standalone or one-hot GJD conditional training mode."""
+    policy_config: PolicyVariantConfig,
+) -> DynamicsObjective | None:
+    """Resolve the conditional mode owned by a standalone policy program."""
 
-    program_mode = fixed_conditioning_mode_for_program(
-        getattr(policy_config, "program", None)
-    )
-    if program_mode is not None:
-        return program_mode
-    return fixed_conditioning_mode_from_probabilities(
-        getattr(policy_config, "generalist_denoising_mode_probs", None)
-    )
+    return policy_config.fixed_conditioning_mode
 
 
-def one_hot_conditioning_mode_probabilities(
-    mode: GeneralistDenoisingMode,
-) -> dict[GeneralistDenoisingMode, float]:
-    """Build the canonical one-hot distribution for one conditioning mode."""
+def requires_independent_timestep_clocks(
+    program: VideoActionProgram | str | None,
+) -> bool:
+    """Return whether a program has no meaningful joint clock to couple."""
 
-    return {
-        candidate: float(candidate == mode)
-        for candidate in GeneralistDenoisingMode
-    }
-
-
-def _program_requires_joint_coupling(program: VideoActionProgram) -> bool:
-    return program in {
-        VideoActionProgram.GENERALIST_JOINT_DENOISING,
-        VideoActionProgram.FORWARD_DYNAMICS,
-        VideoActionProgram.INVERSE_DYNAMICS,
-    }
+    if program is None:
+        return False
+    return not _program_semantics(program).has_joint_noise_clock
 
 
 def current_block_coupling_for_program(
@@ -154,39 +125,7 @@ def current_block_coupling_for_program(
 ) -> CurrentBlockCoupling:
     """Return the low-level same-chunk coupling owned by one public program."""
 
-    resolved_program = VideoActionProgram(program)
-    if _program_requires_joint_coupling(resolved_program):
-        return CurrentBlockCoupling.JOINT
-    return CurrentBlockCoupling(resolved_program.value)
-
-
-def resolve_video_action_program_semantics(
-    *,
-    program: VideoActionProgram | str | None,
-    current_block_coupling: CurrentBlockCoupling | str | None,
-) -> tuple[VideoActionProgram | None, CurrentBlockCoupling | None]:
-    """Resolve a public program into its low-level same-chunk coupling."""
-
-    resolved_program = None if program is None else VideoActionProgram(program)
-    resolved_coupling = (
-        None
-        if current_block_coupling is None
-        else CurrentBlockCoupling(current_block_coupling)
-    )
-    if resolved_program is None and resolved_coupling is not None:
-        resolved_program = VideoActionProgram(resolved_coupling.value)
-    if resolved_program is not None:
-        expected_coupling = current_block_coupling_for_program(resolved_program)
-        if resolved_coupling is not None and resolved_coupling != expected_coupling:
-            raise ValueError(
-                "`policy_variant.program` conflicts with "
-                "`policy_variant.current_block_coupling`: "
-                f"program={resolved_program.value!r} requires "
-                f"current_block_coupling={expected_coupling.value!r}, got "
-                f"{resolved_coupling.value!r}."
-            )
-        resolved_coupling = expected_coupling
-    return resolved_program, resolved_coupling
+    return _program_semantics(program).current_block_coupling
 
 
 @dataclass(frozen=True)
@@ -199,60 +138,74 @@ class VideoActionPolicyConfig(PolicyVariantConfig):
 
     noisy_video_condition_prob: float = 0.5
     program: VideoActionProgram | None = None
-    joint_timestep_coupling: JointTimestepCoupling = JointTimestepCoupling.MATCH_SIGMA
-    # Deprecated boolean alias retained for old checkpoint-era configs.
-    couple_action_to_video_timesteps: bool | None = field(default=None, repr=False, compare=False)
-    generalist_training_paradigm: GeneralistTrainingParadigm = GeneralistTrainingParadigm.DEMO_ONLY
-    generalist_denoising_mode_probs: dict[GeneralistDenoisingMode, float] | None = None
+    joint_timestep_coupling: JointTimestepCoupling = _DEFAULT_JOINT_TIMESTEP_COUPLING
     generalist_mode_text_token: bool = False
     proprio_context_mode: ProprioContextMode = ProprioContextMode.NONE
     history_stream_visibility: HistoryStreamVisibility = HistoryStreamVisibility.FULL
-    context_condition_latent_source: ContextConditionLatentSource = ContextConditionLatentSource.VIDEO_LATENTS
+    context_condition_latent_source: ContextConditionLatentSource = (
+        ContextConditionLatentSource.VIDEO_LATENTS
+    )
     use_condition_latents: bool = True
+    # Requires an external planning prefix when the sample does not carry an
+    # observed in-sequence t0, as target-only FDM/IDM samples do.
     require_condition_latents: bool = False
     sequence_contract: VideoActionSequenceContract = VideoActionSequenceContract.DEFAULT
-    # Constructor/load alias. Maintained configs and implementation code use
-    # `sequence_contract`; serialization omits this compatibility field.
-    parallel_sequence_contract: VideoActionSequenceContract | None = field(
-        default=None,
-        repr=False,
-        compare=False,
-    )
+
+    @property
+    def supported_backbone_implementations(
+        self,
+    ) -> tuple[BackboneImplementation, ...]:
+        return (BackboneImplementation.SHARED_TRANSFORMER,)
+
+    @property
+    def fixed_conditioning_mode(self) -> DynamicsObjective | None:
+        return fixed_conditioning_mode_for_program(self.program)
+
+    @property
+    def conditioning_requirements(self) -> PolicyConditioningRequirements:
+        return PolicyConditioningRequirements(
+            proprio_context_mode=self.proprio_context_mode,
+            dynamics_mode_context_enabled=bool(self.generalist_mode_text_token),
+        )
+
+    @property
+    def current_block_coupling(self) -> CurrentBlockCoupling:
+        """Low-level same-chunk coupling derived from the public program."""
+
+        if self.program is None:  # guarded by ``__post_init__``
+            raise RuntimeError("Video/action program has not been resolved.")
+        return current_block_coupling_for_program(self.program)
+
+    @property
+    def requires_frame_aligned_proprio_context(self) -> bool:
+        """Whether sequence assembly needs state for every model-visible frame."""
+
+        return self.sequence_contract in {
+            VideoActionSequenceContract.ROLLOUT_PARITY_SINGLE_FRAME_PERCHUNK_PROPRIO,
+            VideoActionSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO,
+        }
 
     def normalize_config_override_values(
         self,
         values: Mapping[str, Any],
     ) -> dict[str, Any]:
-        """Clear program-owned conditional defaults during config overrides."""
+        """Normalize shared video/action config overrides."""
 
         normalized = dict(values)
-        if (
-            "program" in normalized
-            and "generalist_denoising_mode_probs" not in normalized
-            and (
-                fixed_conditioning_mode_for_program(normalized["program"]) is not None
-                or fixed_conditioning_mode_for_program(self.program) is not None
-            )
-        ):
-            # A fixed program owns its one-hot distribution. Clear any derived
-            # value when entering, leaving, or switching fixed programs.
-            normalized["generalist_denoising_mode_probs"] = None
+        if "program" in normalized:
+            resolved_program = VideoActionProgram(normalized["program"])
+            if (
+                resolved_program != self.program
+                and "joint_timestep_coupling" not in normalized
+            ):
+                normalized["joint_timestep_coupling"] = _DEFAULT_JOINT_TIMESTEP_COUPLING
         return normalized
 
     def __post_init__(self) -> None:
         super().__post_init__()
-        resolved_sequence_contract = resolve_legacy_policy_field(
-            canonical_value=self.sequence_contract,
-            legacy_value=self.parallel_sequence_contract,
-            canonical_default=VideoActionSequenceContract.DEFAULT,
-            canonical_name="sequence_contract",
-            legacy_name="parallel_sequence_contract",
-        )
-        object.__setattr__(self, "sequence_contract", resolved_sequence_contract)
         coerce_fields(
             self,
             enum_fields={
-                "generalist_training_paradigm": GeneralistTrainingParadigm,
                 "proprio_context_mode": ProprioContextMode,
                 "history_stream_visibility": HistoryStreamVisibility,
                 "context_condition_latent_source": ContextConditionLatentSource,
@@ -261,32 +214,57 @@ class VideoActionPolicyConfig(PolicyVariantConfig):
             },
             optional_enum_fields={"program": VideoActionProgram},
         )
-        # Constructor aliases are input-only. Clearing them prevents
-        # `dataclasses.replace()` from replaying stale aliases over a canonical
-        # CLI override.
-        object.__setattr__(self, "parallel_sequence_contract", None)
-        if self.couple_action_to_video_timesteps is not None:
-            object.__setattr__(
-                self,
-                "joint_timestep_coupling",
-                JointTimestepCoupling.MATCH_SIGMA
-                if bool(self.couple_action_to_video_timesteps)
-                else JointTimestepCoupling.INDEPENDENT,
+        if self.program is None:
+            raise ValueError(
+                "Video/action policies require an explicit "
+                "`policy_variant.program`; direct runtime and coupling controls "
+                "are not part of the public contract."
             )
-        object.__setattr__(self, "couple_action_to_video_timesteps", None)
+        current_block_coupling_for_program(self.program)
+        if (
+            requires_independent_timestep_clocks(self.program)
+            and self.joint_timestep_coupling != JointTimestepCoupling.INDEPENDENT
+        ):
+            raise ValueError(
+                f"`program = {self.program.value}` does not define a jointly coupled "
+                "video/action noise clock and requires "
+                "`joint_timestep_coupling = independent`."
+            )
         if not 0.0 <= float(self.noisy_video_condition_prob) <= 1.0:
             raise ValueError(
                 "Video/action policies require `0 <= noisy_video_condition_prob <= 1`, "
                 f"got noisy_video_condition_prob={self.noisy_video_condition_prob!r}."
             )
-        if bool(self.require_condition_latents) and not bool(self.use_condition_latents):
+        if (
+            self.context_condition_latent_source
+            == ContextConditionLatentSource.SINGLE_FRAME_CONDITION_LATENT
+            and (
+                not bool(self.use_condition_latents)
+                or not bool(self.require_condition_latents)
+            )
+        ):
+            raise ValueError(
+                "`context_condition_latent_source = single_frame_condition_latent` "
+                "requires both `use_condition_latents = true` and "
+                "`require_condition_latents = true`."
+            )
+        if bool(self.require_condition_latents) and not bool(
+            self.use_condition_latents
+        ):
             raise ValueError(
                 "`require_condition_latents` cannot be true when `use_condition_latents` is false."
+            )
+        if (
+            bool(self.generalist_mode_text_token)
+            and self.program != VideoActionProgram.GENERALIST_JOINT_DENOISING
+        ):
+            raise ValueError(
+                "`generalist_mode_text_token = true` requires "
+                "`program = generalist_joint_denoising`."
             )
 
 
 __all__ = [
     "VideoActionPolicyConfig",
     "current_block_coupling_for_program",
-    "resolve_video_action_program_semantics",
 ]

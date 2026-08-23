@@ -3,8 +3,8 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 
-import torch
 import pytest
+import torch
 import yaml
 from torch import nn
 
@@ -60,25 +60,28 @@ def test_normalize_checkpoint_state_dict_rejects_prefix_collision() -> None:
         )
 
 
-def test_load_pipeline_checkpoint_marks_loaded_lazy_action_expert(tmp_path: Path) -> None:
-    class LazyPolicy(nn.Module):
-        def __init__(self) -> None:
-            super().__init__()
-            self.action_expert = nn.Linear(1, 1, bias=False)
-            self._action_expert_initialized = False
-
+def test_load_pipeline_checkpoint_notifies_supported_lifecycle(tmp_path: Path) -> None:
     class Pipeline(nn.Module):
         def __init__(self) -> None:
             super().__init__()
-            self.policy_variant = LazyPolicy()
+            self.weight = nn.Parameter(torch.zeros(1, 1))
+            self.loaded_state_keys: frozenset[str] | None = None
+            self.missing_state_keys: frozenset[str] | None = None
+
+        def on_checkpoint_loaded(
+            self,
+            *,
+            loaded_state_keys: frozenset[str],
+            missing_state_keys: frozenset[str],
+        ) -> None:
+            self.loaded_state_keys = loaded_state_keys
+            self.missing_state_keys = missing_state_keys
 
     pipeline = Pipeline()
     checkpoint_path = tmp_path / "model_state.pt"
     torch.save(
         {
-            "model_state_dict": {
-                "policy_variant.action_expert.weight": torch.full((1, 1), 3.0)
-            }
+            "model_state_dict": {"weight": torch.full((1, 1), 3.0)}
         },
         checkpoint_path,
     )
@@ -87,9 +90,10 @@ def test_load_pipeline_checkpoint_marks_loaded_lazy_action_expert(tmp_path: Path
 
     assert report.missing_keys == ()
     assert report.unexpected_keys == ()
-    assert pipeline.policy_variant._action_expert_initialized is True
+    assert pipeline.loaded_state_keys == frozenset({"weight"})
+    assert pipeline.missing_state_keys == frozenset()
     torch.testing.assert_close(
-        pipeline.policy_variant.action_expert.weight,
+        pipeline.weight,
         torch.full((1, 1), 3.0),
     )
 

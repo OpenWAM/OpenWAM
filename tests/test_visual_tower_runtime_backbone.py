@@ -224,9 +224,7 @@ def test_visual_tower_owns_copied_frontend_and_named_cache_snapshots(
     tower.restore_runtime_state(snapshot)
 
     assert float(frontend_state[0][0]) == 2.0
-    assert float(
-        tower.core._exact_runtime_caches["planner"].payload["value"][0]
-    ) == 1.0
+    assert float(tower.core._exact_runtime_caches["planner"].payload["value"][0]) == 1.0
 
 
 def test_visual_tower_snapshot_removes_cache_created_by_speculation() -> None:

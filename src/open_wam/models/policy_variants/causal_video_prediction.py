@@ -27,6 +27,7 @@ from .contracts import (
     PolicyPreparedInputs,
     PolicyTrainBatch,
     PolicyTrainOutput,
+    PolicyVisualStage,
     RolloutCursor,
 )
 
@@ -52,11 +53,8 @@ class CausalVideoPredictionPolicyVariant(PolicyVariant):
         self.training_config = training_config
         self.inference_config = inference_config
 
-    def attach_site(self) -> str:
-        return self.config.attach_site
-
-    def required_visual_stages(self) -> tuple[str, ...]:
-        return ("frontend",)
+    def required_visual_stages(self) -> tuple[PolicyVisualStage, ...]:
+        return (PolicyVisualStage.FRONTEND,)
 
     def prepare_train_inputs(
         self,
@@ -70,7 +68,9 @@ class CausalVideoPredictionPolicyVariant(PolicyVariant):
     def _metadata_tuple(batch: PolicyTrainBatch) -> tuple[dict[str, Any], ...]:
         metadata = batch.extra.get("metadata", ())
         if not isinstance(metadata, tuple):
-            raise ValueError("Causal video prediction expects batched metadata as a tuple of mappings.")
+            raise TypeError(
+                "Causal video prediction expects batched metadata as a tuple of mappings."
+            )
         return metadata
 
     def _resolve_layouts(
@@ -84,7 +84,11 @@ class CausalVideoPredictionPolicyVariant(PolicyVariant):
         for sample_metadata in metadata:
             observed_frames = int(sample_metadata["observed_prefix_frames"])
             future_frames = int(sample_metadata["future_suffix_frames"])
-            total_frames = int(sample_metadata.get("valid_video_frames", observed_frames + future_frames))
+            total_frames = int(
+                sample_metadata.get(
+                    "valid_video_frames", observed_frames + future_frames
+                )
+            )
             if observed_frames <= 0 or future_frames <= 0:
                 raise ValueError(
                     "Causal video prediction requires positive observed/future frames, "
@@ -96,10 +100,12 @@ class CausalVideoPredictionPolicyVariant(PolicyVariant):
                     f"got valid_video_frames={total_frames}, observed_frames={observed_frames}, future_frames={future_frames}."
                 )
             if self._uses_wan_temporal_mapping(frame_mapping):
-                observed_frames, future_frames, total_frames = self._map_raw_layout_to_wan_latents(
-                    raw_observed_frames=observed_frames,
-                    raw_total_frames=total_frames,
-                    available_frames=available_frames,
+                observed_frames, future_frames, total_frames = (
+                    self._map_raw_layout_to_wan_latents(
+                        raw_observed_frames=observed_frames,
+                        raw_total_frames=total_frames,
+                        available_frames=available_frames,
+                    )
                 )
             if total_frames > available_frames:
                 raise ValueError(
@@ -147,7 +153,11 @@ class CausalVideoPredictionPolicyVariant(PolicyVariant):
         patch_t, _, _ = token_grid.patch_size
         if patch_t <= 0:
             raise ValueError(f"Invalid video token temporal patch size: {patch_t}.")
-        unaligned = [layout.total_frames for layout in layouts if layout.total_frames % patch_t != 0]
+        unaligned = [
+            layout.total_frames
+            for layout in layouts
+            if layout.total_frames % patch_t != 0
+        ]
         if unaligned:
             raise ValueError(
                 "Causal video prediction cannot mask padded frames at sub-token granularity; "
@@ -167,7 +177,9 @@ class CausalVideoPredictionPolicyVariant(PolicyVariant):
             device=device,
             dtype=temporal_patch_indices.dtype,
         )
-        valid_key_tokens = temporal_patch_indices.unsqueeze(0) < valid_patch_counts.unsqueeze(1)
+        valid_key_tokens = temporal_patch_indices.unsqueeze(
+            0
+        ) < valid_patch_counts.unsqueeze(1)
         return valid_key_tokens[:, None, :].expand(-1, sequence_length, -1).contiguous()
 
     def _build_train_rollout(
@@ -182,7 +194,9 @@ class CausalVideoPredictionPolicyVariant(PolicyVariant):
         layouts = self._resolve_layouts(
             metadata=metadata,
             available_frames=num_frames,
-            frame_mapping=visual_outputs.frontend.conditioning.metadata.get("video_frame_mapping"),
+            frame_mapping=visual_outputs.frontend.conditioning.metadata.get(
+                "video_frame_mapping"
+            ),
         )
         scheduler = FlowMatchScheduler(
             shift=self.training_config.video_sigma_shift,
@@ -190,7 +204,9 @@ class CausalVideoPredictionPolicyVariant(PolicyVariant):
             extra_one_step=True,
             num_train_timesteps=self.training_config.video_num_train_timesteps,
         )
-        scheduler.set_timesteps(self.training_config.video_num_train_timesteps, training=True)
+        scheduler.set_timesteps(
+            self.training_config.video_num_train_timesteps, training=True
+        )
 
         timestep_ids = sample_timestep_id(
             batch_size=batch_size,
@@ -212,13 +228,17 @@ class CausalVideoPredictionPolicyVariant(PolicyVariant):
             dtype=video_latents.dtype,
         )
         for batch_index, layout in enumerate(layouts):
-            noisy_latents[batch_index, :, : layout.observed_frames] = video_latents[batch_index, :, : layout.observed_frames]
+            noisy_latents[batch_index, :, : layout.observed_frames] = video_latents[
+                batch_index, :, : layout.observed_frames
+            ]
             timesteps[batch_index, : layout.observed_frames] = 0.0
             if layout.total_frames < num_frames:
                 noisy_latents[batch_index, :, layout.total_frames :] = 0.0
                 targets[batch_index, :, layout.total_frames :] = 0.0
                 timesteps[batch_index, layout.total_frames :] = 0.0
-            future_loss_mask[batch_index, :, layout.observed_frames : layout.total_frames] = 1.0
+            future_loss_mask[
+                batch_index, :, layout.observed_frames : layout.total_frames
+            ] = 1.0
 
         attention_mask = self._build_valid_token_attention_mask(
             layouts,
@@ -261,7 +281,9 @@ class CausalVideoPredictionPolicyVariant(PolicyVariant):
             metadata=self._metadata_tuple(prepared_inputs.batch),
         )
         batch_size = visual_outputs.frontend.video_latents.shape[0]
-        policy_features = visual_outputs.frontend.video_latents.new_zeros(batch_size, 0, self.config.hidden_size)
+        policy_features = visual_outputs.frontend.video_latents.new_zeros(
+            batch_size, 0, self.config.hidden_size
+        )
         future_frame_counts = torch.tensor(
             [layout.future_frames for layout in rollout["layouts"]],
             device=visual_outputs.frontend.video_latents.device,
@@ -312,14 +334,20 @@ class CausalVideoPredictionPolicyVariant(PolicyVariant):
         layouts = self._resolve_layouts(
             metadata=metadata,
             available_frames=int(visual_outputs.frontend.video_latents.shape[2]),
-            frame_mapping=visual_outputs.frontend.conditioning.metadata.get("video_frame_mapping"),
+            frame_mapping=visual_outputs.frontend.conditioning.metadata.get(
+                "video_frame_mapping"
+            ),
         )
         if len(layouts) != 1:
-            raise ValueError("Causal video prediction inference currently supports batch size 1.")
+            raise ValueError(
+                "Causal video prediction inference currently supports batch size 1."
+            )
         layout = layouts[0]
         video_latents = visual_outputs.frontend.video_latents
         observed_prefix = video_latents[:, :, : layout.observed_frames]
-        future_template = torch.zeros_like(video_latents[:, :, layout.observed_frames : layout.total_frames])
+        future_template = torch.zeros_like(
+            video_latents[:, :, layout.observed_frames : layout.total_frames]
+        )
         predicted_future = visual_tower.generate_conditioned_future_latents(
             observed_prefix=observed_prefix,
             future_template=future_template,
@@ -332,11 +360,15 @@ class CausalVideoPredictionPolicyVariant(PolicyVariant):
             guidance_scale=self.inference_config.guidance_scale,
         )
         predicted_latents = torch.cat([observed_prefix, predicted_future], dim=2)
-        policy_features = video_latents.new_zeros(video_latents.shape[0], 0, self.config.hidden_size)
+        policy_features = video_latents.new_zeros(
+            video_latents.shape[0], 0, self.config.hidden_size
+        )
         next_cursor = advance_rollout_cursor(infer_state.cursor)
         return PolicyInferOutput(
             policy_features=policy_features,
-            next_state=PolicyInferState(step_index=infer_state.step_index + 1, cursor=next_cursor),
+            next_state=PolicyInferState(
+                step_index=infer_state.step_index + 1, cursor=next_cursor
+            ),
             aux={
                 "variant": self.config.name,
                 "architecture": "causal_video_prediction",

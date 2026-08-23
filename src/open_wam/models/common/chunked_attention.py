@@ -9,14 +9,13 @@ from open_wam.models.common.attention_backends import (
     create_block_mask,
 )
 from open_wam.models.common.attention_contracts import (
-    AttentionProfileSpec,
-    JOINT_COUPLING,
-    PreparedAttentionProfile,
     VIDEO_THEN_ACTION_COUPLING,
+    AttentionProfileSpec,
+    PreparedAttentionProfile,
     chunked_temporal_exact_profile_name_for_coupling,
     normalize_chunked_temporal_exact_coupling,
     normalize_conditional_history_policy,
-    normalize_parallel_history_stream_visibility,
+    normalize_history_stream_visibility,
 )
 from open_wam.models.common.chunked_attention_visibility import (
     _build_chunked_cross_attention_visibility,
@@ -115,46 +114,21 @@ def build_chunked_temporal_exact_attention_profile(
     action_context_mask: torch.Tensor | None = None,
     build_dense_masks: bool = False,
     build_flex_masks: bool = False,
-    allow_joint_noisy_block_attention: bool | None = None,
     current_block_coupling: str | None = None,
-    preserve_video_pretrain_history: bool = False,
     history_stream_visibility: str | None = None,
     prefix_condition_frames: int = 0,
     singleton_chunk_frame: int | None = None,
     conditional_history_policy: str | None = None,
 ) -> PreparedAttentionProfile:
-    # When preserve_video_pretrain_history=True, restrict the noise_to_clean
-    # rule on PAST CHUNKS so that the video stream's K/V context matches the
-    # video-only pretrain distribution: current V_n attends only history
-    # V_clean (no history A_clean), while current A_n keeps full history
-    # access. Same-chunk cross-stream visibility is unchanged so all 6
-    # coupling modes still behave as before within the current chunk.
+    # History visibility applies only to past chunks. Same-chunk cross-stream
+    # visibility remains owned by the current-block coupling program.
     if current_block_coupling is None:
-        current_block_coupling = (
-            JOINT_COUPLING
-            if allow_joint_noisy_block_attention
-            else VIDEO_THEN_ACTION_COUPLING
-        )
-    elif allow_joint_noisy_block_attention is not None:
-        legacy_coupling = (
-            JOINT_COUPLING
-            if allow_joint_noisy_block_attention
-            else VIDEO_THEN_ACTION_COUPLING
-        )
-        normalized_coupling = normalize_chunked_temporal_exact_coupling(
-            current_block_coupling
-        )
-        if normalized_coupling != legacy_coupling:
-            raise ValueError(
-                "`current_block_coupling` conflicts with legacy "
-                "`allow_joint_noisy_block_attention`."
-            )
+        current_block_coupling = VIDEO_THEN_ACTION_COUPLING
     current_block_coupling = normalize_chunked_temporal_exact_coupling(
         current_block_coupling
     )
-    resolved_history_stream_visibility = normalize_parallel_history_stream_visibility(
-        history_stream_visibility,
-        preserve_video_pretrain_history=preserve_video_pretrain_history,
+    resolved_history_stream_visibility = normalize_history_stream_visibility(
+        history_stream_visibility
     )
     resolved_conditional_history_policy = normalize_conditional_history_policy(
         conditional_history_policy
@@ -431,10 +405,7 @@ def build_chunked_temporal_exact_attention_profile(
             else int(singleton_chunk_frame),
             "invalid_action_context_tokens": int(invalid_action_token_count),
             "action_context_valid_tokens": action_context_valid_tokens,
-            "allow_joint_noisy_block_attention": current_block_coupling
-            == JOINT_COUPLING,
             "current_block_coupling": current_block_coupling,
-            "preserve_video_pretrain_history": bool(preserve_video_pretrain_history),
             "history_stream_visibility": resolved_history_stream_visibility,
             "prefix_condition_frames": int(prefix_condition_frames),
             "conditional_history_policy": resolved_conditional_history_policy,

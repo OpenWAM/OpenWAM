@@ -6,11 +6,11 @@ from pathlib import Path
 from typing import Any
 
 from open_wam.configs import (
+    ActionDecoderName,
+    DynamicsObjective,
     ExperimentConfig,
-    ParallelStreamVariantProfile,
-    PolicyVariantName,
-    SampleOrderMode,
     SampleWeightMode,
+    VideoActionProgram,
 )
 from open_wam.configs.policy_video_action import resolve_fixed_conditioning_mode
 
@@ -21,18 +21,15 @@ def _resolve_policy_architecture(config: ExperimentConfig) -> str:
     return str(config.policy_variant.name)
 
 
-def _resolve_policy_program(config: ExperimentConfig) -> str | None:
+def _resolve_policy_program(
+    config: ExperimentConfig,
+) -> VideoActionProgram | None:
     program = getattr(config.policy_variant, "program", None)
-    if program is not None:
-        return str(program)
-    variant_profile = getattr(config.policy_variant, "variant_profile", None)
-    if _is_generalist_joint_denoising_profile(variant_profile):
-        return "generalist_joint_denoising"
-    return None
+    return None if program is None else VideoActionProgram(program)
 
 
 def _resolve_workload_family(config: ExperimentConfig) -> str:
-    if config.policy_variant.name == PolicyVariantName.CAUSAL_VIDEO_PREDICTION:
+    if config.action_decoder.name is ActionDecoderName.VIDEO_ONLY:
         return "video_pretrain"
     return "policy_train"
 
@@ -68,68 +65,99 @@ def build_run_tracking_metadata(
 ) -> dict[str, Any]:
     architecture = _resolve_policy_architecture(config)
     program = _resolve_policy_program(config)
+    program_label = None if program is None else program.value
     workload_family = _resolve_workload_family(config)
     attach_site = getattr(config.policy_variant, "attach_site", None)
     runtime_mode = getattr(config.policy_variant, "runtime_mode", None)
-    variant_profile = getattr(config.policy_variant, "variant_profile", None)
-    current_block_coupling = getattr(config.policy_variant, "current_block_coupling", None)
+    current_block_coupling = getattr(
+        config.policy_variant, "current_block_coupling", None
+    )
     reference_profile = getattr(config.policy_variant, "reference_profile", None)
-    generalist_denoising_mode_probs = getattr(
+    generalist_mode_text_token = bool(
+        getattr(config.policy_variant, "generalist_mode_text_token", False)
+    )
+    fixed_conditioning_mode = resolve_fixed_conditioning_mode(config.policy_variant)
+    history_stream_visibility = getattr(
         config.policy_variant,
-        "generalist_denoising_mode_probs",
+        "history_stream_visibility",
         None,
     )
-    generalist_training_paradigm = getattr(config.policy_variant, "generalist_training_paradigm", None)
-    generalist_mode_text_token = bool(getattr(config.policy_variant, "generalist_mode_text_token", False))
-    fixed_conditioning_mode = resolve_fixed_conditioning_mode(config.policy_variant)
+    sample_construction = getattr(config.data, "sample_construction", None)
+    dynamics_routing = getattr(config.data, "dynamics_routing", None)
+    dynamics_routes = (
+        tuple(dynamics_routing.active_routes) if dynamics_routing is not None else ()
+    )
+    if dynamics_routes:
+        mode_probabilities = dynamics_routing.mode_probabilities()
+    elif program is VideoActionProgram.GENERALIST_JOINT_DENOISING:
+        mode_probabilities = {
+            mode: float(mode == DynamicsObjective.JOINT) for mode in DynamicsObjective
+        }
+    else:
+        mode_probabilities = None
     gjd_ablation = (
         _resolve_generalist_ablation(
-            generalist_denoising_mode_probs,
+            mode_probabilities,
             generalist_mode_text_token=generalist_mode_text_token,
         )
-        if program == "generalist_joint_denoising"
+        if program is VideoActionProgram.GENERALIST_JOINT_DENOISING
         else None
     )
-    preserve_video_pretrain_history = getattr(config.policy_variant, "preserve_video_pretrain_history", None)
-    sample_construction = getattr(config.data, "sample_construction", None)
-    dynamics_mixture = getattr(config.data, "generalist_dynamics_mixture", None)
-    checkpoint_dir = Path(config.trainer.checkpoint_dir) if config.trainer.checkpoint_dir else output_dir / "checkpoints"
+    checkpoint_dir = (
+        Path(config.trainer.checkpoint_dir)
+        if config.trainer.checkpoint_dir
+        else output_dir / "checkpoints"
+    )
     metadata: dict[str, Any] = {
-        "tracking_schema_version": 2,
+        "tracking_schema_version": 4,
         "framework": "open_wam",
         "experiment_name": config.name,
         "run_name": run_name,
         "run_slug": run_name,
         "architecture": architecture,
-        "program": program,
+        "program": program_label,
         "workload_family": workload_family,
         "policy_variant": str(config.policy_variant.name),
         "runtime_mode": (str(runtime_mode) if runtime_mode is not None else None),
-        "variant_profile": (str(variant_profile) if variant_profile is not None else None),
-        "current_block_coupling": (str(current_block_coupling) if current_block_coupling is not None else None),
+        "current_block_coupling": (
+            str(current_block_coupling) if current_block_coupling is not None else None
+        ),
         "reference_profile": reference_profile,
-        "generalist_denoising_mode_probs": (
-            {str(mode): float(prob) for mode, prob in generalist_denoising_mode_probs.items()}
-            if generalist_denoising_mode_probs is not None
+        "dynamics_routing_routes": [
+            {
+                "source": route.source.value,
+                "mode": route.mode.value,
+                "weight": float(route.weight),
+            }
+            for route in dynamics_routes
+        ],
+        "dynamics_objective_probabilities": (
+            {
+                mode.value: float(probability)
+                for mode, probability in mode_probabilities.items()
+            }
+            if mode_probabilities is not None
             else None
         ),
         "gjd_ablation": gjd_ablation,
-        "generalist_training_paradigm": (
-            str(generalist_training_paradigm) if generalist_training_paradigm is not None else None
-        ),
+        "dynamics_routing_enabled": bool(dynamics_routes),
         "generalist_mode_text_token": generalist_mode_text_token,
         "fixed_conditioning_mode": (
             fixed_conditioning_mode.value
             if fixed_conditioning_mode is not None
             else None
         ),
-        "generalist_dynamics_train_latent_root": (
-            dynamics_mixture.train_latent_root if dynamics_mixture is not None else None
+        "dynamics_routing_train_latent_root": (
+            dynamics_routing.train_latent_root if dynamics_routing is not None else None
         ),
-        "generalist_dynamics_val_latent_root": (
-            dynamics_mixture.val_latent_root if dynamics_mixture is not None else None
+        "dynamics_routing_val_latent_root": (
+            dynamics_routing.val_latent_root if dynamics_routing is not None else None
         ),
-        "preserve_video_pretrain_history": preserve_video_pretrain_history,
+        "history_stream_visibility": (
+            str(history_stream_visibility)
+            if history_stream_visibility is not None
+            else None
+        ),
         "action_decoder": str(config.action_decoder.name),
         "attach_site": (str(attach_site) if attach_site is not None else None),
         "dataset_name": config.data.dataset_name,
@@ -139,17 +167,20 @@ def build_run_tracking_metadata(
         ),
         "segment_min_frames": (
             int(sample_construction.segment_min_frames)
-            if sample_construction is not None and sample_construction.segment_min_frames is not None
+            if sample_construction is not None
+            and sample_construction.segment_min_frames is not None
             else None
         ),
         "segment_max_frames": (
             int(sample_construction.segment_max_frames)
-            if sample_construction is not None and sample_construction.segment_max_frames is not None
+            if sample_construction is not None
+            and sample_construction.segment_max_frames is not None
             else None
         ),
         "segment_frames": (
             int(sample_construction.segment_frames)
-            if sample_construction is not None and sample_construction.segment_frames is not None
+            if sample_construction is not None
+            and sample_construction.segment_frames is not None
             else None
         ),
         "start_padding_frames": (
@@ -158,44 +189,61 @@ def build_run_tracking_metadata(
             else 0
         ),
         "target_alignment": (
-            str(sample_construction.target_alignment) if sample_construction is not None else None
+            str(sample_construction.target_alignment)
+            if sample_construction is not None
+            else None
         ),
         "rollout_context_policy": (
-            str(sample_construction.rollout_context_policy) if sample_construction is not None else None
+            str(sample_construction.rollout_context_policy)
+            if sample_construction is not None
+            else None
         ),
         "rollout_context_frames": (
             int(sample_construction.rollout_context_frames)
-            if sample_construction is not None and sample_construction.rollout_context_frames is not None
+            if sample_construction is not None
+            and sample_construction.rollout_context_frames is not None
             else None
         ),
         "tail_padding_policy": (
-            str(sample_construction.tail_padding_policy) if sample_construction is not None else None
+            str(sample_construction.tail_padding_policy)
+            if sample_construction is not None
+            else None
         ),
         "padded_target_policy": (
-            str(sample_construction.padded_target_policy) if sample_construction is not None else None
+            str(sample_construction.padded_target_policy)
+            if sample_construction is not None
+            else None
         ),
         "task_start_power": (
-            float(sample_construction.task_start_power) if sample_construction is not None else None
+            float(sample_construction.task_start_power)
+            if sample_construction is not None
+            else None
         ),
         "demo_count_power": (
-            float(sample_construction.demo_count_power) if sample_construction is not None else None
+            float(sample_construction.demo_count_power)
+            if sample_construction is not None
+            else None
         ),
         "trajectory_start_power": (
-            float(sample_construction.trajectory_start_power) if sample_construction is not None else None
+            float(sample_construction.trajectory_start_power)
+            if sample_construction is not None
+            else None
         ),
         "sample_weight_mode": (
             str(sample_construction.sample_weight_mode)
-            if sample_construction is not None and sample_construction.sample_weight_mode != SampleWeightMode.UNIFORM
+            if sample_construction is not None
+            and sample_construction.sample_weight_mode != SampleWeightMode.UNIFORM
             else None
         ),
         "sample_order_mode": (
             str(sample_construction.sample_order_mode)
-            if sample_construction is not None and sample_construction.sample_order_mode != SampleOrderMode.EPOCH_ORDER
+            if sample_construction is not None
             else None
         ),
         "sample_weight_length_power": (
             float(sample_construction.sample_weight_length_power)
-            if sample_construction is not None and sample_construction.sample_weight_length_power is not None
+            if sample_construction is not None
+            and sample_construction.sample_weight_length_power is not None
             else None
         ),
         "backbone_implementation": str(config.backbone.implementation),
@@ -210,9 +258,15 @@ def build_run_tracking_metadata(
         "action_horizon": int(config.data.action_schema.action_horizon),
         "state_dim": int(config.data.action_schema.state_dim),
         "state_horizon": int(config.data.action_schema.state_horizon),
-        "enabled_objectives": [str(value) for value in config.training.enabled_objectives],
-        "trainable_components": [str(value) for value in config.training.trainable_components],
-        "frozen_components": [str(value) for value in config.training.frozen_components],
+        "enabled_objectives": [
+            str(value) for value in config.training.enabled_objectives
+        ],
+        "trainable_components": [
+            str(value) for value in config.training.trainable_components
+        ],
+        "frozen_components": [
+            str(value) for value in config.training.frozen_components
+        ],
         "output_dir": str(output_dir),
         "checkpoint_dir": str(checkpoint_dir),
         "resume_from": config.trainer.resume_from,
@@ -226,7 +280,9 @@ def build_default_wandb_project(tracking_metadata: dict[str, Any]) -> str:
     return f"openwam-{tracking_metadata['dataset_name']}-{tracking_metadata['workload_family'].replace('_', '-')}"
 
 
-def resolve_wandb_project(config: ExperimentConfig, tracking_metadata: dict[str, Any]) -> str:
+def resolve_wandb_project(
+    config: ExperimentConfig, tracking_metadata: dict[str, Any]
+) -> str:
     if config.trainer.wandb_project is not None:
         return config.trainer.wandb_project
     return build_default_wandb_project(tracking_metadata)
@@ -278,12 +334,12 @@ def build_wandb_tags(tracking_metadata: dict[str, Any]) -> tuple[str, ...]:
         ordered_tags.append("dirty_worktree")
     if tracking_metadata.get("runtime_mode"):
         ordered_tags.append(f"runtime_mode:{tracking_metadata['runtime_mode']}")
-    if tracking_metadata.get("variant_profile") and tracking_metadata["variant_profile"] != "standard":
-        ordered_tags.append(f"variant_profile:{tracking_metadata['variant_profile']}")
     if tracking_metadata.get("current_block_coupling"):
         ordered_tags.append(f"coupling:{tracking_metadata['current_block_coupling']}")
     if tracking_metadata.get("reference_profile"):
-        ordered_tags.append(f"reference_profile:{tracking_metadata['reference_profile']}")
+        ordered_tags.append(
+            f"reference_profile:{tracking_metadata['reference_profile']}"
+        )
     if tracking_metadata.get("sample_construction_mode"):
         ordered_tags.append(f"sample:{tracking_metadata['sample_construction_mode']}")
     if tracking_metadata.get("segment_frames") is not None:
@@ -297,23 +353,32 @@ def build_wandb_tags(tracking_metadata: dict[str, Any]) -> tuple[str, ...]:
     ):
         ordered_tags.append(f"segment_frames:{tracking_metadata['segment_min_frames']}")
     if int(tracking_metadata.get("start_padding_frames") or 0) > 0:
-        ordered_tags.append(f"start_padding_frames:{tracking_metadata['start_padding_frames']}")
-    if tracking_metadata.get("target_alignment") and tracking_metadata["target_alignment"] != "legacy":
+        ordered_tags.append(
+            f"start_padding_frames:{tracking_metadata['start_padding_frames']}"
+        )
+    if (
+        tracking_metadata.get("target_alignment")
+        and tracking_metadata["target_alignment"] != "legacy"
+    ):
         ordered_tags.append(f"target_alignment:{tracking_metadata['target_alignment']}")
     if (
         tracking_metadata.get("target_alignment")
         and tracking_metadata["target_alignment"] != "legacy"
         and tracking_metadata.get("rollout_context_policy")
     ):
-        ordered_tags.append(f"rollout_context:{tracking_metadata['rollout_context_policy']}")
+        ordered_tags.append(
+            f"rollout_context:{tracking_metadata['rollout_context_policy']}"
+        )
     if tracking_metadata.get("sample_weight_mode"):
         ordered_tags.append(f"sample_weight:{tracking_metadata['sample_weight_mode']}")
     if tracking_metadata.get("sample_order_mode"):
         ordered_tags.append(f"sample_order:{tracking_metadata['sample_order_mode']}")
-    if tracking_metadata.get("preserve_video_pretrain_history") is True:
-        ordered_tags.append("video_pretrain_history:preserved")
-    if tracking_metadata.get("generalist_training_paradigm"):
-        ordered_tags.append(f"generalist_paradigm:{tracking_metadata['generalist_training_paradigm']}")
+    if tracking_metadata.get("history_stream_visibility"):
+        ordered_tags.append(
+            f"history_visibility:{tracking_metadata['history_stream_visibility']}"
+        )
+    if tracking_metadata.get("dynamics_routing_enabled"):
+        ordered_tags.append("dynamics_routing:enabled")
     if tracking_metadata.get("gjd_ablation"):
         ordered_tags.append(
             f"gjd:{tracking_metadata['architecture']}:{tracking_metadata['gjd_ablation']}"
@@ -329,13 +394,6 @@ def build_wandb_tags(tracking_metadata: dict[str, Any]) -> tuple[str, ...]:
         if tag not in deduped:
             deduped.append(tag)
     return tuple(deduped)
-
-
-def _is_generalist_joint_denoising_profile(variant_profile: Any) -> bool:
-    return (
-        variant_profile == ParallelStreamVariantProfile.GENERALIST_JOINT_DENOISING
-        or str(getattr(variant_profile, "value", variant_profile)) == "generalist_joint_denoising"
-    )
 
 
 def _resolve_generalist_ablation(

@@ -137,6 +137,13 @@ uv run --extra train open-wam-train \
   --set policy_variant.program=video_then_action
 ```
 
+Changing `program` also restores the checkpoint-validated noise-clock default,
+`joint_timestep_coupling: independent`. VTA, ATV, and decoupled execution have
+only one noisy modality per stage, so another value is rejected instead of
+being stored and silently ignored. Joint, noisy-condition, and GJD programs
+may still set an explicit timestep-coupling ablation such as `match_sigma`.
+Sequence contracts never choose or rewrite the noise clock.
+
 ### LIBERO Policy Planning Default
 
 The six shipped video/action program configs use one shared full-trajectory
@@ -163,9 +170,10 @@ This default follows a matched 10,000-step VTA study. On the common task subset
 68.0-86.0% for three fixed-128 controls; its all-task score was 95.0% over 282
 rollouts. The study used one training seed and changed the sampler/replay
 bundle together, so it establishes the default recipe, not a causal claim for
-any one field. The historical Parallel Stream exact-backend profiles remain
-available for checkpoint reproduction, but they are not the default policy
-program recipe.
+any one field. Historical Parallel Stream checkpoints remain loadable through
+the checkpoint compatibility boundary; their backend/profile metadata is
+validated against the canonical program rather than exposed as another
+authored semantic choice.
 
 These are YAML defaults, not runtime invariants. The generic config, data, and
 policy layers neither recognize this recipe by name nor reject another
@@ -173,10 +181,10 @@ structurally valid combination. Override individual fields with `--set` or
 ship another experiment YAML for an ablation.
 
 GJD `real_joint` uses this same planning recipe and sequence contract. GJD-only
-fields such as mode probabilities, timestep coupling, counterfactual source
-weights, and total optimization budget remain method knobs. Conditional FDM
-and IDM rows do not inherit long-horizon planning context: they keep their
-target-only singleton-`t0`, text-dropped, one-video-boundary history contract.
+fields such as source/mode routes, timestep coupling, mode-token use, and total
+optimization budget remain method knobs. Conditional FDM and IDM rows do not
+inherit long-horizon planning context: they keep their target-only
+singleton-`t0`, text-dropped, one-video-boundary history contract.
 
 `replay_status_policy: include_all` must remain paired with
 `val_replay_status_policy: null`, `require_replay_status: false`, and
@@ -227,7 +235,9 @@ Choose the interface by experiment intent:
 
 The first two choices execute the same conditional tensor contract. They differ
 only in experiment identity and tracking: a GJD run records an ablation, while
-the standalone config records a fixed program.
+the standalone config records a fixed program. Parallel Stream and Dual Expert
+consume the same route and sequence contracts; choose the corresponding
+architecture config to change model topology.
 
 ```bash
 open-wam-train \
@@ -240,42 +250,45 @@ open-wam-train \
   --set policy_variant.generalist_mode_text_token=true
 ```
 
-The canonical config is vanilla GJD: joint/FDM/IDM mode probabilities are
-`0.6/0.2/0.2`, the five-bucket real/counterfactual mixer is active, and the
-mode token is disabled. Setting `generalist_mode_text_token=true` produces the
-mode-token variant above. Pure-joint sets probabilities to `1/0/0` and
-`generalist_training_paradigm=demo_only`. Pure-FDM and pure-IDM use only the
-matching real-demo and counterfactual buckets; their weights are a relative
-source ratio. For example, pure FDM with a `3:1` real-to-counterfactual ratio is:
+The canonical config is vanilla GJD. Its five routes aggregate to
+`joint/FDM/IDM = 0.6/0.2/0.2`, split evenly between real and counterfactual
+sources for each conditional mode. The mode token is disabled. Setting
+`generalist_mode_text_token=true` produces the mode-token variant above.
+Pure-joint uses an empty route list. Pure-FDM and pure-IDM use only the matching real-demo and
+counterfactual routes; their weights are a relative source ratio. For example,
+pure FDM with a `3:1` real-to-counterfactual ratio is:
 
 ```bash
-FDM_PROBS='{joint: 0, action_conditioned_video: 1, video_conditioned_action: 0}'
+FDM_ROUTES='[{"source":"real_demo","mode":"action_conditioned_video","weight":3},{"source":"counterfactual_dynamics","mode":"action_conditioned_video","weight":1}]'
 open-wam-train \
   --config-name dual_expert_libero_generalist_joint_denoising \
   --save-root runs/dual-expert-gjd-pure-fdm \
-  --set "policy_variant.generalist_denoising_mode_probs=${FDM_PROBS}" \
   --set policy_variant.generalist_mode_text_token=false \
-  --set policy_variant.generalist_training_paradigm=dynamics_routed \
-  --set data.generalist_dynamics_mixture.real_joint_weight=0 \
-  --set data.generalist_dynamics_mixture.real_action_conditioned_video_weight=3 \
-  --set data.generalist_dynamics_mixture.real_video_conditioned_action_weight=0 \
-  --set data.generalist_dynamics_mixture.counterfactual_action_conditioned_video_weight=1 \
-  --set data.generalist_dynamics_mixture.counterfactual_video_conditioned_action_weight=0
+  --set "data.dynamics_routing.routes=${FDM_ROUTES}"
 ```
 
 Under replacement sampling, the example draws real and counterfactual FDM
 samples with a `3:1` ratio in expectation. Weights need not sum to one. Either
-endpoint may be zero, but not both. A zero counterfactual weight does not
-require encoded counterfactual roots. Configure positive-weight counterfactual
-train and validation roots in
-`configs/local_paths.yaml` or with explicit `--set` overrides.
+endpoint may be zero, but not both. Every conditional route requires encoded
+dynamics train and validation roots: `real_demo` selects the rollout-local
+`gt` branch and `counterfactual_dynamics` selects perturbed branches. Configure
+those roots in `configs/local_paths.yaml` or with explicit `--set` overrides.
 
-The public `generalist_training_paradigm: dynamics_routed` setting selects this
-source router and target-only data adapter. It does not mean that
-counterfactual data must be active: source weights decide whether a run uses
-real demonstrations, counterfactual rows, or both. The legacy input value
-`mixed_dynamics` is accepted for old resolved configs and is normalized to
-`dynamics_routed`; new configs and commands should use the canonical name.
+A nonempty `data.dynamics_routing.routes` list selects the source router and
+target-only adapter; no second enable flag exists. Routes decide whether a run
+uses real demonstrations, counterfactual rows, or both. The route list is the
+only source and objective sampling authority, while the policy program is the
+execution authority. Active routes require `sample_order_mode: replacement`;
+route weights are replacement probabilities, so an epoch-order setting is
+rejected rather than silently ignored. Retired routing markers such as `mixed_dynamics` and
+`dynamics_routed` are validated and discarded only when loading immutable
+checkpoint configs with runtime compatibility enabled. Authored configs must
+omit them. That checkpoint migration reconstructs the historical effective
+contract rather than trusting serialized defaults: explicit route rows win;
+otherwise `mixed_dynamics` activates the old source weights, while `demo_only`
+ignores those dormant weights and maps any conditional mode probabilities to
+real-demo routes only. Pure-joint `demo_only` remains route-free so its original
+categorical RNG draw is preserved.
 
 Resume through the same package entry point and repeat the experiment-defining
 overrides (the checkpoint-local resolved config remains the audit record):
@@ -300,20 +313,46 @@ GJD mode:
 | Training path | Required data |
 | --- | --- |
 | Standard VTA, ATV, joint, decoupled, or noisy-condition policy | The normal encoded demonstration root only; no counterfactual root is used |
-| Conditional FDM/IDM with the default `1:1` ratio | The normal encoded demonstration root plus encoded counterfactual train and validation roots |
-| Conditional FDM/IDM with counterfactual weight `0` | The normal encoded demonstration root only; counterfactual roots are not opened |
+| Conditional FDM/IDM with the default `1:1` ratio | Encoded dynamics train and validation roots containing both `gt` and perturbed rows; the normal planning dataset is not loaded |
+| Conditional FDM/IDM with counterfactual weight `0` | Encoded dynamics train and validation roots containing `gt` rows; the normal planning dataset is not loaded |
+| GJD with positive joint and conditional routes | The normal planning dataset plus encoded dynamics roots; only sources with positive routes are loaded |
 
-Counterfactual roots are not arbitrary videos. They must follow the encoded
+Encoded dynamics roots are not arbitrary videos. They must follow the encoded
 target-only `t0`-plus-future contract: an observed `t0`, aligned future video
 and action data, valid loss-boundary metadata, and aligned proprio when it is
-available. The loader validates this contract before model execution. Set the
-two roots through `configs/local_paths.yaml` or explicit `--set` overrides.
+available. Canonical manifests declare
+`artifact_schema: open_wam.encoded_dynamics.v1`, an explicit
+`reference_branch`, and an artifact-relative `raw_payload_root` that locates
+aligned action and proprio payloads. Absolute `dataset_root`, config, and
+checkpoint paths are provenance only and are never runtime location fields.
+Canonical loading is strict: migrate an unversioned or pre-relocation v1 root
+once before training:
 
-Counterfactual data is therefore required by the default config and for any
-counterfactual experiment, but not by the conditional objective itself. A
-real-demo-only FDM run sets
-`counterfactual_action_conditioned_video_weight=0`; real-demo-only IDM sets
-`counterfactual_video_conditioned_action_weight=0`.
+```bash
+uv run python scripts/migrate_encoded_dynamics_artifact.py /path/to/encoded_root
+```
+
+If the artifact was copied from another machine and its legacy provenance path
+no longer exists, identify the copied raw payload directory explicitly:
+
+```bash
+uv run python scripts/migrate_encoded_dynamics_artifact.py \
+  /path/to/encoded_root \
+  --raw-root /path/to/raw_payload_root
+```
+
+The migration validates all training-indexed payloads and updates only
+`manifest.json`; latent, action, and simulator-state payloads are unchanged.
+It stores the raw root relative to the encoded root, so moving their common
+directory preserves the artifact. The loader checks every indexed payload
+required by the positive routes before model execution. Set the two encoded
+roots through `configs/local_paths.yaml` or explicit `--set` overrides.
+
+Perturbed rows are required only when a `counterfactual_dynamics` route has
+positive weight. The rollout-local encoded root is required by every
+conditional objective because even a real-only route consumes its `gt` rows.
+The ordinary planning dataset is required only when a positive `joint` route
+can consume it.
 
 To produce LIBERO counterfactual roots from a source checkout, first install
 the `sim` dependencies and configure the local LIBERO repository. The generator
@@ -348,7 +387,8 @@ for SPLIT in train val; do
   uv run --extra eval python scripts/encode_libero_fdm_counterfactual_dataset.py \
     --dataset-root "$CF_ROOT/$SPLIT" \
     --config configs/experiments/dual_expert_libero_conditional_dynamics.yaml \
-    --checkpoint "$VAE_CHECKPOINT" --device cuda:0
+    --checkpoint "$VAE_CHECKPOINT" --device cuda:0 \
+    --skip-condition-latents
 done
 ```
 
@@ -363,27 +403,51 @@ uv run --extra train open-wam-train \
   --cfg configs/experiments/dual_expert_libero_conditional_dynamics.yaml \
   --save-root runs/dual-expert-forward-dynamics
 
-# IDM uses the same config with one program override and the same 1:1 default.
+# IDM changes both execution mode and data routes. The cross-config validator
+# rejects changing only one side.
+IDM_ROUTES='[{"source":"real_demo","mode":"video_conditioned_action","weight":1},{"source":"counterfactual_dynamics","mode":"video_conditioned_action","weight":1}]'
 uv run --extra train open-wam-train \
   --cfg configs/experiments/dual_expert_libero_conditional_dynamics.yaml \
   --set policy_variant.program=inverse_dynamics \
+  --set "data.dynamics_routing.routes=${IDM_ROUTES}" \
   --save-root runs/dual-expert-inverse-dynamics
 ```
 
-For a non-default ratio, add the two matching source overrides. For example,
-FDM `3:1` uses:
+The Dual Expert file above is a convenience profile. Parallel Stream uses the
+same fixed program and routes on its own GJD topology profile. Replace the two
+GJD validation probes with one probe whose objective is inherited from the
+fixed program:
 
 ```bash
---set data.generalist_dynamics_mixture.real_action_conditioned_video_weight=3 \
---set data.generalist_dynamics_mixture.counterfactual_action_conditioned_video_weight=1
+FDM_ROUTES='[{"source":"real_demo","mode":"action_conditioned_video","weight":1},{"source":"counterfactual_dynamics","mode":"action_conditioned_video","weight":1}]'
+FIXED_VAL='[{"name":"conditional_dynamics_val","dataset_split":"val","source":"dataset","max_batches":16,"report_prefix":"val_conditional_dynamics"}]'
+uv run --extra train open-wam-train \
+  --cfg configs/experiments/parallel_stream_libero_generalist_joint_denoising.yaml \
+  --set policy_variant.program=forward_dynamics \
+  --set "data.dynamics_routing.routes=${FDM_ROUTES}" \
+  --set "validation.auxiliary_tasks=${FIXED_VAL}" \
+  --save-root runs/parallel-stream-forward-dynamics
 ```
 
-For IDM, use the corresponding `real_video_conditioned_action_weight` and
-`counterfactual_video_conditioned_action_weight` fields.
+Use the same three overrides with `inverse_dynamics` and
+`video_conditioned_action` routes for Parallel Stream IDM. The architecture
+swap changes model/action packing and checkpoint topology, not the conditional
+data or objective contract.
 
-The fixed program filters out every irrelevant mixture bucket, so the unused
-pair of weights in the shared YAML has no effect. In both programs the data
-layer projects real and counterfactual rows to the same target-only layout:
+For a non-default ratio, replace the route list. For example, FDM `3:1` uses:
+
+```bash
+FDM_ROUTES='[{"source":"real_demo","mode":"action_conditioned_video","weight":3},{"source":"counterfactual_dynamics","mode":"action_conditioned_video","weight":1}]'
+uv run --extra train open-wam-train \
+  --cfg configs/experiments/dual_expert_libero_conditional_dynamics.yaml \
+  --set "data.dynamics_routing.routes=${FDM_ROUTES}" \
+  --save-root runs/dual-expert-forward-dynamics-real3-cf1
+```
+
+For IDM, use `video_conditioned_action` in both routes. Fixed programs reject
+routes for the other mode, preventing a valid-looking config from sampling an
+objective the program cannot execute. In both programs the data layer selects
+the encoded `gt` or perturbed source view with the same target-only layout:
 `V0` is an observed, unsupervised singleton t0 chunk; loss starts at `V1`; each
 following chunk retains the sampled 1-4 frame geometry and can attend one most
 recent clean video/proprio boundary frame. Task text and the learned GJD mode
@@ -396,8 +460,9 @@ offline FDM/IDM diagnostics below with explicit condition tensors.
 
 For FDM metrics, each evaluation row must provide `t0`, clean future actions,
 and target future video. For IDM metrics, it must provide `t0`, clean future
-video, and target actions. Real-demo diagnostics can project ordinary demo rows;
-counterfactual metrics require the encoded counterfactual rows described above.
+video, and target actions. Strict real and counterfactual metrics both use the
+encoded dynamics rows described above; ordinary full-trajectory demo crops are
+not equivalent to a rollout-local causal-VAE reset at t0.
 
 ## Offline Evaluation
 
@@ -447,6 +512,18 @@ When `--mode` is omitted, a `forward_dynamics` checkpoint runs only
 `video_conditioned_action`. An explicitly incompatible mode fails before data
 or model loading. A non-fixed GJD config retains the research behavior of
 running every diagnostic mode; use repeated `--mode` arguments to narrow it.
+These `--mode` values name research interventions. The adapter translates each
+intervention to one canonical core objective: `joint`,
+`action_conditioned_video`, or `video_conditioned_action`. Model runtime APIs do
+not accept the research aliases.
+
+Conditional offline diagnostics generate one latent frame per model call even
+when the checkpoint was trained with randomized 1-to-4-frame future chunks.
+The evaluator advances one target frame and one cache frame each call, so it
+does not skip targets or let prediction errors accumulate across a four-frame
+diagnostic call. Counterfactual manifests record both the configured checkpoint
+chunk size and the effective per-mode diagnostic chunk size.
+
 Use `--help` for windows, branches, and output paths. The reusable GJD policy
 and counterfactual-action contracts continue to live in `open_wam`; only the
 experiment orchestration and visualization live under `scripts/`.

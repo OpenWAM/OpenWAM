@@ -7,6 +7,7 @@ from open_wam.sdk.config import (
     ExperimentConfig,
     ExtensionActionDecoderConfig,
     ExtensionPolicyConfig,
+    PolicyConditioningRequirements,
     load_experiment_config,
 )
 from open_wam.sdk.data import (
@@ -18,8 +19,11 @@ from open_wam.sdk.data import (
 )
 from open_wam.sdk.policy import (
     ActionDecoder,
+    PolicyPipelineRequirements,
     PolicyVariant,
+    PolicyVisualStage,
     PreparedAttentionProfile,
+    RuntimeSequenceFamily,
     RuntimeStepInput,
     VisualCoreInput,
     register_action_decoder,
@@ -36,16 +40,19 @@ from open_wam.sdk.simulator import (
 def test_role_specific_sdk_exposes_extension_contracts() -> None:
     assert ExperimentConfig.__module__ == "open_wam.configs.experiment"
     assert ExtensionPolicyConfig.__module__ == "open_wam.configs.policy_contracts"
-    assert (
-        ExtensionActionDecoderConfig.__module__
-        == "open_wam.configs.action_decoder"
+    assert PolicyConditioningRequirements.__module__ == (
+        "open_wam.configs.policy_contracts"
     )
+    assert ExtensionActionDecoderConfig.__module__ == "open_wam.configs.action_decoder"
     assert WAMSample.__module__ == "open_wam.data.contracts"
     assert DatasetArtifactKind.__module__ == "open_wam.data.artifacts"
     assert DatasetArtifactRequirement.__module__ == "open_wam.data.artifacts"
     assert PolicyVariant.__module__ == "open_wam.models.policy_variants.base"
+    assert PolicyPipelineRequirements.__module__.endswith("policy_variants.contracts")
+    assert PolicyVisualStage.CORE.value == "core"
     assert ActionDecoder.__module__ == "open_wam.models.action_decoders.base"
     assert PreparedAttentionProfile.__module__.endswith("attention_contracts")
+    assert RuntimeSequenceFamily.__module__.endswith("runtime_programs")
     assert RuntimeStepInput.__module__.endswith("runtime_programs")
     assert VisualCoreInput.__module__.endswith("visual_tower.contracts")
     assert SimulatorBackend.__module__ == "open_wam.simulators.contracts"

@@ -126,7 +126,7 @@ backbone:
   implementation: shared_transformer
 policy_variant:
   name: parallel_stream
-  runtime_mode: lingbot_exact
+  program: video_then_action
 action_decoder:
   name: lingbot_parallel
   action_dim: 7
@@ -161,7 +161,7 @@ backbone:
   implementation: shared_transformer
 policy_variant:
   name: parallel_stream
-  runtime_mode: lingbot_exact
+  program: video_then_action
   proprio_context_mode: text_context_typo
 action_decoder:
   name: parallel_stream_decoder
@@ -197,7 +197,7 @@ backbone:
   implementation: shared_transformer
 policy_variant:
   name: parallel_stream
-  runtime_mode: lingbot_exact
+  program: video_then_action
   proprio_context_mode: text_context_token  # deprecated
 action_decoder:
   name: parallel_stream_decoder
@@ -235,8 +235,7 @@ backbone:
   implementation: shared_transformer
 policy_variant:
   name: parallel_stream
-  runtime_mode: lingbot_exact
-  current_block_coupling: decoupled_same_step
+  program: decoupled_same_step
   context_condition_latent_source: single_frame_condition_latent
   history_stream_visibility: video_only
 action_decoder:
@@ -252,6 +251,90 @@ trainer:
     report = validate_config_file(config_path, repo_root=tmp_path)
 
     assert report.ok
+
+
+@pytest.mark.unit
+def test_static_validator_rejects_retired_history_visibility_alias(
+    tmp_path: Path,
+) -> None:
+    source = (
+        REPO_ROOT / "configs/experiments/parallel_stream_libero_joint.yaml"
+    )
+    raw = yaml.safe_load(source.read_text(encoding="utf-8"))
+    raw["policy_variant"]["preserve_video_pretrain_history"] = True
+    config_path = tmp_path / "retired_history_alias.yaml"
+    config_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+
+    report = validate_config_file(config_path, repo_root=REPO_ROOT)
+
+    assert not report.ok
+    assert any(
+        "preserve_video_pretrain_history" in issue.message
+        and "retired" in issue.message
+        for issue in report.errors
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("architecture", "decoder", "field_name"),
+    [
+        ("parallel_stream", "parallel_stream_decoder", "use_condition_latents"),
+        ("parallel_stream", "parallel_stream_decoder", "require_condition_latents"),
+        ("dual_expert", "dual_expert_decoder", "use_condition_latents"),
+        ("dual_expert", "dual_expert_decoder", "require_condition_latents"),
+    ],
+)
+def test_static_validator_rejects_disabled_single_frame_condition_flags(
+    tmp_path: Path,
+    architecture: str,
+    decoder: str,
+    field_name: str,
+) -> None:
+    config_path = tmp_path / f"{architecture}_{field_name}_false.yaml"
+    use_condition_latents = "false" if field_name == "use_condition_latents" else "true"
+    require_condition_latents = (
+        "false" if field_name == "require_condition_latents" else "true"
+    )
+    config_path.write_text(
+        f"""
+name: disabled_single_frame_condition_flag
+data:
+  dataset_name: synthetic
+  dataset_type: synthetic_multiview
+  sample_construction:
+    condition_source_frame_offset: -1
+  action_schema:
+    action_dim: 7
+    action_horizon: 8
+    state_dim: 8
+    state_horizon: 1
+backbone:
+  implementation: shared_transformer
+policy_variant:
+  name: {architecture}
+  program: decoupled_same_step
+  context_condition_latent_source: single_frame_condition_latent
+  use_condition_latents: {use_condition_latents}
+  require_condition_latents: {require_condition_latents}
+action_decoder:
+  name: {decoder}
+  action_dim: 7
+  action_horizon: 8
+trainer:
+  accelerator: cpu
+""",
+        encoding="utf-8",
+    )
+
+    report = validate_config_file(config_path, repo_root=tmp_path)
+
+    assert not report.ok
+    assert any(
+        issue.path == f"policy_variant.{field_name}"
+        and "requires" in issue.message
+        for issue in report.errors
+    )
 
 
 @pytest.mark.unit
@@ -274,8 +357,7 @@ backbone:
   implementation: shared_transformer
 policy_variant:
   name: parallel_stream
-  runtime_mode: lingbot_exact
-  current_block_coupling: decoupled_same_step
+  program: decoupled_same_step
   context_condition_latent_source: single_frame_condition_latent
 action_decoder:
   name: parallel_stream_decoder
@@ -315,7 +397,7 @@ backbone:
   implementation: shared_transformer
 policy_variant:
   name: parallel_stream
-  runtime_mode: lingbot_exact
+  program: video_then_action
   history_stream_visibility: typo
 action_decoder:
   name: parallel_stream_decoder
@@ -547,6 +629,8 @@ name: dynamics_routed_replacement_order
 data:
   dataset_name: libero
   dataset_type: lerobot_v2_latent_local
+  train_batch_size: 1
+  val_batch_size: 1
   sample_construction:
     sample_order_mode: replacement
   action_schema:
@@ -554,15 +638,15 @@ data:
     action_horizon: 16
     state_dim: 8
     state_horizon: 1
+  dynamics_routing:
+    routes:
+      - {source: real_demo, mode: joint, weight: 1.0}
 backbone:
   implementation: shared_transformer
 policy_variant:
   name: parallel_stream
   attach_site: within_visual_core
-  runtime_mode: lingbot_exact_action_conditioned
-  variant_profile: generalist_joint_denoising
-  current_block_coupling: joint
-  generalist_training_paradigm: dynamics_routed
+  program: generalist_joint_denoising
 action_decoder:
   name: parallel_stream_decoder
   action_dim: 7
@@ -580,19 +664,104 @@ trainer:
 
 
 @pytest.mark.unit
-def test_static_validator_accepts_legacy_mixed_dynamics_value(tmp_path: Path) -> None:
+def test_static_validator_rejects_epoch_order_with_dynamics_routing(
+    tmp_path: Path,
+) -> None:
     source_path = (
         REPO_ROOT
         / "configs/experiments/dual_expert_libero_generalist_joint_denoising.yaml"
     )
     raw = yaml.safe_load(source_path.read_text(encoding="utf-8"))
-    raw["policy_variant"]["generalist_training_paradigm"] = "mixed_dynamics"
-    config_path = tmp_path / "legacy_mixed_dynamics.yaml"
+    raw["data"]["sample_construction"]["sample_order_mode"] = "epoch_order"
+    config_path = tmp_path / "dynamics_routed_epoch_order.yaml"
+    config_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+
+    report = validate_config_file(config_path, repo_root=REPO_ROOT)
+
+    assert not report.ok
+    assert any(
+        issue.path == "data.sample_construction.sample_order_mode"
+        and "replacement" in issue.message
+        for issue in report.errors
+    )
+
+
+@pytest.mark.unit
+def test_static_validator_accepts_default_replacement_order_with_dynamics_routing(
+    tmp_path: Path,
+) -> None:
+    source_path = (
+        REPO_ROOT
+        / "configs/experiments/dual_expert_libero_generalist_joint_denoising.yaml"
+    )
+    raw = yaml.safe_load(source_path.read_text(encoding="utf-8"))
+    raw["data"]["sample_construction"].pop("sample_order_mode")
+    config_path = tmp_path / "dynamics_routed_default_replacement_order.yaml"
     config_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
 
     report = validate_config_file(config_path, repo_root=REPO_ROOT)
 
     assert report.ok
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("field_name", "bad_value"),
+    [
+        ("lenght_multiplier", 2.0),
+        ("seed", True),
+        ("length_multiplier", True),
+    ],
+)
+def test_static_validator_rejects_invalid_dynamics_routing_scalars(
+    tmp_path: Path,
+    field_name: str,
+    bad_value: object,
+) -> None:
+    source_path = (
+        REPO_ROOT
+        / "configs/experiments/dual_expert_libero_generalist_joint_denoising.yaml"
+    )
+    raw = yaml.safe_load(source_path.read_text(encoding="utf-8"))
+    raw["data"]["dynamics_routing"][field_name] = bad_value
+    config_path = tmp_path / f"bad_dynamics_routing_{field_name}.yaml"
+    config_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+
+    report = validate_config_file(config_path, repo_root=REPO_ROOT)
+
+    assert not report.ok
+    assert any(
+        issue.path == f"data.dynamics_routing.{field_name}"
+        for issue in report.errors
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "field_name",
+    ["generalist_training_paradigm", "dynamics_routing_requirement"],
+)
+def test_static_validator_rejects_retired_routing_markers(
+    tmp_path: Path,
+    field_name: str,
+) -> None:
+    source_path = (
+        REPO_ROOT
+        / "configs/experiments/dual_expert_libero_generalist_joint_denoising.yaml"
+    )
+    raw = yaml.safe_load(source_path.read_text(encoding="utf-8"))
+    raw["policy_variant"][field_name] = "mixed_dynamics"
+    config_path = tmp_path / "legacy_mixed_dynamics.yaml"
+    config_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+
+    report = validate_config_file(config_path, repo_root=REPO_ROOT)
+
+    assert not report.ok
+    assert any(
+        issue.path == f"policy_variant.{field_name}"
+        and "retired" in issue.message
+        for issue in report.errors
+    )
 
 
 @pytest.mark.unit
@@ -609,15 +778,15 @@ data:
     action_horizon: 16
     state_dim: 8
     state_horizon: 1
+  dynamics_routing:
+    routes:
+      - {source: real_demo, mode: joint, weight: 1.0}
 backbone:
   implementation: shared_transformer
 policy_variant:
   name: parallel_stream
   attach_site: within_visual_core
-  runtime_mode: lingbot_exact_action_conditioned
-  variant_profile: generalist_joint_denoising
-  current_block_coupling: joint
-  generalist_training_paradigm: dynamics_routed
+  program: generalist_joint_denoising
 action_decoder:
   name: parallel_stream_decoder
   action_dim: 7
@@ -652,15 +821,15 @@ data:
     action_horizon: 16
     state_dim: 8
     state_horizon: 1
+  dynamics_routing:
+    routes:
+      - {source: real_demo, mode: joint, weight: 1.0}
 backbone:
   implementation: shared_transformer
 policy_variant:
   name: parallel_stream
   attach_site: within_visual_core
-  runtime_mode: lingbot_exact_action_conditioned
-  variant_profile: generalist_joint_denoising
-  current_block_coupling: joint
-  generalist_training_paradigm: dynamics_routed
+  program: generalist_joint_denoising
 action_decoder:
   name: parallel_stream_decoder
   action_dim: 7
@@ -689,6 +858,7 @@ data:
   dataset_type: lerobot_v2_latent_local
   sample_construction:
     mode: hierarchical_fixed_segment
+    sample_order_mode: epoch_order
     segment_frames: 128
     chunk_size: 4
     window_size: 30
@@ -735,6 +905,7 @@ data:
   dataset_type: lerobot_v2_latent_local
   sample_construction:
     mode: hierarchical_fixed_segment
+    sample_order_mode: epoch_order
     segment_frames: 128
     chunk_size: 4
     randomize_geometry: true
@@ -780,6 +951,7 @@ data:
   dataset_type: lerobot_v2_latent_local
   sample_construction:
     mode: hierarchical_fixed_segment
+    sample_order_mode: epoch_order
     segment_frames: 128
     chunk_size: 4
     target_alignment: next_after_context
@@ -820,6 +992,7 @@ data:
   dataset_type: lerobot_v2_latent_local
   sample_construction:
     mode: hierarchical_fixed_segment
+    sample_order_mode: epoch_order
     segment_frames: 8
     context_prefix_policy: fixed
     context_prefix_frames: -1
@@ -915,6 +1088,7 @@ validation:
       report_prefix: val_probe
     - name: fdm_val
       mode_override: action_conditioned_video
+      drop_text_conditioning: false
       dataset_split: made_up
       source: bad_source
       report_prefix: val_probe
@@ -927,12 +1101,17 @@ trainer:
     report = validate_config_file(config_path, repo_root=tmp_path)
 
     assert not report.ok
-    assert any("Invalid GeneralistDenoisingMode" in issue.message for issue in report.errors)
+    assert any("Invalid DynamicsObjective" in issue.message for issue in report.errors)
     assert any("Invalid DataSplit" in issue.message for issue in report.errors)
     assert any("Invalid AuxiliaryValidationSource" in issue.message for issue in report.errors)
     assert any(issue.path.endswith("max_batches") for issue in report.errors)
     assert any("Duplicate auxiliary validation task name" in issue.message for issue in report.errors)
     assert any("Duplicate auxiliary validation report prefix" in issue.message for issue in report.errors)
+    assert any(
+        issue.path.endswith("drop_text_conditioning")
+        and "always removes task text" in issue.message
+        for issue in report.errors
+    )
 
 
 @pytest.mark.unit
@@ -946,6 +1125,7 @@ data:
   dataset_type: lerobot_v2_latent_local
   sample_construction:
     mode: hierarchical_fixed_segment
+    sample_order_mode: epoch_order
     segment_frames: 128
     require_full_segment: false
   action_schema:
@@ -992,6 +1172,7 @@ backbone:
   implementation: shared_transformer
 policy_variant:
   name: parallel_stream
+  program: video_then_action
   runtime_mode: fastwam_first_frame
 action_decoder:
   name: parallel_stream_decoder
@@ -1027,8 +1208,7 @@ backbone:
   implementation: shared_transformer
 policy_variant:
   name: parallel_stream
-  runtime_mode: lingbot_exact
-  current_block_coupling: decoupled_same_step
+  program: decoupled_same_step
   sequence_contract: rollout_parity_single_frame_perchunk_proprio
   history_stream_visibility: full
 action_decoder:
@@ -1083,8 +1263,8 @@ trainer:
 
 
 @pytest.mark.unit
-def test_static_validator_checks_joint_denoise_mode_probabilities(tmp_path: Path) -> None:
-    config_path = tmp_path / "bad_joint_probs.yaml"
+def test_static_validator_checks_parallel_stream_generalist_routes(tmp_path: Path) -> None:
+    config_path = tmp_path / "bad_generalist_routes.yaml"
     config_path.write_text(
         """
 name: bad_joint_probs
@@ -1096,18 +1276,17 @@ data:
     action_horizon: 16
     state_dim: 8
     state_horizon: 1
+  dynamics_routing:
+    routes:
+      - {source: real_demo, mode: typo_mode, weight: 1.0}
+      - {source: real_demo, mode: action_conditioned_video, weight: -0.2}
+      - {source: counterfactual_dynamics, mode: video_conditioned_action, weight: .nan}
 backbone:
   implementation: shared_transformer
 policy_variant:
   name: parallel_stream
   attach_site: within_visual_core
-  runtime_mode: lingbot_exact_action_conditioned
-  variant_profile: generalist_joint_denoising
-  generalist_denoising_mode_probs:
-    joint: 0.0
-    typo_mode: 1.0
-    action_conditioned_video: -0.2
-    video_conditioned_action: .nan
+  program: generalist_joint_denoising
 action_decoder:
   name: parallel_stream_decoder
   action_dim: 30
@@ -1121,9 +1300,9 @@ trainer:
     report = validate_config_file(config_path, repo_root=tmp_path)
 
     assert not report.ok
-    assert any("Invalid GeneralistDenoisingMode" in issue.message for issue in report.errors)
-    assert any(issue.path.endswith("action_conditioned_video") for issue in report.errors)
-    assert any(issue.path.endswith("video_conditioned_action") and "finite" in issue.message for issue in report.errors)
+    assert any(issue.path.endswith("routes.0.mode") for issue in report.errors)
+    assert any(issue.path.endswith("routes.1.weight") for issue in report.errors)
+    assert any(issue.path.endswith("routes.2.weight") and "finite" in issue.message for issue in report.errors)
 
 
 @pytest.mark.unit
@@ -1145,7 +1324,7 @@ backbone:
 policy_variant:
   name: parallel_stream
   attach_site: within_visual_core
-  runtime_mode: lingbot_exact_action_conditioned
+  program: joint
   current_block_coupling: typo_joint
 action_decoder:
   name: parallel_stream_decoder
@@ -1200,8 +1379,8 @@ trainer:
 
 
 @pytest.mark.unit
-def test_static_validator_checks_dual_expert_generalist_mode_probabilities(tmp_path: Path) -> None:
-    config_path = tmp_path / "bad_dual_expert_probs.yaml"
+def test_static_validator_checks_dual_expert_generalist_routes(tmp_path: Path) -> None:
+    config_path = tmp_path / "bad_dual_expert_routes.yaml"
     config_path.write_text(
         """
 name: bad_dual_expert_probs
@@ -1213,17 +1392,18 @@ data:
     action_horizon: 16
     state_dim: 8
     state_horizon: 1
+  dynamics_routing:
+    routes:
+      - {source: real_demo, mode: typo_mode, weight: 1.0}
+      - {source: real_demo, mode: action_conditioned_video, weight: -0.2}
+      - {source: counterfactual_dynamics, mode: video_conditioned_action, weight: .nan}
+      - {source: real_demo, mode: joint, weight: "1.0", ratio: 1.0}
 backbone:
   implementation: shared_transformer
 policy_variant:
   name: dual_expert
   attach_site: post_visual_core
   program: generalist_joint_denoising
-  generalist_denoising_mode_probs:
-    joint: 0.0
-    typo_mode: 1.0
-    action_conditioned_video: -0.2
-    video_conditioned_action: .nan
 action_decoder:
   name: dual_expert_decoder
   action_dim: 7
@@ -1237,16 +1417,11 @@ trainer:
     report = validate_config_file(config_path, repo_root=tmp_path)
 
     assert not report.ok
-    assert any(
-        "Invalid GeneralistDenoisingMode" in issue.message for issue in report.errors
-    )
-    assert any(
-        issue.path.endswith("action_conditioned_video") for issue in report.errors
-    )
-    assert any(
-        issue.path.endswith("video_conditioned_action") and "finite" in issue.message
-        for issue in report.errors
-    )
+    assert any(issue.path.endswith("routes.0.mode") for issue in report.errors)
+    assert any(issue.path.endswith("routes.1.weight") for issue in report.errors)
+    assert any(issue.path.endswith("routes.2.weight") and "finite" in issue.message for issue in report.errors)
+    assert any(issue.path.endswith("routes.3.weight") and "numeric" in issue.message for issue in report.errors)
+    assert any(issue.path.endswith("routes.3.ratio") and "Unknown" in issue.message for issue in report.errors)
     assert any(issue.path == "data.train_batch_size" for issue in report.errors)
     assert any(issue.path == "data.val_batch_size" for issue in report.errors)
 
@@ -1273,8 +1448,6 @@ policy_variant:
   name: dual_expert
   attach_site: post_visual_core
   program: generalist_joint_denoising
-  generalist_denoising_mode_probs:
-    joint: 1.0
 action_decoder:
   name: dual_expert_decoder
   action_dim: 7
@@ -1286,6 +1459,23 @@ trainer:
     )
 
     report = validate_config_file(config_path, repo_root=tmp_path)
+
+    assert not report.ok
+    assert any(issue.path == "data.train_batch_size" for issue in report.errors)
+
+
+@pytest.mark.unit
+def test_static_validator_checks_parallel_generalist_batch_size(tmp_path: Path) -> None:
+    source_path = (
+        REPO_ROOT
+        / "configs/experiments/parallel_stream_libero_generalist_joint_denoising.yaml"
+    )
+    raw = yaml.safe_load(source_path.read_text(encoding="utf-8"))
+    raw["data"]["train_batch_size"] = 2
+    config_path = tmp_path / "bad_parallel_gjd_batch_size.yaml"
+    config_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+
+    report = validate_config_file(config_path, repo_root=REPO_ROOT)
 
     assert not report.ok
     assert any(issue.path == "data.train_batch_size" for issue in report.errors)
@@ -1331,8 +1521,8 @@ trainer:
 
 
 @pytest.mark.unit
-def test_static_validator_rejects_boolean_joint_denoise_probability(tmp_path: Path) -> None:
-    config_path = tmp_path / "bad_joint_bool_prob.yaml"
+def test_static_validator_rejects_boolean_generalist_route_weight(tmp_path: Path) -> None:
+    config_path = tmp_path / "bad_route_bool_weight.yaml"
     config_path.write_text(
         """
 name: bad_joint_bool_prob
@@ -1344,17 +1534,15 @@ data:
     action_horizon: 16
     state_dim: 8
     state_horizon: 1
+  dynamics_routing:
+    routes:
+      - {source: real_demo, mode: joint, weight: true}
 backbone:
   implementation: shared_transformer
 policy_variant:
   name: parallel_stream
   attach_site: within_visual_core
-  runtime_mode: lingbot_exact_action_conditioned
-  variant_profile: generalist_joint_denoising
-  generalist_denoising_mode_probs:
-    joint: true
-    action_conditioned_video: 0.0
-    video_conditioned_action: 0.0
+  program: generalist_joint_denoising
 action_decoder:
   name: parallel_stream_decoder
   action_dim: 30
@@ -1368,11 +1556,11 @@ trainer:
     report = validate_config_file(config_path, repo_root=tmp_path)
 
     assert not report.ok
-    assert any(issue.path.endswith("joint") and "numeric" in issue.message for issue in report.errors)
+    assert any(issue.path.endswith("routes.0.weight") and "numeric" in issue.message for issue in report.errors)
 
 
 @pytest.mark.parametrize("raw_probability", [".nan", ".inf"])
-def test_static_validator_rejects_non_finite_joint_denoise_probability(
+def test_static_validator_rejects_non_finite_generalist_route_weight(
     tmp_path: Path,
     raw_probability: str,
 ) -> None:
@@ -1388,17 +1576,17 @@ data:
     action_horizon: 16
     state_dim: 8
     state_horizon: 1
+  dynamics_routing:
+    routes:
+      - source: real_demo
+        mode: action_conditioned_video
+        weight: {raw_probability}
 backbone:
   implementation: shared_transformer
 policy_variant:
   name: parallel_stream
   attach_site: within_visual_core
-  runtime_mode: lingbot_exact_action_conditioned
-  variant_profile: generalist_joint_denoising
-  generalist_denoising_mode_probs:
-    joint: 0.6
-    action_conditioned_video: {raw_probability}
-    video_conditioned_action: 0.2
+  program: generalist_joint_denoising
 action_decoder:
   name: parallel_stream_decoder
   action_dim: 30
@@ -1413,7 +1601,7 @@ trainer:
 
     assert not report.ok
     assert any(
-        issue.path.endswith("action_conditioned_video") and "finite" in issue.message
+        issue.path.endswith("routes.0.weight") and "finite" in issue.message
         for issue in report.errors
     )
 

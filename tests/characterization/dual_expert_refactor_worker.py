@@ -17,8 +17,20 @@ import torch
 import torch.distributed as dist
 
 from open_wam.configs import load_experiment_config
+from open_wam.contracts import (
+    DYNAMICS_CONDITIONAL_CHUNK_LAYOUT_METADATA_KEY,
+    DYNAMICS_CONDITIONAL_CHUNK_LAYOUT_T0_SINGLETON,
+    DYNAMICS_CONDITIONAL_HISTORY_POLICY_METADATA_KEY,
+    DYNAMICS_CONDITIONAL_HISTORY_PREVIOUS_BOUNDARY_VIDEO_ONLY,
+    DYNAMICS_CONDITIONAL_LAYOUT_METADATA_KEY,
+    DYNAMICS_CONDITIONAL_LAYOUT_TARGET_ONLY_T0_PLUS_FUTURE,
+    ConditionalDynamicsSequenceLayout,
+)
 from open_wam.models.common.rollout_history import resolve_execute_action_steps
-from open_wam.models.policy_variants import PolicyInferContext
+from open_wam.models.policy_variants import (
+    DynamicsRolloutRequest,
+    PolicyInferContext,
+)
 from open_wam.models.policy_variants.dual_expert.inference_backend import (
     ensure_dual_expert_inference_backend,
 )
@@ -44,8 +56,8 @@ from .dual_expert_refactor_artifacts import (
     write_json_atomic,
 )
 from .dual_expert_refactor_contract import (
-    CHARACTERIZATION_ASSET_IDS,
     CACHE_ROLLOVER_ASSET_IDS,
+    CHARACTERIZATION_ASSET_IDS,
     DEFAULT_INFERENCE_CONTRACT,
     FULL_STATE_RESUME_ASSET_ID,
     GJD_INFERENCE_CONTRACT,
@@ -200,6 +212,10 @@ def run_training_characterization(
             torch.cuda.reset_peak_memory_stats(runtime.strategy.device)
             batch = load_latent_batch_fixture(
                 fixture_root / f"{scenario.fixture_id}.json"
+            )
+            batch = _migrate_frozen_counterfactual_fixture_contract(
+                batch,
+                source=scenario.source,
             )
             device_batch = runtime.step_executor.batch_adapter.move_to_device(
                 batch,
@@ -704,7 +720,9 @@ def _load_pipeline_checkpoint(
         "unexpected_key_count": len(unexpected),
         "missing_key_preview": list(missing[:20]),
         "unexpected_key_preview": list(unexpected[:20]),
-        "trained_missing_keys": [key for key in missing if _is_trained_dual_expert_key(key)],
+        "trained_missing_keys": [
+            key for key in missing if _is_trained_dual_expert_key(key)
+        ],
         "trained_unexpected_keys": [
             key for key in unexpected if _is_trained_dual_expert_key(key)
         ],
@@ -731,13 +749,17 @@ def _distributed_training_checkpoint_compatibility(
         expected_keys = {
             normalized
             for name, _ in model.named_parameters(remove_duplicate=False)
-            if _is_trained_dual_expert_key(normalized := _normalize_checkpoint_key(name))
+            if _is_trained_dual_expert_key(
+                normalized := _normalize_checkpoint_key(name)
+            )
         }
         checkpoint, raw_state, state_dict = _load_checkpoint_state_dict(checkpoint_path)
         checkpoint_keys = set(state_dict)
         missing = sorted(expected_keys - checkpoint_keys)
         unexpected = sorted(
-            key for key in checkpoint_keys - expected_keys if _is_trained_dual_expert_key(key)
+            key
+            for key in checkpoint_keys - expected_keys
+            if _is_trained_dual_expert_key(key)
         )
         report = {
             "tensor_keys": len(checkpoint_keys),
@@ -901,14 +923,20 @@ def _run_inference_scenario(
                 )
             extra = _inference_extra(
                 fixture=fixture,
-                mode=mode,
                 device=device,
+            )
+            dynamics = _inference_dynamics(
+                mode=mode,
                 action_conditioning=action_conditioning,
                 video_conditioning=video_conditioning,
             )
             infer_output = pipeline.forward_infer_step_from_visual_outputs(
                 visual_outputs,
-                context=PolicyInferContext(state=state, extra=extra),
+                context=PolicyInferContext(
+                    state=state,
+                    dynamics=dynamics,
+                    extra=extra,
+                ),
                 infer_state=infer_state,
             )
             chunk_report, next_input_latents = _inference_chunk_report(
@@ -978,30 +1006,36 @@ def _run_inference_scenario(
 def _inference_extra(
     *,
     fixture,
-    mode: GJDTrainingMode | None,
     device: torch.device,
-    action_conditioning: torch.Tensor,
-    video_conditioning: torch.Tensor,
 ) -> dict[str, Any]:
-    extra: dict[str, Any] = {
+    return {
         "task_text": fixture.task_text,
         "action_device": str(device),
         "dual_expert_inference_window_size": 30,
     }
-    if mode is not None:
-        extra.update(
-            {
-                "action_conditioning_mode": mode.value,
-                "dual_expert_generalist_rollout_mode": mode.value,
-            }
-        )
+
+
+def _inference_dynamics(
+    *,
+    mode: GJDTrainingMode | None,
+    action_conditioning: torch.Tensor,
+    video_conditioning: torch.Tensor,
+) -> DynamicsRolloutRequest | None:
+    if mode is None:
+        return None
     if mode == GJDTrainingMode.FDM:
-        extra["dual_expert_forced_action_latents"] = action_conditioning
-        extra["dual_expert_commit_action_latents"] = action_conditioning
-    elif mode == GJDTrainingMode.IDM:
-        extra["dual_expert_video_condition_latents"] = video_conditioning
-        extra["dual_expert_commit_action_latents"] = action_conditioning
-    return extra
+        return DynamicsRolloutRequest(
+            objective=mode.value,
+            clean_action=action_conditioning,
+            history_action=action_conditioning,
+        )
+    if mode == GJDTrainingMode.IDM:
+        return DynamicsRolloutRequest(
+            objective=mode.value,
+            clean_video=video_conditioning,
+            history_action=action_conditioning,
+        )
+    return DynamicsRolloutRequest(objective=mode.value)
 
 
 def _inference_chunk_report(
@@ -1033,17 +1067,34 @@ def _inference_chunk_report(
                 f"{method.asset_id}/{mode or 'default'} chunk {chunk_index} "
                 f"produced non-finite {name}."
             )
-    if tuple(action_pred.shape) != tuple(action_conditioning.shape):
+    contract = GJD_INFERENCE_CONTRACT if method.is_gjd else DEFAULT_INFERENCE_CONTRACT
+    conditional_rollout = mode in {GJDTrainingMode.FDM, GJDTrainingMode.IDM}
+    expected_frame_count = (
+        1 if conditional_rollout else int(video_conditioning.shape[2])
+    )
+    expected_action_shape = (
+        int(action_conditioning.shape[0]),
+        expected_frame_count * contract.action_per_frame,
+        int(action_conditioning.shape[2]),
+    )
+    expected_video_shape = (
+        int(video_conditioning.shape[0]),
+        int(video_conditioning.shape[1]),
+        expected_frame_count,
+        int(video_conditioning.shape[3]),
+        int(video_conditioning.shape[4]),
+    )
+    if tuple(action_pred.shape) != expected_action_shape:
         raise AssertionError(
             f"{method.asset_id}/{mode or 'default'} chunk {chunk_index} returned "
             f"action shape {tuple(action_pred.shape)}, expected "
-            f"{tuple(action_conditioning.shape)}."
+            f"{expected_action_shape}."
         )
-    if tuple(predicted_latents.shape) != tuple(video_conditioning.shape):
+    if tuple(predicted_latents.shape) != expected_video_shape:
         raise AssertionError(
             f"{method.asset_id}/{mode or 'default'} chunk {chunk_index} returned "
             f"video-latent shape {tuple(predicted_latents.shape)}, expected "
-            f"{tuple(video_conditioning.shape)}."
+            f"{expected_video_shape}."
         )
     next_state = infer_output.policy_output.next_state
     selected_state_fingerprints = collect_tensor_fingerprints(
@@ -1058,17 +1109,21 @@ def _inference_chunk_report(
             max_tensors=4,
         )
     )
-    contract = GJD_INFERENCE_CONTRACT if method.is_gjd else DEFAULT_INFERENCE_CONTRACT
     execute_action_steps = resolve_execute_action_steps(
         None,
         action_horizon=int(action_pred.shape[1]),
         action_per_frame=contract.action_per_frame,
     )
-    if execute_action_steps != contract.execute_action_steps:
+    expected_execute_action_steps = (
+        contract.action_per_frame
+        if conditional_rollout
+        else contract.execute_action_steps
+    )
+    if execute_action_steps != expected_execute_action_steps:
         raise AssertionError(
             f"{method.asset_id}/{mode or 'default'} chunk {chunk_index} resolved "
             f"{execute_action_steps} executed actions, expected "
-            f"{contract.execute_action_steps}."
+            f"{expected_execute_action_steps}."
         )
     committed_action_pred = action_pred[:, :execute_action_steps]
     report = {
@@ -1289,6 +1344,65 @@ def _training_scenario_report(
             torch.cuda.max_memory_allocated(runtime.strategy.device)
         ),
     }
+
+
+def _migrate_frozen_counterfactual_fixture_contract(batch, *, source: str):
+    """Materialize metadata omitted by the immutable schema-v1 CF fixtures.
+
+    Production datasets must carry the complete conditional-layout contract.
+    The two pre-contract characterization fixtures are immutable oracles, so the
+    harness upgrades only their otherwise complete canonical metadata in memory.
+    """
+
+    if source != "counterfactual_dynamics":
+        return batch
+
+    layout = ConditionalDynamicsSequenceLayout()
+    prerequisite_contract = {
+        DYNAMICS_CONDITIONAL_LAYOUT_METADATA_KEY: (
+            DYNAMICS_CONDITIONAL_LAYOUT_TARGET_ONLY_T0_PLUS_FUTURE
+        ),
+        DYNAMICS_CONDITIONAL_CHUNK_LAYOUT_METADATA_KEY: (
+            DYNAMICS_CONDITIONAL_CHUNK_LAYOUT_T0_SINGLETON
+        ),
+        DYNAMICS_CONDITIONAL_HISTORY_POLICY_METADATA_KEY: (
+            DYNAMICS_CONDITIONAL_HISTORY_PREVIOUS_BOUNDARY_VIDEO_ONLY
+        ),
+        "history_frames": layout.history_frames,
+        "loss_frame_start": layout.loss_frame_start,
+        "latent_loss_frame_start": layout.loss_frame_start,
+        "action_loss_frame_start": layout.loss_frame_start,
+        "chunk_origin_frame": layout.chunk_origin_frame,
+        "target_observation_frame_in_sample": layout.singleton_chunk_frame,
+        "singleton_chunk_frame": layout.singleton_chunk_frame,
+    }
+    migrated_metadata: list[dict[str, Any]] = []
+    for sample_index, item in enumerate(batch.metadata):
+        metadata = dict(item)
+        mismatches = {
+            key: (metadata.get(key), expected)
+            for key, expected in prerequisite_contract.items()
+            if metadata.get(key) != expected
+        }
+        if mismatches:
+            details = ", ".join(
+                f"{key}={actual!r} (expected {expected!r})"
+                for key, (actual, expected) in sorted(mismatches.items())
+            )
+            raise ValueError(
+                "Frozen counterfactual fixture does not match the approved "
+                f"target-only contract at sample {sample_index}: {details}."
+            )
+        existing_prefix = metadata.get("context_prefix_frames_in_sample")
+        if existing_prefix not in (None, layout.context_prefix_frames):
+            raise ValueError(
+                "Frozen counterfactual fixture has conflicting "
+                "context_prefix_frames_in_sample at sample "
+                f"{sample_index}: {existing_prefix!r}."
+            )
+        metadata["context_prefix_frames_in_sample"] = layout.context_prefix_frames
+        migrated_metadata.append(metadata)
+    return replace(batch, metadata=tuple(migrated_metadata))
 
 
 def _schema_v1_decoder_artifact_fingerprints(policy) -> dict[str, dict[str, Any]]:

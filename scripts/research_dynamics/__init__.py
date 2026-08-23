@@ -12,7 +12,12 @@ from open_wam.data.counterfactual_actions import (
     apply_action_branch,
 )
 
-from .types import FdmAblationMode, FdmRunConfig, FdmWindowSelection
+from .types import (
+    FdmAblationMode,
+    FdmRunConfig,
+    FdmWindowSelection,
+    dynamics_objective_for_ablation_mode,
+)
 
 __all__ = [
     "ACTION_BRANCH_SPECS",
@@ -22,4 +27,5 @@ __all__ = [
     "FdmRunConfig",
     "FdmWindowSelection",
     "apply_action_branch",
+    "dynamics_objective_for_ablation_mode",
 ]

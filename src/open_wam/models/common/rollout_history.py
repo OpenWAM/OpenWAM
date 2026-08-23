@@ -50,7 +50,7 @@ def build_executed_action_history_tensor(
     action_per_frame: int,
     action_dim: int,
 ) -> torch.Tensor | None:
-    """Build DualExpert/LIBERO warmup history from actions sent to the simulator.
+    """Build policy warmup history from actions sent to the environment.
 
     The helper returns a CPU float32 tensor for actions actually sent to the
     simulator. Legacy zero-bootstrap rows for skipped frame groups are

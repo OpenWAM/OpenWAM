@@ -28,7 +28,7 @@ from open_wam.artifacts import load_tensor_artifact as _load_tensor_artifact
 from open_wam.configs import CheckpointMode, ExperimentConfig
 from open_wam.configs.enums import serialize_enum_values
 
-from .checkpoint_export import _remap_packed_video_blocks_into_backbone
+from .checkpoint_export import merge_state_dict_overlay as _merge_state_dict_overlay
 from .checkpoint_storage import (
     _atomic_torch_save,
     _is_rank_zero,
@@ -536,7 +536,7 @@ class CheckpointManager:
                     warnings.warn(
                         "Promoting model_state.pt resume path to sibling full_training_state.pt "
                         "because trainer.checkpoint_mode=full_training_state. Pass a checkpoint "
-                        "directory or full_training_state.pt for exact GJD resumes.",
+                        "directory or full_training_state.pt for exact training resumes.",
                         RuntimeWarning,
                         stacklevel=2,
                     )
@@ -667,20 +667,16 @@ class CheckpointManager:
         backbone_state_dict = get_model_state_dict(
             backbone, options=_save_state_dict_options()
         )
-        # DualExpert packed-coupling path: video_block weights live under
-        # policy_variant.packed_block_stack.packed_blocks.{i}.video_block.* and
-        # visual_tower.core.blocks is empty. Re-key those into blocks.{i}.* so
-        # the exported transformer/ matches the LingBot loader layout that
-        # exact parallel-stream and visualization scripts expect.
-        policy_variant = getattr(pipeline, "policy_variant", None)
-        packed_block_stack = getattr(policy_variant, "packed_block_stack", None)
-        if packed_block_stack is not None:
-            stack_state_dict = get_model_state_dict(
-                packed_block_stack, options=_save_state_dict_options()
+        for overlay in pipeline.module_topology().runtime_backbone_state_overlays:
+            overlay_state_dict = get_model_state_dict(
+                overlay.module,
+                options=_save_state_dict_options(),
             )
-            backbone_state_dict = _remap_packed_video_blocks_into_backbone(
-                backbone_state_dict=backbone_state_dict,
-                stack_state_dict=stack_state_dict,
+            backbone_state_dict = _merge_state_dict_overlay(
+                base_state_dict=backbone_state_dict,
+                overlay_state_dict=overlay_state_dict,
+                map_key=overlay.map_key,
+                exclusive_target_prefixes=overlay.exclusive_target_prefixes,
             )
         if not _is_rank_zero():
             return

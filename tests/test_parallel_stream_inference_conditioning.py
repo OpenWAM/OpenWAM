@@ -3,8 +3,9 @@ from __future__ import annotations
 import torch
 
 from open_wam.configs import (
-    GeneralistDenoisingMode,
+    DynamicsObjective,
     ParallelStreamPolicyConfig,
+    VideoActionProgram,
 )
 from open_wam.models.policy_variants.parallel_stream import reference_runtime
 from open_wam.models.policy_variants.parallel_stream.inference_conditioning import (
@@ -31,12 +32,13 @@ def test_disabled_mode_context_preserves_text_object_identity() -> None:
     actual_text, actual_negative = append_generalist_mode_text_context(
         object(),
         policy_config=ParallelStreamPolicyConfig(
+            program=VideoActionProgram.VIDEO_THEN_ACTION,
             hidden_size=8,
             generalist_mode_text_token=False,
         ),
         text_emb=text,
         negative_text_emb=negative,
-        mode=GeneralistDenoisingMode.JOINT,
+        mode=DynamicsObjective.JOINT,
     )
 
     assert actual_text is text

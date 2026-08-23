@@ -11,6 +11,7 @@ from open_wam.configs import (
     ParallelStreamActionDecoderConfig,
     ParallelStreamPolicyConfig,
     TrainingConfig,
+    VideoActionProgram,
 )
 from open_wam.data import build_synthetic_batch
 from open_wam.models.policy_variants import PolicyTrainBatch
@@ -34,8 +35,8 @@ def test_exact_libero_train_inputs_expand_raw_actions_to_model_space() -> None:
             freq_dim=8,
         ),
         policy_variant=ParallelStreamPolicyConfig(
+            program=VideoActionProgram.VIDEO_THEN_ACTION,
             hidden_size=32,
-            runtime_mode="lingbot_exact",
             reference_profile="libero",
             frame_chunk_size=4,
             action_per_frame=4,

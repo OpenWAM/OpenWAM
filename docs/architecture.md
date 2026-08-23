@@ -16,7 +16,9 @@ these roles instead of adding a parallel training or inference stack.
 
 ## Configuration Axes
 
-Video-action experiments are described by independent choices:
+Video-action experiments are described through these contracts. Architecture,
+program, sequence contract, and decoder are authored; each architecture
+derives the compatible numerical backend from the selected program.
 
 | Axis | Meaning | Examples |
 | --- | --- | --- |
@@ -27,10 +29,11 @@ Video-action experiments are described by independent choices:
 | Decoder | Final predictions, supervised losses, and rollout plan | `parallel_stream_decoder`, `dual_expert_decoder` |
 
 `policy_variant.program` is the public switch for the six standard
-video-action programs. Dual Expert derives its lower-level
-`current_block_coupling` and rejects attempts to set it directly. Parallel
-Stream keeps an explicit coupling field for its exact-runtime compatibility
-surface, but a supplied program and coupling must agree. For example:
+video-action programs. Both built-in architectures derive the lower-level
+`current_block_coupling` and reject attempts to set it directly. Parallel
+Stream also derives its numerical runtime backend and whether action
+conditioning is active. Exact-runtime code consumes these read-only values;
+none is a second authored axis. For example:
 
 ```bash
 open-wam-train \
@@ -39,7 +42,12 @@ open-wam-train \
 ```
 
 Named YAMLs remain available for reproducible runs. The override above and the
-matching named config resolve to the same typed program and coupling.
+matching named config resolve to the same typed program and coupling. Program
+changes also restore the checkpoint-validated `independent` clock default.
+Single-noisy-stream programs require that value; joint and GJD programs can
+select a different clock only as an explicit ablation. Sequence contracts own
+layout and history, never scheduler coupling, and the runtime never silently
+replaces a configured value.
 
 ## Built-In Architectures
 
@@ -53,16 +61,17 @@ lifecycle, proprio insertion, and recurrent inference:
 src/open_wam/models/policy_variants/parallel_stream/
 ```
 
-The `lingbot_exact` runtime name denotes a checkpoint-compatible numerical
+The `lingbot_exact` runtime name denotes the maintained exact packed numerical
 backend. It is not a separate architecture and does not determine the
-video/action program.
+video/action program. Historical M1 resolved configs are not a supported public
+configuration surface.
 
 ### Dual Expert
 
 `dual_expert` uses separate video and action transformer parameters and
 executes paired blocks under the selected visibility program. Its package owns
 expert initialization, packed and split-cache execution, recurrent history,
-and checkpoint-compatible block routing:
+and block routing:
 
 ```text
 src/open_wam/models/policy_variants/dual_expert/
@@ -77,9 +86,10 @@ belong in `models/common`, typed policy contracts, or the data layer.
 
 `open_wam.configs.load_experiment_config` is the YAML-to-dataclass boundary.
 Finite public choices are enums. Dataset names, paths, extension identifiers,
-and free-form labels remain strings. Compatibility normalization accepts old
-config names and fields before typed construction; runtime code consumes only
-canonical values.
+and free-form labels remain strings. Naming-only aliases resolve before typed
+construction. Retired semantic fields are accepted only when immutable
+checkpoint metadata is loaded with `checkpoint_runtime_compat=True`; authored
+YAML, CLI overrides, and Python configs have one canonical field per choice.
 
 ### VariantPipeline
 
@@ -100,7 +110,9 @@ contract and payload type.
 `VisualTower` owns the shared visual frontend, transformer-facing runtime
 hooks, optional decode stage, and common runtime-program execution. It accepts
 prepared attention profiles and runtime inputs; it does not decide policy
-conditioning or supervision semantics.
+conditioning or supervision semantics. Multi-view VAE encoding consumes the
+data layer's `ViewPlacement` contract and reconstructs the corresponding latent
+canvas without benchmark names or camera-specific branches.
 
 ### PolicyVariant
 
@@ -123,13 +135,24 @@ code asks the decoder for a plan instead of branching on an architecture.
 ## Generalist Joint Denoising
 
 GJD is the `generalist_joint_denoising` program inside either architecture. A
-sample selects one `GeneralistDenoisingMode`:
+sample selects one `DynamicsObjective`:
 
 | Mode | Clean supplied modality | Active loss | Task text |
 | --- | --- | --- | --- |
 | `joint` | neither | video and action | retained |
 | `action_conditioned_video` (FDM) | action in the action-noisy slot at timestep zero | video only | removed |
 | `video_conditioned_action` (IDM) | video in the video-noisy slot at timestep zero | action only | removed |
+
+`data.dynamics_routing.routes` is the single sampling contract. Each
+route names a source, mode, and relative weight; the data adapter stamps that
+choice into sample metadata. The policy program is the single execution
+contract: GJD consumes the routed mode, while standalone `forward_dynamics` and
+`inverse_dynamics` require every active route to match their fixed mode. Adding
+a new source or mode extends these typed contracts and its data/runtime adapter,
+without adding a second probability field to a policy config. Custom routed
+datasets expose source-specific validation through the
+`open_wam.data.DynamicsSourceViewProvider` protocol; callers do not need to
+subclass a built-in dataset.
 
 Conditional real-demo and counterfactual samples share one rollout-style data
 contract:
@@ -142,19 +165,30 @@ latent frames 1..N future targets, supervised according to FDM or IDM mode
 The t0 frame is always a singleton chunk. Future chunks retain the sampled GJD
 geometry, including the maintained 1-to-4 frame randomization where configured.
 Conditional attention exposes only the most recent clean video boundary, not a
-long demonstration prefix. The data layer projects real-demo conditional
-samples to this target-only layout and validates counterfactual metadata before
+long demonstration prefix. Both backends consume the same typed hidden-proprio
+contract: frame-level state is projected onto that previous boundary, while
+chunk-level state that was already sampled at a boundary is expanded over its
+matching chunk. This projection happens before backend-specific token packing,
+so tensor shape cannot silently change the state alignment and recorded future
+state is not leaked into the current conditional chunk. The
+encoded-dynamics adapter selects rollout-local
+`gt` rows for real-demo conditional routes and perturbed rows for
+counterfactual routes, then validates the same target-only metadata before
 either architecture executes it.
 
 The shared owner of mode semantics is
-`open_wam.models.common.joint_conditioning`. Architecture code applies those
+`open_wam.models.common.dynamics_objectives`. Architecture code applies those
 decisions to its own packing and cache representation. Joint-mode behavior is
 unchanged by the conditional target-only transform.
 
 `parallel_stream` and `dual_expert` are maintained architecture choices under
 this same GJD paradigm. Their real-joint rows use the configured planning
-prefix, while conditional FDM/IDM rows bypass that prefix and use the shared
-target-only contract above. Select architecture through the experiment config:
+prefix. Conditional rows use t0 directly as frame 0 and bypass external-prefix
+assembly in both backends, so both expose exactly the same clean history.
+Accordingly, `require_condition_latents` requires an external prefix only for
+samples without an in-sequence t0; it does not require a redundant tensor for
+target-only conditional rows.
+Select architecture through the experiment config:
 
 ```bash
 open-wam-train \

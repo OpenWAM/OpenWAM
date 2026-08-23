@@ -6,6 +6,8 @@ import math
 from typing import Any, Mapping
 
 from .enums import (
+    DynamicsObjective,
+    DynamicsSource,
     PaddedTargetPolicy,
     RolloutContextPolicy,
     SampleOrderMode,
@@ -165,7 +167,10 @@ def _validate_sample_construction(
                 "`hierarchical_fixed_segment` uses fixed segment and hierarchical power fields; "
                 f"do not set `{legacy_key}`.",
             )
-    if sample_construction.get("sample_order_mode") == SampleOrderMode.REPLACEMENT.value:
+    if sample_construction.get(
+        "sample_order_mode",
+        SampleOrderMode.REPLACEMENT.value,
+    ) == SampleOrderMode.REPLACEMENT.value:
         issues.error(
             "data.sample_construction.sample_order_mode",
             "`hierarchical_fixed_segment` does not support replacement `sample_order_mode`.",
@@ -199,71 +204,105 @@ def _validate_sample_construction(
                 )
 
 
-def _validate_generalist_dynamics_mixture(
-    mixture: Mapping[str, Any],
+def _validate_dynamics_routing(
+    routing: Mapping[str, Any],
     issues: "_IssueBuilder",
 ) -> None:
-    weight_keys = (
+    retired_fields = (
         "real_joint_weight",
         "real_action_conditioned_video_weight",
         "real_video_conditioned_action_weight",
         "counterfactual_action_conditioned_video_weight",
         "counterfactual_video_conditioned_action_weight",
+        "conditional_history_frames",
     )
+    for key in retired_fields:
+        if key in routing:
+            issues.error(
+                f"data.dynamics_routing.{key}",
+                "This field is retired; configure source, mode, and weight in `routes`.",
+            )
+    known_fields = {
+        "train_latent_root",
+        "val_latent_root",
+        "allow_train_latent_root_for_val",
+        "routes",
+        "seed",
+        "length_multiplier",
+    }
+    for key in sorted(set(routing).difference(known_fields, retired_fields)):
+        issues.error(
+            f"data.dynamics_routing.{key}",
+            "Unknown dynamics-routing field.",
+        )
+    routes = routing.get("routes", ())
+    if not isinstance(routes, (list, tuple)):
+        issues.error("data.dynamics_routing.routes", "Expected a list of route mappings.")
+        routes = ()
     total = 0.0
-    for key in weight_keys:
-        if key not in mixture:
+    route_keys: set[tuple[str, str]] = set()
+    for index, route in enumerate(routes):
+        path = f"data.dynamics_routing.routes.{index}"
+        if not isinstance(route, Mapping):
+            issues.error(path, "Expected a mapping with source, mode, and weight.")
             continue
-        value = mixture[key]
-        if isinstance(value, bool):
-            issues.error(f"data.generalist_dynamics_mixture.{key}", "Expected a numeric weight.")
+        for required_key in ("source", "mode", "weight"):
+            if required_key not in route:
+                issues.error(f"{path}.{required_key}", "Required field is missing.")
+        for unknown_key in set(route).difference({"source", "mode", "weight"}):
+            issues.error(f"{path}.{unknown_key}", "Unknown route field.")
+        _validate_enum(route, "source", DynamicsSource, issues, path)
+        _validate_enum(route, "mode", DynamicsObjective, issues, path)
+        source = route.get("source")
+        mode = route.get("mode")
+        if source is not None and mode is not None:
+            route_key = (str(source), str(mode))
+            if route_key in route_keys:
+                issues.error(path, "Duplicate source/mode route.")
+            route_keys.add(route_key)
+        if (
+            source == DynamicsSource.COUNTERFACTUAL_DYNAMICS.value
+            and mode == DynamicsObjective.JOINT.value
+        ):
+            issues.error(path, "Counterfactual sources do not support joint planning routes.")
+        if "weight" not in route:
             continue
-        try:
-            numeric = float(value)
-        except (TypeError, ValueError):
-            issues.error(f"data.generalist_dynamics_mixture.{key}", "Expected a numeric weight.")
+        value = route.get("weight")
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            issues.error(f"{path}.weight", "Expected a numeric weight.")
             continue
-        if not math.isfinite(numeric):
-            issues.error(f"data.generalist_dynamics_mixture.{key}", "Expected a finite weight.")
-            continue
-        if numeric < 0.0:
-            issues.error(f"data.generalist_dynamics_mixture.{key}", "Expected a non-negative weight.")
+        numeric = float(value)
+        if not math.isfinite(numeric) or numeric < 0.0:
+            issues.error(f"{path}.weight", "Expected a finite non-negative weight.")
             continue
         total += numeric
-    if total <= 0.0 and any(key in mixture for key in weight_keys):
-        issues.error("data.generalist_dynamics_mixture", "Expected at least one positive mixture weight.")
+    if routes and total <= 0.0:
+        issues.error("data.dynamics_routing.routes", "Expected at least one positive route weight.")
     for key in ("train_latent_root", "val_latent_root"):
-        if key in mixture and mixture[key] is not None and not isinstance(mixture[key], str):
-            issues.error(f"data.generalist_dynamics_mixture.{key}", "Expected a string path.")
-    if "allow_train_latent_root_for_val" in mixture and not isinstance(
-        mixture["allow_train_latent_root_for_val"],
+        if key in routing and routing[key] is not None and not isinstance(routing[key], str):
+            issues.error(f"data.dynamics_routing.{key}", "Expected a string path.")
+    if "allow_train_latent_root_for_val" in routing and not isinstance(
+        routing["allow_train_latent_root_for_val"],
         bool,
     ):
-        issues.error("data.generalist_dynamics_mixture.allow_train_latent_root_for_val", "Expected a boolean.")
-    if "length_multiplier" in mixture:
-        value = mixture["length_multiplier"]
+        issues.error("data.dynamics_routing.allow_train_latent_root_for_val", "Expected a boolean.")
+    if "seed" in routing and (
+        isinstance(routing["seed"], bool)
+        or not isinstance(routing["seed"], int)
+    ):
+        issues.error("data.dynamics_routing.seed", "Expected an integer.")
+    if "length_multiplier" in routing:
+        value = routing["length_multiplier"]
+        if isinstance(value, bool):
+            issues.error(
+                "data.dynamics_routing.length_multiplier",
+                "Expected a numeric value.",
+            )
+            return
         try:
             numeric = float(value)
         except (TypeError, ValueError):
-            issues.error("data.generalist_dynamics_mixture.length_multiplier", "Expected a numeric value.")
+            issues.error("data.dynamics_routing.length_multiplier", "Expected a numeric value.")
             return
         if not math.isfinite(numeric) or numeric <= 0.0:
-            issues.error("data.generalist_dynamics_mixture.length_multiplier", "Expected a finite positive value.")
-    if "conditional_history_frames" in mixture and mixture["conditional_history_frames"] is not None:
-        value = mixture["conditional_history_frames"]
-        if isinstance(value, bool):
-            issues.error("data.generalist_dynamics_mixture.conditional_history_frames", "Expected a positive integer or null.")
-        else:
-            try:
-                numeric = int(value)
-            except (TypeError, ValueError):
-                issues.error(
-                    "data.generalist_dynamics_mixture.conditional_history_frames",
-                    "Expected a positive integer or null.",
-                )
-                return
-            if numeric <= 0:
-                issues.error(
-                    "data.generalist_dynamics_mixture.conditional_history_frames",
-                    "Expected a positive integer or null.",
-                )
+            issues.error("data.dynamics_routing.length_multiplier", "Expected a finite positive value.")

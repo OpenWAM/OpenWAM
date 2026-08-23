@@ -208,12 +208,12 @@ def test_training_runtime_runs_artifact_preflight_before_model_build(
     )
     observed: list[str] = []
 
-    def fail_preflight(data_config):
-        observed.append(data_config.dataset_type)
+    def fail_preflight(config):
+        observed.append(config.data.dataset_type)
         raise DatasetArtifactPreflightError("missing test artifact")
 
     monkeypatch.setattr(
-        "open_wam.training.runtime.preflight_dataset_artifacts",
+        "open_wam.training.runtime.preflight_runtime_dataset_artifacts",
         fail_preflight,
     )
     monkeypatch.setattr(

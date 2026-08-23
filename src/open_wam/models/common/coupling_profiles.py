@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import torch
 
-from open_wam.configs import CurrentBlockCoupling
+from open_wam.configs import CurrentBlockCoupling, HistoryStreamVisibility
 from open_wam.models.common.attention_contracts import PreparedAttentionProfile
 from open_wam.models.common.chunked_attention import (
     build_chunked_temporal_exact_attention_profile,
@@ -21,8 +21,9 @@ def build_exact_packed_video_action_coupling_profile(
     current_block_coupling: CurrentBlockCoupling | str = CurrentBlockCoupling.VIDEO_THEN_ACTION,
     build_dense_masks: bool | None = None,
     build_flex_masks: bool | None = None,
-    preserve_video_pretrain_history: bool = True,
-    history_stream_visibility: str | None = None,
+    history_stream_visibility: HistoryStreamVisibility | str = (
+        HistoryStreamVisibility.VIDEO_QUERIES_VIDEO_ONLY
+    ),
     chunk_origin_frame: int = 0,
     action_context_mask: torch.Tensor | None = None,
     prefix_condition_frames: int = 0,
@@ -83,7 +84,6 @@ def build_exact_packed_video_action_coupling_profile(
         current_block_coupling=CurrentBlockCoupling(current_block_coupling).value,
         chunk_origin_frame=int(chunk_origin_frame),
         action_context_mask=action_context_mask,
-        preserve_video_pretrain_history=preserve_video_pretrain_history,
         history_stream_visibility=history_stream_visibility,
         prefix_condition_frames=int(prefix_condition_frames),
         singleton_chunk_frame=singleton_chunk_frame,

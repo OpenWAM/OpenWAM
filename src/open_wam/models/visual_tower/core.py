@@ -4,7 +4,11 @@ import torch
 from torch import nn
 
 from open_wam.configs.backbone import SharedVideoTransformerConfig
-from open_wam.models.video_backbone.contracts import AttentionCacheEntry, CacheState, CacheUpdateMetadata
+from open_wam.models.video_backbone.contracts import (
+    AttentionCacheEntry,
+    CacheState,
+    CacheUpdateMetadata,
+)
 
 from .contracts import VisualCoreInput, VisualCoreOutput
 from .runtime_programs import RuntimeStepInput, RuntimeStepOutput
@@ -29,7 +33,9 @@ def _prepare_attention_mask(
             )
         if attention_mask.dtype == torch.bool:
             float_mask = torch.zeros_like(attention_mask, dtype=dtype, device=device)
-            float_mask = float_mask.masked_fill(~attention_mask.to(device=device), float("-inf"))
+            float_mask = float_mask.masked_fill(
+                ~attention_mask.to(device=device), float("-inf")
+            )
             return float_mask
         return attention_mask.to(device=device, dtype=dtype)
     if attention_mask.ndim == 3:
@@ -40,13 +46,19 @@ def _prepare_attention_mask(
             )
         if attention_mask.dtype == torch.bool:
             float_mask = torch.zeros_like(attention_mask, dtype=dtype, device=device)
-            float_mask = float_mask.masked_fill(~attention_mask.to(device=device), float("-inf"))
+            float_mask = float_mask.masked_fill(
+                ~attention_mask.to(device=device), float("-inf")
+            )
         else:
             float_mask = attention_mask.to(device=device, dtype=dtype)
-        return float_mask[:, None, :, :].expand(batch_size, num_heads, seq_len, seq_len).reshape(
-            batch_size * num_heads,
-            seq_len,
-            seq_len,
+        return (
+            float_mask[:, None, :, :]
+            .expand(batch_size, num_heads, seq_len, seq_len)
+            .reshape(
+                batch_size * num_heads,
+                seq_len,
+                seq_len,
+            )
         )
     raise ValueError(
         "Expected attention mask with shape [seq_len, seq_len] or [B, seq_len, seq_len], "
@@ -69,7 +81,9 @@ class SimpleTransformerBlock(nn.Module):
             nn.Linear(hidden_size * mlp_ratio, hidden_size),
         )
 
-    def forward(self, hidden_states: torch.Tensor, attention_mask: torch.Tensor | None = None) -> torch.Tensor:
+    def forward(
+        self, hidden_states: torch.Tensor, attention_mask: torch.Tensor | None = None
+    ) -> torch.Tensor:
         batch_size, seq_len, _ = hidden_states.shape
         prepared_mask = _prepare_attention_mask(
             attention_mask=attention_mask,
@@ -80,7 +94,9 @@ class SimpleTransformerBlock(nn.Module):
             dtype=hidden_states.dtype,
         )
         normed = self.norm1(hidden_states)
-        attn_out, _ = self.attn(normed, normed, normed, attn_mask=prepared_mask, need_weights=False)
+        attn_out, _ = self.attn(
+            normed, normed, normed, attn_mask=prepared_mask, need_weights=False
+        )
         hidden_states = hidden_states + attn_out
         hidden_states = hidden_states + self.mlp(self.norm2(hidden_states))
         return hidden_states
@@ -111,9 +127,13 @@ class PackedSequenceVisualCore(nn.Module):
         if core_input.timestep_context is not None:
             hidden_states = hidden_states + core_input.timestep_context
         for block in self.blocks:
-            hidden_states = block(hidden_states, attention_mask=core_input.attention_mask)
+            hidden_states = block(
+                hidden_states, attention_mask=core_input.attention_mask
+            )
         hidden_states = self.final_norm(hidden_states)
-        cache_update_metadata = core_input.cache_update_metadata or CacheUpdateMetadata()
+        cache_update_metadata = (
+            core_input.cache_update_metadata or CacheUpdateMetadata()
+        )
         has_runtime_sequence = core_input.sequence_metadata is not None
         layer_cache_entries = (
             tuple(
@@ -124,7 +144,9 @@ class PackedSequenceVisualCore(nn.Module):
                         "current_start_frame": cache_update_metadata.current_start_frame,
                     }
                 )
-                for layer_index, layer_seq_len in enumerate([hidden_states.shape[1]] * len(self.blocks))
+                for layer_index, layer_seq_len in enumerate(
+                    [hidden_states.shape[1]] * len(self.blocks)
+                )
             )
             if has_runtime_sequence
             else tuple()
@@ -178,14 +200,17 @@ class PackedSequenceVisualCore(nn.Module):
         )
 
     def execute_runtime_step(self, step_input: RuntimeStepInput) -> RuntimeStepOutput:
-        prepared = prepare_runtime_sequence(step_input, hidden_size=self.config.hidden_size)
+        prepared = prepare_runtime_sequence(step_input)
         if prepared.mode != "core_input" or prepared.core_input is None:
             raise ValueError(
                 "PackedSequenceVisualCore only supports runtime programs that resolve to `core_input`."
             )
         core_output = self.forward(prepared.core_input)
         core_output.aux.setdefault("runtime_program", step_input.program.name)
-        core_output.aux.setdefault("sequence_family", step_input.program.sequence_family)
+        core_output.aux.setdefault(
+            "sequence_family",
+            step_input.program.sequence_family.value,
+        )
         return RuntimeStepOutput(
             tokens=core_output.tokens,
             core_output=core_output,
@@ -193,7 +218,7 @@ class PackedSequenceVisualCore(nn.Module):
             aux={
                 **core_output.aux,
                 "runtime_program": step_input.program.name,
-                "sequence_family": step_input.program.sequence_family,
+                "sequence_family": step_input.program.sequence_family.value,
             },
         )
 

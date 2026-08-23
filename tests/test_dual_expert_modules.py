@@ -9,14 +9,14 @@ import open_wam.configs  # Complete config initialization before policy imports.
 from open_wam.configs import (
     ActionSchemaConfig,
     CurrentBlockCoupling,
+    DualExpertActionDecoderConfig,
     DualExpertActionExpertInitMode,
     DualExpertConditionMode,
     DualExpertPolicyConfig,
     ExperimentConfig,
-    GeneralistDenoisingMode,
+    HistoryStreamVisibility,
     InferenceConfig,
     JointTimestepCoupling,
-    DualExpertActionDecoderConfig,
     ProprioContextMode,
     RobotWinDataConfig,
     TrainingConfig,
@@ -33,6 +33,11 @@ from open_wam.models.common import (
 )
 from open_wam.models.common.attention_profiles import (
     build_chunked_temporal_exact_attention_profile,
+)
+from open_wam.models.common.proprio_conditioning import (
+    HiddenProprioContext,
+    ProprioContextGranularity,
+    project_hidden_proprio_context_to_frames,
 )
 from open_wam.models.common.rollout_startup import build_strict_action_context_mask
 from open_wam.models.policy_variants import (
@@ -73,6 +78,9 @@ from open_wam.models.policy_variants.dual_expert.contracts import (
     DualExpertActionLayerCache,
     DualExpertRuntimeState,
 )
+from open_wam.models.policy_variants.dual_expert.coupling_semantics import (
+    is_dual_expert_same_step_coupling,
+)
 from open_wam.models.policy_variants.dual_expert.decoder_artifacts import (
     DUAL_EXPERT_DECODER_ARTIFACT_CONTRACT,
     DualExpertInferArtifacts,
@@ -88,17 +96,14 @@ from open_wam.models.policy_variants.dual_expert.modules import (
 from open_wam.models.policy_variants.dual_expert.packed_block import (
     DualExpertPackedBlock,
 )
+from open_wam.models.policy_variants.dual_expert.rollout_geometry import (
+    resolve_dual_expert_rollout_cache_window_frames,
+    resolve_dual_expert_rollout_history_frames,
+)
 from open_wam.models.policy_variants.dual_expert.runtime import (
     dual_expert_scheduler_next_sigma,
     expand_dual_expert_scalar_timestep,
     step_dual_expert_flow_with_sigmas,
-)
-from open_wam.models.policy_variants.dual_expert.coupling_semantics import (
-    is_dual_expert_same_step_coupling,
-)
-from open_wam.models.policy_variants.dual_expert.rollout_geometry import (
-    resolve_dual_expert_rollout_cache_window_frames,
-    resolve_dual_expert_rollout_history_frames,
 )
 from open_wam.models.policy_variants.dual_expert.variant import DualExpertPolicyVariant
 from open_wam.models.video_backbone.config import SharedVideoTransformerConfig
@@ -135,11 +140,23 @@ def test_dual_expert_runtime_cache_exports_are_compatibility_aliases() -> None:
         assert getattr(dual_expert_runtime, name) is canonical_operation
 
 
-def test_dual_expert_runtime_condition_and_flow_exports_are_compatibility_aliases() -> None:
-    assert dual_expert_runtime.resolve_dual_expert_condition_latents is resolve_dual_expert_condition_latents
-    assert dual_expert_runtime.expand_dual_expert_scalar_timestep is expand_scalar_timestep
-    assert dual_expert_runtime.dual_expert_scheduler_next_sigma is zero_terminal_next_sigma
-    assert dual_expert_runtime.step_dual_expert_flow_with_sigmas is explicit_sigma_euler_step
+def test_dual_expert_runtime_condition_and_flow_exports_are_compatibility_aliases() -> (
+    None
+):
+    assert (
+        dual_expert_runtime.resolve_dual_expert_condition_latents
+        is resolve_dual_expert_condition_latents
+    )
+    assert (
+        dual_expert_runtime.expand_dual_expert_scalar_timestep is expand_scalar_timestep
+    )
+    assert (
+        dual_expert_runtime.dual_expert_scheduler_next_sigma is zero_terminal_next_sigma
+    )
+    assert (
+        dual_expert_runtime.step_dual_expert_flow_with_sigmas
+        is explicit_sigma_euler_step
+    )
 
 
 def test_dual_expert_runtime_sharding_exports_are_compatibility_aliases() -> None:
@@ -148,7 +165,9 @@ def test_dual_expert_runtime_sharding_exports_are_compatibility_aliases() -> Non
     assert dual_expert_runtime._unshard_runtime_params is unshard_runtime_parameters
 
 
-def test_dual_expert_runtime_cache_execution_exports_are_compatibility_aliases() -> None:
+def test_dual_expert_runtime_cache_execution_exports_are_compatibility_aliases() -> (
+    None
+):
     assert (
         dual_expert_runtime.forward_action_with_video_and_action_cache
         is forward_action_with_video_and_action_cache
@@ -233,10 +252,14 @@ def test_dual_expert_action_expert_can_copy_shared_video_blocks() -> None:
     init_action_expert_from_video_core(action_expert=expert, video_core=video_core)
 
     for action_block, video_block in zip(expert.blocks, video_core.blocks, strict=True):
-        assert torch.allclose(action_block.scale_shift_table, video_block.scale_shift_table)
+        assert torch.allclose(
+            action_block.scale_shift_table, video_block.scale_shift_table
+        )
 
 
-def test_dual_expert_action_expert_can_interpolate_smaller_ffn_from_shared_video_blocks() -> None:
+def test_dual_expert_action_expert_can_interpolate_smaller_ffn_from_shared_video_blocks() -> (
+    None
+):
     video_core = SharedVideoTransformerCore(
         SharedVideoTransformerConfig(
             hidden_size=32,
@@ -402,7 +425,9 @@ def test_build_dual_expert_inference_action_mask_honors_strict_chunk_origin() ->
     assert strict_origin[first_current_action_query, frame0_video_key]
 
 
-def test_build_dual_expert_inference_action_mask_keeps_strict_first_target_chunk_together() -> None:
+def test_build_dual_expert_inference_action_mask_keeps_strict_first_target_chunk_together() -> (
+    None
+):
     mask = build_dual_expert_inference_action_attention_mask(
         video_seq_len=5,
         past_action_seq_len=0,
@@ -511,12 +536,14 @@ def test_build_dual_expert_packed_coupling_mask_six_mode_visibility(
     action_clean_key = 3
     video_key = (
         action_noisy_key
-        if coupling in {CurrentBlockCoupling.JOINT, CurrentBlockCoupling.ACTION_NOISY_TO_VIDEO}
+        if coupling
+        in {CurrentBlockCoupling.JOINT, CurrentBlockCoupling.ACTION_NOISY_TO_VIDEO}
         else action_clean_key
     )
     action_key = (
         video_noisy_query
-        if coupling in {CurrentBlockCoupling.JOINT, CurrentBlockCoupling.VIDEO_NOISY_TO_ACTION}
+        if coupling
+        in {CurrentBlockCoupling.JOINT, CurrentBlockCoupling.VIDEO_NOISY_TO_ACTION}
         else video_clean_key
     )
     assert bool(mask[video_noisy_query, video_key]) is video_reads_action
@@ -606,15 +633,19 @@ def test_build_dual_expert_packed_coupling_profile_matches_method1_dense_mask(
         build_dense_masks=True,
         build_flex_masks=False,
         current_block_coupling=coupling.value,
-        preserve_video_pretrain_history=True,
+        history_stream_visibility=(HistoryStreamVisibility.VIDEO_QUERIES_VIDEO_ONLY),
     )
 
     assert m5_profile.self_attention_mask is not None
     assert method1_profile.self_attention_mask is not None
-    assert torch.equal(m5_profile.self_attention_mask, method1_profile.self_attention_mask)
+    assert torch.equal(
+        m5_profile.self_attention_mask, method1_profile.self_attention_mask
+    )
 
 
-def test_dual_expert_packed_coupling_action_context_mask_hides_startup_action_tokens() -> None:
+def test_dual_expert_packed_coupling_action_context_mask_hides_startup_action_tokens() -> (
+    None
+):
     action_context_mask = torch.ones(1, 20, 1)
     action_context_mask[:, :4] = 0.0
     profile = build_dual_expert_packed_coupling_attention_profile(
@@ -650,7 +681,9 @@ def test_dual_expert_packed_coupling_action_context_mask_hides_startup_action_to
     assert profile.metadata["invalid_action_context_tokens"] == 4
 
 
-def test_dual_expert_packed_coupling_singleton_chunk_frame_isolates_t0_history() -> None:
+def test_dual_expert_packed_coupling_singleton_chunk_frame_isolates_t0_history() -> (
+    None
+):
     profile = build_dual_expert_packed_coupling_attention_profile(
         num_video_frames=5,
         video_tokens_per_frame=1,
@@ -750,8 +783,12 @@ def test_dual_expert_joint_strict_startup_action_prefix_is_not_kv_context() -> N
     action_clean_start = action_noisy_start + action_tokens
     invalid_noisy = slice(action_noisy_start, action_noisy_start + prefix_tokens)
     invalid_clean = slice(action_clean_start, action_clean_start + prefix_tokens)
-    real_noisy = slice(action_noisy_start + prefix_tokens, action_noisy_start + action_tokens)
-    real_clean = slice(action_clean_start + prefix_tokens, action_clean_start + action_tokens)
+    real_noisy = slice(
+        action_noisy_start + prefix_tokens, action_noisy_start + action_tokens
+    )
+    real_clean = slice(
+        action_clean_start + prefix_tokens, action_clean_start + action_tokens
+    )
 
     invalid_kv = torch.zeros(mask.shape[1], dtype=torch.bool)
     invalid_kv[invalid_noisy] = True
@@ -766,7 +803,9 @@ def test_dual_expert_joint_strict_startup_action_prefix_is_not_kv_context() -> N
     assert profile.metadata["invalid_action_context_tokens"] == prefix_tokens
 
 
-def test_dual_expert_packed_coupling_profile_threads_history_stream_visibility() -> None:
+def test_dual_expert_packed_coupling_profile_threads_history_stream_visibility() -> (
+    None
+):
     profile = build_dual_expert_packed_coupling_attention_profile(
         num_video_frames=4,
         video_tokens_per_frame=1,
@@ -823,7 +862,9 @@ def test_dual_expert_packed_coupling_profile_threads_prefix_condition_frames() -
     assert bool(mask[action_noisy_target0, action_clean_target0].item()) is False
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="Flex block mask requires CUDA in this setup")
+@pytest.mark.skipif(
+    not torch.cuda.is_available(), reason="Flex block mask requires CUDA in this setup"
+)
 def test_build_dual_expert_packed_coupling_profile_uses_flex_on_cuda() -> None:
     profile = build_dual_expert_packed_coupling_attention_profile(
         num_video_frames=4,
@@ -851,8 +892,12 @@ def test_trim_dual_expert_action_cache_prefix_keeps_oldest_tokens() -> None:
     trimmed = trim_dual_expert_action_cache_prefix(cache, max_action_seq_len=4)
 
     assert trimmed.action_seq_len == 4
-    assert torch.equal(trimmed.layers[0].key.flatten(), torch.arange(4, dtype=torch.float32))
-    assert torch.equal(trimmed.layers[0].value.flatten(), torch.arange(100, 104, dtype=torch.float32))
+    assert torch.equal(
+        trimmed.layers[0].key.flatten(), torch.arange(4, dtype=torch.float32)
+    )
+    assert torch.equal(
+        trimmed.layers[0].value.flatten(), torch.arange(100, 104, dtype=torch.float32)
+    )
 
 
 def test_runtime_action_cache_rewind_uses_absolute_cache_start_frame() -> None:
@@ -874,7 +919,9 @@ def test_runtime_action_cache_rewind_uses_absolute_cache_start_frame() -> None:
     assert state.action_cache_start_frame == 10
     assert state.action_cache is not None
     assert state.action_cache.action_seq_len == 8
-    assert torch.equal(state.action_cache.layers[0].key.flatten(), torch.arange(8, dtype=torch.float32))
+    assert torch.equal(
+        state.action_cache.layers[0].key.flatten(), torch.arange(8, dtype=torch.float32)
+    )
 
 
 def test_runtime_action_cache_rewind_clears_cache_before_window() -> None:
@@ -913,7 +960,6 @@ def test_dual_expert_train_loss_masks_use_objective_specific_metadata() -> None:
         inference_config=InferenceConfig(),
         action_dim=1,
         action_horizon=8,
-        state_dim=4,
     )
     batch = PolicyTrainBatch(
         actions=torch.ones(1, 8, 1),
@@ -937,7 +983,9 @@ def test_dual_expert_train_loss_masks_use_objective_specific_metadata() -> None:
         observed_num_frames=4,
     )
     assert action_mask is not None
-    assert torch.equal(action_mask[:, :, 0], torch.tensor([[0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0]]))
+    assert torch.equal(
+        action_mask[:, :, 0], torch.tensor([[0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0]])
+    )
 
     video_mask = variant.training_layout.build_effective_video_loss_mask(
         video_latents=torch.ones(1, 2, 4, 1, 1),
@@ -963,7 +1011,6 @@ def test_dual_expert_role_contracts_do_not_register_model_state() -> None:
         inference_config=InferenceConfig(),
         action_dim=1,
         action_horizon=8,
-        state_dim=4,
     )
 
     assert not isinstance(variant.conditioning, torch.nn.Module)
@@ -990,7 +1037,9 @@ def test_dual_expert_variant_train_forward_from_latents_smoke(
     config = ExperimentConfig(
         data=RobotWinDataConfig(
             num_frames=4,
-            action_schema=ActionSchemaConfig(action_dim=4, action_horizon=4, state_dim=4, state_horizon=1),
+            action_schema=ActionSchemaConfig(
+                action_dim=4, action_horizon=4, state_dim=4, state_horizon=1
+            ),
         ),
         backbone=SharedVideoTransformerConfig(
             implementation="shared_transformer",
@@ -1013,8 +1062,12 @@ def test_dual_expert_variant_train_forward_from_latents_smoke(
             teacher_forcing_video_noise_prob=teacher_forcing_video_noise_prob,
             num_action_layers=2,
         ),
-        action_decoder=DualExpertActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
-        training=TrainingConfig(chunk_size=2, window_size=8, action_loss_weight=1.0, latent_loss_weight=0.0),
+        action_decoder=DualExpertActionDecoderConfig(
+            hidden_size=32, action_dim=4, action_horizon=4
+        ),
+        training=TrainingConfig(
+            chunk_size=2, window_size=8, action_loss_weight=1.0, latent_loss_weight=0.0
+        ),
         inference=InferenceConfig(frame_chunk_size=2),
     )
     pipeline = build_variant_pipeline_from_config(config)
@@ -1036,7 +1089,9 @@ def test_dual_expert_prefers_condition_latents_by_default() -> None:
     config = ExperimentConfig(
         data=RobotWinDataConfig(
             num_frames=4,
-            action_schema=ActionSchemaConfig(action_dim=4, action_horizon=4, state_dim=4, state_horizon=1),
+            action_schema=ActionSchemaConfig(
+                action_dim=4, action_horizon=4, state_dim=4, state_horizon=1
+            ),
         ),
         backbone=SharedVideoTransformerConfig(
             implementation="shared_transformer",
@@ -1059,8 +1114,12 @@ def test_dual_expert_prefers_condition_latents_by_default() -> None:
             teacher_forcing_video_noise_prob=0.0,
             num_action_layers=2,
         ),
-        action_decoder=DualExpertActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
-        training=TrainingConfig(chunk_size=2, window_size=8, action_loss_weight=1.0, latent_loss_weight=0.0),
+        action_decoder=DualExpertActionDecoderConfig(
+            hidden_size=32, action_dim=4, action_horizon=4
+        ),
+        training=TrainingConfig(
+            chunk_size=2, window_size=8, action_loss_weight=1.0, latent_loss_weight=0.0
+        ),
         inference=InferenceConfig(frame_chunk_size=2),
     )
     pipeline = build_variant_pipeline_from_config(config)
@@ -1081,60 +1140,13 @@ def test_dual_expert_prefers_condition_latents_by_default() -> None:
     assert torch.isfinite(output.decoder_output.loss)
 
 
-def test_dual_expert_accepts_time_first_train_condition_latents() -> None:
-    config = ExperimentConfig(
-        data=RobotWinDataConfig(
-            num_frames=4,
-            action_schema=ActionSchemaConfig(action_dim=4, action_horizon=4, state_dim=4, state_horizon=1),
-        ),
-        backbone=SharedVideoTransformerConfig(
-            implementation="shared_transformer",
-            hidden_size=32,
-            num_layers=2,
-            num_heads=4,
-            attention_head_dim=8,
-            ffn_dim=64,
-            text_dim=16,
-            freq_dim=8,
-            load_reference_core_weights=False,
-            load_text_conditioning=False,
-            load_wan_vae_frontend=False,
-        ),
-        policy_variant=DualExpertPolicyConfig(
-            hidden_size=32,
-            program=VideoActionProgram.VIDEO_THEN_ACTION,
-            condition_mode=DualExpertConditionMode.FIRST_FRAME,
-            video_prefix_frames=1,
-            teacher_forcing_video_noise_prob=0.0,
-            num_action_layers=2,
-        ),
-        action_decoder=DualExpertActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
-        training=TrainingConfig(chunk_size=2, window_size=8, action_loss_weight=1.0, latent_loss_weight=0.0),
-        inference=InferenceConfig(frame_chunk_size=2),
-    )
-    pipeline = build_variant_pipeline_from_config(config)
-    video_latents = torch.zeros(1, 48, 4, 8, 8)
-    condition_latents = torch.full((1, 4, 48, 8, 8), 3.0)
-    batch = PolicyTrainBatch(
-        actions=torch.randn(1, 4, 4),
-        extra={"condition_latents": condition_latents},
-    )
-
-    output = pipeline.forward_train_from_latents(
-        video_latents,
-        batch,
-        text_context=torch.randn(1, 5, 16),
-    )
-
-    assert output.policy_output.aux["video_condition_source"] == "condition_latents"
-    assert torch.isfinite(output.decoder_output.loss)
-
-
 def test_dual_expert_condition_latents_can_be_disabled() -> None:
     config = ExperimentConfig(
         data=RobotWinDataConfig(
             num_frames=4,
-            action_schema=ActionSchemaConfig(action_dim=4, action_horizon=4, state_dim=4, state_horizon=1),
+            action_schema=ActionSchemaConfig(
+                action_dim=4, action_horizon=4, state_dim=4, state_horizon=1
+            ),
         ),
         backbone=SharedVideoTransformerConfig(
             implementation="shared_transformer",
@@ -1158,8 +1170,12 @@ def test_dual_expert_condition_latents_can_be_disabled() -> None:
             num_action_layers=2,
             use_condition_latents=False,
         ),
-        action_decoder=DualExpertActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
-        training=TrainingConfig(chunk_size=2, window_size=8, action_loss_weight=1.0, latent_loss_weight=0.0),
+        action_decoder=DualExpertActionDecoderConfig(
+            hidden_size=32, action_dim=4, action_horizon=4
+        ),
+        training=TrainingConfig(
+            chunk_size=2, window_size=8, action_loss_weight=1.0, latent_loss_weight=0.0
+        ),
         inference=InferenceConfig(frame_chunk_size=2),
     )
     pipeline = build_variant_pipeline_from_config(config)
@@ -1179,11 +1195,15 @@ def test_dual_expert_condition_latents_can_be_disabled() -> None:
     assert torch.isfinite(output.decoder_output.loss)
 
 
-def test_dual_expert_deprecated_text_token_proprio_context_uses_shared_batch_context_for_train() -> None:
+def test_dual_expert_deprecated_text_token_proprio_context_uses_shared_batch_context_for_train() -> (
+    None
+):
     config = ExperimentConfig(
         data=RobotWinDataConfig(
             num_frames=4,
-            action_schema=ActionSchemaConfig(action_dim=4, action_horizon=4, state_dim=4, state_horizon=1),
+            action_schema=ActionSchemaConfig(
+                action_dim=4, action_horizon=4, state_dim=4, state_horizon=1
+            ),
         ),
         backbone=SharedVideoTransformerConfig(
             implementation="shared_transformer",
@@ -1207,8 +1227,12 @@ def test_dual_expert_deprecated_text_token_proprio_context_uses_shared_batch_con
             num_action_layers=1,
             proprio_context_mode=ProprioContextMode.TEXT_CONTEXT_TOKEN,  # deprecated compatibility
         ),
-        action_decoder=DualExpertActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
-        training=TrainingConfig(chunk_size=2, window_size=8, action_loss_weight=1.0, latent_loss_weight=0.0),
+        action_decoder=DualExpertActionDecoderConfig(
+            hidden_size=32, action_dim=4, action_horizon=4
+        ),
+        training=TrainingConfig(
+            chunk_size=2, window_size=8, action_loss_weight=1.0, latent_loss_weight=0.0
+        ),
         inference=InferenceConfig(frame_chunk_size=2),
     )
     pipeline = build_variant_pipeline_from_config(config)
@@ -1225,7 +1249,9 @@ def test_dual_expert_deprecated_text_token_proprio_context_uses_shared_batch_con
     proprio_context_state_mask[:, 2, 2:] = 0
     video_latents = torch.randn(1, 48, 4, 8, 8)
     text_context = torch.zeros(1, 5, 16)
-    visual_outputs = pipeline.prepare_visual_outputs_from_latents(video_latents, text_context=text_context)
+    visual_outputs = pipeline.prepare_visual_outputs_from_latents(
+        video_latents, text_context=text_context
+    )
     batch = PolicyTrainBatch(
         actions=torch.randn(1, 4, 4),
         state=state,
@@ -1247,7 +1273,11 @@ def test_dual_expert_deprecated_text_token_proprio_context_uses_shared_batch_con
     )
 
     masked_proprio = proprio_context_state * proprio_context_state_mask
-    expected = encoder(masked_proprio.reshape(3, 4)).reshape(1, 3, 16).to(dtype=video_latents.dtype)
+    expected = (
+        encoder(masked_proprio.reshape(3, 4))
+        .reshape(1, 3, 16)
+        .to(dtype=video_latents.dtype)
+    )
     assert torch.allclose(prepared.variant_inputs["proprio_state"], masked_proprio)
     assert resolved is not None
     assert resolved.shape == (1, 8, 16)
@@ -1259,7 +1289,9 @@ def test_dual_expert_per_chunk_additive_does_not_build_text_proprio_mask() -> No
     config = ExperimentConfig(
         data=RobotWinDataConfig(
             num_frames=4,
-            action_schema=ActionSchemaConfig(action_dim=4, action_horizon=4, state_dim=4, state_horizon=1),
+            action_schema=ActionSchemaConfig(
+                action_dim=4, action_horizon=4, state_dim=4, state_horizon=1
+            ),
         ),
         backbone=SharedVideoTransformerConfig(
             implementation="shared_transformer",
@@ -1280,14 +1312,20 @@ def test_dual_expert_per_chunk_additive_does_not_build_text_proprio_mask() -> No
             num_action_layers=1,
             proprio_context_mode=ProprioContextMode.PER_CHUNK_ADDITIVE,
         ),
-        action_decoder=DualExpertActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
-        training=TrainingConfig(chunk_size=2, window_size=8, action_loss_weight=1.0, latent_loss_weight=1.0),
+        action_decoder=DualExpertActionDecoderConfig(
+            hidden_size=32, action_dim=4, action_horizon=4
+        ),
+        training=TrainingConfig(
+            chunk_size=2, window_size=8, action_loss_weight=1.0, latent_loss_weight=1.0
+        ),
         inference=InferenceConfig(frame_chunk_size=2),
     )
     pipeline = build_variant_pipeline_from_config(config)
     video_latents = torch.randn(1, 48, 4, 8, 8)
     text_context = torch.randn(1, 5, 16)
-    visual_outputs = pipeline.prepare_visual_outputs_from_latents(video_latents, text_context=text_context)
+    visual_outputs = pipeline.prepare_visual_outputs_from_latents(
+        video_latents, text_context=text_context
+    )
     proprio_context_frames = torch.randn(1, 4, 4)
     batch = PolicyTrainBatch(
         actions=torch.randn(1, 4, 4),
@@ -1316,17 +1354,24 @@ def test_dual_expert_per_chunk_additive_does_not_build_text_proprio_mask() -> No
     )
 
     assert prepared.variant_inputs["proprio_state"] is None
-    assert torch.equal(prepared.variant_inputs["hidden_proprio_state"], proprio_context_frames)
+    assert torch.equal(
+        prepared.variant_inputs["hidden_proprio_context"].values,
+        proprio_context_frames,
+    )
     assert resolved is not None
     assert resolved.shape == text_context.shape
     assert mask is None
 
 
-def test_dual_expert_deprecated_text_token_proprio_mask_exposes_matching_chunk_token_only() -> None:
+def test_dual_expert_deprecated_text_token_proprio_mask_exposes_matching_chunk_token_only() -> (
+    None
+):
     config = ExperimentConfig(
         data=RobotWinDataConfig(
             num_frames=6,
-            action_schema=ActionSchemaConfig(action_dim=4, action_horizon=6, state_dim=4, state_horizon=1),
+            action_schema=ActionSchemaConfig(
+                action_dim=4, action_horizon=6, state_dim=4, state_horizon=1
+            ),
         ),
         backbone=SharedVideoTransformerConfig(
             implementation="shared_transformer",
@@ -1350,8 +1395,12 @@ def test_dual_expert_deprecated_text_token_proprio_mask_exposes_matching_chunk_t
             num_action_layers=1,
             proprio_context_mode=ProprioContextMode.TEXT_CONTEXT_TOKEN,  # deprecated compatibility
         ),
-        action_decoder=DualExpertActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=6),
-        training=TrainingConfig(chunk_size=2, window_size=8, action_loss_weight=1.0, latent_loss_weight=0.0),
+        action_decoder=DualExpertActionDecoderConfig(
+            hidden_size=32, action_dim=4, action_horizon=6
+        ),
+        training=TrainingConfig(
+            chunk_size=2, window_size=8, action_loss_weight=1.0, latent_loss_weight=0.0
+        ),
         inference=InferenceConfig(frame_chunk_size=2),
     )
     pipeline = build_variant_pipeline_from_config(config)
@@ -1385,7 +1434,9 @@ def test_dual_expert_deprecated_text_token_proprio_mask_exposes_matching_chunk_t
     )
 
 
-def test_dual_expert_chunk_origin_aligns_one_frame_context_with_first_target_chunk() -> None:
+def test_dual_expert_chunk_origin_aligns_one_frame_context_with_first_target_chunk() -> (
+    None
+):
     video_mask = build_chunk_causal_video_mask(
         video_seq_len=5,
         video_tokens_per_frame=1,
@@ -1402,7 +1453,9 @@ def test_dual_expert_chunk_origin_aligns_one_frame_context_with_first_target_chu
     config = ExperimentConfig(
         data=RobotWinDataConfig(
             num_frames=5,
-            action_schema=ActionSchemaConfig(action_dim=4, action_horizon=5, state_dim=4, state_horizon=1),
+            action_schema=ActionSchemaConfig(
+                action_dim=4, action_horizon=5, state_dim=4, state_horizon=1
+            ),
         ),
         backbone=SharedVideoTransformerConfig(
             implementation="shared_transformer",
@@ -1426,21 +1479,27 @@ def test_dual_expert_chunk_origin_aligns_one_frame_context_with_first_target_chu
             num_action_layers=1,
             proprio_context_mode=ProprioContextMode.TEXT_CONTEXT_TOKEN,  # deprecated compatibility
         ),
-        action_decoder=DualExpertActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=5),
-        training=TrainingConfig(chunk_size=4, window_size=8, action_loss_weight=1.0, latent_loss_weight=0.0),
+        action_decoder=DualExpertActionDecoderConfig(
+            hidden_size=32, action_dim=4, action_horizon=5
+        ),
+        training=TrainingConfig(
+            chunk_size=4, window_size=8, action_loss_weight=1.0, latent_loss_weight=0.0
+        ),
         inference=InferenceConfig(frame_chunk_size=4),
     )
     pipeline = build_variant_pipeline_from_config(config)
     resolved_text = torch.zeros(1, 3, 16)
     proprio_context_state = torch.zeros(1, 2, 4)
 
-    cross_mask = pipeline.policy_variant.conditioning.build_proprio_cross_attention_mask(
-        resolved_text_context=resolved_text,
-        proprio_state=proprio_context_state,
-        query_frames_per_copy=5,
-        tokens_per_frame=1,
-        chunk_size_frames=4,
-        chunk_origin_frame=1,
+    cross_mask = (
+        pipeline.policy_variant.conditioning.build_proprio_cross_attention_mask(
+            resolved_text_context=resolved_text,
+            proprio_state=proprio_context_state,
+            query_frames_per_copy=5,
+            tokens_per_frame=1,
+            chunk_size_frames=4,
+            chunk_origin_frame=1,
+        )
     )
 
     assert cross_mask is not None
@@ -1449,7 +1508,9 @@ def test_dual_expert_chunk_origin_aligns_one_frame_context_with_first_target_chu
     assert cross_mask[0, 4, :3].tolist() == [True, True, False]
 
 
-def test_dual_expert_packed_block_accepts_query_dependent_cross_attention_masks() -> None:
+def test_dual_expert_packed_block_accepts_query_dependent_cross_attention_masks() -> (
+    None
+):
     video_core = SharedVideoTransformerCore(
         SharedVideoTransformerConfig(
             hidden_size=32,
@@ -1493,8 +1554,12 @@ def test_dual_expert_packed_block_accepts_query_dependent_cross_attention_masks(
         action_attention_mask=None,
         video_text_hidden_states=torch.randn(batch_size, context_tokens, 32),
         action_text_hidden_states=torch.randn(batch_size, context_tokens, 32),
-        video_cross_attention_mask=torch.ones(batch_size, video_tokens, context_tokens, dtype=torch.bool),
-        action_cross_attention_mask=torch.ones(batch_size, action_tokens, context_tokens, dtype=torch.bool),
+        video_cross_attention_mask=torch.ones(
+            batch_size, video_tokens, context_tokens, dtype=torch.bool
+        ),
+        action_cross_attention_mask=torch.ones(
+            batch_size, action_tokens, context_tokens, dtype=torch.bool
+        ),
     )
 
     assert video_out.shape == (batch_size, video_tokens, 32)
@@ -1503,11 +1568,15 @@ def test_dual_expert_packed_block_accepts_query_dependent_cross_attention_masks(
     assert torch.isfinite(action_out).all()
 
 
-def test_dual_expert_prepare_infer_state_appends_deprecated_proprio_context_token() -> None:
+def test_dual_expert_prepare_infer_state_appends_deprecated_proprio_context_token() -> (
+    None
+):
     config = ExperimentConfig(
         data=RobotWinDataConfig(
             num_frames=4,
-            action_schema=ActionSchemaConfig(action_dim=4, action_horizon=4, state_dim=4, state_horizon=1),
+            action_schema=ActionSchemaConfig(
+                action_dim=4, action_horizon=4, state_dim=4, state_horizon=1
+            ),
         ),
         backbone=SharedVideoTransformerConfig(
             implementation="shared_transformer",
@@ -1531,8 +1600,12 @@ def test_dual_expert_prepare_infer_state_appends_deprecated_proprio_context_toke
             num_action_layers=1,
             proprio_context_mode=ProprioContextMode.TEXT_CONTEXT_TOKEN,  # deprecated compatibility
         ),
-        action_decoder=DualExpertActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
-        training=TrainingConfig(chunk_size=2, window_size=8, action_loss_weight=1.0, latent_loss_weight=0.0),
+        action_decoder=DualExpertActionDecoderConfig(
+            hidden_size=32, action_dim=4, action_horizon=4
+        ),
+        training=TrainingConfig(
+            chunk_size=2, window_size=8, action_loss_weight=1.0, latent_loss_weight=0.0
+        ),
         inference=InferenceConfig(frame_chunk_size=2),
     )
     pipeline = build_variant_pipeline_from_config(config)
@@ -1544,7 +1617,9 @@ def test_dual_expert_prepare_infer_state_appends_deprecated_proprio_context_toke
     state = torch.tensor([[[1.0, 1.0, 1.0, 1.0], [2.0, 3.0, 4.0, 5.0]]])
     video_latents = torch.randn(1, 48, 4, 8, 8)
     text_context = torch.zeros(1, 5, 16)
-    visual_outputs = pipeline.prepare_visual_outputs_from_latents(video_latents, text_context=text_context)
+    visual_outputs = pipeline.prepare_visual_outputs_from_latents(
+        video_latents, text_context=text_context
+    )
 
     infer_state = pipeline.policy_variant.prepare_infer_state(
         visual_tower=pipeline.visual_tower,
@@ -1580,7 +1655,9 @@ def test_dual_expert_variant_infer_from_latents_smoke(
     config = ExperimentConfig(
         data=RobotWinDataConfig(
             num_frames=4,
-            action_schema=ActionSchemaConfig(action_dim=4, action_horizon=4, state_dim=4, state_horizon=1),
+            action_schema=ActionSchemaConfig(
+                action_dim=4, action_horizon=4, state_dim=4, state_horizon=1
+            ),
         ),
         backbone=SharedVideoTransformerConfig(
             implementation="shared_transformer",
@@ -1603,8 +1680,12 @@ def test_dual_expert_variant_infer_from_latents_smoke(
             teacher_forcing_video_noise_prob=0.0,
             num_action_layers=2,
         ),
-        action_decoder=DualExpertActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
-        training=TrainingConfig(chunk_size=2, window_size=8, action_loss_weight=1.0, latent_loss_weight=0.0),
+        action_decoder=DualExpertActionDecoderConfig(
+            hidden_size=32, action_dim=4, action_horizon=4
+        ),
+        training=TrainingConfig(
+            chunk_size=2, window_size=8, action_loss_weight=1.0, latent_loss_weight=0.0
+        ),
         inference=InferenceConfig(frame_chunk_size=2, action_num_inference_steps=3),
     )
     pipeline = build_variant_pipeline_from_config(config)
@@ -1621,7 +1702,9 @@ def test_dual_expert_variant_infer_from_latents_smoke(
 
     assert output.decoder_output.action_pred.shape == (1, 4, 4)
     assert torch.isfinite(output.decoder_output.action_pred).all()
-    assert isinstance(output.policy_output.next_state.variant_state, DualExpertRuntimeState)
+    assert isinstance(
+        output.policy_output.next_state.variant_state, DualExpertRuntimeState
+    )
 
 
 def test_dual_expert_packed_joint_infer_uses_actual_rollout_video_length() -> None:
@@ -1688,11 +1771,15 @@ def test_dual_expert_packed_joint_infer_uses_actual_rollout_video_length() -> No
     assert output.decoder_output.action_pred.shape == (1, 4, 4)
 
 
-def test_dual_expert_variant_train_from_latents_supports_joint_action_and_video_objectives() -> None:
+def test_dual_expert_variant_train_from_latents_supports_joint_action_and_video_objectives() -> (
+    None
+):
     config = ExperimentConfig(
         data=RobotWinDataConfig(
             num_frames=4,
-            action_schema=ActionSchemaConfig(action_dim=4, action_horizon=4, state_dim=4, state_horizon=1),
+            action_schema=ActionSchemaConfig(
+                action_dim=4, action_horizon=4, state_dim=4, state_horizon=1
+            ),
         ),
         backbone=SharedVideoTransformerConfig(
             implementation="shared_transformer",
@@ -1714,7 +1801,9 @@ def test_dual_expert_variant_train_from_latents_supports_joint_action_and_video_
             video_prefix_frames=1,
             num_action_layers=2,
         ),
-        action_decoder=DualExpertActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
+        action_decoder=DualExpertActionDecoderConfig(
+            hidden_size=32, action_dim=4, action_horizon=4
+        ),
         training=TrainingConfig(
             chunk_size=2,
             window_size=8,
@@ -1736,8 +1825,12 @@ def test_dual_expert_variant_train_from_latents_supports_joint_action_and_video_
     )
 
     assert torch.isfinite(output.decoder_output.loss)
-    assert torch.isfinite(output.decoder_output.metrics["weighted_action_diffusion_loss"])
-    assert torch.isfinite(output.decoder_output.metrics["weighted_video_diffusion_loss"])
+    assert torch.isfinite(
+        output.decoder_output.metrics["weighted_action_diffusion_loss"]
+    )
+    assert torch.isfinite(
+        output.decoder_output.metrics["weighted_video_diffusion_loss"]
+    )
     assert output.decoder_output.aux["predicted_latents"].shape == video_latents.shape
 
 
@@ -1758,7 +1851,9 @@ def test_dual_expert_joint_denoise_train_supports_same_step_couplings(
     config = ExperimentConfig(
         data=RobotWinDataConfig(
             num_frames=4,
-            action_schema=ActionSchemaConfig(action_dim=4, action_horizon=4, state_dim=4, state_horizon=1),
+            action_schema=ActionSchemaConfig(
+                action_dim=4, action_horizon=4, state_dim=4, state_horizon=1
+            ),
         ),
         backbone=SharedVideoTransformerConfig(
             implementation="shared_transformer",
@@ -1779,7 +1874,9 @@ def test_dual_expert_joint_denoise_train_supports_same_step_couplings(
             video_prefix_frames=1,
             num_action_layers=1,
         ),
-        action_decoder=DualExpertActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
+        action_decoder=DualExpertActionDecoderConfig(
+            hidden_size=32, action_dim=4, action_horizon=4
+        ),
         training=TrainingConfig(
             chunk_size=2,
             window_size=8,
@@ -1787,17 +1884,26 @@ def test_dual_expert_joint_denoise_train_supports_same_step_couplings(
             action_loss_weight=1.0,
             latent_loss_weight=1.0,
         ),
-        inference=InferenceConfig(frame_chunk_size=2, video_num_inference_steps=2, action_num_inference_steps=2),
+        inference=InferenceConfig(
+            frame_chunk_size=2,
+            video_num_inference_steps=2,
+            action_num_inference_steps=2,
+        ),
     )
     pipeline = build_variant_pipeline_from_config(config)
     batch = PolicyTrainBatch(actions=torch.randn(1, 4, 4))
     video_latents = torch.randn(1, 48, 4, 8, 8)
     text_context = torch.randn(1, 5, 16)
 
-    output = pipeline.forward_train_from_latents(video_latents, batch, text_context=text_context)
+    output = pipeline.forward_train_from_latents(
+        video_latents, batch, text_context=text_context
+    )
 
     assert torch.isfinite(output.decoder_output.loss)
-    assert output.policy_output.aux["current_block_coupling"] == current_block_coupling.value
+    assert (
+        output.policy_output.aux["current_block_coupling"]
+        == current_block_coupling.value
+    )
 
 
 @pytest.mark.parametrize(
@@ -1817,7 +1923,9 @@ def test_dual_expert_joint_denoise_infer_supports_same_step_couplings(
     config = ExperimentConfig(
         data=RobotWinDataConfig(
             num_frames=4,
-            action_schema=ActionSchemaConfig(action_dim=4, action_horizon=4, state_dim=4, state_horizon=1),
+            action_schema=ActionSchemaConfig(
+                action_dim=4, action_horizon=4, state_dim=4, state_horizon=1
+            ),
         ),
         backbone=SharedVideoTransformerConfig(
             implementation="shared_transformer",
@@ -1838,14 +1946,24 @@ def test_dual_expert_joint_denoise_infer_supports_same_step_couplings(
             video_prefix_frames=1,
             num_action_layers=1,
         ),
-        action_decoder=DualExpertActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
-        training=TrainingConfig(chunk_size=2, window_size=8, action_loss_weight=1.0, latent_loss_weight=1.0),
-        inference=InferenceConfig(frame_chunk_size=2, video_num_inference_steps=2, action_num_inference_steps=2),
+        action_decoder=DualExpertActionDecoderConfig(
+            hidden_size=32, action_dim=4, action_horizon=4
+        ),
+        training=TrainingConfig(
+            chunk_size=2, window_size=8, action_loss_weight=1.0, latent_loss_weight=1.0
+        ),
+        inference=InferenceConfig(
+            frame_chunk_size=2,
+            video_num_inference_steps=2,
+            action_num_inference_steps=2,
+        ),
     )
     pipeline = build_variant_pipeline_from_config(config)
     video_latents = torch.randn(1, 48, 4, 8, 8)
     text_context = torch.randn(1, 5, 16)
-    visual_outputs = pipeline.prepare_visual_outputs_from_latents(video_latents, text_context=text_context)
+    visual_outputs = pipeline.prepare_visual_outputs_from_latents(
+        video_latents, text_context=text_context
+    )
 
     output = pipeline.forward_infer_step_from_visual_outputs(
         visual_outputs,
@@ -1853,7 +1971,10 @@ def test_dual_expert_joint_denoise_infer_supports_same_step_couplings(
     )
 
     assert output.decoder_output.action_pred.shape == (1, 4, 4)
-    assert output.policy_output.aux["current_block_coupling"] == current_block_coupling.value
+    assert (
+        output.policy_output.aux["current_block_coupling"]
+        == current_block_coupling.value
+    )
     if current_block_coupling in {
         CurrentBlockCoupling.VIDEO_THEN_ACTION,
         CurrentBlockCoupling.DECOUPLED_SAME_STEP,
@@ -1877,7 +1998,9 @@ def test_dual_expert_split_cache_infer_threads_per_chunk_action_proprio(
     config = ExperimentConfig(
         data=RobotWinDataConfig(
             num_frames=4,
-            action_schema=ActionSchemaConfig(action_dim=4, action_horizon=4, state_dim=4, state_horizon=1),
+            action_schema=ActionSchemaConfig(
+                action_dim=4, action_horizon=4, state_dim=4, state_horizon=1
+            ),
         ),
         backbone=SharedVideoTransformerConfig(
             implementation="shared_transformer",
@@ -1899,9 +2022,17 @@ def test_dual_expert_split_cache_infer_threads_per_chunk_action_proprio(
             num_action_layers=1,
             proprio_context_mode=ProprioContextMode.PER_CHUNK_ADDITIVE,
         ),
-        action_decoder=DualExpertActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
-        training=TrainingConfig(chunk_size=2, window_size=8, action_loss_weight=1.0, latent_loss_weight=1.0),
-        inference=InferenceConfig(frame_chunk_size=2, video_num_inference_steps=2, action_num_inference_steps=2),
+        action_decoder=DualExpertActionDecoderConfig(
+            hidden_size=32, action_dim=4, action_horizon=4
+        ),
+        training=TrainingConfig(
+            chunk_size=2, window_size=8, action_loss_weight=1.0, latent_loss_weight=1.0
+        ),
+        inference=InferenceConfig(
+            frame_chunk_size=2,
+            video_num_inference_steps=2,
+            action_num_inference_steps=2,
+        ),
     )
     pipeline = build_variant_pipeline_from_config(config)
     captured_hidden_contexts: list[torch.Tensor | None] = []
@@ -1909,10 +2040,14 @@ def test_dual_expert_split_cache_infer_threads_per_chunk_action_proprio(
 
     def capture_pre_dit(*args, **kwargs):
         hidden_context = kwargs.get("hidden_context")
-        captured_hidden_contexts.append(None if hidden_context is None else hidden_context.detach().clone())
+        captured_hidden_contexts.append(
+            None if hidden_context is None else hidden_context.detach().clone()
+        )
         return original_pre_dit(*args, **kwargs)
 
-    monkeypatch.setattr(pipeline.policy_variant.action_expert, "pre_dit", capture_pre_dit)
+    monkeypatch.setattr(
+        pipeline.policy_variant.action_expert, "pre_dit", capture_pre_dit
+    )
 
     output = pipeline.forward_infer_step_from_latents(
         torch.randn(1, 48, 1, 8, 8),
@@ -1928,13 +2063,15 @@ def test_dual_expert_split_cache_infer_threads_per_chunk_action_proprio(
         assert hidden_context.shape == (1, 4, 32)
 
 
-def test_dual_expert_generalist_packed_infer_couples_action_to_video_sigma_schedule(
+def test_dual_expert_generalist_packed_infer_supports_explicit_sigma_coupling(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config = ExperimentConfig(
         data=RobotWinDataConfig(
             num_frames=4,
-            action_schema=ActionSchemaConfig(action_dim=4, action_horizon=4, state_dim=4, state_horizon=1),
+            action_schema=ActionSchemaConfig(
+                action_dim=4, action_horizon=4, state_dim=4, state_horizon=1
+            ),
         ),
         backbone=SharedVideoTransformerConfig(
             implementation="shared_transformer",
@@ -1952,11 +2089,13 @@ def test_dual_expert_generalist_packed_infer_couples_action_to_video_sigma_sched
         policy_variant=DualExpertPolicyConfig(
             hidden_size=32,
             program=VideoActionProgram.GENERALIST_JOINT_DENOISING,
-            generalist_denoising_mode_probs={GeneralistDenoisingMode.JOINT: 1.0},
+            joint_timestep_coupling=JointTimestepCoupling.MATCH_SIGMA,
             video_prefix_frames=1,
             num_action_layers=1,
         ),
-        action_decoder=DualExpertActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
+        action_decoder=DualExpertActionDecoderConfig(
+            hidden_size=32, action_dim=4, action_horizon=4
+        ),
         training=TrainingConfig(
             chunk_size=2,
             window_size=8,
@@ -1965,7 +2104,11 @@ def test_dual_expert_generalist_packed_infer_couples_action_to_video_sigma_sched
             action_loss_weight=1.0,
             latent_loss_weight=1.0,
         ),
-        inference=InferenceConfig(frame_chunk_size=2, video_num_inference_steps=2, action_num_inference_steps=2),
+        inference=InferenceConfig(
+            frame_chunk_size=2,
+            video_num_inference_steps=2,
+            action_num_inference_steps=2,
+        ),
     )
     pipeline = build_variant_pipeline_from_config(config)
     captured_action_timesteps: list[torch.Tensor] = []
@@ -1975,7 +2118,9 @@ def test_dual_expert_generalist_packed_infer_couples_action_to_video_sigma_sched
         captured_action_timesteps.append(kwargs["timestep"].detach().clone())
         return original_pre_dit(*args, **kwargs)
 
-    monkeypatch.setattr(pipeline.policy_variant.action_expert, "pre_dit", capture_pre_dit)
+    monkeypatch.setattr(
+        pipeline.policy_variant.action_expert, "pre_dit", capture_pre_dit
+    )
     infer_state = PolicyInferState(step_index=1)
     infer_state.cursor.current_start_frame = 2
     video_latents = torch.randn(1, 48, 2, 8, 8)
@@ -1988,17 +2133,30 @@ def test_dual_expert_generalist_packed_infer_couples_action_to_video_sigma_sched
         text_context=text_context,
     )
 
-    assert output.policy_output.aux["dual_expert_packed_history_debug"]["coupled_action_video_sigmas"] is True
     assert (
-        output.policy_output.aux["dual_expert_packed_history_debug"]["joint_timestep_coupling"]
+        output.policy_output.aux["dual_expert_packed_history_debug"][
+            "coupled_action_video_sigmas"
+        ]
+        is True
+    )
+    assert (
+        output.policy_output.aux["dual_expert_packed_history_debug"][
+            "joint_timestep_coupling"
+        ]
         == JointTimestepCoupling.MATCH_SIGMA.value
     )
     assert len(captured_action_timesteps) == 2
     first_step_noisy_action_t = captured_action_timesteps[0][0, :4]
     second_step_noisy_action_t = captured_action_timesteps[1][0, :4]
-    assert torch.allclose(first_step_noisy_action_t, torch.full_like(first_step_noisy_action_t, 1000.0))
-    assert torch.allclose(second_step_noisy_action_t, torch.full_like(second_step_noisy_action_t, 833.0))
-    assert not torch.allclose(second_step_noisy_action_t, torch.full_like(second_step_noisy_action_t, 500.0))
+    assert torch.allclose(
+        first_step_noisy_action_t, torch.full_like(first_step_noisy_action_t, 1000.0)
+    )
+    assert torch.allclose(
+        second_step_noisy_action_t, torch.full_like(second_step_noisy_action_t, 833.0)
+    )
+    assert not torch.allclose(
+        second_step_noisy_action_t, torch.full_like(second_step_noisy_action_t, 500.0)
+    )
 
 
 def test_dual_expert_explicit_sigma_flow_helpers_preserve_endpoint_semantics() -> None:
@@ -2040,7 +2198,9 @@ def test_dual_expert_packed_infer_modes_keep_two_chunk_history(
     config = ExperimentConfig(
         data=RobotWinDataConfig(
             num_frames=4,
-            action_schema=ActionSchemaConfig(action_dim=4, action_horizon=4, state_dim=4, state_horizon=1),
+            action_schema=ActionSchemaConfig(
+                action_dim=4, action_horizon=4, state_dim=4, state_horizon=1
+            ),
         ),
         backbone=SharedVideoTransformerConfig(
             implementation="shared_transformer",
@@ -2061,9 +2221,17 @@ def test_dual_expert_packed_infer_modes_keep_two_chunk_history(
             video_prefix_frames=1,
             num_action_layers=1,
         ),
-        action_decoder=DualExpertActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
-        training=TrainingConfig(chunk_size=2, window_size=8, action_loss_weight=1.0, latent_loss_weight=1.0),
-        inference=InferenceConfig(frame_chunk_size=2, video_num_inference_steps=2, action_num_inference_steps=2),
+        action_decoder=DualExpertActionDecoderConfig(
+            hidden_size=32, action_dim=4, action_horizon=4
+        ),
+        training=TrainingConfig(
+            chunk_size=2, window_size=8, action_loss_weight=1.0, latent_loss_weight=1.0
+        ),
+        inference=InferenceConfig(
+            frame_chunk_size=2,
+            video_num_inference_steps=2,
+            action_num_inference_steps=2,
+        ),
     )
     pipeline = build_variant_pipeline_from_config(config)
     text_context = torch.randn(1, 5, 16)
@@ -2103,7 +2271,9 @@ def test_dual_expert_packed_infer_chunk0_uses_one_frame_startup_bootstrap() -> N
     config = ExperimentConfig(
         data=RobotWinDataConfig(
             num_frames=4,
-            action_schema=ActionSchemaConfig(action_dim=4, action_horizon=4, state_dim=4, state_horizon=1),
+            action_schema=ActionSchemaConfig(
+                action_dim=4, action_horizon=4, state_dim=4, state_horizon=1
+            ),
         ),
         backbone=SharedVideoTransformerConfig(
             implementation="shared_transformer",
@@ -2124,9 +2294,17 @@ def test_dual_expert_packed_infer_chunk0_uses_one_frame_startup_bootstrap() -> N
             video_prefix_frames=1,
             num_action_layers=1,
         ),
-        action_decoder=DualExpertActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
-        training=TrainingConfig(chunk_size=2, window_size=8, action_loss_weight=1.0, latent_loss_weight=1.0),
-        inference=InferenceConfig(frame_chunk_size=2, video_num_inference_steps=2, action_num_inference_steps=2),
+        action_decoder=DualExpertActionDecoderConfig(
+            hidden_size=32, action_dim=4, action_horizon=4
+        ),
+        training=TrainingConfig(
+            chunk_size=2, window_size=8, action_loss_weight=1.0, latent_loss_weight=1.0
+        ),
+        inference=InferenceConfig(
+            frame_chunk_size=2,
+            video_num_inference_steps=2,
+            action_num_inference_steps=2,
+        ),
     )
     pipeline = build_variant_pipeline_from_config(config)
     video_latents = torch.randn(1, 48, 1, 8, 8)
@@ -2169,11 +2347,15 @@ def test_dual_expert_packed_infer_chunk0_uses_one_frame_startup_bootstrap() -> N
     assert history_debug["current_clean_condition_frames"] == 2
 
 
-def test_dual_expert_action_then_video_action_only_rollout_skips_predicted_video() -> None:
+def test_dual_expert_action_then_video_action_only_rollout_skips_predicted_video() -> (
+    None
+):
     config = ExperimentConfig(
         data=RobotWinDataConfig(
             num_frames=4,
-            action_schema=ActionSchemaConfig(action_dim=4, action_horizon=4, state_dim=4, state_horizon=1),
+            action_schema=ActionSchemaConfig(
+                action_dim=4, action_horizon=4, state_dim=4, state_horizon=1
+            ),
         ),
         backbone=SharedVideoTransformerConfig(
             implementation="shared_transformer",
@@ -2194,9 +2376,17 @@ def test_dual_expert_action_then_video_action_only_rollout_skips_predicted_video
             video_prefix_frames=1,
             num_action_layers=1,
         ),
-        action_decoder=DualExpertActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
-        training=TrainingConfig(chunk_size=2, window_size=8, action_loss_weight=1.0, latent_loss_weight=1.0),
-        inference=InferenceConfig(frame_chunk_size=2, video_num_inference_steps=2, action_num_inference_steps=2),
+        action_decoder=DualExpertActionDecoderConfig(
+            hidden_size=32, action_dim=4, action_horizon=4
+        ),
+        training=TrainingConfig(
+            chunk_size=2, window_size=8, action_loss_weight=1.0, latent_loss_weight=1.0
+        ),
+        inference=InferenceConfig(
+            frame_chunk_size=2,
+            video_num_inference_steps=2,
+            action_num_inference_steps=2,
+        ),
     )
     pipeline = build_variant_pipeline_from_config(config)
 
@@ -2226,11 +2416,15 @@ def test_dual_expert_action_then_video_action_only_rollout_skips_predicted_video
     assert packed_state.past_clean_actions.shape[1] == 4
 
 
-def test_dual_expert_action_then_video_action_only_rollout_preserves_hidden_proprio_alignment() -> None:
+def test_dual_expert_action_then_video_action_only_rollout_preserves_hidden_proprio_alignment() -> (
+    None
+):
     config = ExperimentConfig(
         data=RobotWinDataConfig(
             num_frames=4,
-            action_schema=ActionSchemaConfig(action_dim=4, action_horizon=4, state_dim=4, state_horizon=1),
+            action_schema=ActionSchemaConfig(
+                action_dim=4, action_horizon=4, state_dim=4, state_horizon=1
+            ),
         ),
         backbone=SharedVideoTransformerConfig(
             implementation="shared_transformer",
@@ -2252,9 +2446,17 @@ def test_dual_expert_action_then_video_action_only_rollout_preserves_hidden_prop
             num_action_layers=1,
             proprio_context_mode=ProprioContextMode.PER_CHUNK_ADDITIVE,
         ),
-        action_decoder=DualExpertActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
-        training=TrainingConfig(chunk_size=2, window_size=8, action_loss_weight=1.0, latent_loss_weight=1.0),
-        inference=InferenceConfig(frame_chunk_size=2, video_num_inference_steps=2, action_num_inference_steps=2),
+        action_decoder=DualExpertActionDecoderConfig(
+            hidden_size=32, action_dim=4, action_horizon=4
+        ),
+        training=TrainingConfig(
+            chunk_size=2, window_size=8, action_loss_weight=1.0, latent_loss_weight=1.0
+        ),
+        inference=InferenceConfig(
+            frame_chunk_size=2,
+            video_num_inference_steps=2,
+            action_num_inference_steps=2,
+        ),
     )
     pipeline = build_variant_pipeline_from_config(config)
     first = pipeline.forward_infer_step_from_latents(
@@ -2269,7 +2471,10 @@ def test_dual_expert_action_then_video_action_only_rollout_preserves_hidden_prop
     assert isinstance(first_state, DualExpertRuntimeState)
     assert first_state.past_hidden_proprio_states is not None
     assert first_state.past_clean_latents is not None
-    assert first_state.past_hidden_proprio_states.shape[1] == first_state.past_clean_latents.shape[2]
+    assert (
+        first_state.past_hidden_proprio_states.shape[1]
+        == first_state.past_clean_latents.shape[2]
+    )
 
     warmed_state = first_state
     warmed_state.past_clean_latents = torch.cat(
@@ -2312,7 +2517,10 @@ def test_dual_expert_action_then_video_action_only_rollout_preserves_hidden_prop
     assert isinstance(second_state, DualExpertRuntimeState)
     assert second_state.past_clean_latents is not None
     assert second_state.past_hidden_proprio_states is not None
-    assert second_state.past_hidden_proprio_states.shape[1] == second_state.past_clean_latents.shape[2]
+    assert (
+        second_state.past_hidden_proprio_states.shape[1]
+        == second_state.past_clean_latents.shape[2]
+    )
     assert second.policy_output.aux["predicted_latents"].shape[2] == 0
 
 
@@ -2320,7 +2528,9 @@ def test_dual_expert_action_only_rollout_rejects_video_then_action() -> None:
     config = ExperimentConfig(
         data=RobotWinDataConfig(
             num_frames=4,
-            action_schema=ActionSchemaConfig(action_dim=4, action_horizon=4, state_dim=4, state_horizon=1),
+            action_schema=ActionSchemaConfig(
+                action_dim=4, action_horizon=4, state_dim=4, state_horizon=1
+            ),
         ),
         backbone=SharedVideoTransformerConfig(
             implementation="shared_transformer",
@@ -2341,9 +2551,17 @@ def test_dual_expert_action_only_rollout_rejects_video_then_action() -> None:
             video_prefix_frames=1,
             num_action_layers=1,
         ),
-        action_decoder=DualExpertActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
-        training=TrainingConfig(chunk_size=2, window_size=8, action_loss_weight=1.0, latent_loss_weight=1.0),
-        inference=InferenceConfig(frame_chunk_size=2, video_num_inference_steps=2, action_num_inference_steps=2),
+        action_decoder=DualExpertActionDecoderConfig(
+            hidden_size=32, action_dim=4, action_horizon=4
+        ),
+        training=TrainingConfig(
+            chunk_size=2, window_size=8, action_loss_weight=1.0, latent_loss_weight=1.0
+        ),
+        inference=InferenceConfig(
+            frame_chunk_size=2,
+            video_num_inference_steps=2,
+            action_num_inference_steps=2,
+        ),
     )
     pipeline = build_variant_pipeline_from_config(config)
 
@@ -2355,11 +2573,15 @@ def test_dual_expert_action_only_rollout_rejects_video_then_action() -> None:
         )
 
 
-def test_dual_expert_decoupled_action_only_rollout_skips_split_cache_video_denoise() -> None:
+def test_dual_expert_decoupled_action_only_rollout_skips_split_cache_video_denoise() -> (
+    None
+):
     config = ExperimentConfig(
         data=RobotWinDataConfig(
             num_frames=4,
-            action_schema=ActionSchemaConfig(action_dim=4, action_horizon=4, state_dim=4, state_horizon=1),
+            action_schema=ActionSchemaConfig(
+                action_dim=4, action_horizon=4, state_dim=4, state_horizon=1
+            ),
         ),
         backbone=SharedVideoTransformerConfig(
             implementation="shared_transformer",
@@ -2380,9 +2602,17 @@ def test_dual_expert_decoupled_action_only_rollout_skips_split_cache_video_denoi
             video_prefix_frames=1,
             num_action_layers=1,
         ),
-        action_decoder=DualExpertActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
-        training=TrainingConfig(chunk_size=2, window_size=8, action_loss_weight=1.0, latent_loss_weight=1.0),
-        inference=InferenceConfig(frame_chunk_size=2, video_num_inference_steps=2, action_num_inference_steps=2),
+        action_decoder=DualExpertActionDecoderConfig(
+            hidden_size=32, action_dim=4, action_horizon=4
+        ),
+        training=TrainingConfig(
+            chunk_size=2, window_size=8, action_loss_weight=1.0, latent_loss_weight=1.0
+        ),
+        inference=InferenceConfig(
+            frame_chunk_size=2,
+            video_num_inference_steps=2,
+            action_num_inference_steps=2,
+        ),
     )
     pipeline = build_variant_pipeline_from_config(config)
 
@@ -2395,8 +2625,18 @@ def test_dual_expert_decoupled_action_only_rollout_skips_split_cache_video_denoi
     assert output.decoder_output.action_pred.shape == (1, 4, 4)
     assert output.policy_output.aux["dual_expert_action_only_rollout"] is True
     assert output.policy_output.aux["predicted_latents"].shape[2] == 0
-    assert output.policy_output.aux["dual_expert_cache_debug"]["dual_expert_action_only_rollout"] is True
-    assert output.policy_output.aux["dual_expert_cache_debug"]["video_commit_before_action"] is False
+    assert (
+        output.policy_output.aux["dual_expert_cache_debug"][
+            "dual_expert_action_only_rollout"
+        ]
+        is True
+    )
+    assert (
+        output.policy_output.aux["dual_expert_cache_debug"][
+            "video_commit_before_action"
+        ]
+        is False
+    )
     assert output.policy_output.decoder_artifacts is not None
     infer_artifacts = output.policy_output.decoder_artifacts.require(
         contract=DUAL_EXPERT_DECODER_ARTIFACT_CONTRACT,
@@ -2406,11 +2646,15 @@ def test_dual_expert_decoupled_action_only_rollout_skips_split_cache_video_denoi
     assert infer_artifacts.predicted_latents.shape[2] == 0
 
 
-def test_dual_expert_action_then_video_rollout_frame_chunk_override_shortens_internal_action_horizon() -> None:
+def test_dual_expert_action_then_video_rollout_frame_chunk_override_shortens_internal_action_horizon() -> (
+    None
+):
     config = ExperimentConfig(
         data=RobotWinDataConfig(
             num_frames=4,
-            action_schema=ActionSchemaConfig(action_dim=4, action_horizon=4, state_dim=4, state_horizon=1),
+            action_schema=ActionSchemaConfig(
+                action_dim=4, action_horizon=4, state_dim=4, state_horizon=1
+            ),
         ),
         backbone=SharedVideoTransformerConfig(
             implementation="shared_transformer",
@@ -2431,9 +2675,17 @@ def test_dual_expert_action_then_video_rollout_frame_chunk_override_shortens_int
             video_prefix_frames=1,
             num_action_layers=1,
         ),
-        action_decoder=DualExpertActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
-        training=TrainingConfig(chunk_size=2, window_size=8, action_loss_weight=1.0, latent_loss_weight=1.0),
-        inference=InferenceConfig(frame_chunk_size=2, video_num_inference_steps=2, action_num_inference_steps=2),
+        action_decoder=DualExpertActionDecoderConfig(
+            hidden_size=32, action_dim=4, action_horizon=4
+        ),
+        training=TrainingConfig(
+            chunk_size=2, window_size=8, action_loss_weight=1.0, latent_loss_weight=1.0
+        ),
+        inference=InferenceConfig(
+            frame_chunk_size=2,
+            video_num_inference_steps=2,
+            action_num_inference_steps=2,
+        ),
     )
     pipeline = build_variant_pipeline_from_config(config)
 
@@ -2449,8 +2701,18 @@ def test_dual_expert_action_then_video_rollout_frame_chunk_override_shortens_int
     )
 
     assert output.decoder_output.action_pred.shape == (1, 2, 4)
-    assert output.policy_output.aux["dual_expert_packed_history_debug"]["rollout_frame_chunk_size"] == 1
-    assert output.policy_output.aux["dual_expert_packed_history_debug"]["rollout_action_horizon"] == 2
+    assert (
+        output.policy_output.aux["dual_expert_packed_history_debug"][
+            "rollout_frame_chunk_size"
+        ]
+        == 1
+    )
+    assert (
+        output.policy_output.aux["dual_expert_packed_history_debug"][
+            "rollout_action_horizon"
+        ]
+        == 2
+    )
     state = output.policy_output.next_state.variant_state
     assert isinstance(state, DualExpertRuntimeState)
     assert state.past_clean_actions is not None
@@ -2458,11 +2720,15 @@ def test_dual_expert_action_then_video_rollout_frame_chunk_override_shortens_int
     assert output.policy_output.next_state.cursor.current_start_frame == 2
 
 
-def test_dual_expert_decoupled_rollout_frame_chunk_override_shortens_split_cache_action_horizon() -> None:
+def test_dual_expert_decoupled_rollout_frame_chunk_override_shortens_split_cache_action_horizon() -> (
+    None
+):
     config = ExperimentConfig(
         data=RobotWinDataConfig(
             num_frames=4,
-            action_schema=ActionSchemaConfig(action_dim=4, action_horizon=4, state_dim=4, state_horizon=1),
+            action_schema=ActionSchemaConfig(
+                action_dim=4, action_horizon=4, state_dim=4, state_horizon=1
+            ),
         ),
         backbone=SharedVideoTransformerConfig(
             implementation="shared_transformer",
@@ -2483,9 +2749,17 @@ def test_dual_expert_decoupled_rollout_frame_chunk_override_shortens_split_cache
             video_prefix_frames=1,
             num_action_layers=1,
         ),
-        action_decoder=DualExpertActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
-        training=TrainingConfig(chunk_size=2, window_size=8, action_loss_weight=1.0, latent_loss_weight=1.0),
-        inference=InferenceConfig(frame_chunk_size=2, video_num_inference_steps=2, action_num_inference_steps=2),
+        action_decoder=DualExpertActionDecoderConfig(
+            hidden_size=32, action_dim=4, action_horizon=4
+        ),
+        training=TrainingConfig(
+            chunk_size=2, window_size=8, action_loss_weight=1.0, latent_loss_weight=1.0
+        ),
+        inference=InferenceConfig(
+            frame_chunk_size=2,
+            video_num_inference_steps=2,
+            action_num_inference_steps=2,
+        ),
     )
     pipeline = build_variant_pipeline_from_config(config)
 
@@ -2501,9 +2775,17 @@ def test_dual_expert_decoupled_rollout_frame_chunk_override_shortens_split_cache
     )
 
     assert output.decoder_output.action_pred.shape == (1, 2, 4)
-    assert output.policy_output.aux["dual_expert_cache_debug"]["rollout_frame_chunk_size"] == 1
-    assert output.policy_output.aux["dual_expert_cache_debug"]["rollout_action_horizon"] == 2
-    assert output.policy_output.aux["dual_expert_cache_debug"]["chunk_advance_frames"] == 1
+    assert (
+        output.policy_output.aux["dual_expert_cache_debug"]["rollout_frame_chunk_size"]
+        == 1
+    )
+    assert (
+        output.policy_output.aux["dual_expert_cache_debug"]["rollout_action_horizon"]
+        == 2
+    )
+    assert (
+        output.policy_output.aux["dual_expert_cache_debug"]["chunk_advance_frames"] == 1
+    )
     assert output.policy_output.decoder_artifacts is not None
     infer_artifacts = output.policy_output.decoder_artifacts.require(
         contract=DUAL_EXPERT_DECODER_ARTIFACT_CONTRACT,
@@ -2514,19 +2796,47 @@ def test_dual_expert_decoupled_rollout_frame_chunk_override_shortens_split_cache
 
 
 def test_dual_expert_rollout_history_window_matches_fixed128_context_contract() -> None:
-    assert resolve_dual_expert_rollout_history_frames(window_size=30, frame_chunk_size=4) == 60
-    assert resolve_dual_expert_rollout_cache_window_frames(window_size=30, frame_chunk_size=4) == 64
-    assert resolve_dual_expert_rollout_history_frames(window_size=31, frame_chunk_size=4) == 60
-    assert resolve_dual_expert_rollout_cache_window_frames(window_size=31, frame_chunk_size=4) == 64
-    assert resolve_dual_expert_rollout_history_frames(window_size=8, frame_chunk_size=2) == 8
-    assert resolve_dual_expert_rollout_cache_window_frames(window_size=8, frame_chunk_size=2) == 10
+    assert (
+        resolve_dual_expert_rollout_history_frames(window_size=30, frame_chunk_size=4)
+        == 60
+    )
+    assert (
+        resolve_dual_expert_rollout_cache_window_frames(
+            window_size=30, frame_chunk_size=4
+        )
+        == 64
+    )
+    assert (
+        resolve_dual_expert_rollout_history_frames(window_size=31, frame_chunk_size=4)
+        == 60
+    )
+    assert (
+        resolve_dual_expert_rollout_cache_window_frames(
+            window_size=31, frame_chunk_size=4
+        )
+        == 64
+    )
+    assert (
+        resolve_dual_expert_rollout_history_frames(window_size=8, frame_chunk_size=2)
+        == 8
+    )
+    assert (
+        resolve_dual_expert_rollout_cache_window_frames(
+            window_size=8, frame_chunk_size=2
+        )
+        == 10
+    )
 
 
-def test_dual_expert_packed_infer_uses_rollout_history_contract_for_cached_context() -> None:
+def test_dual_expert_packed_infer_uses_rollout_history_contract_for_cached_context() -> (
+    None
+):
     config = ExperimentConfig(
         data=RobotWinDataConfig(
             num_frames=4,
-            action_schema=ActionSchemaConfig(action_dim=4, action_horizon=4, state_dim=4, state_horizon=1),
+            action_schema=ActionSchemaConfig(
+                action_dim=4, action_horizon=4, state_dim=4, state_horizon=1
+            ),
         ),
         backbone=SharedVideoTransformerConfig(
             implementation="shared_transformer",
@@ -2547,12 +2857,22 @@ def test_dual_expert_packed_infer_uses_rollout_history_contract_for_cached_conte
             video_prefix_frames=1,
             num_action_layers=1,
         ),
-        action_decoder=DualExpertActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
-        training=TrainingConfig(chunk_size=2, window_size=8, action_loss_weight=1.0, latent_loss_weight=1.0),
-        inference=InferenceConfig(frame_chunk_size=2, video_num_inference_steps=2, action_num_inference_steps=2),
+        action_decoder=DualExpertActionDecoderConfig(
+            hidden_size=32, action_dim=4, action_horizon=4
+        ),
+        training=TrainingConfig(
+            chunk_size=2, window_size=8, action_loss_weight=1.0, latent_loss_weight=1.0
+        ),
+        inference=InferenceConfig(
+            frame_chunk_size=2,
+            video_num_inference_steps=2,
+            action_num_inference_steps=2,
+        ),
     )
     pipeline = build_variant_pipeline_from_config(config)
-    action_tokens_per_frame = config.data.action_schema.action_horizon // config.inference.frame_chunk_size
+    action_tokens_per_frame = (
+        config.data.action_schema.action_horizon // config.inference.frame_chunk_size
+    )
     runtime_state = DualExpertRuntimeState(
         past_clean_latents=torch.randn(1, 48, 12, 8, 8),
         past_clean_actions=torch.randn(1, 12 * action_tokens_per_frame, 4),
@@ -2586,7 +2906,9 @@ def test_dual_expert_legacy_prefix_prepends_current_state_to_hidden_proprio() ->
     config = ExperimentConfig(
         data=RobotWinDataConfig(
             num_frames=4,
-            action_schema=ActionSchemaConfig(action_dim=4, action_horizon=4, state_dim=4, state_horizon=1),
+            action_schema=ActionSchemaConfig(
+                action_dim=4, action_horizon=4, state_dim=4, state_horizon=1
+            ),
         ),
         backbone=SharedVideoTransformerConfig(
             implementation="shared_transformer",
@@ -2608,22 +2930,56 @@ def test_dual_expert_legacy_prefix_prepends_current_state_to_hidden_proprio() ->
             proprio_context_mode=ProprioContextMode.PER_CHUNK_ADDITIVE,
             sequence_contract=VideoActionSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO,
         ),
-        action_decoder=DualExpertActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
-        training=TrainingConfig(chunk_size=4, window_size=8, action_loss_weight=1.0, latent_loss_weight=1.0),
+        action_decoder=DualExpertActionDecoderConfig(
+            hidden_size=32, action_dim=4, action_horizon=4
+        ),
+        training=TrainingConfig(
+            chunk_size=4, window_size=8, action_loss_weight=1.0, latent_loss_weight=1.0
+        ),
         inference=InferenceConfig(frame_chunk_size=4),
     )
     pipeline = build_variant_pipeline_from_config(config)
     video_latents = torch.zeros(1, 48, 4, 8, 8)
     condition_latents = torch.ones_like(video_latents)
-    target_states = torch.tensor([[[1.0], [2.0], [3.0], [4.0]]]).expand(-1, -1, 4).contiguous()
-    batch = PolicyTrainBatch(actions=torch.zeros(1, 4, 4), state=torch.full((1, 1, 4), 9.0))
+    target_states = (
+        torch.tensor([[[1.0], [2.0], [3.0], [4.0]]]).expand(-1, -1, 4).contiguous()
+    )
+    batch = PolicyTrainBatch(
+        actions=torch.zeros(1, 4, 4),
+        state=torch.full((1, 1, 4), 9.0),
+        extra={"condition_latents": condition_latents},
+    )
+    resolved_condition = (
+        pipeline.policy_variant.conditioning.resolve_train_condition_latents(
+            batch,
+            video_latents=video_latents,
+        )
+    )
+    assert resolved_condition is condition_latents
+
+    clean_condition, clean_source = (
+        pipeline.policy_variant.conditioning.train_clean_video_condition_latents(
+            video_latents=video_latents,
+            condition_latents=resolved_condition,
+            history_frames=1,
+            dynamics_sample_plan=None,
+        )
+    )
+    assert clean_condition is not None
+    assert clean_source == "context_condition_latents"
+    torch.testing.assert_close(clean_condition[:, :, :1], condition_latents[:, :, :1])
+    torch.testing.assert_close(clean_condition[:, :, 1:], video_latents[:, :, 1:])
 
     model_video_latents, hidden_state, prefix_frames, source = (
-        pipeline.policy_variant.conditioning.prepend_legacy_prefix_video_latents(
+        pipeline.policy_variant.conditioning.prepare_train_video_sequence(
             video_latents=video_latents,
             condition_latents=condition_latents,
-            hidden_proprio_state=target_states,
+            hidden_proprio_context=HiddenProprioContext(
+                values=target_states,
+                granularity=ProprioContextGranularity.FRAME,
+            ),
             batch=batch,
+            dynamics_sample_plan=None,
         )
     )
 
@@ -2631,45 +2987,56 @@ def test_dual_expert_legacy_prefix_prepends_current_state_to_hidden_proprio() ->
     assert prefix_frames == 1
     assert source == "condition_latents_prefix"
     assert hidden_state is not None
-    assert hidden_state.shape == (1, 5, 4)
-    assert torch.equal(hidden_state[:, 0, :], torch.full((1, 4), 9.0))
-    assert torch.equal(hidden_state[:, 1:, :], target_states)
+    assert hidden_state.granularity is ProprioContextGranularity.FRAME
+    assert hidden_state.values.shape == (1, 5, 4)
+    assert torch.equal(hidden_state.values[:, 0, :], torch.full((1, 4), 9.0))
+    assert torch.equal(hidden_state.values[:, 1:, :], target_states)
 
 
-def test_dual_expert_legacy_prefix_action_hidden_proprio_uses_causal_chunk_boundaries() -> None:
-    states = torch.tensor([[[9.0], [1.0], [2.0], [3.0], [4.0], [5.0], [6.0], [7.0], [8.0]]])
-
-    resolved = DualExpertConditioning.legacy_prefix_action_hidden_proprio_state(
-        states,
-        prefix_condition_frames=1,
-        target_num_frames=8,
-        chunk_size_frames=4,
+def test_shared_prefix_hidden_proprio_projection_uses_causal_chunk_boundaries() -> None:
+    states = torch.tensor(
+        [[[9.0], [1.0], [2.0], [3.0], [4.0], [5.0], [6.0], [7.0], [8.0]]]
     )
 
-    assert resolved is not None
-    assert resolved.squeeze(-1).tolist() == [[9.0, 9.0, 9.0, 9.0, 4.0, 4.0, 4.0, 4.0]]
+    resolved = project_hidden_proprio_context_to_frames(
+        HiddenProprioContext(
+            values=states,
+            granularity=ProprioContextGranularity.FRAME,
+        ),
+        prefix_frames=1,
+        num_frames=9,
+        chunk_size=4,
+    )
+
+    assert resolved[:, 1:, :].squeeze(-1).tolist() == [
+        [9.0, 9.0, 9.0, 9.0, 4.0, 4.0, 4.0, 4.0]
+    ]
 
 
-def test_dual_expert_legacy_prefix_action_hidden_proprio_honors_shifted_chunk_origin() -> None:
+def test_shared_prefix_hidden_proprio_projection_honors_shifted_chunk_origin() -> None:
     states = torch.tensor([[[9.0], [1.0], [2.0], [3.0], [4.0], [5.0], [6.0]]])
 
-    resolved = DualExpertConditioning.legacy_prefix_action_hidden_proprio_state(
-        states,
-        prefix_condition_frames=1,
-        target_num_frames=6,
-        chunk_size_frames=2,
+    resolved = project_hidden_proprio_context_to_frames(
+        HiddenProprioContext(
+            values=states,
+            granularity=ProprioContextGranularity.FRAME,
+        ),
+        prefix_frames=1,
+        num_frames=7,
+        chunk_size=2,
         chunk_origin_frame=3,
     )
 
-    assert resolved is not None
-    assert resolved.squeeze(-1).tolist() == [[9.0, 1.0, 1.0, 3.0, 3.0, 5.0]]
+    assert resolved[:, 1:, :].squeeze(-1).tolist() == [[9.0, 1.0, 1.0, 3.0, 3.0, 5.0]]
 
 
 def test_dual_expert_legacy_prefix_requires_frame_level_hidden_proprio() -> None:
     config = ExperimentConfig(
         data=RobotWinDataConfig(
             num_frames=4,
-            action_schema=ActionSchemaConfig(action_dim=4, action_horizon=4, state_dim=4, state_horizon=1),
+            action_schema=ActionSchemaConfig(
+                action_dim=4, action_horizon=4, state_dim=4, state_horizon=1
+            ),
         ),
         backbone=SharedVideoTransformerConfig(
             implementation="shared_transformer",
@@ -2691,8 +3058,12 @@ def test_dual_expert_legacy_prefix_requires_frame_level_hidden_proprio() -> None
             proprio_context_mode=ProprioContextMode.PER_CHUNK_ADDITIVE,
             sequence_contract=VideoActionSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO,
         ),
-        action_decoder=DualExpertActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
-        training=TrainingConfig(chunk_size=4, window_size=8, action_loss_weight=1.0, latent_loss_weight=1.0),
+        action_decoder=DualExpertActionDecoderConfig(
+            hidden_size=32, action_dim=4, action_horizon=4
+        ),
+        training=TrainingConfig(
+            chunk_size=4, window_size=8, action_loss_weight=1.0, latent_loss_weight=1.0
+        ),
         inference=InferenceConfig(frame_chunk_size=4),
     )
     pipeline = build_variant_pipeline_from_config(config)
@@ -2702,7 +3073,9 @@ def test_dual_expert_legacy_prefix_requires_frame_level_hidden_proprio() -> None
         extra={"proprio_context_state": torch.zeros(1, 1, 4)},
     )
 
-    with pytest.raises(ValueError, match="requires frame-level `proprio_context_frames`"):
+    with pytest.raises(
+        ValueError, match="requires frame-level `proprio_context_frames`"
+    ):
         pipeline.policy_variant.conditioning.resolve_train_hidden_proprio_context(batch)
 
 
@@ -2712,7 +3085,9 @@ def test_dual_expert_packed_strict_old_infer_skips_video_hidden_proprio(
     config = ExperimentConfig(
         data=RobotWinDataConfig(
             num_frames=4,
-            action_schema=ActionSchemaConfig(action_dim=4, action_horizon=4, state_dim=4, state_horizon=1),
+            action_schema=ActionSchemaConfig(
+                action_dim=4, action_horizon=4, state_dim=4, state_horizon=1
+            ),
         ),
         backbone=SharedVideoTransformerConfig(
             implementation="shared_transformer",
@@ -2735,9 +3110,17 @@ def test_dual_expert_packed_strict_old_infer_skips_video_hidden_proprio(
             proprio_context_mode=ProprioContextMode.PER_CHUNK_ADDITIVE,
             sequence_contract=VideoActionSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO,
         ),
-        action_decoder=DualExpertActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
-        training=TrainingConfig(chunk_size=2, window_size=8, action_loss_weight=1.0, latent_loss_weight=1.0),
-        inference=InferenceConfig(frame_chunk_size=2, video_num_inference_steps=2, action_num_inference_steps=2),
+        action_decoder=DualExpertActionDecoderConfig(
+            hidden_size=32, action_dim=4, action_horizon=4
+        ),
+        training=TrainingConfig(
+            chunk_size=2, window_size=8, action_loss_weight=1.0, latent_loss_weight=1.0
+        ),
+        inference=InferenceConfig(
+            frame_chunk_size=2,
+            video_num_inference_steps=2,
+            action_num_inference_steps=2,
+        ),
     )
     pipeline = build_variant_pipeline_from_config(config)
     captured_video_inputs: list[torch.Tensor | None] = []
@@ -2747,12 +3130,20 @@ def test_dual_expert_packed_strict_old_infer_skips_video_hidden_proprio(
 
     def capture_video_hidden(conditioning, *args, **kwargs):
         hidden_proprio_state = args[1] if len(args) > 1 else None
-        captured_video_inputs.append(None if hidden_proprio_state is None else hidden_proprio_state.detach().clone())
+        captured_video_inputs.append(
+            None
+            if hidden_proprio_state is None
+            else hidden_proprio_state.detach().clone()
+        )
         return original_video_hidden(conditioning, *args, **kwargs)
 
     def capture_action_hidden(conditioning, *args, **kwargs):
         hidden_proprio_state = args[1] if len(args) > 1 else None
-        captured_action_inputs.append(None if hidden_proprio_state is None else hidden_proprio_state.detach().clone())
+        captured_action_inputs.append(
+            None
+            if hidden_proprio_state is None
+            else hidden_proprio_state.detach().clone()
+        )
         return original_action_hidden(conditioning, *args, **kwargs)
 
     monkeypatch.setattr(
@@ -2782,7 +3173,9 @@ def test_dual_expert_packed_infer_tracks_per_chunk_hidden_proprio_history() -> N
     config = ExperimentConfig(
         data=RobotWinDataConfig(
             num_frames=4,
-            action_schema=ActionSchemaConfig(action_dim=4, action_horizon=4, state_dim=4, state_horizon=1),
+            action_schema=ActionSchemaConfig(
+                action_dim=4, action_horizon=4, state_dim=4, state_horizon=1
+            ),
         ),
         backbone=SharedVideoTransformerConfig(
             implementation="shared_transformer",
@@ -2804,9 +3197,17 @@ def test_dual_expert_packed_infer_tracks_per_chunk_hidden_proprio_history() -> N
             num_action_layers=1,
             proprio_context_mode=ProprioContextMode.PER_CHUNK_ADDITIVE,
         ),
-        action_decoder=DualExpertActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
-        training=TrainingConfig(chunk_size=2, window_size=8, action_loss_weight=1.0, latent_loss_weight=1.0),
-        inference=InferenceConfig(frame_chunk_size=2, video_num_inference_steps=2, action_num_inference_steps=2),
+        action_decoder=DualExpertActionDecoderConfig(
+            hidden_size=32, action_dim=4, action_horizon=4
+        ),
+        training=TrainingConfig(
+            chunk_size=2, window_size=8, action_loss_weight=1.0, latent_loss_weight=1.0
+        ),
+        inference=InferenceConfig(
+            frame_chunk_size=2,
+            video_num_inference_steps=2,
+            action_num_inference_steps=2,
+        ),
     )
     pipeline = build_variant_pipeline_from_config(config)
     first = pipeline.forward_infer_step_from_latents(
@@ -2828,14 +3229,19 @@ def test_dual_expert_packed_infer_tracks_per_chunk_hidden_proprio_history() -> N
     second_state = second.policy_output.next_state.variant_state
     assert isinstance(second_state, DualExpertRuntimeState)
     assert second_state.past_hidden_proprio_states is not None
-    assert second_state.past_hidden_proprio_states.shape[1] == second_state.past_clean_latents.shape[2]
+    assert (
+        second_state.past_hidden_proprio_states.shape[1]
+        == second_state.past_clean_latents.shape[2]
+    )
 
 
 def test_dual_expert_variant_builds_with_interpolated_action_expert_ffn() -> None:
     config = ExperimentConfig(
         data=RobotWinDataConfig(
             num_frames=4,
-            action_schema=ActionSchemaConfig(action_dim=4, action_horizon=4, state_dim=4, state_horizon=1),
+            action_schema=ActionSchemaConfig(
+                action_dim=4, action_horizon=4, state_dim=4, state_horizon=1
+            ),
         ),
         backbone=SharedVideoTransformerConfig(
             implementation="shared_transformer",
@@ -2858,7 +3264,9 @@ def test_dual_expert_variant_builds_with_interpolated_action_expert_ffn() -> Non
             action_ffn_dim=32,
             num_action_layers=2,
         ),
-        action_decoder=DualExpertActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
+        action_decoder=DualExpertActionDecoderConfig(
+            hidden_size=32, action_dim=4, action_horizon=4
+        ),
         training=TrainingConfig(enabled_objectives=("action",)),
         inference=InferenceConfig(frame_chunk_size=2),
     )

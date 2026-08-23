@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from dataclasses import replace
 from datetime import datetime
@@ -20,6 +21,7 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from open_wam.configs import load_experiment_config
+from open_wam.data import ENCODED_DYNAMICS_ARTIFACT_SCHEMA_V1
 from open_wam.data.latent_temporal import (
     CONDITION_SOURCE_FRAME_POLICY_NEXT_LATENT_SOURCE_OFFSET,
     latent_raw_boundaries,
@@ -67,8 +69,13 @@ def main(argv: list[str] | None = None) -> None:
     output_dtype = _parse_output_dtype(args.output_dtype)
     shard_roots = _resolve_shards(dataset_root, args.shards)
     manifest = {
+        "artifact_schema": ENCODED_DYNAMICS_ARTIFACT_SCHEMA_V1,
         "dataset_kind": "libero10_counterfactual_fdm_encoded_latents",
+        "reference_branch": "gt",
         "created_at": datetime.now().isoformat(timespec="seconds"),
+        "raw_payload_root": Path(
+            os.path.relpath(dataset_root, start=output_root)
+        ).as_posix(),
         "dataset_root": str(dataset_root),
         "output_root": str(output_root),
         "config": str(Path(args.config).expanduser().resolve()),
@@ -77,8 +84,14 @@ def main(argv: list[str] | None = None) -> None:
         "output_dtype": str(output_dtype).replace("torch.", ""),
         "batch_size": int(args.batch_size),
         "condition_latents": not bool(args.skip_condition_latents),
-        "condition_source_frame_offset": int(args.condition_source_frame_offset),
-        "condition_source_frame_policy": CONDITION_SOURCE_FRAME_POLICY,
+        "condition_source_frame_offset": (
+            None
+            if args.skip_condition_latents
+            else int(args.condition_source_frame_offset)
+        ),
+        "condition_source_frame_policy": (
+            None if args.skip_condition_latents else CONDITION_SOURCE_FRAME_POLICY
+        ),
         "condition_batch_size": int(args.condition_batch_size),
         "shards": [shard.name for shard in shard_roots],
         "source_summary": _read_optional_json(dataset_root / "aggregate_summary.json")
@@ -626,8 +639,9 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         "--skip-condition-latents",
         action="store_true",
         help=(
-            "Only encode context/target video latents. This is not valid for current "
-            "Dual-expert legacy-prefix GJD configs that use condition_source_frame_offset=-1."
+            "Only encode context/target video latents. This is the recommended "
+            "format for target-only FDM/IDM training, where t0 is already the "
+            "first in-sequence latent."
         ),
     )
     parser.add_argument("--shards", default=None, help="Comma-separated shard directory names. Defaults to all shards.")

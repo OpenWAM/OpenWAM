@@ -8,6 +8,7 @@ import torch
 import torch.distributed as dist
 
 from open_wam.configs import StrategyName, TrainerAccelerator, TrainerConfig
+from open_wam.models.policy_variants import PolicyModuleTopology
 from open_wam.training.strategies import (
     _apply_composable_fsdp_sharding,
     build_training_strategy,
@@ -32,7 +33,16 @@ class _Pipeline(torch.nn.Module):
         self.policy_variant = torch.nn.Module()
         self.policy_variant.action_expert = torch.nn.Module()
         self.policy_variant.action_expert.blocks = torch.nn.ModuleList([_Block()])
-        self.policy_variant.packed_block_stack = None
+
+    def module_topology(self) -> PolicyModuleTopology:
+        return PolicyModuleTopology(
+            visual_runtime_modules=(self.visual_tower.core,),
+            action_expert_modules=(self.policy_variant.action_expert,),
+            fsdp_block_stacks=(
+                self.visual_tower.core,
+                self.policy_variant.action_expert,
+            ),
+        )
 
 
 def test_composable_fsdp_shards_nested_blocks_then_pipeline_root(

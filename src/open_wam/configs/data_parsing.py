@@ -29,7 +29,8 @@ from .data_contracts import (
     ActionTargetConfig,
     CausalPrefixSuffixBucketConfig,
     DataConfig,
-    GeneralistDynamicsMixtureConfig,
+    DynamicsRoutingConfig,
+    DynamicsRouteConfig,
     SampleConstructionConfig,
     ViewLayoutConfig,
 )
@@ -240,38 +241,82 @@ def _load_action_normalization_config(
     )
 
 
-def _load_generalist_dynamics_mixture_config(
+def _load_dynamics_routing_config(
     raw_value: Any,
-    defaults: GeneralistDynamicsMixtureConfig,
-) -> GeneralistDynamicsMixtureConfig:
+    defaults: DynamicsRoutingConfig,
+) -> DynamicsRoutingConfig:
     raw = raw_value or {}
     if not isinstance(raw, dict):
-        raise ValueError("Expected `data.generalist_dynamics_mixture` to be a mapping.")
-    return GeneralistDynamicsMixtureConfig(
+        raise ValueError("Expected `data.dynamics_routing` to be a mapping.")
+    retired_fields = {
+        "real_joint_weight",
+        "real_action_conditioned_video_weight",
+        "real_video_conditioned_action_weight",
+        "counterfactual_action_conditioned_video_weight",
+        "counterfactual_video_conditioned_action_weight",
+        "conditional_history_frames",
+    }
+    authored_retired_fields = sorted(retired_fields.intersection(raw))
+    if authored_retired_fields:
+        joined = ", ".join(authored_retired_fields)
+        raise ValueError(
+            "Retired `data.dynamics_routing` fields were provided: "
+            f"{joined}. Express each source/mode/weight choice in `routes` instead."
+        )
+    known_fields = {
+        "train_latent_root",
+        "val_latent_root",
+        "allow_train_latent_root_for_val",
+        "routes",
+        "seed",
+        "length_multiplier",
+    }
+    unknown_fields = sorted(set(raw).difference(known_fields, retired_fields))
+    if unknown_fields:
+        joined = ", ".join(str(field) for field in unknown_fields)
+        raise ValueError(
+            f"`data.dynamics_routing` contains unknown fields: {joined}."
+        )
+    routes_raw = raw.get("routes", defaults.routes)
+    if not isinstance(routes_raw, (list, tuple)):
+        raise ValueError("Expected `data.dynamics_routing.routes` to be a list.")
+    parsed_routes: list[DynamicsRouteConfig] = []
+    for index, route in enumerate(routes_raw):
+        if isinstance(route, DynamicsRouteConfig):
+            parsed_routes.append(route)
+            continue
+        if not isinstance(route, Mapping):
+            raise ValueError(
+                f"Expected `data.dynamics_routing.routes[{index}]` to be a mapping."
+            )
+        route_fields = {"source", "mode", "weight"}
+        missing = route_fields.difference(route)
+        if missing:
+            fields = ", ".join(sorted(missing))
+            raise ValueError(
+                f"`data.dynamics_routing.routes[{index}]` is missing: {fields}."
+            )
+        unknown = set(route).difference(route_fields)
+        if unknown:
+            fields = ", ".join(sorted(str(field) for field in unknown))
+            raise ValueError(
+                f"`data.dynamics_routing.routes[{index}]` contains unknown fields: {fields}."
+            )
+        parsed_routes.append(
+            DynamicsRouteConfig(
+                source=route["source"],
+                mode=route["mode"],
+                weight=route["weight"],
+            )
+        )
+    return DynamicsRoutingConfig(
         train_latent_root=raw.get("train_latent_root", defaults.train_latent_root),
         val_latent_root=raw.get("val_latent_root", defaults.val_latent_root),
         allow_train_latent_root_for_val=raw.get(
             "allow_train_latent_root_for_val",
             defaults.allow_train_latent_root_for_val,
         ),
-        real_joint_weight=raw.get("real_joint_weight", defaults.real_joint_weight),
-        real_action_conditioned_video_weight=raw.get(
-            "real_action_conditioned_video_weight",
-            defaults.real_action_conditioned_video_weight,
-        ),
-        real_video_conditioned_action_weight=raw.get(
-            "real_video_conditioned_action_weight",
-            defaults.real_video_conditioned_action_weight,
-        ),
-        counterfactual_action_conditioned_video_weight=raw.get(
-            "counterfactual_action_conditioned_video_weight",
-            defaults.counterfactual_action_conditioned_video_weight,
-        ),
-        counterfactual_video_conditioned_action_weight=raw.get(
-            "counterfactual_video_conditioned_action_weight",
-            defaults.counterfactual_video_conditioned_action_weight,
-        ),
-        conditional_history_frames=raw.get("conditional_history_frames", defaults.conditional_history_frames),
+        routes=tuple(parsed_routes),
         seed=raw.get("seed", defaults.seed),
         length_multiplier=raw.get("length_multiplier", defaults.length_multiplier),
     )
@@ -281,6 +326,12 @@ def parse_data_config(raw_value: Mapping[str, Any] | None) -> DataConfig:
     """Parse one dataset section into the uniform typed data contract."""
 
     data_raw = raw_value or {}
+    if "generalist_dynamics_mixture" in data_raw:
+        raise ValueError(
+            "`data.generalist_dynamics_mixture` is retired in authored configs; "
+            "use `data.dynamics_routing`. Historical keys are accepted only by "
+            "checkpoint runtime compatibility loading."
+        )
     action_schema_raw = data_raw.get("action_schema", {})
     action_target_raw = data_raw.get("action_target", {})
     sample_construction_raw = data_raw.get("sample_construction", {})
@@ -678,9 +729,9 @@ def parse_data_config(raw_value: Mapping[str, Any] | None) -> DataConfig:
                 )
             ),
         ),
-        generalist_dynamics_mixture=_load_generalist_dynamics_mixture_config(
-            data_raw.get("generalist_dynamics_mixture"),
-            data_defaults.generalist_dynamics_mixture,
+        dynamics_routing=_load_dynamics_routing_config(
+            data_raw.get("dynamics_routing"),
+            data_defaults.dynamics_routing,
         ),
         adapter_options=data_raw.get("adapter_options", data_defaults.adapter_options),
     )

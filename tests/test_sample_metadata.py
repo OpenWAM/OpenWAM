@@ -3,18 +3,19 @@ from __future__ import annotations
 import pytest
 
 from open_wam.contracts import (
-    GENERALIST_TRAINING_DROP_TEXT_METADATA_KEY,
-    GENERALIST_TRAINING_MODE_OVERRIDE_METADATA_KEY,
-    GENERALIST_TRAINING_SOURCE_METADATA_KEY,
+    DYNAMICS_ROUTING_DROP_TEXT_METADATA_KEY,
+    DYNAMICS_ROUTING_MODE_METADATA_KEY,
+    DYNAMICS_ROUTING_SOURCE_METADATA_KEY,
+    ConditionalDynamicsSequenceLayout,
     SampleConstructionMetadata,
     single_sample_metadata_mapping,
 )
 from open_wam.data.sample_metadata import (
-    GENERALIST_TRAINING_DROP_TEXT_METADATA_KEY
+    DYNAMICS_ROUTING_DROP_TEXT_METADATA_KEY
     as LegacyGeneralistTrainingDropTextMetadataKey,
-    GENERALIST_TRAINING_MODE_OVERRIDE_METADATA_KEY
+    DYNAMICS_ROUTING_MODE_METADATA_KEY
     as LegacyGeneralistTrainingModeOverrideMetadataKey,
-    GENERALIST_TRAINING_SOURCE_METADATA_KEY
+    DYNAMICS_ROUTING_SOURCE_METADATA_KEY
     as LegacyGeneralistTrainingSourceMetadataKey,
     SampleConstructionMetadata as LegacySampleConstructionMetadata,
     single_sample_metadata_mapping as legacy_single_sample_metadata_mapping,
@@ -26,16 +27,24 @@ def test_sample_metadata_legacy_imports_preserve_identity() -> None:
     assert legacy_single_sample_metadata_mapping is single_sample_metadata_mapping
     assert (
         LegacyGeneralistTrainingDropTextMetadataKey
-        is GENERALIST_TRAINING_DROP_TEXT_METADATA_KEY
+        is DYNAMICS_ROUTING_DROP_TEXT_METADATA_KEY
     )
     assert (
         LegacyGeneralistTrainingModeOverrideMetadataKey
-        is GENERALIST_TRAINING_MODE_OVERRIDE_METADATA_KEY
+        is DYNAMICS_ROUTING_MODE_METADATA_KEY
     )
     assert (
         LegacyGeneralistTrainingSourceMetadataKey
-        is GENERALIST_TRAINING_SOURCE_METADATA_KEY
+        is DYNAMICS_ROUTING_SOURCE_METADATA_KEY
     )
+
+
+def test_conditional_dynamics_sequence_layout_is_canonical() -> None:
+    layout = ConditionalDynamicsSequenceLayout()
+
+    assert layout.loss_frame_range(observed_num_frames=4) == (1, 4)
+    with pytest.raises(TypeError):
+        ConditionalDynamicsSequenceLayout(history_frames=2)
 
 
 def test_sample_construction_metadata_parses_geometry_and_generalist_fields() -> None:
@@ -47,9 +56,9 @@ def test_sample_construction_metadata_parses_geometry_and_generalist_fields() ->
         "frame_shift": 30,
         "loss_frame_start": 12,
         "loss_frame_end": 20,
-        GENERALIST_TRAINING_MODE_OVERRIDE_METADATA_KEY: "action_conditioned_video",
-        GENERALIST_TRAINING_DROP_TEXT_METADATA_KEY: True,
-        GENERALIST_TRAINING_SOURCE_METADATA_KEY: "counterfactual_dynamics",
+        DYNAMICS_ROUTING_MODE_METADATA_KEY: "action_conditioned_video",
+        DYNAMICS_ROUTING_DROP_TEXT_METADATA_KEY: True,
+        DYNAMICS_ROUTING_SOURCE_METADATA_KEY: "counterfactual_dynamics",
     }
 
     parsed = SampleConstructionMetadata.from_batch_metadata((metadata,))
@@ -61,20 +70,20 @@ def test_sample_construction_metadata_parses_geometry_and_generalist_fields() ->
     assert parsed.context_prefix_frames_in_sample == 1
     assert parsed.frame_shift == 30
     assert parsed.frame_range_or_default(observed_num_frames=24) == (12, 20)
-    assert parsed.generalist.mode_override == "action_conditioned_video"
-    assert parsed.generalist.drop_text_conditioning is True
-    assert parsed.generalist.source == "counterfactual_dynamics"
+    assert parsed.dynamics_routing.mode_override == "action_conditioned_video"
+    assert parsed.dynamics_routing.drop_text_conditioning is True
+    assert parsed.dynamics_routing.source == "counterfactual_dynamics"
 
 
 def test_sample_construction_metadata_preserves_absent_drop_text_as_unspecified() -> None:
     parsed = SampleConstructionMetadata.from_mapping(
         {
-            GENERALIST_TRAINING_MODE_OVERRIDE_METADATA_KEY: "action_conditioned_video",
+            DYNAMICS_ROUTING_MODE_METADATA_KEY: "action_conditioned_video",
         }
     )
 
     assert parsed is not None
-    assert parsed.generalist.drop_text_conditioning is None
+    assert parsed.dynamics_routing.drop_text_conditioning is None
 
 
 def test_sample_construction_metadata_falls_back_to_generic_loss_range() -> None:

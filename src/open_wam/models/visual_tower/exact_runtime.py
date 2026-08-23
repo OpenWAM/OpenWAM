@@ -48,7 +48,9 @@ def build_reference_mesh_id(
         ff = ff + ff_offset
         hh = torch.ones_like(hh) * -1
         ww = torch.ones_like(ww) * -1
-    grid_id = torch.cat([ff.unsqueeze(0), hh.unsqueeze(0), ww.unsqueeze(0)], dim=0).flatten(1)
+    grid_id = torch.cat(
+        [ff.unsqueeze(0), hh.unsqueeze(0), ww.unsqueeze(0)], dim=0
+    ).flatten(1)
     return torch.cat([grid_id, torch.full_like(grid_id[:1], t)], dim=0)
 
 
@@ -76,7 +78,9 @@ def prepare_exact_single_stream_input(
     else:
         timestep_value = float(timestep)
     if isinstance(timestep_value, float):
-        timesteps = torch.ones(num_frames, device=device, dtype=torch.float32) * timestep_value
+        timesteps = (
+            torch.ones(num_frames, device=device, dtype=torch.float32) * timestep_value
+        )
     else:
         timesteps = timestep_value
 
@@ -112,7 +116,9 @@ def prepare_exact_single_stream_input(
         input_dict["noisy_latents"][:, :, 0:1] = cond[:, :, 0:1]
         input_dict["timesteps"][:, 0:1] *= 0
     if action_mode and action_channel_mask is not None:
-        input_dict["noisy_latents"] = input_dict["noisy_latents"] * action_channel_mask.to(
+        input_dict["noisy_latents"] = input_dict[
+            "noisy_latents"
+        ] * action_channel_mask.to(
             device=input_dict["noisy_latents"].device,
             dtype=input_dict["noisy_latents"].dtype,
         )
@@ -189,7 +195,9 @@ def run_exact_single_stream_forward(
 
     batch_size = input_dict["noisy_latents"].shape[0]
     effective_input = input_dict
-    use_cfg = negative_text_emb is not None and (force_cfg_batch or guidance_scale > 1.0)
+    use_cfg = negative_text_emb is not None and (
+        force_cfg_batch or guidance_scale > 1.0
+    )
     if use_cfg:
         effective_input = repeat_exact_single_stream_input_for_cfg(
             input_dict,
@@ -200,26 +208,20 @@ def run_exact_single_stream_forward(
         transformer=transformer,
     )
     with torch.inference_mode():
-        if hasattr(transformer, "execute_runtime_step"):
-            step_output = transformer.execute_runtime_step(
-                RuntimeStepInput(
-                    program=build_single_stream_exact_runtime_program(),
-                    payload=effective_input,
-                    update_cache=update_cache,
-                    cache_name=cache_name,
-                    action_mode=action_mode,
-                )
-            )
-            output = step_output.tokens
-        else:
-            output = transformer(
-                effective_input,
+        step_output = transformer.execute_runtime_step(
+            RuntimeStepInput(
+                program=build_single_stream_exact_runtime_program(),
+                payload=effective_input,
                 update_cache=update_cache,
                 cache_name=cache_name,
                 action_mode=action_mode,
             )
+        )
+        output = step_output.tokens
     if output is None:
-        raise ValueError("Exact single-stream runtime execution did not return token predictions.")
+        raise ValueError(
+            "Exact single-stream runtime execution did not return token predictions."
+        )
     if use_cfg and combine_cfg:
         cond_output = output[:batch_size]
         uncond_output = output[batch_size:]
@@ -251,43 +253,31 @@ def initialize_exact_runtime_cache(
         frame_chunk_size * latent_height * latent_width
     ) // math.prod(transformer.patch_size)
     latent_token_per_chunk *= max(1, int(token_batch_factor))
-    action_token_per_chunk = frame_chunk_size * action_per_frame * max(
-        1,
-        int(token_batch_factor),
+    action_token_per_chunk = (
+        frame_chunk_size
+        * action_per_frame
+        * max(
+            1,
+            int(token_batch_factor),
+        )
     )
     cache_batch_size = (
         int(cache_batch_size_override)
         if cache_batch_size_override is not None
         else effective_batch_size
     )
-    if hasattr(transformer, "clear_runtime_cache_state"):
-        transformer.clear_runtime_cache_state(cache_name)
-    else:
-        transformer.clear_cache(cache_name)
-    if hasattr(transformer, "initialize_runtime_cache_backend"):
-        transformer.initialize_runtime_cache_backend(
-            cache_name,
-            attn_window=attn_window,
-            latent_token_per_chunk=latent_token_per_chunk,
-            action_token_per_chunk=action_token_per_chunk,
-            device=device,
-            dtype=resolve_runtime_module_dtype(transformer),
-            batch_size=cache_batch_size,
-            backend_name=cache_backend_name,
-            prefix_visibility_mode=prefix_visibility_mode,
-        )
-    else:
-        transformer.create_empty_cache(
-            cache_name,
-            attn_window,
-            latent_token_per_chunk,
-            action_token_per_chunk,
-            device=device,
-            dtype=resolve_runtime_module_dtype(transformer),
-            batch_size=cache_batch_size,
-            backend_name=cache_backend_name,
-            prefix_visibility_mode=prefix_visibility_mode,
-        )
+    transformer.clear_runtime_cache_state(cache_name)
+    transformer.initialize_runtime_cache_backend(
+        cache_name,
+        attn_window=attn_window,
+        latent_token_per_chunk=latent_token_per_chunk,
+        action_token_per_chunk=action_token_per_chunk,
+        device=device,
+        dtype=resolve_runtime_module_dtype(transformer),
+        batch_size=cache_batch_size,
+        backend_name=cache_backend_name,
+        prefix_visibility_mode=prefix_visibility_mode,
+    )
 
 
 def clear_exact_prediction_cache(
@@ -297,7 +287,4 @@ def clear_exact_prediction_cache(
 ) -> None:
     """Clear transient prediction K/V while retaining stable exact history."""
 
-    if hasattr(transformer, "clear_runtime_prediction_cache"):
-        transformer.clear_runtime_prediction_cache(cache_name)
-    else:
-        transformer.clear_pred_cache(cache_name)
+    transformer.clear_runtime_prediction_cache(cache_name)

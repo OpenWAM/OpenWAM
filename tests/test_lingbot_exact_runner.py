@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import torch
 
@@ -12,13 +13,51 @@ from open_wam.configs import (
     ParallelStreamPolicyConfig,
     RobotWinDataConfig,
     TrainingConfig,
+    VideoActionProgram,
 )
 from open_wam.data import build_synthetic_batch
 from open_wam.models.video_backbone.config import SharedVideoTransformerConfig
 from open_wam.models.visual_tower.reference_loader import load_wan_transformer_class
 from open_wam.pipelines import build_exact_runtime_runner_from_config
+from open_wam.pipelines.lingbot_exact import LingbotExactRunner, LingbotExactSession
 
 from .reference_model_test_utils import reference_model_path_or_skip
+
+
+def test_lingbot_runner_forwards_frame_aligned_proprio_history() -> None:
+    captured: dict[str, object] = {}
+    hidden_proprio_history = torch.randn(1, 3, 4)
+    next_state = SimpleNamespace(cache={})
+
+    class FakePolicy:
+        def warm_reference_cache(self, *_args, **kwargs):
+            captured.update(kwargs)
+            return next_state
+
+    runner = object.__new__(LingbotExactRunner)
+    runner.pipeline = SimpleNamespace(
+        policy_variant=FakePolicy(),
+        visual_tower=object(),
+    )
+    visual_outputs = SimpleNamespace(
+        frontend=SimpleNamespace(
+            conditioning=SimpleNamespace(
+                text_context=torch.zeros(1, 2, 3),
+                negative_text_context=None,
+            )
+        )
+    )
+    runner._prepare_visual_outputs = lambda **_kwargs: visual_outputs
+
+    output = runner.warmup_cache(
+        session=LingbotExactSession(policy_state=SimpleNamespace()),
+        video_latents=torch.zeros(1, 4, 3, 2, 2),
+        action_history=torch.zeros(1, 6, 2),
+        hidden_proprio_history=hidden_proprio_history,
+    )
+
+    assert output.session.policy_state is next_state
+    assert captured["hidden_proprio_history"] is hidden_proprio_history
 
 
 def test_lingbot_exact_runner_supports_warmup_and_chunk_generation(tmp_path: Path) -> None:
@@ -63,8 +102,8 @@ def test_lingbot_exact_runner_supports_warmup_and_chunk_generation(tmp_path: Pat
         ),
         backbone=backbone_config,
         policy_variant=ParallelStreamPolicyConfig(
+            program=VideoActionProgram.VIDEO_THEN_ACTION,
             hidden_size=32,
-            runtime_mode="lingbot_exact",
             frame_chunk_size=2,
             action_per_frame=2,
             attn_window=8,

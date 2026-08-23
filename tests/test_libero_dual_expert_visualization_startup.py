@@ -13,6 +13,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from open_wam.evals import libero_dual_expert_rollout as dual_expert_viz
+from open_wam.evals import libero_dual_expert_inputs as dual_expert_inputs
 from open_wam.evals import libero_dual_expert_runtime as dual_expert_runtime
 from open_wam.models.policy_variants.dual_expert.runtime_routes import (
     should_use_dual_expert_split_cache_inference,
@@ -32,9 +33,7 @@ def test_dual_expert_runtime_loading_contract_has_one_canonical_owner() -> None:
     public_names = (
         "CURRENT_FRONTEND_ENCODE_MODE",
         "DEPRECATED_FRONTEND_ENCODE_MODE",
-        "LIVE_SIM_DUAL_EXPERT_GENERALIST_ROLLOUT_MODES",
         "DUAL_EXPERT_GJD_ACTION_ROUTES",
-        "OFFLINE_DIAGNOSTIC_DUAL_EXPERT_GENERALIST_ROLLOUT_MODES",
         "DualExpertLiberoLoadOptions",
         "DualExpertLiberoRuntime",
         "load_dual_expert_libero_runtime",
@@ -42,14 +41,6 @@ def test_dual_expert_runtime_loading_contract_has_one_canonical_owner() -> None:
     )
     for name in public_names:
         assert getattr(dual_expert_viz, name) is getattr(dual_expert_runtime, name)
-    assert (
-        dual_expert_viz._maybe_merge_checkpoint_runtime_config
-        is dual_expert_runtime._maybe_merge_checkpoint_runtime_config
-    )
-    assert (
-        dual_expert_viz._require_current_frontend_encode_mode
-        is dual_expert_runtime._require_current_frontend_encode_mode
-    )
 
 
 def test_policy_debug_summarizes_typed_decoder_artifacts() -> None:
@@ -345,7 +336,7 @@ def test_prepare_dual_expert_visual_outputs_streaming_path_uses_run_frontend() -
     assert outputs.frontend.video_latents.shape[2] == 1
 
 
-def test_build_infer_context_threads_dual_expert_generalist_rollout_mode() -> None:
+def test_build_infer_context_uses_joint_dynamics_by_default() -> None:
     obs = {
         "robot0_eef_pos": np.zeros(3, dtype=np.float32),
         "robot0_eef_quat": np.asarray([0.0, 0.0, 0.0, 1.0], dtype=np.float32),
@@ -366,41 +357,13 @@ def test_build_infer_context_threads_dual_expert_generalist_rollout_mode() -> No
         runtime_device=torch.device("cpu"),
         dual_expert_inference_window_size=30,
         dual_expert_action_only_rollout=False,
-        dual_expert_generalist_rollout_mode="joint",
     )
 
     assert context.extra["task_text"] == ("task",)
     assert context.extra["dual_expert_inference_window_size"] == 30
-    assert context.extra["action_conditioning_mode"] == "joint"
-    assert context.extra["dual_expert_generalist_rollout_mode"] == "joint"
+    assert "action_conditioning_mode" not in context.extra
     assert "dual_expert_action_only_rollout" not in context.extra
     assert context.state.shape == (1, 1, 8)
-
-
-def test_build_infer_context_rejects_offline_diagnostic_dual_expert_generalist_modes() -> None:
-    obs = {
-        "robot0_eef_pos": np.zeros(3, dtype=np.float32),
-        "robot0_eef_quat": np.asarray([0.0, 0.0, 0.0, 1.0], dtype=np.float32),
-        "robot0_gripper_qpos": np.zeros(2, dtype=np.float32),
-    }
-    config = SimpleNamespace(
-        data=SimpleNamespace(
-            action_schema=SimpleNamespace(state_horizon=1),
-            action_target=SimpleNamespace(state_encoding="eef_pos_axisangle_gripper_2d"),
-        )
-    )
-
-    with pytest.raises(ValueError, match="offline diagnostic mode"):
-        dual_expert_viz._build_infer_context(
-            "task",
-            action_device=torch.device("cpu"),
-            model_obs_window=[obs],
-            config=config,
-            runtime_device=torch.device("cpu"),
-            dual_expert_inference_window_size=30,
-            dual_expert_action_only_rollout=False,
-            dual_expert_generalist_rollout_mode="video_conditioned_action",
-        )
 
 
 def test_standalone_offline_visualization_encoding_uses_shared_reference_assets() -> None:
@@ -410,7 +373,7 @@ def test_standalone_offline_visualization_encoding_uses_shared_reference_assets(
 
     assets = _FakeReferenceAssets(encoded)
 
-    result = dual_expert_viz._encode_video_window_offline(
+    result = dual_expert_inputs._encode_video_window_offline(
         assets,
         canonical_video=canonical_video,
         placements=placements,

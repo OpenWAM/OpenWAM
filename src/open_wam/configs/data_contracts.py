@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from numbers import Integral, Real
 from typing import Any
 
 from .enums import (
@@ -18,6 +19,8 @@ from .enums import (
     AnchorPolicy,
     DataSplit,
     GripperRepresentation,
+    DynamicsObjective,
+    DynamicsSource,
     LatentTemporalLayout,
     LatentWindowProfile,
     PaddedTargetPolicy,
@@ -41,7 +44,8 @@ __all__ = [
     "ActionTargetConfig",
     "CausalPrefixSuffixBucketConfig",
     "DataConfig",
-    "GeneralistDynamicsMixtureConfig",
+    "DynamicsRoutingConfig",
+    "DynamicsRouteConfig",
     "SampleConstructionConfig",
     "ViewLayoutConfig",
 ]
@@ -371,7 +375,7 @@ class SampleConstructionConfig:
     demo_count_power: float = 0.0
     trajectory_start_power: float = 1.0
     sample_weight_mode: SampleWeightMode = SampleWeightMode.UNIFORM
-    sample_order_mode: SampleOrderMode = SampleOrderMode.EPOCH_ORDER
+    sample_order_mode: SampleOrderMode = SampleOrderMode.REPLACEMENT
     # Used by task_virtual_start_count_power: task mass is proportional to the
     # number of eligible virtual starts raised to this power. 0 is task-uniform,
     # 1 is transition-uniform.
@@ -521,48 +525,120 @@ class SampleConstructionConfig:
 
 
 @dataclass(frozen=True)
-class GeneralistDynamicsMixtureConfig:
-    """Optional encoded-dynamics source mixed into generalist training.
+class DynamicsRouteConfig:
+    """One weighted source/mode route in a dynamics-routed dataset."""
 
-    The five weights define the new GJD training paradigm at the data-sample
-    level. Dataset wrappers stamp the selected bucket into sample metadata so
-    Parallel-stream and dual-expert runtimes can force the corresponding
-    joint/FDM/IDM mode.
+    source: DynamicsSource
+    mode: DynamicsObjective
+    weight: float
+
+    def __post_init__(self) -> None:
+        coerce_fields(
+            self,
+            enum_fields={
+                "source": DynamicsSource,
+                "mode": DynamicsObjective,
+            },
+        )
+        if isinstance(self.weight, bool) or not isinstance(self.weight, Real):
+            raise ValueError(
+                "`data.dynamics_routing.routes[].weight` must be a finite real number."
+            )
+        weight = float(self.weight)
+        object.__setattr__(self, "weight", weight)
+        if not math.isfinite(weight) or weight < 0.0:
+            raise ValueError("`data.dynamics_routing.routes[].weight` must be finite and non-negative.")
+        if (
+            self.source == DynamicsSource.COUNTERFACTUAL_DYNAMICS
+            and self.mode == DynamicsObjective.JOINT
+        ):
+            raise ValueError(
+                "Counterfactual dynamics routes support only action-conditioned-video "
+                "or video-conditioned-action modes; they do not provide the full planning "
+                "contract required by joint denoising."
+            )
+
+    @property
+    def bucket_name(self) -> str:
+        """Stable metadata label used to force the runtime denoising mode."""
+
+        if self.source == DynamicsSource.REAL_DEMO:
+            prefix = "real"
+        elif self.source == DynamicsSource.COUNTERFACTUAL_DYNAMICS:
+            prefix = "counterfactual"
+        else:  # pragma: no cover - enum coercion currently makes this unreachable.
+            raise ValueError(
+                f"Dynamics source {self.source!r} has no stable metadata label."
+            )
+        return f"{prefix}_{self.mode.value}"
+
+
+@dataclass(frozen=True)
+class DynamicsRoutingConfig:
+    """Weighted source/mode routes for dynamics-routed training.
+
+    ``routes`` is the sole authority for both source and denoising-mode
+    sampling. Dataset wrappers stamp the selected route into sample metadata;
+    policy runtimes consume that forced mode rather than sampling it again.
     """
 
     train_latent_root: str | None = None
     val_latent_root: str | None = None
     allow_train_latent_root_for_val: bool = False
-    real_joint_weight: float = 0.6
-    real_action_conditioned_video_weight: float = 0.1
-    real_video_conditioned_action_weight: float = 0.1
-    counterfactual_action_conditioned_video_weight: float = 0.1
-    counterfactual_video_conditioned_action_weight: float = 0.1
-    conditional_history_frames: int | None = None
+    routes: tuple[DynamicsRouteConfig, ...] = field(default_factory=tuple)
     seed: int = 0
     length_multiplier: float = 1.0
 
     def __post_init__(self) -> None:
-        weights = {
-            "real_joint_weight": self.real_joint_weight,
-            "real_action_conditioned_video_weight": self.real_action_conditioned_video_weight,
-            "real_video_conditioned_action_weight": self.real_video_conditioned_action_weight,
-            "counterfactual_action_conditioned_video_weight": self.counterfactual_action_conditioned_video_weight,
-            "counterfactual_video_conditioned_action_weight": self.counterfactual_video_conditioned_action_weight,
-        }
-        for name, value in weights.items():
-            numeric = float(value)
-            if not math.isfinite(numeric) or numeric < 0.0:
-                raise ValueError(f"`data.generalist_dynamics_mixture.{name}` must be finite and non-negative.")
-        if sum(float(value) for value in weights.values()) <= 0.0:
-            raise ValueError("`data.generalist_dynamics_mixture` must contain at least one positive weight.")
+        routes = tuple(
+            route if isinstance(route, DynamicsRouteConfig) else DynamicsRouteConfig(**route)
+            for route in self.routes
+        )
+        object.__setattr__(self, "routes", routes)
+        route_keys = [(route.source, route.mode) for route in routes]
+        if len(route_keys) != len(set(route_keys)):
+            raise ValueError("`data.dynamics_routing.routes` must not repeat a source/mode pair.")
+        if routes and not any(float(route.weight) > 0.0 for route in routes):
+            raise ValueError("`data.dynamics_routing.routes` must contain at least one positive weight.")
         if not isinstance(self.allow_train_latent_root_for_val, bool):
-            raise ValueError("`data.generalist_dynamics_mixture.allow_train_latent_root_for_val` must be boolean.")
-        if self.conditional_history_frames is not None and int(self.conditional_history_frames) <= 0:
-            raise ValueError("`data.generalist_dynamics_mixture.conditional_history_frames` must be positive or null.")
-        if not math.isfinite(float(self.length_multiplier)) or float(self.length_multiplier) <= 0.0:
-            raise ValueError("`data.generalist_dynamics_mixture.length_multiplier` must be finite and positive.")
+            raise ValueError("`data.dynamics_routing.allow_train_latent_root_for_val` must be boolean.")
+        for field_name in ("train_latent_root", "val_latent_root"):
+            value = getattr(self, field_name)
+            if value is not None and not isinstance(value, str):
+                raise ValueError(
+                    f"`data.dynamics_routing.{field_name}` must be a string path or null."
+                )
+        if isinstance(self.seed, bool) or not isinstance(self.seed, Integral):
+            raise ValueError("`data.dynamics_routing.seed` must be an integer.")
+        object.__setattr__(self, "seed", int(self.seed))
+        if isinstance(self.length_multiplier, bool) or not isinstance(
+            self.length_multiplier,
+            Real,
+        ):
+            raise ValueError(
+                "`data.dynamics_routing.length_multiplier` must be a finite positive number."
+            )
+        length_multiplier = float(self.length_multiplier)
+        object.__setattr__(self, "length_multiplier", length_multiplier)
+        if not math.isfinite(length_multiplier) or length_multiplier <= 0.0:
+            raise ValueError("`data.dynamics_routing.length_multiplier` must be finite and positive.")
 
+    @property
+    def active_routes(self) -> tuple[DynamicsRouteConfig, ...]:
+        """Routes that participate in sampling."""
+
+        return tuple(route for route in self.routes if float(route.weight) > 0.0)
+
+    def mode_probabilities(self) -> dict[DynamicsObjective, float]:
+        """Return normalized aggregate probabilities for diagnostics."""
+
+        totals = {mode: 0.0 for mode in DynamicsObjective}
+        for route in self.active_routes:
+            totals[route.mode] += float(route.weight)
+        denominator = sum(totals.values())
+        if denominator <= 0.0:
+            return totals
+        return {mode: weight / denominator for mode, weight in totals.items()}
 
 @dataclass(frozen=True)
 class DataConfig:
@@ -605,8 +681,8 @@ class DataConfig:
     action_target: ActionTargetConfig
     action_mapping: ActionMappingConfig
     sample_construction: SampleConstructionConfig
-    generalist_dynamics_mixture: GeneralistDynamicsMixtureConfig = field(
-        default_factory=GeneralistDynamicsMixtureConfig
+    dynamics_routing: DynamicsRoutingConfig = field(
+        default_factory=DynamicsRoutingConfig
     )
     latent_temporal_layout: LatentTemporalLayout = LatentTemporalLayout.WAN_CAUSAL_STRIDE4
     adapter_options: dict[str, Any] = field(default_factory=dict)

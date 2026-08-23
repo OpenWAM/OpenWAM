@@ -1,18 +1,16 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any
 
 import torch
 
-from open_wam.configs import GeneralistDenoisingMode
+from open_wam.models.common.dynamics_objectives import DynamicsRolloutPlan
 
 from .contracts import DualExpertRuntimeState
 
 
 @dataclass(frozen=True)
-class DualExpertConditionalRolloutInputs:
+class DualExpertDynamicsRolloutInputs:
     """Validated tensor overrides for joint, FDM, and IDM packed rollouts."""
 
     forced_action_latents: torch.Tensor | None
@@ -103,11 +101,17 @@ class DualExpertPackedHistory:
         hidden_proprio_state: torch.Tensor | None,
         require_hidden_proprio_history: bool,
     ) -> DualExpertPackedHistoryWindow:
-        history_video_frames = 0 if self.video_latents is None else int(self.video_latents.shape[2])
-        source_action_tokens = 0 if self.action_latents is None else int(self.action_latents.shape[1])
+        history_video_frames = (
+            0 if self.video_latents is None else int(self.video_latents.shape[2])
+        )
+        source_action_tokens = (
+            0 if self.action_latents is None else int(self.action_latents.shape[1])
+        )
         history_action_frames = source_action_tokens // layout.action_tokens_per_frame
         history_frames = min(history_video_frames, history_action_frames)
-        max_history_frames = max(0, int(history_window_frames) - layout.frame_chunk_size)
+        max_history_frames = max(
+            0, int(history_window_frames) - layout.frame_chunk_size
+        )
         if max_history_frames > 0:
             history_frames = min(history_frames, max_history_frames)
         else:
@@ -134,7 +138,9 @@ class DualExpertPackedHistory:
                     f"got history={tuple(history_hidden_proprio.shape)}, "
                     f"batch_size={layout.batch_size}."
                 )
-            history_hidden_proprio = history_hidden_proprio[:, -history_frames:].contiguous()
+            history_hidden_proprio = history_hidden_proprio[
+                :, -history_frames:
+            ].contiguous()
         else:
             history_hidden_proprio = None
         if (
@@ -142,7 +148,9 @@ class DualExpertPackedHistory:
             and require_hidden_proprio_history
             and history_hidden_proprio is None
         ):
-            raise ValueError("dual-expert per-chunk additive proprio inference is missing hidden proprio history.")
+            raise ValueError(
+                "dual-expert per-chunk additive proprio inference is missing hidden proprio history."
+            )
 
         current_hidden_proprio = None
         if hidden_proprio_state is not None:
@@ -216,7 +224,10 @@ class DualExpertPackedInferenceLayout:
                 "DualExpert packed inference layout requires positive dimensions, "
                 f"got {invalid}."
             )
-        if self.current_video_prefix_frames < 0 or self.current_action_prefix_tokens < 0:
+        if (
+            self.current_video_prefix_frames < 0
+            or self.current_action_prefix_tokens < 0
+        ):
             raise ValueError(
                 "DualExpert packed inference layout prefixes must be non-negative, "
                 f"got video={self.current_video_prefix_frames}, "
@@ -236,45 +247,34 @@ class DualExpertPackedInferenceLayout:
                 f"prefix={self.current_action_prefix_tokens}."
             )
 
-    def resolve_conditional_rollout_inputs(
+    def resolve_dynamics_rollout_inputs(
         self,
-        extra: Mapping[str, Any],
+        plan: DynamicsRolloutPlan,
         *,
-        generalist_rollout_mode: GeneralistDenoisingMode,
         current_clean_video: torch.Tensor,
-    ) -> DualExpertConditionalRolloutInputs:
+    ) -> DualExpertDynamicsRolloutInputs:
         forced_action_latents = self._coerce_action_tensor(
-            extra,
-            "dual_expert_forced_action_latents",
-            required=(
-                generalist_rollout_mode
-                == GeneralistDenoisingMode.ACTION_CONDITIONED_VIDEO
-            ),
-            generalist_rollout_mode=generalist_rollout_mode,
+            plan.clean_action,
+            label="clean_action",
         )
         commit_action_latents = self._coerce_action_tensor(
-            extra,
-            "dual_expert_commit_action_latents",
-            required=False,
-            generalist_rollout_mode=generalist_rollout_mode,
+            plan.history_action,
+            label="history_action",
         )
         video_condition_latents = self._coerce_video_tensor(
-            extra,
-            "dual_expert_video_condition_latents",
-            required=(
-                generalist_rollout_mode
-                == GeneralistDenoisingMode.VIDEO_CONDITIONED_ACTION
-            ),
-            generalist_rollout_mode=generalist_rollout_mode,
+            plan.clean_video,
+            label="clean_video",
             current_clean_video=current_clean_video,
         )
-        return DualExpertConditionalRolloutInputs(
+        return DualExpertDynamicsRolloutInputs(
             forced_action_latents=forced_action_latents,
             commit_action_latents=commit_action_latents,
             video_condition_latents=video_condition_latents,
         )
 
-    def compose_current_action_sequence(self, action_tokens: torch.Tensor) -> torch.Tensor:
+    def compose_current_action_sequence(
+        self, action_tokens: torch.Tensor
+    ) -> torch.Tensor:
         if self.current_action_prefix_tokens <= 0:
             return action_tokens
         invalid_prefix = action_tokens.new_zeros(
@@ -284,79 +284,69 @@ class DualExpertPackedInferenceLayout:
         )
         return torch.cat([invalid_prefix, action_tokens], dim=1)
 
-    def _context_tensor(
+    def _prepare_tensor(
         self,
-        extra: Mapping[str, Any],
-        key: str,
+        value: torch.Tensor | None,
+        *,
+        label: str,
     ) -> torch.Tensor | None:
-        value = extra.get(key)
         if value is None:
             return None
-        if not isinstance(value, torch.Tensor):
-            raise TypeError(
-                f"dual-expert GJD rollout context {key!r} must be a torch.Tensor, "
-                f"got {type(value)!r}."
-            )
+        if not isinstance(value, torch.Tensor):  # pragma: no cover - request invariant
+            raise TypeError(f"Dynamics rollout {label!r} must be a torch.Tensor.")
         return value.to(device=self.device, dtype=self.dtype)
 
     def _coerce_action_tensor(
         self,
-        extra: Mapping[str, Any],
-        key: str,
+        value: torch.Tensor | None,
         *,
-        required: bool,
-        generalist_rollout_mode: GeneralistDenoisingMode,
+        label: str,
     ) -> torch.Tensor | None:
-        value = self._context_tensor(extra, key)
+        value = self._prepare_tensor(value, label=label)
         if value is None:
-            if required:
-                raise ValueError(
-                    f"dual-expert GJD rollout mode {generalist_rollout_mode.value!r} "
-                    f"requires {key!r}."
-                )
             return None
         if value.ndim != 3:
             raise ValueError(
-                f"dual-expert GJD rollout context {key!r} must have shape [B, H, D], "
+                f"Dual Expert dynamics rollout {label!r} must have shape [B, H, D], "
                 f"got {tuple(value.shape)}."
             )
-        if int(value.shape[0]) != self.batch_size or int(value.shape[-1]) != self.action_dim:
+        if (
+            int(value.shape[0]) != self.batch_size
+            or int(value.shape[-1]) != self.action_dim
+        ):
             raise ValueError(
-                f"dual-expert GJD rollout context {key!r} shape does not match current action shape, "
+                f"Dual Expert dynamics rollout {label!r} shape does not match current action shape, "
                 f"got {tuple(value.shape)}, expected batch={self.batch_size}, "
                 f"action_dim={self.action_dim}."
             )
-        if int(value.shape[1]) == self.configured_action_horizon:
-            return value.contiguous()
-        if int(value.shape[1]) == self.current_action_sequence_tokens:
-            return value[:, self.current_action_prefix_tokens :].contiguous()
-        raise ValueError(
-            f"dual-expert GJD rollout context {key!r} must contain either "
-            f"action_horizon={self.configured_action_horizon} or "
-            f"current_action_sequence_tokens={self.current_action_sequence_tokens} tokens, "
-            f"got {value.shape[1]}."
-        )
+        action_steps = int(value.shape[1])
+        generated_action_horizon = self.frame_chunk_size * self.action_tokens_per_frame
+        if action_steps < generated_action_horizon:
+            raise ValueError(
+                f"Dual Expert dynamics rollout {label!r} provides {action_steps} "
+                f"action steps but the current chunk needs {generated_action_horizon}."
+            )
+        if action_steps % self.action_tokens_per_frame != 0:
+            raise ValueError(
+                f"Dual Expert dynamics rollout {label!r} must be frame-aligned "
+                f"to action_tokens_per_frame={self.action_tokens_per_frame}, "
+                f"got {action_steps} action steps."
+            )
+        return value[:, :generated_action_horizon].contiguous()
 
     def _coerce_video_tensor(
         self,
-        extra: Mapping[str, Any],
-        key: str,
+        value: torch.Tensor | None,
         *,
-        required: bool,
-        generalist_rollout_mode: GeneralistDenoisingMode,
+        label: str,
         current_clean_video: torch.Tensor,
     ) -> torch.Tensor | None:
-        value = self._context_tensor(extra, key)
+        value = self._prepare_tensor(value, label=label)
         if value is None:
-            if required:
-                raise ValueError(
-                    f"dual-expert GJD rollout mode {generalist_rollout_mode.value!r} "
-                    f"requires {key!r}."
-                )
             return None
         if value.ndim != 5:
             raise ValueError(
-                f"dual-expert GJD rollout context {key!r} must have shape [B, C, T, H, W], "
+                f"Dual Expert dynamics rollout {label!r} must have shape [B, C, T, H, W], "
                 f"got {tuple(value.shape)}."
             )
         expected_prefix = (
@@ -373,24 +363,23 @@ class DualExpertPackedInferenceLayout:
         )
         if got_prefix != expected_prefix:
             raise ValueError(
-                f"dual-expert GJD rollout context {key!r} shape does not match current video shape, "
+                f"Dual Expert dynamics rollout {label!r} shape does not match current video shape, "
                 f"got {tuple(value.shape)}, expected batch/channels/spatial={expected_prefix}."
             )
-        if int(value.shape[2]) == self.frame_chunk_size:
-            if self.current_video_prefix_frames <= 0:
-                return value.contiguous()
-            return torch.cat(
-                [
-                    current_clean_video[:, :, : self.current_video_prefix_frames],
-                    value,
-                ],
-                dim=2,
-            ).contiguous()
-        if int(value.shape[2]) == self.current_video_sequence_frames:
-            return value.contiguous()
-        raise ValueError(
-            f"dual-expert GJD rollout context {key!r} must contain either "
-            f"frame_chunk_size={self.frame_chunk_size} or "
-            f"current_video_sequence_frames={self.current_video_sequence_frames} frames, "
-            f"got {value.shape[2]}."
-        )
+        supplied_frames = int(value.shape[2])
+        if supplied_frames < self.frame_chunk_size:
+            raise ValueError(
+                f"Dual Expert dynamics rollout {label!r} provides "
+                f"{supplied_frames} video frames but the current chunk needs "
+                f"{self.frame_chunk_size}."
+            )
+        generated_chunk = value[:, :, : self.frame_chunk_size]
+        if self.current_video_prefix_frames <= 0:
+            return generated_chunk.contiguous()
+        return torch.cat(
+            [
+                current_clean_video[:, :, : self.current_video_prefix_frames],
+                generated_chunk,
+            ],
+            dim=2,
+        ).contiguous()

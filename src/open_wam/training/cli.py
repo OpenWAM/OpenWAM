@@ -7,22 +7,19 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
-import open_wam.configs.enums as config_enums
 from open_wam.cli.train_arguments import build_train_arg_parser as build_cli_arg_parser
 from open_wam.configs import (
     ExperimentConfig,
-    apply_video_action_sequence_contract,
     load_experiment_config,
     resolve_config_path_alias,
-    validate_video_action_sequence_contract_override_keys,
 )
 from open_wam.configs.config_paths import EXPERIMENT_CONFIG_ROOT
-from open_wam.configs.policy_compatibility import normalize_video_action_override_keys
 from open_wam.extensions import load_extension_modules
 from open_wam.utils.config_overrides import (
     apply_config_overrides,
     parse_override_assignments,
 )
+
 
 def _default_resume_path(checkpoint_root: Path) -> Path:
     """Prefer exact training-state resumes, with model-only as a fallback for legacy checkpoints.
@@ -192,20 +189,7 @@ def apply_train_cli_overrides(
         update_map["trainer.wandb_mode"] = overrides.wandb_mode
 
     update_map.update(parse_override_assignments(overrides.overrides))
-    update_map = normalize_video_action_override_keys(update_map)
-    validate_video_action_sequence_contract_override_keys(
-        update_map,
-        contract_value=getattr(
-            config.policy_variant,
-            "sequence_contract",
-            config_enums.VideoActionSequenceContract.DEFAULT,
-        ),
-    )
     config = apply_config_overrides(config, update_map)
-    config = apply_video_action_sequence_contract(
-        config,
-        explicit_override_keys=set(update_map),
-    )
     return apply_wandb_env_defaults(
         config,
         env=env or os.environ,

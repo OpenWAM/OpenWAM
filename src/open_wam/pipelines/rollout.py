@@ -106,7 +106,9 @@ class VariantRolloutRunner:
             )
         else:
             if views is None:
-                raise ValueError("VariantRolloutRunner.infer_step requires either `views` or `video_latents`.")
+                raise ValueError(
+                    "VariantRolloutRunner.infer_step requires either `views` or `video_latents`."
+                )
             infer_output = self.pipeline.forward_infer_step(
                 views,
                 resolved_context,
@@ -191,6 +193,7 @@ class VariantRolloutRunner:
         return PolicyInferContext(
             state=context.state,
             previous_action=context.previous_action,
+            dynamics=context.dynamics,
             extra={
                 **context.extra,
                 "task_text": context.extra.get("task_text", session.task_text),
@@ -209,12 +212,14 @@ class VariantRolloutRunner:
             task_text=resolved_context.extra.get("task_text", session.task_text),
             text_context=(
                 infer_output.visual_outputs.frontend.conditioning.text_context
-                if infer_output.visual_outputs.frontend.conditioning.text_context is not None
+                if infer_output.visual_outputs.frontend.conditioning.text_context
+                is not None
                 else session.text_context
             ),
             negative_text_context=(
                 infer_output.visual_outputs.frontend.conditioning.negative_text_context
-                if infer_output.visual_outputs.frontend.conditioning.negative_text_context is not None
+                if infer_output.visual_outputs.frontend.conditioning.negative_text_context
+                is not None
                 else session.negative_text_context
             ),
         )

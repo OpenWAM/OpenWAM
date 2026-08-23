@@ -25,6 +25,11 @@ these SDK modules directly. Public stability still follows the role-specific
 SDK boundary above; typing visibility does not make internal implementation
 modules compatibility-managed.
 
+`open_wam.sdk.config.resolve_experiment_config` materializes fields owned by
+typed config contracts. `load_experiment_config` and `TrainingRuntime` also
+validate cross-section runtime and data requirements; use those boundaries
+when starting an experiment rather than treating resolution as validation.
+
 The base install supports config and result tooling. Install `open-wam[torch]`
 for dataset, policy, decoder, and attention extensions; use
 `open-wam[train]`, `open-wam[eval]`, or `open-wam[sim]` for the corresponding
@@ -119,6 +124,7 @@ contract.
 | --- | --- | --- |
 | Change an existing program, geometry, loss weight, or optimizer setting | `ExperimentConfig` | YAML or `--set`; no Python required |
 | Read a new storage format, camera schema, or action/state representation | dataset adapter | Register `raw_builder` and/or `latent_builder` through `open_wam.sdk.data` |
+| Supply real or counterfactual target-only FDM/IDM data | encoded dynamics artifact | Produce `open_wam.encoded_dynamics.v1` and validate it with `load_encoded_dynamics_artifact`; routing stays dataset-agnostic |
 | Check dataset-owned files before startup | dataset adapter | Register an `artifact_resolver` |
 | Change dataset mixing, weighting, or distributed sample order | dataset and sampler | Implement the dataset sampling contract; shared advanced samplers remain provisional infrastructure |
 | Add policy parameters, dense sequence semantics, or recurrent state | `PolicyVariant` | Register an extension policy through `open_wam.sdk.policy` |
@@ -129,6 +135,12 @@ contract.
 | Replace the visual frontend, backbone, or decode stack | `VisualTower` | Contribute in-tree and preserve checkpoint contracts |
 | Add an optimizer, strategy, loop policy, checkpoint format, or log sink | training infrastructure | Select built-ins by config; new reusable implementations are currently in-tree contributions |
 | Add an offline metric or application report | application evaluator | Build an application command around typed pipeline outputs |
+
+For one encoded-dynamics view, use
+`open_wam.data.EncodedDynamicsLatentDataset.from_root(...)`. Orchestrators that
+build several real/counterfactual or train/validation views should load one
+`open_wam.data.EncodedDynamicsResources` per unique root and pass that shared
+resource to each view; this avoids reparsing the complete transition index.
 
 ## Core Boundary Ownership
 
@@ -144,6 +156,13 @@ Do not subclass `ExperimentConfig` in an extension package: the built-in YAML
 loader will not discover that subclass. A new shared finite choice requires an
 in-tree enum and named cross-section validation. Application-specific choices
 remain in the open extension envelope.
+
+Dataset adapters own source parsing, but strict FDM/IDM consumes a canonical
+artifact rather than a benchmark-specific dataset class. Emit a manifest,
+`metadata/encoded_transitions.jsonl`, model-space target latents, and aligned
+action/state payloads following `open_wam.encoded_dynamics.v1`. The public
+`open_wam.sdk.data.load_encoded_dynamics_artifact` validator checks the index;
+positive route sources are preflighted before model construction.
 
 ### VariantPipeline
 
@@ -162,7 +181,7 @@ inference coverage for every maintained architecture.
 
 The tower owns the shared frontend, visual core, runtime execution, and cache
 lifecycle. Policies always receive frontend output and may additionally
-request `"core"` from `required_visual_stages()`.
+request `PolicyVisualStage.CORE` from `required_visual_stages()`.
 
 Use the dense runtime plus `PreparedAttentionProfile` for custom visibility.
 Adding a `RuntimeProgramSpec` name does not register an executor: a new exact
@@ -174,16 +193,24 @@ runtime implementation and checkpoint/parity coverage. There is no
 
 Use a policy extension for application-owned learned parameters,
 packing/conditioning semantics, runtime-program selection, or recurrent
-inference state. Pass policy-specific outputs through a typed
-`DecoderArtifactEnvelope`; do not expose decoder-private tensors through
-unstructured pipeline keys. See [Adding A Policy Variant](#adding-a-policy-variant).
+inference state. Declare standard shared-tower adapters through the extension
+config's `proprio_context_mode` and `dynamics_mode_context_enabled` fields; they
+must be known before modules are allocated. Return `PolicyPipelineRequirements`
+from `pipeline_requirements()` to validate model-space geometry and carry any
+source-to-model action channel projection into the decoder. Pass policy-specific
+outputs through a typed `DecoderArtifactEnvelope`; do not expose decoder-private
+tensors through unstructured pipeline keys. See
+[Adding A Policy Variant](#adding-a-policy-variant).
 
 ### ActionDecoder
 
 Use a decoder extension when policy topology remains valid but final
 prediction, supervision, sampling, or rollout commitment changes. Keep
-simulator-space conversion in the simulator adapter. See
-[Adding An Action Decoder](#adding-an-action-decoder).
+simulator-space conversion in the simulator adapter. A decoder that emits
+routed-dynamics metrics should override `dynamics_metric_namespace`; auxiliary
+validation reads that declared namespace without identifying the policy
+architecture. A decoder can consume policy-declared assembly metadata through
+`configure_pipeline_requirements()`. See [Adding An Action Decoder](#adding-an-action-decoder).
 
 ## Adding A Dataset
 
@@ -435,10 +462,11 @@ extend, or on the stable `open_wam.models.common` public exports above.
 
 Built-in DualExpert checkpoint layouts are narrower policy-internal contracts:
 
-- `open_wam.models.policy_variants.dual_expert.attention_unpacked` owns dense layouts
-  used by unpacked training and joint denoising;
-- `open_wam.models.policy_variants.dual_expert.attention_packed` owns exact packed
-  coupling profiles; and
+- `open_wam.models.policy_variants.dual_expert.attention_unpacked` owns dense
+  diagnostic and checkpoint-compatibility layout builders; it is not a
+  maintained training or GJD execution path;
+- `open_wam.models.policy_variants.dual_expert.attention_packed` owns the exact
+  packed coupling profiles used by maintained training; and
 - `open_wam.models.policy_variants.dual_expert.attention_cached` owns split-cache
   action inference layouts.
 

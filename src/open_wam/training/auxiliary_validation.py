@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import inspect
 from dataclasses import dataclass, replace
 
 import torch
@@ -8,14 +7,19 @@ from torch.utils.data import DataLoader, Dataset
 from torch.utils.data.distributed import DistributedSampler
 
 from open_wam.configs import AuxiliaryValidationTaskConfig, ExperimentConfig
-from open_wam.configs.enums import AuxiliaryValidationSource, DataSplit
+from open_wam.configs.enums import (
+    AuxiliaryValidationSource,
+    DataSplit,
+    DynamicsObjective,
+)
 from open_wam.configs.policy_video_action import resolve_fixed_conditioning_mode
 from open_wam.contracts import (
-    GENERALIST_TRAINING_BUCKET_METADATA_KEY,
-    GENERALIST_TRAINING_DROP_TEXT_METADATA_KEY,
-    GENERALIST_TRAINING_MODE_OVERRIDE_METADATA_KEY,
-    GENERALIST_TRAINING_SOURCE_METADATA_KEY,
+    DYNAMICS_ROUTING_BUCKET_METADATA_KEY,
+    DYNAMICS_ROUTING_DROP_TEXT_METADATA_KEY,
+    DYNAMICS_ROUTING_MODE_METADATA_KEY,
+    DYNAMICS_ROUTING_SOURCE_METADATA_KEY,
 )
+from open_wam.data import DynamicsSourceViewProvider
 
 
 @dataclass(frozen=True)
@@ -46,10 +50,10 @@ class AuxiliaryValidationDataset(Dataset):
         sample = self.dataset[index]
         metadata = dict(getattr(sample, "metadata", {}) or {})
         if self.task.mode_override is not None:
-            metadata[GENERALIST_TRAINING_MODE_OVERRIDE_METADATA_KEY] = self.task.mode_override.value
-            metadata[GENERALIST_TRAINING_DROP_TEXT_METADATA_KEY] = self.task.should_drop_text
-            metadata.setdefault(GENERALIST_TRAINING_SOURCE_METADATA_KEY, "auxiliary_validation")
-            metadata.setdefault(GENERALIST_TRAINING_BUCKET_METADATA_KEY, self.task.name)
+            metadata[DYNAMICS_ROUTING_MODE_METADATA_KEY] = self.task.mode_override.value
+            metadata[DYNAMICS_ROUTING_DROP_TEXT_METADATA_KEY] = self.task.should_drop_text
+            metadata.setdefault(DYNAMICS_ROUTING_SOURCE_METADATA_KEY, "auxiliary_validation")
+            metadata.setdefault(DYNAMICS_ROUTING_BUCKET_METADATA_KEY, self.task.name)
             metadata["generalist_validation_task"] = self.task.name
             metadata["generalist_validation_phase"] = self.task.phase
             metadata["generalist_validation_requested_source"] = self.task.source.value
@@ -85,13 +89,32 @@ def build_auxiliary_validation_runs(
             and task.mode_override is not None
             and task.mode_override != fixed_mode
         ):
-            continue
-        if task.phase in seen_phases:
-            raise ValueError(f"Duplicate auxiliary validation report prefix {task.phase!r}.")
-        seen_phases.add(task.phase)
-        source_loader = train_loader if task.dataset_split == DataSplit.TRAIN else val_loader
-        source_dataset, resolved_source = _resolve_auxiliary_validation_source(source_loader.dataset, task=task)
-        dataset = AuxiliaryValidationDataset(source_dataset, task=task)
+            raise ValueError(
+                f"Auxiliary validation task {task.name!r} requests mode "
+                f"{task.mode_override.value!r}, but policy program "
+                f"{config.policy_variant.program.value!r} fixes mode "
+                f"{fixed_mode.value!r}."
+            )
+        effective_task = (
+            replace(task, mode_override=fixed_mode)
+            if fixed_mode is not None and task.mode_override is None
+            else task
+        )
+        if effective_task.phase in seen_phases:
+            raise ValueError(
+                f"Duplicate auxiliary validation report prefix {effective_task.phase!r}."
+            )
+        seen_phases.add(effective_task.phase)
+        source_loader = (
+            train_loader
+            if effective_task.dataset_split == DataSplit.TRAIN
+            else val_loader
+        )
+        source_dataset, resolved_source = _resolve_auxiliary_validation_source(
+            source_loader.dataset,
+            task=effective_task,
+        )
+        dataset = AuxiliaryValidationDataset(source_dataset, task=effective_task)
         sampler = (
             DistributedSampler(dataset, shuffle=False, num_replicas=strategy.world_size, rank=strategy.rank)
             if strategy.distributed
@@ -99,7 +122,7 @@ def build_auxiliary_validation_runs(
         )
         runs.append(
             AuxiliaryValidationRun(
-                config=task,
+                config=effective_task,
                 loader=DataLoader(
                     dataset,
                     batch_size=source_loader.batch_size,
@@ -120,15 +143,36 @@ def _resolve_auxiliary_validation_source(
     *,
     task: AuxiliaryValidationTaskConfig,
 ) -> tuple[Dataset, str]:
+    conditional_mode = (
+        task.mode_override is not None and task.mode_override.is_conditional
+    )
     if task.source == AuxiliaryValidationSource.DATASET:
         return dataset, AuxiliaryValidationSource.DATASET.value
     if task.source == AuxiliaryValidationSource.COUNTERFACTUAL_DYNAMICS_IF_AVAILABLE:
-        return _resolve_named_auxiliary_validation_source(
-            dataset,
-            task=task,
-            source=AuxiliaryValidationSource.COUNTERFACTUAL_DYNAMICS,
-            fallback=(dataset, AuxiliaryValidationSource.DATASET.value),
-        )
+        if isinstance(dataset, DynamicsSourceViewProvider):
+            source = (
+                AuxiliaryValidationSource.COUNTERFACTUAL_DYNAMICS
+                if dataset.has_route(
+                    source=AuxiliaryValidationSource.COUNTERFACTUAL_DYNAMICS.value,
+                    mode=(
+                        task.mode_override.value
+                        if task.mode_override is not None
+                        else DynamicsObjective.JOINT.value
+                    ),
+                )
+                else AuxiliaryValidationSource.REAL_DEMO
+            )
+            return _resolve_named_auxiliary_validation_source(
+                dataset,
+                task=task,
+                source=source,
+            )
+        if conditional_mode:
+            raise ValueError(
+                f"Conditional auxiliary validation task {task.name!r} requires "
+                "a dynamics-routed dataset; no source-view provider is available."
+            )
+        return dataset, AuxiliaryValidationSource.DATASET.value
     return _resolve_named_auxiliary_validation_source(dataset, task=task, source=task.source)
 
 
@@ -137,44 +181,29 @@ def _resolve_named_auxiliary_validation_source(
     *,
     task: AuxiliaryValidationTaskConfig,
     source: AuxiliaryValidationSource,
-    fallback: tuple[Dataset, str] | None = None,
 ) -> tuple[Dataset, str]:
-    has_source = getattr(dataset, "has_source", None)
-    if callable(has_source) and not bool(has_source(source.value)):
-        if fallback is not None:
-            return fallback
+    mode = (
+        task.mode_override.value
+        if task.mode_override is not None
+        else DynamicsObjective.JOINT.value
+    )
+    if isinstance(dataset, DynamicsSourceViewProvider) and not dataset.has_route(
+        source=source.value,
+        mode=mode,
+    ):
         raise ValueError(
             f"Auxiliary validation task {task.name!r} requested source {source.value!r}, "
             f"but that source is not available in the selected {task.dataset_split.value!r} dataset."
         )
-    build_source_view = getattr(dataset, "build_source_view", None)
-    if callable(build_source_view):
-        source_view_kwargs = {
-            "source": source.value,
-            "mode": task.mode_override.value if task.mode_override is not None else "joint",
-            "bucket_name": task.name,
-            "drop_text": task.should_drop_text,
-        }
-        try:
-            source_view_parameters = inspect.signature(build_source_view).parameters
-        except (TypeError, ValueError):
-            source_view_parameters = {}
-        if "spread_indices" in source_view_parameters:
-            source_view_kwargs["spread_indices"] = True
-        view = build_source_view(**source_view_kwargs)
+    if isinstance(dataset, DynamicsSourceViewProvider):
+        view = dataset.build_source_view(
+            source=source.value,
+            mode=mode,
+            bucket_name=task.name,
+            spread_indices=True,
+        )
         if isinstance(view, Dataset):
             return view, source.value
-    attribute_by_source = {
-        AuxiliaryValidationSource.REAL_DEMO: "real_dataset",
-        AuxiliaryValidationSource.COUNTERFACTUAL_DYNAMICS: "counterfactual_dataset",
-    }
-    attribute = attribute_by_source.get(source)
-    if attribute is not None and hasattr(dataset, attribute):
-        resolved = getattr(dataset, attribute)
-        if isinstance(resolved, Dataset):
-            return resolved, source.value
-    if fallback is not None:
-        return fallback
     raise ValueError(
         f"Auxiliary validation task {task.name!r} requested source {task.source.value!r}, "
         f"but the selected {task.dataset_split.value!r} dataset does not expose that source."
@@ -186,19 +215,21 @@ def _auxiliary_validation_summary_metrics(
     task: AuxiliaryValidationTaskConfig,
     metrics: dict[str, float],
     batch_count: float,
+    dynamics_metric_namespace: str | None,
 ) -> dict[str, float]:
     summary: dict[str, float] = {"count": float(batch_count)}
-    for namespace in ("joint_denoise", "dual_expert_generalist"):
-        action_active_key = f"{namespace}/action_loss_active"
-        latent_active_key = f"{namespace}/latent_loss_active"
-        if action_active_key in metrics:
-            summary["action_loss_active"] = metrics[action_active_key]
-        if latent_active_key in metrics:
-            summary["latent_loss_active"] = metrics[latent_active_key]
-        if task.mode_override is None:
-            continue
-        mode = task.mode_override.value
-        mode_count_key = f"{namespace}/{mode}/count"
+    if dynamics_metric_namespace is None:
+        return summary
+    action_active_key = f"{dynamics_metric_namespace}/action_loss_active"
+    latent_active_key = f"{dynamics_metric_namespace}/latent_loss_active"
+    if action_active_key in metrics:
+        summary["action_loss_active"] = metrics[action_active_key]
+    if latent_active_key in metrics:
+        summary["latent_loss_active"] = metrics[latent_active_key]
+    if task.mode_override is not None:
+        mode_count_key = (
+            f"{dynamics_metric_namespace}/{task.mode_override.value}/count"
+        )
         if mode_count_key in metrics:
             summary["mode_fraction"] = metrics[mode_count_key]
     return summary

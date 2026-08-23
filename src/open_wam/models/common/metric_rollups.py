@@ -7,7 +7,7 @@ import torch
 from open_wam.configs.enums import StrEnum
 
 
-def add_joint_conditioning_mode_metrics(
+def add_dynamics_objective_metrics(
     metrics: dict[str, torch.Tensor],
     *,
     namespace: str,
@@ -22,7 +22,7 @@ def add_joint_conditioning_mode_metrics(
     action_metric_aliases: tuple[str, ...] = (),
     latent_metric_aliases: tuple[str, ...] = (),
 ) -> None:
-    """Add per-mode count/loss rollups for joint video/action conditioning."""
+    """Add per-objective count and loss rollups for video/action dynamics."""
 
     metric_device = action_loss.device
     one = torch.ones((), device=metric_device)

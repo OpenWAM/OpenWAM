@@ -45,8 +45,10 @@ from open_wam.utils.config_overrides import (
 from .cli import _repair_runtime_config_for_local_eval
 from .metrics import rgb_mse_per_frame, simple_ssim_per_frame
 from .rollout import (
-    JointDenoisingFdmRollout,
-    make_rollout_cursor,
+    DynamicsRolloutAdapter,
+    build_dynamics_rollout_adapter,
+    resolve_action_per_frame,
+    resolve_dynamics_rollout_frame_chunk_size,
     should_drop_task_text_for_fdm_mode,
 )
 from .sampling import require_chunk_aligned_horizon
@@ -101,7 +103,9 @@ def main(argv: list[str] | None = None) -> None:
     checkpoint_dir = checkpoint_file.parent
     transformer_dir = resolve_transformer_dir_override(checkpoint_dir)
     base_config = load_experiment_config(config_path)
-    config, resolved_checkpoint_config = merge_runtime_config_from_checkpoint(base_config, checkpoint_file)
+    config, resolved_checkpoint_config = merge_runtime_config_from_checkpoint(
+        base_config, checkpoint_file
+    )
     config = _repair_runtime_config_for_local_eval(
         config=config,
         base_config=base_config,
@@ -122,12 +126,22 @@ def main(argv: list[str] | None = None) -> None:
     output_root = Path(args.output_dir).expanduser().resolve() / run_id
     output_root.mkdir(parents=True, exist_ok=True)
 
-    action_per_frame = int(config.policy_variant.action_per_frame)
-    frame_chunk_size = int(config.inference.frame_chunk_size)
-    generated_frames = require_chunk_aligned_horizon(
-        horizon_frames=args.horizon_frames,
-        frame_chunk_size=frame_chunk_size,
-    )
+    action_per_frame = resolve_action_per_frame(config)
+    configured_frame_chunk_size = int(config.inference.frame_chunk_size)
+    modes = tuple(FdmAblationMode(value) for value in args.mode)
+    frame_chunk_sizes = {
+        mode: resolve_dynamics_rollout_frame_chunk_size(
+            mode,
+            configured_frame_chunk_size=configured_frame_chunk_size,
+        )
+        for mode in modes
+    }
+    for frame_chunk_size in set(frame_chunk_sizes.values()):
+        require_chunk_aligned_horizon(
+            horizon_frames=args.horizon_frames,
+            frame_chunk_size=frame_chunk_size,
+        )
+    generated_frames = int(args.horizon_frames)
     replay_rows = _load_replay_status(Path(args.replay_status_path).expanduser())
     cases = _select_cases(
         replay_rows,
@@ -138,7 +152,6 @@ def main(argv: list[str] | None = None) -> None:
         t0_frame_arg=args.t0_frame,
         max_cases=args.max_cases,
     )
-    modes = tuple(FdmAblationMode(value) for value in args.mode)
     branches = tuple(_parse_branch_names(args.branch))
 
     manifest = {
@@ -146,13 +159,18 @@ def main(argv: list[str] | None = None) -> None:
         "config_path": str(config_path),
         "checkpoint_file": str(checkpoint_file),
         "checkpoint_dir": str(checkpoint_dir),
-        "checkpoint_resolved_config": None if resolved_checkpoint_config is None else str(resolved_checkpoint_config),
+        "checkpoint_resolved_config": None
+        if resolved_checkpoint_config is None
+        else str(resolved_checkpoint_config),
         "transformer_dir": str(transformer_dir),
         "output_root": str(output_root),
         "replay_status_path": str(Path(args.replay_status_path).expanduser().resolve()),
         "horizon_frames": int(args.horizon_frames),
         "generated_frames": int(generated_frames),
-        "frame_chunk_size": frame_chunk_size,
+        "configured_frame_chunk_size": configured_frame_chunk_size,
+        "mode_frame_chunk_sizes": {
+            mode.value: frame_chunk_sizes[mode] for mode in modes
+        },
         "action_per_frame": action_per_frame,
         "context_raw_frames": _raw_window_frames_for_latents(
             int(args.context_window_frames),
@@ -174,15 +192,22 @@ def main(argv: list[str] | None = None) -> None:
     }
     _write_json(output_root / "manifest.json", manifest)
     if args.plan_only:
-        print(json.dumps({"status": "plan_only", "manifest": str(output_root / "manifest.json")}, indent=2))
+        print(
+            json.dumps(
+                {"status": "plan_only", "manifest": str(output_root / "manifest.json")},
+                indent=2,
+            )
+        )
         return
 
-    ensure_local_libero_config(Path.cwd())
-    from open_wam.pipelines import build_exact_runtime_runner_from_config
-
-    runner = build_exact_runtime_runner_from_config(config)
-    fdm_rollout = JointDenoisingFdmRollout(runner)
     runtime_device = torch.device(args.runtime_device)
+    ensure_local_libero_config(Path.cwd())
+    fdm_rollout = build_dynamics_rollout_adapter(
+        config=config,
+        checkpoint_file=checkpoint_file,
+        runtime_device=runtime_device,
+        runtime_dtype=None,
+    )
     frontend_device = torch.device(args.frontend_device or args.runtime_device)
     decode_device = torch.device(args.decode_device or args.runtime_device)
 
@@ -191,14 +216,19 @@ def main(argv: list[str] | None = None) -> None:
     rendered_cache: dict[tuple[int, str], BranchRender] = {}
     for case in cases:
         actions = _read_actions(case.parquet_path)
-        task_spec = resolve_libero_task(case.task_text, project_root=Path.cwd(), benchmark_name=args.benchmark)
+        task_spec = resolve_libero_task(
+            case.task_text, project_root=Path.cwd(), benchmark_name=args.benchmark
+        )
         init_states = load_libero_task_init_states(task_spec, project_root=Path.cwd())
         init_state = init_states[int(case.init_state_index) % len(init_states)]
         env = build_libero_offscreen_env(
             task_spec,
             camera_height=args.camera_height,
             camera_width=args.camera_width,
-            horizon=max(args.env_horizon, int((case.t0_frame + generated_frames + 2) * action_per_frame + 32)),
+            horizon=max(
+                args.env_horizon,
+                int((case.t0_frame + generated_frames + 2) * action_per_frame + 32),
+            ),
             ignore_done=True,
             project_root=Path.cwd(),
         )
@@ -213,7 +243,9 @@ def main(argv: list[str] | None = None) -> None:
                     horizon_frames=args.horizon_frames,
                     generated_frames=generated_frames,
                     action_per_frame=action_per_frame,
-                    seed=args.seed + case.case_index * 100 + branch_seed_offset(branch_name),
+                    seed=args.seed
+                    + case.case_index * 100
+                    + branch_seed_offset(branch_name),
                     output_root=output_root,
                     video_fps=args.video_fps,
                 )
@@ -226,7 +258,7 @@ def main(argv: list[str] | None = None) -> None:
                         mode=mode,
                         prompt=case.task_text,
                         action_per_frame=action_per_frame,
-                        frame_chunk_size=frame_chunk_size,
+                        frame_chunk_size=frame_chunk_sizes[mode],
                         generated_frames=generated_frames,
                         runtime_device=runtime_device,
                         frontend_device=frontend_device,
@@ -234,7 +266,9 @@ def main(argv: list[str] | None = None) -> None:
                         seed=args.seed + case.case_index * 1000 + mode_index * 10000,
                         output_root=output_root,
                         video_fps=args.video_fps,
-                        fdm_drop_text_conditioning=bool(args.fdm_drop_text_conditioning),
+                        fdm_drop_text_conditioning=bool(
+                            args.fdm_drop_text_conditioning
+                        ),
                         config=config,
                     )
                     metric_rows.extend(result["metric_rows"])
@@ -262,7 +296,9 @@ def main(argv: list[str] | None = None) -> None:
         "metrics_summary": str(output_root / "metrics_summary.csv"),
         "sample_results": str(output_root / "sample_results.jsonl"),
         "target_video_count": len(list((output_root / "videos").glob("target_*.mp4"))),
-        "prediction_video_count": len(list((output_root / "videos").glob("pred_*.mp4"))),
+        "prediction_video_count": len(
+            list((output_root / "videos").glob("pred_*.mp4"))
+        ),
         "summary_rows": summary_rows,
     }
     _write_json(output_root / "summary.json", summary)
@@ -284,9 +320,13 @@ def _select_cases(
     for episode_index in episode_indices:
         row = by_episode.get(int(episode_index))
         if row is None:
-            raise ValueError(f"Episode {episode_index} was not found in replay metadata.")
+            raise ValueError(
+                f"Episode {episode_index} was not found in replay metadata."
+            )
         if row.get("failure"):
-            raise ValueError(f"Episode {episode_index} is marked replay failure; choose a successful replay row.")
+            raise ValueError(
+                f"Episode {episode_index} is marked replay failure; choose a successful replay row."
+            )
         parquet_path = Path(str(row["parquet_path"]))
         actions = _read_actions(parquet_path)
         total_video_frames = actions.shape[0] // int(action_per_frame)
@@ -297,13 +337,19 @@ def _select_cases(
                 f"Episode {episode_index} is too short for horizon={horizon_frames}: "
                 f"total_video_frames={total_video_frames}, min_t0={min_t0}."
             )
-        t0_frame = int(t0_frame_arg) if t0_frame_arg is not None else int(round(total_video_frames * 0.35))
+        t0_frame = (
+            int(t0_frame_arg)
+            if t0_frame_arg is not None
+            else int(round(total_video_frames * 0.35))
+        )
         t0_frame = min(max(min_t0, t0_frame), max_t0)
         init_state_index = row.get("resolved_init_state_index")
         if init_state_index is None:
             init_state_index = row.get("primary_init_state_index")
         if init_state_index is None:
-            raise ValueError(f"Episode {episode_index} has no resolved or primary init state index.")
+            raise ValueError(
+                f"Episode {episode_index} has no resolved or primary init state index."
+            )
         selected.append(
             CounterfactualCase(
                 case_index=len(selected),
@@ -339,9 +385,15 @@ def _render_counterfactual_branch(
     t0_action_index = int(case.t0_frame * action_per_frame)
     future_action_count = int(horizon_frames * action_per_frame)
     context_latent_frames = int(case.t0_frame - case.context_start_frame)
-    context_raw_frame_count = _raw_window_frames_for_latents(context_latent_frames, action_per_frame=action_per_frame)
-    future_actions = actions[t0_action_index : t0_action_index + future_action_count].copy()
-    future_actions = apply_action_branch(future_actions, branch_name=branch_name, seed=seed)
+    context_raw_frame_count = _raw_window_frames_for_latents(
+        context_latent_frames, action_per_frame=action_per_frame
+    )
+    future_actions = actions[
+        t0_action_index : t0_action_index + future_action_count
+    ].copy()
+    future_actions = apply_action_branch(
+        future_actions, branch_name=branch_name, seed=seed
+    )
 
     obs = env.reset()
     obs = env.set_init_state(init_state)
@@ -360,13 +412,17 @@ def _render_counterfactual_branch(
             f"expected={context_raw_frame_count}, got={len(context_obs)}."
         )
 
-    for action_index in range(context_action_start + context_raw_frame_count, t0_action_index):
+    for action_index in range(
+        context_action_start + context_raw_frame_count, t0_action_index
+    ):
         obs, _, _, _ = env.step(actions[action_index].astype(np.float32, copy=False))
 
     target_frames: list[np.ndarray] = []
     future_obs: list[dict[str, np.ndarray]] = []
     del generated_frames
-    target_raw_frame_count = _decoded_raw_frames_for_latents(horizon_frames, action_per_frame=action_per_frame)
+    target_raw_frame_count = _decoded_raw_frames_for_latents(
+        horizon_frames, action_per_frame=action_per_frame
+    )
     t0_obs = _extract_obs(obs)
     future_obs.append(t0_obs)
     target_frames.append(_compose_obs_rgb(t0_obs))
@@ -401,7 +457,7 @@ def _render_counterfactual_branch(
 
 def _run_model_on_branch(
     *,
-    fdm_rollout: JointDenoisingFdmRollout,
+    fdm_rollout: DynamicsRolloutAdapter,
     branch: BranchRender,
     case: CounterfactualCase,
     mode: FdmAblationMode,
@@ -419,22 +475,14 @@ def _run_model_on_branch(
     config,
 ) -> dict[str, Any]:
     seed_everywhere(seed)
-    runner = fdm_rollout.runner
-    session = runner.reset(task_text=(prompt,))
-    if case.context_start_frame:
-        session.policy_state.cache["frame_start"] = int(case.context_start_frame)
-        session.policy_state.cursor = make_rollout_cursor(
-            session.policy_state.cursor,
-            current_start_frame=int(case.context_start_frame),
-            block_index=session.policy_state.cursor.block_index,
-            chunk_size=session.policy_state.cursor.chunk_size,
+    video_latents, text_context, negative_text_context = (
+        _prepare_obs_context_with_frontend(
+            pipeline=fdm_rollout.pipeline,
+            obs_list=branch.context_obs,
+            prompt=prompt,
+            frontend_device=frontend_device,
+            runtime_device=runtime_device,
         )
-    video_latents, text_context, negative_text_context = _prepare_obs_context_with_frontend(
-        runner=runner,
-        obs_list=branch.context_obs,
-        prompt=prompt,
-        frontend_device=frontend_device,
-        runtime_device=runtime_device,
     )
     expected_context_frames = int(case.t0_frame - case.context_start_frame)
     if int(video_latents.shape[2]) != expected_context_frames:
@@ -445,48 +493,45 @@ def _run_model_on_branch(
     action_start = case.context_start_frame * action_per_frame
     action_end = case.t0_frame * action_per_frame
     all_actions = _read_actions(case.parquet_path)
-    action_context = torch.from_numpy(all_actions[action_start:action_end]).unsqueeze(0).to(
-        device=runtime_device,
-        dtype=torch.float32,
-    )
-    drop_text_for_mode = _should_drop_text_conditioning(mode, fdm_drop_text_conditioning=fdm_drop_text_conditioning)
-    if drop_text_for_mode:
-        if text_context is None:
-            visual_config = runner.pipeline.visual_tower.config
-            warmup_text_context = torch.zeros(
-                int(video_latents.shape[0]),
-                int(visual_config.max_text_tokens),
-                int(visual_config.text_dim),
-                device=video_latents.device,
-                dtype=video_latents.dtype,
-            )
-        else:
-            warmup_text_context = torch.zeros_like(text_context)
-        warmup_negative_text_context = (
-            torch.zeros_like(negative_text_context)
-            if negative_text_context is not None
-            else None
+    action_context = (
+        torch.from_numpy(all_actions[action_start:action_end])
+        .unsqueeze(0)
+        .to(
+            device=runtime_device,
+            dtype=torch.float32,
         )
-    else:
-        warmup_text_context = text_context
-        warmup_negative_text_context = negative_text_context
-    warmup = runner.warmup_cache(
-        session=session,
-        video_latents=video_latents,
-        text_context=warmup_text_context,
-        negative_text_context=warmup_negative_text_context,
-        action_history=action_context,
+    )
+    drop_text_for_mode = _should_drop_text_conditioning(
+        mode, fdm_drop_text_conditioning=fdm_drop_text_conditioning
+    )
+    session = fdm_rollout.reset_and_warmup(
+        task_text=(prompt,),
+        video_context=video_latents,
+        action_context=action_context,
+        text_context=text_context,
+        negative_text_context=negative_text_context,
+        context_start_frame=int(case.context_start_frame),
         action_space=ActionSpace.RAW,
-        action_conditioning_mode=mode.value,
+        mode=mode,
+        drop_text_conditioning=drop_text_for_mode,
         proprio_state=_proprio_state_from_obs(
             branch.context_obs[-1],
             config=config,
             device=runtime_device,
         ),
+        hidden_proprio_history=_proprio_history_from_obs(
+            branch.context_obs,
+            action_per_frame=action_per_frame,
+            config=config,
+            device=runtime_device,
+        ),
     )
-    session = warmup.session
 
-    future_actions = torch.from_numpy(branch.future_actions).unsqueeze(0).to(device=runtime_device, dtype=torch.float32)
+    future_actions = (
+        torch.from_numpy(branch.future_actions)
+        .unsqueeze(0)
+        .to(device=runtime_device, dtype=torch.float32)
+    )
     predicted_chunks: list[torch.Tensor] = []
     chunk_debug: list[dict[str, Any]] = []
     for frame_offset in range(0, generated_frames, frame_chunk_size):
@@ -521,16 +566,28 @@ def _run_model_on_branch(
         session = chunk.session
 
     target_latent_frames = int(branch.future_actions.shape[0] // action_per_frame)
-    predicted_latents = torch.cat(predicted_chunks, dim=2)[:, :, :target_latent_frames].cpu()
-    predicted_rgb = decode_latent_video(runner.pipeline, predicted_latents, decode_device=decode_device)
+    predicted_latents = torch.cat(predicted_chunks, dim=2)[
+        :, :, :target_latent_frames
+    ].cpu()
+    predicted_rgb = decode_latent_video(
+        fdm_rollout.pipeline,
+        predicted_latents,
+        decode_device=decode_device,
+    )
     if predicted_rgb is None:
-        raise RuntimeError("Counterfactual FDM eval requires a VAE to decode predicted latents.")
+        raise RuntimeError(
+            "Counterfactual FDM eval requires a VAE to decode predicted latents."
+        )
     target_rgb = _resize_target_to_prediction(branch.target_rgb, predicted_rgb)
     rgb_mse = rgb_mse_per_frame(predicted_rgb, target_rgb)
     rgb_ssim = simple_ssim_per_frame(predicted_rgb, target_rgb)
 
-    video_path = output_root / "videos" / (
-        f"pred_case{case.case_index:02d}_ep{case.episode_index:06d}_{branch.branch_name}_{mode.value}.mp4"
+    video_path = (
+        output_root
+        / "videos"
+        / (
+            f"pred_case{case.case_index:02d}_ep{case.episode_index:06d}_{branch.branch_name}_{mode.value}.mp4"
+        )
     )
     write_prediction_video(
         output_path=video_path,
@@ -540,7 +597,9 @@ def _run_model_on_branch(
         fps=video_fps,
     )
     metric_rows = []
-    for horizon_index, (mse_value, ssim_value) in enumerate(zip(rgb_mse, rgb_ssim, strict=True)):
+    for horizon_index, (mse_value, ssim_value) in enumerate(
+        zip(rgb_mse, rgb_ssim, strict=True)
+    ):
         metric_rows.append(
             {
                 **_case_to_row(case),
@@ -570,7 +629,7 @@ def _run_model_on_branch(
 
 def _prepare_obs_context_with_frontend(
     *,
-    runner: Any,
+    pipeline: Any,
     obs_list: list[dict[str, np.ndarray]],
     prompt: str,
     frontend_device: torch.device,
@@ -579,9 +638,11 @@ def _prepare_obs_context_with_frontend(
     """Prepare simulator observations through the same LingBot frontend path used by rollout."""
 
     if not obs_list:
-        raise ValueError("Counterfactual FDM warmup requires at least one context observation.")
+        raise ValueError(
+            "Counterfactual FDM warmup requires at least one context observation."
+        )
     views = _obs_list_to_views(obs_list, device=frontend_device)
-    visual_outputs = runner.pipeline.prepare_visual_outputs(
+    visual_outputs = pipeline.prepare_visual_outputs(
         views,
         task_text=(prompt,),
         preserve_stream_cache=False,
@@ -592,7 +653,9 @@ def _prepare_obs_context_with_frontend(
     return (
         video_latents.to(device=runtime_device),
         None if text_context is None else text_context.to(device=runtime_device),
-        None if negative_text_context is None else negative_text_context.to(device=runtime_device),
+        None
+        if negative_text_context is None
+        else negative_text_context.to(device=runtime_device),
     )
 
 
@@ -616,7 +679,13 @@ def _proprio_obs_for_future_chunk(
     if frame_offset <= 0 or not branch.future_obs:
         return branch.context_obs[-1]
     previous_latent_frame = int(frame_offset) - 1
-    raw_index = max(0, min(int(previous_latent_frame) * int(action_per_frame), len(branch.future_obs) - 1))
+    raw_index = max(
+        0,
+        min(
+            int(previous_latent_frame) * int(action_per_frame),
+            len(branch.future_obs) - 1,
+        ),
+    )
     return branch.future_obs[raw_index]
 
 
@@ -634,14 +703,18 @@ def _proprio_state_from_obs(
         ProprioContextMode.TEXT_CONTEXT_TOKEN,
     }:
         return None
-    state_encoding = getattr(getattr(config.data, "action_target", None), "state_encoding", None)
+    state_encoding = getattr(
+        getattr(config.data, "action_target", None), "state_encoding", None
+    )
     if state_encoding != "eef_pos_axisangle_gripper_2d":
         raise ValueError(
             "Counterfactual proprio context currently supports only "
             f"state_encoding='eef_pos_axisangle_gripper_2d', got {state_encoding!r}."
         )
     state = _extract_libero_eef_axisangle_gripper_state(obs)
-    expected_dim = int(getattr(getattr(config.data, "action_schema", None), "state_dim", 0) or 0)
+    expected_dim = int(
+        getattr(getattr(config.data, "action_schema", None), "state_dim", 0) or 0
+    )
     if expected_dim > 0 and state.shape[0] != expected_dim:
         raise ValueError(
             "Counterfactual proprio context dim does not match data.action_schema.state_dim, "
@@ -650,44 +723,97 @@ def _proprio_state_from_obs(
     return torch.from_numpy(state).to(device=device, dtype=torch.float32).unsqueeze(0)
 
 
-def _extract_libero_eef_axisangle_gripper_state(obs: dict[str, np.ndarray]) -> np.ndarray:
+def _proprio_history_from_obs(
+    obs_list: list[dict[str, np.ndarray]],
+    *,
+    action_per_frame: int,
+    config: Any,
+    device: torch.device,
+) -> torch.Tensor | None:
+    """Build one state per latent anchor from the raw observation window."""
+
+    if action_per_frame <= 0:
+        raise ValueError(f"action_per_frame must be positive, got {action_per_frame}.")
+    latent_anchor_obs = obs_list[::action_per_frame]
+    states = [
+        _proprio_state_from_obs(obs, config=config, device=device)
+        for obs in latent_anchor_obs
+    ]
+    if not states or states[0] is None:
+        if any(state is not None for state in states):
+            raise RuntimeError(
+                "Counterfactual proprio history cannot mix enabled and disabled states."
+            )
+        return None
+    if any(state is None for state in states):
+        raise RuntimeError(
+            "Counterfactual proprio history cannot mix enabled and disabled states."
+        )
+    return torch.stack([state for state in states if state is not None], dim=1)
+
+
+def _extract_libero_eef_axisangle_gripper_state(
+    obs: dict[str, np.ndarray],
+) -> np.ndarray:
     eef_pos = np.asarray(obs["robot0_eef_pos"], dtype=np.float32).reshape(-1)
     eef_quat = np.asarray(obs["robot0_eef_quat"], dtype=np.float32).reshape(-1)
     gripper_qpos = np.asarray(obs["robot0_gripper_qpos"], dtype=np.float32).reshape(-1)
     if eef_pos.shape[0] != 3:
-        raise ValueError(f"Expected LIBERO robot0_eef_pos to have dim 3, got {eef_pos.shape[0]}.")
+        raise ValueError(
+            f"Expected LIBERO robot0_eef_pos to have dim 3, got {eef_pos.shape[0]}."
+        )
     if eef_quat.shape[0] != 4:
-        raise ValueError(f"Expected LIBERO robot0_eef_quat to have dim 4, got {eef_quat.shape[0]}.")
+        raise ValueError(
+            f"Expected LIBERO robot0_eef_quat to have dim 4, got {eef_quat.shape[0]}."
+        )
     if gripper_qpos.shape[0] != 2:
-        raise ValueError(f"Expected LIBERO robot0_gripper_qpos to have dim 2, got {gripper_qpos.shape[0]}.")
+        raise ValueError(
+            f"Expected LIBERO robot0_gripper_qpos to have dim 2, got {gripper_qpos.shape[0]}."
+        )
     axisangle = (
-        quaternion_to_axis_angle(torch.from_numpy(eef_quat).to(dtype=torch.float32).unsqueeze(0))[0]
+        quaternion_to_axis_angle(
+            torch.from_numpy(eef_quat).to(dtype=torch.float32).unsqueeze(0)
+        )[0]
         .detach()
         .cpu()
         .numpy()
         .astype(np.float32, copy=False)
     )
     if axisangle.shape[0] != 3:
-        raise ValueError(f"Expected axis-angle proprio dim 3, got {axisangle.shape[0]}.")
-    return np.concatenate([eef_pos, axisangle, gripper_qpos], axis=0).astype(np.float32, copy=False)
+        raise ValueError(
+            f"Expected axis-angle proprio dim 3, got {axisangle.shape[0]}."
+        )
+    return np.concatenate([eef_pos, axisangle, gripper_qpos], axis=0).astype(
+        np.float32, copy=False
+    )
 
 
 def _compose_obs_rgb(obs: dict[str, np.ndarray]) -> np.ndarray:
     left = _as_uint8(obs[LIBERO_OBS_KEYS[0]])
     right = _as_uint8(obs[LIBERO_OBS_KEYS[1]])
     if left.shape[:2] != right.shape[:2]:
-        raise ValueError(f"Expected matching camera shapes, got {left.shape} and {right.shape}.")
+        raise ValueError(
+            f"Expected matching camera shapes, got {left.shape} and {right.shape}."
+        )
     return np.concatenate([left, right], axis=1)
 
 
-def _obs_list_to_views(obs_list: list[dict[str, np.ndarray]], *, device: torch.device) -> dict[str, torch.Tensor]:
+def _obs_list_to_views(
+    obs_list: list[dict[str, np.ndarray]], *, device: torch.device
+) -> dict[str, torch.Tensor]:
     return {
-        LIBERO_OBS_KEYS[0]: torch.from_numpy(np.stack([obs[LIBERO_OBS_KEYS[0]] for obs in obs_list], axis=0)).to(device=device),
-        LIBERO_OBS_KEYS[1]: torch.from_numpy(np.stack([obs[LIBERO_OBS_KEYS[1]] for obs in obs_list], axis=0)).to(device=device),
+        LIBERO_OBS_KEYS[0]: torch.from_numpy(
+            np.stack([obs[LIBERO_OBS_KEYS[0]] for obs in obs_list], axis=0)
+        ).to(device=device),
+        LIBERO_OBS_KEYS[1]: torch.from_numpy(
+            np.stack([obs[LIBERO_OBS_KEYS[1]] for obs in obs_list], axis=0)
+        ).to(device=device),
     }
 
 
-def _resize_target_to_prediction(target_rgb: np.ndarray, predicted_rgb: np.ndarray) -> np.ndarray:
+def _resize_target_to_prediction(
+    target_rgb: np.ndarray, predicted_rgb: np.ndarray
+) -> np.ndarray:
     if target_rgb.shape == predicted_rgb.shape:
         return target_rgb
     if int(target_rgb.shape[0]) != int(predicted_rgb.shape[0]):
@@ -700,14 +826,18 @@ def _resize_target_to_prediction(target_rgb: np.ndarray, predicted_rgb: np.ndarr
     frames = []
     target_u8 = _as_uint8(target_rgb)
     for frame in target_u8:
-        resized = Image.fromarray(frame).resize((predicted_rgb.shape[2], predicted_rgb.shape[1]))
+        resized = Image.fromarray(frame).resize(
+            (predicted_rgb.shape[2], predicted_rgb.shape[1])
+        )
         frames.append(np.asarray(resized, dtype=np.float32) / 255.0)
     return np.stack(frames, axis=0)
 
 
 def _write_rgb_video(path: Path, rgb: np.ndarray, *, fps: float) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    imageio.mimsave(path, [_as_uint8(frame) for frame in rgb], fps=float(fps), macro_block_size=1)
+    imageio.mimsave(
+        path, [_as_uint8(frame) for frame in rgb], fps=float(fps), macro_block_size=1
+    )
 
 
 def _read_actions(parquet_path: Path) -> np.ndarray:
@@ -752,7 +882,9 @@ def _small_chunk_debug(chunks: list[dict[str, Any]]) -> list[dict[str, Any]]:
         "generalist_conditional_history_chunks",
         "generation_frame_start",
     }
-    return [{key: value for key, value in chunk.items() if key in keep} for chunk in chunks]
+    return [
+        {key: value for key, value in chunk.items() if key in keep} for chunk in chunks
+    ]
 
 
 def _should_drop_text_conditioning(
@@ -762,7 +894,9 @@ def _should_drop_text_conditioning(
 ) -> bool:
     return bool(
         should_drop_task_text_for_fdm_mode(mode)
-        or (fdm_drop_text_conditioning and mode != FdmAblationMode.VANILLA_JOINT_ROLLOUT)
+        or (
+            fdm_drop_text_conditioning and mode != FdmAblationMode.VANILLA_JOINT_ROLLOUT
+        )
     )
 
 
@@ -776,10 +910,14 @@ def _as_uint8(value: np.ndarray) -> np.ndarray:
 
 
 def _raw_window_frames_for_latents(latent_frames: int, *, action_per_frame: int) -> int:
-    return raw_window_frames_for_latents(latent_frames, action_per_frame=action_per_frame)
+    return raw_window_frames_for_latents(
+        latent_frames, action_per_frame=action_per_frame
+    )
 
 
-def _decoded_raw_frames_for_latents(latent_frames: int, *, action_per_frame: int) -> int:
+def _decoded_raw_frames_for_latents(
+    latent_frames: int, *, action_per_frame: int
+) -> int:
     if latent_frames <= 0:
         raise ValueError(f"Expected positive latent frame count, got {latent_frames}.")
     return int(action_per_frame) * int(latent_frames) + 1
@@ -822,7 +960,9 @@ def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         writer.writerows(rows)
 
 
-def _summarize_counterfactual_metric_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _summarize_counterfactual_metric_rows(
+    rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
     groups: dict[tuple[str, str, int], list[dict[str, Any]]] = {}
     for row in rows:
         groups.setdefault(
@@ -832,8 +972,12 @@ def _summarize_counterfactual_metric_rows(rows: list[dict[str, Any]]) -> list[di
 
     summaries: list[dict[str, Any]] = []
     for (branch, mode, horizon_index), group_rows in sorted(groups.items()):
-        rgb_mse = np.asarray([float(row["rgb_mse"]) for row in group_rows], dtype=np.float64)
-        rgb_ssim = np.asarray([float(row["rgb_ssim"]) for row in group_rows], dtype=np.float64)
+        rgb_mse = np.asarray(
+            [float(row["rgb_mse"]) for row in group_rows], dtype=np.float64
+        )
+        rgb_ssim = np.asarray(
+            [float(row["rgb_ssim"]) for row in group_rows], dtype=np.float64
+        )
         summaries.append(
             {
                 "branch": branch,
@@ -850,7 +994,9 @@ def _summarize_counterfactual_metric_rows(rows: list[dict[str, Any]]) -> list[di
 
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run simulator-counterfactual FDM evaluation on LIBERO.")
+    parser = argparse.ArgumentParser(
+        description="Run simulator-counterfactual FDM evaluation on LIBERO."
+    )
     parser.add_argument(
         "--config",
         "--cfg",
@@ -861,7 +1007,9 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--replay-status-path", required=True)
     parser.add_argument("--episode-indices", required=True)
     parser.add_argument("--max-cases", type=int, default=None)
-    parser.add_argument("--output-dir", default="outputs/joint_denoising_fdm_counterfactual")
+    parser.add_argument(
+        "--output-dir", default="outputs/joint_denoising_fdm_counterfactual"
+    )
     parser.add_argument("--run-id", default=None)
     parser.add_argument("--horizon-frames", type=int, default=16)
     parser.add_argument("--context-window-frames", type=int, default=16)
@@ -927,7 +1075,9 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
             "the counterfactual renderer only evaluates future-video modes."
         )
     if args.context_window_frames <= 0:
-        parser.error("--context-window-frames must be positive for counterfactual warmup.")
+        parser.error(
+            "--context-window-frames must be positive for counterfactual warmup."
+        )
     if args.horizon_frames <= 0:
         parser.error("--horizon-frames must be positive.")
     return args

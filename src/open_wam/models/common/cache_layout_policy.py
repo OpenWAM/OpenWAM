@@ -168,7 +168,7 @@ def resolve_slot_pool_prefix_visibility(
             device=attention_mask.device,
             dtype=attention_mask.dtype,
         )
-    elif prefix_visibility_mode == "preserve_video_pretrain_history":
+    elif prefix_visibility_mode == "video_queries_video_only":
         q_stream = _normalize_stream_ids(
             query_stream_ids,
             expected_len=int(attention_mask.shape[-2]),

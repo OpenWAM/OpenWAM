@@ -8,7 +8,10 @@ from torch import nn
 
 from open_wam.models.common import RolloutCursor
 from open_wam.models.common.cache_backends import SlotPoolCachePayload
-from open_wam.models.video_backbone.config import LingbotCompatibleVideoBackboneConfig, SharedVideoTransformerConfig
+from open_wam.models.video_backbone.config import (
+    LingbotCompatibleVideoBackboneConfig,
+    SharedVideoTransformerConfig,
+)
 from open_wam.models.video_backbone.contracts import (
     AttentionCacheEntry,
     CacheBranchState,
@@ -20,7 +23,9 @@ from open_wam.models.visual_tower.runtime_programs import RuntimeStepOutput
 
 
 def test_visual_tower_advance_runtime_cache_state_updates_cursor_metadata() -> None:
-    tower = VisualTower(LingbotCompatibleVideoBackboneConfig(implementation="dummy", num_layers=1))
+    tower = VisualTower(
+        LingbotCompatibleVideoBackboneConfig(implementation="dummy", num_layers=1)
+    )
     cursor = RolloutCursor(current_start_frame=0, block_index=0, chunk_size=2)
     cache = tower.init_runtime_cache_state(
         cursor=cursor,
@@ -45,8 +50,12 @@ def test_visual_tower_advance_runtime_cache_state_updates_cursor_metadata() -> N
     assert next_cache.update_metadata.max_cached_frames == 4
 
 
-def test_visual_tower_truncate_runtime_cache_state_applies_shared_retention_policy() -> None:
-    tower = VisualTower(LingbotCompatibleVideoBackboneConfig(implementation="dummy", num_layers=1))
+def test_visual_tower_truncate_runtime_cache_state_applies_shared_retention_policy() -> (
+    None
+):
+    tower = VisualTower(
+        LingbotCompatibleVideoBackboneConfig(implementation="dummy", num_layers=1)
+    )
     entry = AttentionCacheEntry(
         key=torch.randn(1, 2, 6, 4),
         value=torch.randn(1, 2, 6, 4),
@@ -142,7 +151,9 @@ def test_visual_tower_resolve_cache_preserves_existing_state_identity() -> None:
     assert resolved is existing
 
 
-def test_visual_tower_cache_update_metadata_preserves_policy_and_allows_overrides() -> None:
+def test_visual_tower_cache_update_metadata_preserves_policy_and_allows_overrides() -> (
+    None
+):
     tower = VisualTower(
         LingbotCompatibleVideoBackboneConfig(implementation="dummy", num_layers=1)
     )
@@ -305,8 +316,7 @@ def test_visual_tower_cache_branches_advance_and_clear_preserve_policy() -> None
     assert cleared.cross_attention_kv == tuple()
     assert set(cleared.branch_states) == {"conditioned", "unconditioned"}
     assert all(
-        branch.self_attention_kv == tuple()
-        and branch.cross_attention_kv == tuple()
+        branch.self_attention_kv == tuple() and branch.cross_attention_kv == tuple()
         for branch in cleared.branch_states.values()
     )
     assert cleared.update_metadata == CacheUpdateMetadata(
@@ -320,7 +330,9 @@ def test_visual_tower_cache_branches_advance_and_clear_preserve_policy() -> None
     )
 
 
-def test_prefill_exact_video_cache_materializes_self_attention_kv_for_single_stream_runtime() -> None:
+def test_prefill_exact_video_cache_materializes_self_attention_kv_for_single_stream_runtime() -> (
+    None
+):
     tower = VisualTower(
         SharedVideoTransformerConfig(
             implementation="shared_transformer",
@@ -398,7 +410,9 @@ def test_exact_video_cache_prefill_accepts_attention_mask_and_trainable_cache() 
     assert flow_pred.shape == observed_prefix.shape
 
 
-def test_packed_exact_video_forward_reuses_positions_per_copy_and_returns_kv(monkeypatch) -> None:
+def test_packed_exact_video_forward_reuses_positions_per_copy_and_returns_kv(
+    monkeypatch,
+) -> None:
     tower = VisualTower(
         SharedVideoTransformerConfig(
             implementation="shared_transformer",

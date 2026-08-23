@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import torch
 
-from open_wam.configs.policy_variant import ParallelStreamPolicyConfig
+from open_wam.configs import ParallelStreamPolicyConfig, VideoActionProgram
 from open_wam.models.policy_variants.parallel_stream.action_adapter import (
     LingbotActionAdapter,
     build_action_adapter_spec,
@@ -11,7 +11,7 @@ from open_wam.models.policy_variants.parallel_stream.action_adapter import (
 
 def _build_libero_adapter() -> LingbotActionAdapter:
     config = ParallelStreamPolicyConfig(
-        runtime_mode="lingbot_exact",
+        program=VideoActionProgram.VIDEO_THEN_ACTION,
         reference_profile="libero",
         action_norm_method="profile",
     )
@@ -22,7 +22,7 @@ def _build_libero_adapter() -> LingbotActionAdapter:
 
 def test_explicit_none_action_norm_overrides_reference_profile_quantiles() -> None:
     config = ParallelStreamPolicyConfig(
-        runtime_mode="lingbot_exact",
+        program=VideoActionProgram.VIDEO_THEN_ACTION,
         reference_profile="libero",
         used_action_channel_ids=(0, 1, 2, 3, 4, 5, 6, 28),
         inverse_used_action_channel_ids=(0, 1, 2, 3, 4, 5, 6) + (8,) * 21 + (7, 8),
@@ -43,7 +43,7 @@ def test_explicit_none_action_norm_overrides_reference_profile_quantiles() -> No
 
 def test_profile_action_norm_without_channels_does_not_create_adapter() -> None:
     config = ParallelStreamPolicyConfig(
-        runtime_mode="lingbot_exact",
+        program=VideoActionProgram.VIDEO_THEN_ACTION,
         reference_profile=None,
         used_action_channel_ids=(),
         inverse_used_action_channel_ids=(),

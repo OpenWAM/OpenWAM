@@ -7,6 +7,7 @@ from open_wam.configs import (
     InferenceConfig,
     ParallelExactCacheWriteMode,
     ParallelStreamPolicyConfig,
+    VideoActionProgram,
 )
 from open_wam.models.policy_variants.parallel_stream import cache_lifecycle
 from open_wam.models.policy_variants.parallel_stream import reference_runtime
@@ -37,6 +38,7 @@ def _backbone() -> SharedVideoTransformerConfig:
 
 def _policy() -> ParallelStreamPolicyConfig:
     return ParallelStreamPolicyConfig(
+        program=VideoActionProgram.VIDEO_THEN_ACTION,
         hidden_size=8,
         frame_chunk_size=2,
         action_per_frame=2,

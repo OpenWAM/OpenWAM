@@ -63,17 +63,25 @@ ExperimentConfig -> VariantPipeline -> VisualTower -> PolicyVariant -> ActionDec
 
 Implement the policy hooks it uses:
 
-- `attach_site`
 - `required_visual_stages`
 - `prepare_train_inputs`
 - `forward_train`
 - `prepare_infer_state`
 - `forward_infer_step`
 
-The frontend output is always available. Include `"core"` in
+The frontend output is always available. Include `PolicyVisualStage.CORE` in
 `required_visual_stages()` only when the policy needs the shared dense visual
-core. Use the optional `initialize_for_training()` and
+core. The pipeline rejects unknown stage names before execution. Use the optional `initialize_for_training()` and
 `reconcile_observed_history()` hooks instead of adding pipeline branches.
+
+Set `proprio_context_mode` or `dynamics_mode_context_enabled` in the extension
+policy config when the policy needs those shared-tower adapters. They are
+configured before any policy modules are allocated. Override
+`pipeline_requirements()` to validate model-space geometry and expose accepted
+source-action shapes plus any channel projection when a backend maps source
+actions into a wider model space. The factory verifies that the runtime
+declaration matches the dataset, config, tower, and decoder;
+architecture-specific dimension logic does not belong in the generic factory.
 
 Use `DecoderArtifactEnvelope` for architecture-specific policy-to-decoder
 tensors. Keep sequence layout, recurrent state, and cache transitions in the

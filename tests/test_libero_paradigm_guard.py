@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from open_wam.configs import load_experiment_config
+from open_wam.configs import SampleOrderMode, load_experiment_config
 from open_wam.utils.libero_paradigm import (
     collect_current_libero_policy_paradigm_issues,
     removed_libero_policy_config_reason,
@@ -65,6 +65,7 @@ def test_libero_compatibility_guard_allows_alternative_sampling_recipes(architec
             sample_construction=replace(
                 config.data.sample_construction,
                 mode="hierarchical_fixed_segment",
+                sample_order_mode=SampleOrderMode.EPOCH_ORDER,
                 segment_frames=128,
                 segment_min_frames=None,
                 segment_max_frames=None,
@@ -73,7 +74,6 @@ def test_libero_compatibility_guard_allows_alternative_sampling_recipes(architec
                 randomize_segment_length=False,
                 randomize_segment_start=False,
                 require_full_segment=False,
-                sample_order_mode="epoch_order",
                 target_alignment="next_after_context",
                 rollout_context_policy="one_frame",
                 start_padding_frames=0,
@@ -97,6 +97,7 @@ def test_libero_compatibility_guard_does_not_own_gjd_sampling_geometry() -> None
             sample_construction=replace(
                 config.data.sample_construction,
                 mode="hierarchical_fixed_segment",
+                sample_order_mode=SampleOrderMode.EPOCH_ORDER,
                 segment_frames=128,
                 segment_min_frames=None,
                 segment_max_frames=None,
@@ -105,7 +106,6 @@ def test_libero_compatibility_guard_does_not_own_gjd_sampling_geometry() -> None
                 randomize_segment_length=False,
                 randomize_segment_start=False,
                 require_full_segment=False,
-                sample_order_mode="epoch_order",
                 target_alignment="next_after_context",
                 rollout_context_policy="one_frame",
                 start_padding_frames=0,

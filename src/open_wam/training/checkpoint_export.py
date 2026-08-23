@@ -1,49 +1,43 @@
+"""Architecture-neutral state-dict overlay composition."""
+
 from __future__ import annotations
+
+from collections.abc import Callable
 
 import torch
 
-__all__ = []
 
-
-def _remap_packed_video_blocks_into_backbone(
+def merge_state_dict_overlay(
     *,
-    backbone_state_dict: dict[str, torch.Tensor],
-    stack_state_dict: dict[str, torch.Tensor],
+    base_state_dict: dict[str, torch.Tensor],
+    overlay_state_dict: dict[str, torch.Tensor],
+    map_key: Callable[[str], str | None],
+    exclusive_target_prefixes: tuple[str, ...] = (),
 ) -> dict[str, torch.Tensor]:
-    """Move ``packed_blocks.{i}.video_block.*`` entries under ``blocks.{i}.*``.
+    """Project one policy-owned module state into an exported backbone state."""
 
-    After ownership transfer in ``DualExpertPolicyVariant.attach_visual_tower``, the
-    visual_tower core no longer owns its blocks; running ``state_dict()`` on
-    the core therefore drops every ``blocks.{i}.*`` weight. The packed stack
-    holds the canonical video block weights under
-    ``packed_blocks.{i}.video_block.*``; this helper re-keys them so the
-    exported runtime backbone state dict is a drop-in replacement for the
-    pre-surgery layout. ``action_block.*`` entries are intentionally skipped —
-    they belong to the action expert export path, not the video runtime
-    backbone.
-    """
-
-    if any(key.startswith("blocks.") for key in backbone_state_dict):
+    conflicting_prefixes = tuple(
+        prefix
+        for prefix in exclusive_target_prefixes
+        if any(key.startswith(prefix) for key in base_state_dict)
+    )
+    if conflicting_prefixes:
         raise ValueError(
-            "Runtime backbone state dict already contains `blocks.*` keys; "
-            "packed-coupling remap would clobber them. Investigate why "
-            "visual_tower.core kept its block weights despite the packed "
-            "stack being attached."
+            "Runtime backbone state already owns keys reserved for a policy "
+            f"overlay: {', '.join(conflicting_prefixes)}."
         )
-    remapped: dict[str, torch.Tensor] = dict(backbone_state_dict)
-    prefix = "packed_blocks."
-    video_marker = ".video_block."
-    for key, tensor in stack_state_dict.items():
-        if not key.startswith(prefix):
+
+    merged = dict(base_state_dict)
+    for key, tensor in overlay_state_dict.items():
+        target_key = map_key(key)
+        if target_key is None:
             continue
-        marker_index = key.find(video_marker, len(prefix))
-        if marker_index == -1:
-            # action_block.* (or any other future child) — not part of the
-            # video runtime backbone export.
-            continue
-        block_index_str = key[len(prefix) : marker_index]
-        if not block_index_str.isdigit():
-            continue
-        suffix = key[marker_index + len(video_marker) :]
-        remapped[f"blocks.{block_index_str}.{suffix}"] = tensor
-    return remapped
+        if target_key in merged:
+            raise ValueError(
+                f"Runtime backbone state overlay would replace existing key {target_key!r}."
+            )
+        merged[target_key] = tensor
+    return merged
+
+
+__all__ = ["merge_state_dict_overlay"]

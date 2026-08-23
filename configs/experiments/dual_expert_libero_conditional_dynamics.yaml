@@ -2,15 +2,19 @@ name: dual_expert_libero_conditional_dynamics
 
 # Standalone conditional dynamics on the maintained dual-expert stack.
 # `forward_dynamics` is FDM: clean actions condition video prediction.
-# Override only `policy_variant.program=inverse_dynamics` for IDM: clean video
-# conditions action prediction. Both programs compile to the same one-hot
-# conditional contract used by pure GJD, including text removal, target-only
-# t0 layout, singleton t0 chunk, and one previous video-boundary history.
+# For IDM, select `policy_variant.program=inverse_dynamics` and replace the two
+# routes below with matching `video_conditioned_action` routes. Program and
+# routes are validated together, so a partial override fails instead of
+# silently training the wrong objective. Both programs compile to the same
+# single-mode conditional contract used by pure GJD, including text removal,
+# target-only t0 layout, singleton t0 chunk, and one previous video-boundary
+# history.
 # These are training/offline-inference programs, not live simulator policies.
 # Use VTA, ATV, joint, or another standard program for online action rollout.
-# The default 1:1 real/CF weights require encoded counterfactual train and val
-# roots. For real-demo-only training, set the matching counterfactual weight to
-# zero; the counterfactual roots are then not opened.
+# Every conditional route uses a rollout-local encoded dynamics root. The
+# `real_demo` route selects its `gt` branch; `counterfactual_dynamics` selects
+# perturbed branches. A real-only run may omit the perturbed route, but still
+# needs encoded train and validation roots containing `gt` rows.
 
 data:
   dataset_name: libero
@@ -81,21 +85,16 @@ data:
     include_gripper: true
     gripper_representation: action_command
     gripper_action_index: -1
-  # The fixed program selects one matching pair from these four weights. For
-  # FDM, the action-conditioned pair is used; for IDM, the video-conditioned
-  # pair is used. Relative real/CF weights define the source ratio. A zero
-  # counterfactual weight makes the encoded CF roots optional. Positive CF
-  # weights require target-only t0-plus-future encoded rows at both roots.
-  generalist_dynamics_mixture:
+  # The fixed FDM program accepts only action-conditioned-video routes.
+  # Relative real/CF weights define the source ratio. Both sources are views of
+  # target-only t0-plus-future encoded roots; real_demo selects the gt branch.
+  dynamics_routing:
     train_latent_root: "${paths.datasets.libero_gjd_counterfactual_train_latent_root}"
     val_latent_root: "${paths.datasets.libero_gjd_counterfactual_val_latent_root}"
     allow_train_latent_root_for_val: false
-    real_joint_weight: 0.0
-    real_action_conditioned_video_weight: 1.0
-    real_video_conditioned_action_weight: 1.0
-    counterfactual_action_conditioned_video_weight: 1.0
-    counterfactual_video_conditioned_action_weight: 1.0
-    conditional_history_frames: null
+    routes:
+      - {source: real_demo, mode: action_conditioned_video, weight: 1.0}
+      - {source: counterfactual_dynamics, mode: action_conditioned_video, weight: 1.0}
 
 backbone:
   implementation: shared_transformer
@@ -121,9 +120,6 @@ policy_variant:
   hidden_size: 3072
   attach_site: post_visual_core
   preset: fastwam_joint
-  # `dynamics_routed` selects the real/optional-CF source adapter. It does not
-  # require counterfactual samples when the matching CF weight is zero.
-  generalist_training_paradigm: dynamics_routed
   program: forward_dynamics
   condition_mode: teacher_forcing_cond_video
   video_prefix_frames: 1
@@ -137,8 +133,7 @@ policy_variant:
   use_activation_checkpointing: true
   noisy_video_condition_prob: 0.5
   joint_timestep_coupling: independent
-  # Fixed programs derive a one-hot mode internally and never use a learned
-  # GJD mode token. Do not add `generalist_denoising_mode_probs` here.
+  # Fixed programs never use a learned GJD mode token.
   generalist_mode_text_token: false
 
 action_decoder:
