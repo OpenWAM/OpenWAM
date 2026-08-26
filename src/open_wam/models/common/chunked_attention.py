@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import torch
 
+from open_wam.configs import HistoryStreamVisibility
 from open_wam.models.common.attention_backends import (
     _resolve_compiled_create_block_mask,
     create_block_mask,
@@ -115,7 +116,7 @@ def build_chunked_temporal_exact_attention_profile(
     build_dense_masks: bool = False,
     build_flex_masks: bool = False,
     current_block_coupling: str | None = None,
-    history_stream_visibility: str | None = None,
+    history_stream_visibility: HistoryStreamVisibility | str | None = None,
     prefix_condition_frames: int = 0,
     singleton_chunk_frame: int | None = None,
     conditional_history_policy: str | None = None,
@@ -127,8 +128,8 @@ def build_chunked_temporal_exact_attention_profile(
     current_block_coupling = normalize_chunked_temporal_exact_coupling(
         current_block_coupling
     )
-    resolved_history_stream_visibility = normalize_history_stream_visibility(
-        history_stream_visibility
+    resolved_history_stream_visibility = HistoryStreamVisibility(
+        normalize_history_stream_visibility(history_stream_visibility)
     )
     resolved_conditional_history_policy = normalize_conditional_history_policy(
         conditional_history_policy

@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import torch
 
 from open_wam.contracts import (
     DYNAMICS_CONDITIONAL_HISTORY_PREVIOUS_BOUNDARY_VIDEO_ONLY,
 )
+
+if TYPE_CHECKING:
+    from open_wam.configs import HistoryStreamVisibility
 
 try:
     from torch.nn.attention.flex_attention import BlockMask
@@ -155,12 +158,12 @@ def normalize_chunked_temporal_exact_coupling(coupling: str | None) -> str:
 
 
 def normalize_history_stream_visibility(
-    visibility: str | None,
+    visibility: HistoryStreamVisibility | str | None,
 ) -> str:
-    """Normalize packed video/action clean-history stream visibility."""
+    """Normalize clean-history visibility using the public policy default."""
 
     if visibility is None:
-        return HISTORY_STREAM_VISIBILITY_FULL
+        return HISTORY_STREAM_VISIBILITY_VIDEO_ONLY
     value = str(getattr(visibility, "value", visibility))
     if value in _HISTORY_STREAM_VISIBILITY_VALUES:
         return value

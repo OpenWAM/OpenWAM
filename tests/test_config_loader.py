@@ -2474,6 +2474,50 @@ def test_loaded_enum_like_fields_are_real_enum_members() -> None:
 
 
 @pytest.mark.parametrize(
+    "policy_config_type",
+    (DualExpertPolicyConfig, ParallelStreamPolicyConfig),
+)
+@pytest.mark.parametrize("program", tuple(VideoActionProgram))
+def test_every_video_action_program_defaults_to_video_only_history(
+    policy_config_type: type[DualExpertPolicyConfig | ParallelStreamPolicyConfig],
+    program: VideoActionProgram,
+) -> None:
+    config = policy_config_type(program=program)
+
+    assert config.history_stream_visibility == HistoryStreamVisibility.VIDEO_ONLY
+
+
+def test_all_shipped_video_action_configs_disable_action_history() -> None:
+    for config_path in sorted((REPO_ROOT / "configs/experiments").glob("*.yaml")):
+        config = load_experiment_config(config_path)
+        if isinstance(
+            config.policy_variant,
+            (DualExpertPolicyConfig, ParallelStreamPolicyConfig),
+        ):
+            assert config.policy_variant.history_stream_visibility == (
+                HistoryStreamVisibility.VIDEO_ONLY
+            ), config_path.name
+
+
+@pytest.mark.parametrize(
+    "config_name",
+    (
+        "dual_expert_robotwin_smoke.yaml",
+        "parallel_stream_robotwin_smoke.yaml",
+    ),
+)
+def test_video_action_yaml_default_disables_action_history(
+    config_name: str,
+) -> None:
+    config = load_experiment_config(REPO_ROOT / "configs/experiments" / config_name)
+
+    assert config.policy_variant.sequence_contract == VideoActionSequenceContract.DEFAULT
+    assert config.policy_variant.history_stream_visibility == (
+        HistoryStreamVisibility.VIDEO_ONLY
+    )
+
+
+@pytest.mark.parametrize(
     "removed_mode",
     ("random_subwindow", "contextual_subwindow", "aligned_subwindow"),
 )

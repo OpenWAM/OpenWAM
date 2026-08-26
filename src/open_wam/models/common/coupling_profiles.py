@@ -22,7 +22,7 @@ def build_exact_packed_video_action_coupling_profile(
     build_dense_masks: bool | None = None,
     build_flex_masks: bool | None = None,
     history_stream_visibility: HistoryStreamVisibility | str = (
-        HistoryStreamVisibility.VIDEO_QUERIES_VIDEO_ONLY
+        HistoryStreamVisibility.VIDEO_ONLY
     ),
     chunk_origin_frame: int = 0,
     action_context_mask: torch.Tensor | None = None,

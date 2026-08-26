@@ -141,7 +141,10 @@ class VideoActionPolicyConfig(PolicyVariantConfig):
     joint_timestep_coupling: JointTimestepCoupling = _DEFAULT_JOINT_TIMESTEP_COUPLING
     generalist_mode_text_token: bool = False
     proprio_context_mode: ProprioContextMode = ProprioContextMode.NONE
-    history_stream_visibility: HistoryStreamVisibility = HistoryStreamVisibility.FULL
+    # Historical action K/V is opt-in for every video/action program.
+    history_stream_visibility: HistoryStreamVisibility = (
+        HistoryStreamVisibility.VIDEO_ONLY
+    )
     context_condition_latent_source: ContextConditionLatentSource = (
         ContextConditionLatentSource.VIDEO_LATENTS
     )

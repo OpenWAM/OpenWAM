@@ -4,7 +4,13 @@ from __future__ import annotations
 
 import torch
 
-from open_wam.configs import CurrentBlockCoupling
+from open_wam.configs import CurrentBlockCoupling, HistoryStreamVisibility
+from open_wam.models.common.attention_contracts import (
+    normalize_history_stream_visibility,
+)
+from open_wam.models.common.chunked_attention_visibility import (
+    build_history_stream_visibility_mask,
+)
 
 
 def build_dual_expert_inference_action_attention_mask(
@@ -24,6 +30,8 @@ def build_dual_expert_inference_action_attention_mask(
     chunk_origin_frame: int = 0,
     current_block_coupling: CurrentBlockCoupling
     | str = CurrentBlockCoupling.VIDEO_THEN_ACTION,
+    history_stream_visibility: HistoryStreamVisibility
+    | str = HistoryStreamVisibility.VIDEO_ONLY,
 ) -> torch.Tensor:
     """Inference-only DualExpert action attention mask (parallel-stream byte-aligned).
 
@@ -52,6 +60,9 @@ def build_dual_expert_inference_action_attention_mask(
     exposure.
     """
     coupling = CurrentBlockCoupling(current_block_coupling)
+    history_visibility = HistoryStreamVisibility(
+        normalize_history_stream_visibility(history_stream_visibility)
+    )
 
     if video_seq_len < 0 or past_action_seq_len < 0 or current_action_seq_len <= 0:
         raise ValueError(
@@ -179,8 +190,21 @@ def build_dual_expert_inference_action_attention_mask(
         noise_to_clean = (~q_clean) & kv_clean & (kv_frame < q_frame)
     noise_to_noise = (~q_clean) & (~kv_clean) & (kv_frame == q_frame)
 
+    history_stream_ok = build_history_stream_visibility_mask(
+        q_stream=q_stream,
+        kv_stream=kv_stream,
+        visibility=history_visibility,
+    )
+    # The stream predicate constrains history only. Same-chunk visibility
+    # remains owned by the coupling mode above.
+    history_allowed = (kv_chunk >= q_chunk) | history_stream_ok
+
     within_window = (q_frame - kv_frame).abs() <= int(window_size_frames)
-    mask = within_window & (clean_to_clean | noise_to_clean | noise_to_noise)
+    mask = (
+        within_window
+        & history_allowed
+        & (clean_to_clean | noise_to_clean | noise_to_noise)
+    )
 
     if not video_can_attend_action:
         mask[:video_seq_len, video_seq_len:] = False

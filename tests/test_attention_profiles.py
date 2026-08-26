@@ -6,21 +6,23 @@ import json
 import pytest
 import torch
 
-import open_wam.models.common.chunked_attention as chunked_attention
 from open_wam.configs import HistoryStreamVisibility
+from open_wam.models.common import chunked_attention
 from open_wam.models.common.attention_profiles import (
     build_chunked_temporal_exact_attention_profile,
     normalize_chunked_temporal_exact_coupling,
+    normalize_history_stream_visibility,
 )
 from open_wam.models.common.packed_token_layout import (
     PackedTokenKind,
     PackedTokenStream,
     build_exact_video_action_token_layout,
 )
-from open_wam.models.policy_variants.parallel_stream.reference_runtime import get_mesh_id
+from open_wam.models.policy_variants.parallel_stream.reference_runtime import (
+    get_mesh_id,
+)
 from open_wam.models.video_backbone.config import SharedVideoTransformerConfig
 from open_wam.models.visual_tower.replica_core import SharedVideoTransformerCore
-
 
 _CHUNKED_ATTENTION_ORACLE_SHA256 = (
     "328cfe465c21a42563d651be37214c912abe3e5dc1669e1a1ca3d1397157b8a9"
@@ -67,6 +69,12 @@ _CHUNKED_ATTENTION_LAYOUTS = (
         "singleton_chunk_frame": 0,
     },
 )
+
+
+def test_omitted_history_stream_visibility_defaults_to_video_only() -> None:
+    assert normalize_history_stream_visibility(None) == (
+        HistoryStreamVisibility.VIDEO_ONLY.value
+    )
 
 
 def _build_chunked_attention_oracle_profile(

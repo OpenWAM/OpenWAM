@@ -181,7 +181,7 @@ def build_dual_expert_packed_coupling_attention_profile(
     chunk_origin_frame: int = 0,
     action_context_mask: torch.Tensor | None = None,
     history_stream_visibility: HistoryStreamVisibility | str = (
-        HistoryStreamVisibility.VIDEO_QUERIES_VIDEO_ONLY
+        HistoryStreamVisibility.VIDEO_ONLY
     ),
     prefix_condition_frames: int = 0,
     singleton_chunk_frame: int | None = None,

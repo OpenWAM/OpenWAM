@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import builtins
 import json
-from pathlib import Path
 import sys
 import types
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -137,7 +137,7 @@ def test_sanity_command_public_tiny_numerical_contract(tmp_path: Path, capsys) -
     assert summary["seed"] == 17
     assert summary["metrics"]["rollout_steps"] == 1
     assert summary["metrics"]["train_loss"] == pytest.approx(
-        5.558737754821777,
+        5.592546463012695,
         rel=0.0,
         abs=_PUBLIC_TINY_CPU_REDUCTION_ATOL,
     )
@@ -156,23 +156,23 @@ def test_sanity_command_public_tiny_numerical_contract(tmp_path: Path, capsys) -
         "view_shapes": {"camera_0": [1, 2, 64, 64, 3]},
     }
     assert summary["train_forward"]["loss"] == pytest.approx(
-        5.558737754821777,
+        5.592546463012695,
         rel=0.0,
         abs=_PUBLIC_TINY_CPU_REDUCTION_ATOL,
     )
     train_metrics = summary["train_forward"]["metrics"]
     assert train_metrics["action_diffusion_loss"] == pytest.approx(
-        5.558737754821777,
+        5.592546463012695,
         rel=0.0,
         abs=_PUBLIC_TINY_CPU_REDUCTION_ATOL,
     )
     assert train_metrics["weighted_action_diffusion_loss"] == pytest.approx(
-        5.558737754821777,
+        5.592546463012695,
         rel=0.0,
         abs=_PUBLIC_TINY_CPU_REDUCTION_ATOL,
     )
     assert train_metrics["action_mse"] == pytest.approx(
-        0.39484402537345886,
+        0.39806774258613586,
         rel=0.0,
         abs=1e-7,
     )

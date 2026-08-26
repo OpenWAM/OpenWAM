@@ -4453,11 +4453,12 @@ def test_attention_profile_roles_have_one_owner_and_a_stable_facade() -> None:
             "_build_chunked_self_attention_visibility",
             "_effective_frame_ids_for_singleton_cutoff",
             "_previous_boundary_frame_ids",
+            "build_history_stream_visibility_mask",
         },
     }
     all_names = set().union(*owner_names.values())
 
-    assert len(all_names) == 21
+    assert len(all_names) == 22
     assert not _top_level_definitions(ATTENTION_PROFILE_ROLE_PATHS["facade"])
     assert all(
         sum(
@@ -4546,6 +4547,7 @@ def test_attention_profile_roles_have_one_owner_and_a_stable_facade() -> None:
         "align_frame_context_to_previous_chunk_boundary",
         "_build_chunked_cross_attention_visibility",
         "_build_chunked_self_attention_visibility",
+        "build_history_stream_visibility_mask",
     }
     for role, names in owner_names.items():
         for name in names:

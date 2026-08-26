@@ -94,7 +94,7 @@ def _parse_video_action_policy_fields(
             config_enums.HistoryStreamVisibility,
             raw.get(
                 "history_stream_visibility",
-                config_enums.HistoryStreamVisibility.FULL,
+                config_enums.HistoryStreamVisibility.VIDEO_ONLY,
             ),
         ),
         "context_condition_latent_source": context_source,

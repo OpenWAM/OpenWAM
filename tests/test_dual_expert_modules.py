@@ -561,7 +561,7 @@ def test_build_dual_expert_packed_coupling_mask_six_mode_visibility(
         CurrentBlockCoupling.ACTION_NOISY_TO_VIDEO,
     ],
 )
-def test_build_dual_expert_packed_coupling_mask_preserves_video_history_for_all_modes(
+def test_build_dual_expert_packed_coupling_mask_defaults_to_video_only_history(
     coupling: CurrentBlockCoupling,
 ) -> None:
     mask = build_dual_expert_packed_coupling_attention_mask(
@@ -583,7 +583,7 @@ def test_build_dual_expert_packed_coupling_mask_preserves_video_history_for_all_
     assert bool(mask[video_noisy_chunk1, video_clean_history]) is True
     assert bool(mask[video_noisy_chunk1, action_clean_history]) is False
     assert bool(mask[action_noisy_chunk1, video_clean_history]) is True
-    assert bool(mask[action_noisy_chunk1, action_clean_history]) is True
+    assert bool(mask[action_noisy_chunk1, action_clean_history]) is False
 
 
 @pytest.mark.parametrize(
@@ -604,7 +604,7 @@ def test_build_dual_expert_packed_coupling_mask_preserves_video_history_for_all_
         (4, 2, 1, 2),
     ],
 )
-def test_build_dual_expert_packed_coupling_profile_matches_method1_dense_mask(
+def test_build_dual_expert_packed_coupling_profile_matches_shared_dense_mask(
     coupling: CurrentBlockCoupling,
     num_frames: int,
     video_tokens_per_frame: int,
@@ -621,7 +621,7 @@ def test_build_dual_expert_packed_coupling_profile_matches_method1_dense_mask(
         device=torch.device("cpu"),
         current_block_coupling=coupling,
     )
-    method1_profile = build_chunked_temporal_exact_attention_profile(
+    shared_profile = build_chunked_temporal_exact_attention_profile(
         latent_shape=(1, 1, num_frames, 1, video_tokens_per_frame),
         action_shape=(1, 1, num_frames, 1, action_tokens_per_frame),
         padded_length=0,
@@ -633,13 +633,13 @@ def test_build_dual_expert_packed_coupling_profile_matches_method1_dense_mask(
         build_dense_masks=True,
         build_flex_masks=False,
         current_block_coupling=coupling.value,
-        history_stream_visibility=(HistoryStreamVisibility.VIDEO_QUERIES_VIDEO_ONLY),
+        history_stream_visibility=HistoryStreamVisibility.VIDEO_ONLY,
     )
 
     assert m5_profile.self_attention_mask is not None
-    assert method1_profile.self_attention_mask is not None
+    assert shared_profile.self_attention_mask is not None
     assert torch.equal(
-        m5_profile.self_attention_mask, method1_profile.self_attention_mask
+        m5_profile.self_attention_mask, shared_profile.self_attention_mask
     )
 
 

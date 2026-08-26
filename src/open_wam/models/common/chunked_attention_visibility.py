@@ -4,14 +4,12 @@ from __future__ import annotations
 
 import torch
 
+from open_wam.configs import HistoryStreamVisibility
 from open_wam.models.common.attention_contracts import (
     ACTION_NOISY_TO_VIDEO_COUPLING,
     ACTION_THEN_VIDEO_COUPLING,
     CONDITIONAL_HISTORY_POLICY_PREVIOUS_BOUNDARY_VIDEO_ONLY,
     DECOUPLED_SAME_STEP_COUPLING,
-    HISTORY_STREAM_VISIBILITY_FULL,
-    HISTORY_STREAM_VISIBILITY_VIDEO_ONLY,
-    HISTORY_STREAM_VISIBILITY_VIDEO_QUERIES_VIDEO_ONLY,
     JOINT_COUPLING,
     VIDEO_NOISY_TO_ACTION_COUPLING,
 )
@@ -111,6 +109,30 @@ def align_frame_context_to_previous_chunk_boundary(
     return aligned
 
 
+def build_history_stream_visibility_mask(
+    *,
+    q_stream: torch.Tensor,
+    kv_stream: torch.Tensor,
+    visibility: HistoryStreamVisibility,
+) -> torch.Tensor:
+    """Return the stream pairs permitted when the key belongs to history.
+
+    This predicate does not decide whether a key is historical. Callers apply
+    it only to pairs where the key chunk precedes the query chunk, leaving
+    same-chunk visibility to the selected coupling program.
+    """
+
+    if visibility is HistoryStreamVisibility.FULL:
+        return torch.ones_like(q_stream, dtype=torch.bool)
+    if visibility is HistoryStreamVisibility.VIDEO_QUERIES_VIDEO_ONLY:
+        return (q_stream == kv_stream) | (
+            q_stream == int(PackedTokenStream.ACTION)
+        )
+    if visibility is HistoryStreamVisibility.VIDEO_ONLY:
+        return kv_stream == int(PackedTokenStream.VIDEO)
+    raise AssertionError(f"Unhandled history stream visibility {visibility!r}.")
+
+
 def _build_chunked_self_attention_visibility(
     *,
     q_seq: torch.Tensor,
@@ -133,7 +155,7 @@ def _build_chunked_self_attention_visibility(
     prefix_condition_frames: int,
     singleton_chunk_frame: int | None,
     current_block_coupling: str,
-    history_stream_visibility: str,
+    history_stream_visibility: HistoryStreamVisibility,
     conditional_history_policy: str,
 ) -> torch.Tensor:
     """Evaluate the exact visibility law for broadcastable query/KV tensors.
@@ -151,18 +173,11 @@ def _build_chunked_self_attention_visibility(
             kv_effective_frame >= int(singleton_chunk_frame)
         )
 
-    if history_stream_visibility == HISTORY_STREAM_VISIBILITY_FULL:
-        history_stream_ok = torch.ones_like(q_seq, dtype=torch.bool)
-    elif (
-        history_stream_visibility == HISTORY_STREAM_VISIBILITY_VIDEO_QUERIES_VIDEO_ONLY
-    ):
-        history_stream_ok = (q_stream == kv_stream) | (q_stream == 1)
-    elif history_stream_visibility == HISTORY_STREAM_VISIBILITY_VIDEO_ONLY:
-        history_stream_ok = kv_stream == 0
-    else:  # pragma: no cover - normalized by the profile builder
-        raise ValueError(
-            f"Unsupported history stream visibility {history_stream_visibility!r}."
-        )
+    history_stream_ok = build_history_stream_visibility_mask(
+        q_stream=q_stream,
+        kv_stream=kv_stream,
+        visibility=history_stream_visibility,
+    )
 
     if (
         conditional_history_policy

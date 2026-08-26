@@ -592,6 +592,7 @@ class DualExpertSplitCacheInferenceProgram:
             current_action_frame_start=current_action_frame_start,
             chunk_origin_frame=int(runtime_state.chunk_origin_frame),
             current_block_coupling=current_block_coupling,
+            history_stream_visibility=self.config.history_stream_visibility,
         )
         # parallel-stream-aligned cache write: run the denoise loop without
         # capturing K/V, then issue a SEPARATE fresh forward at timestep=0
