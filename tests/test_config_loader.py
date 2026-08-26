@@ -3690,6 +3690,10 @@ def test_causal_video_prediction_mixed_video_config_loads() -> None:
     assert config.trainer.runtime_backbone_export_components == (
         TrainingComponentSelector.VISUAL_TOWER_SHARED_VIDEO_BACKBONE,
     )
+    assert config.trainer.limit_train_batches is None
+    assert config.trainer.limit_val_batches == 0
+    assert config.trainer.max_checkpoints_to_keep == 3
+    assert config.trainer.wandb_mode == "online"
     assert config.data.sample_construction.causal_prefix_suffix_buckets[0] == CausalPrefixSuffixBucketConfig(
         observed_frames=1,
         future_frames=4,

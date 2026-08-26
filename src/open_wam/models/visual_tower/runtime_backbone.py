@@ -41,7 +41,19 @@ def initialize_runtime_backbone(
 
     runtime_backbone_dir = resolve_runtime_backbone_dir(config)
     if runtime_backbone_dir is None:
+        if config.load_reference_core_weights:
+            raise ValueError(
+                "`backbone.load_reference_core_weights=true` requires "
+                "`backbone.runtime_backbone_artifact_path`, an absolute "
+                "`backbone.transformer_subdir`, or "
+                "`backbone.pretrained_model_name_or_path`."
+            )
         return None
+    if not runtime_backbone_dir.is_dir():
+        raise FileNotFoundError(
+            "Runtime-backbone initialization requires an existing transformer "
+            f"artifact directory, resolved to {runtime_backbone_dir}."
+        )
     is_exported_runtime_dir = is_open_wam_exported_runtime_backbone_dir(
         runtime_backbone_dir
     )

@@ -165,6 +165,8 @@ inference:
   frame_chunk_size: 1
 
 trainer:
+  limit_train_batches: null
+  limit_val_batches: 0
   runtime: composable
   batch_adapter: views
   loop_policy: steps
@@ -173,7 +175,9 @@ trainer:
   precision: bf16-mixed
   default_root_dir: "${paths.outputs.train_runs_root}"
   save_interval: 100
+  max_checkpoints_to_keep: 3
   export_runtime_backbone: true
   runtime_backbone_export_components: [visual_tower.shared_video_backbone]
   enable_wandb: true
   wandb_project: openwam-mixed-video-pretrain
+  wandb_mode: online

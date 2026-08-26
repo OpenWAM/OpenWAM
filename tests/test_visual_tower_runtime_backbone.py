@@ -66,12 +66,41 @@ def test_runtime_backbone_initialization_is_idempotent_and_optional() -> None:
     )
 
 
+def test_required_runtime_backbone_initialization_rejects_missing_location() -> None:
+    config = replace(_backbone_config(), load_reference_core_weights=True)
+
+    with pytest.raises(ValueError, match="an absolute `backbone.transformer_subdir`"):
+        initialize_runtime_backbone(
+            current_report=None,
+            core=nn.Linear(2, 2),
+            config=config,
+            action_dim=4,
+        )
+
+
+def test_runtime_backbone_initialization_rejects_missing_artifact(tmp_path) -> None:
+    config = replace(
+        _backbone_config(),
+        pretrained_model_name_or_path=str(tmp_path / "missing-model"),
+        load_reference_core_weights=True,
+    )
+
+    with pytest.raises(FileNotFoundError, match="existing transformer artifact"):
+        initialize_runtime_backbone(
+            current_report=None,
+            core=nn.Linear(2, 2),
+            config=config,
+            action_dim=4,
+        )
+
+
 def test_runtime_backbone_initialization_loads_absolute_component_without_model_root(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     core = nn.Linear(2, 2)
     transformer_dir = tmp_path / "detached-transformer"
+    transformer_dir.mkdir()
     expected = BackboneLoadReport(
         loaded_keys=("weight",),
         missing_reference_keys=(),

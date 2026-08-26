@@ -435,6 +435,10 @@ def test_canonical_video_only_config_uses_latent_units_and_semantic_selectors() 
     )
     assert config.training.text_condition_dropout_prob == pytest.approx(0.1)
     assert config.inference.guidance_scale == pytest.approx(5.0)
+    assert config.trainer.limit_train_batches is None
+    assert config.trainer.limit_val_batches == 0
+    assert config.trainer.max_checkpoints_to_keep == 3
+    assert config.trainer.wandb_mode == "online"
 
 
 def _load_rollout_script():
