@@ -14,7 +14,6 @@ from .lerobot_v2_latent_storage import (
     assemble_canonical_latents,
 )
 
-
 __all__ = [
     "LocalLatentSampleConditioning",
     "LocalLatentSampleSource",
@@ -40,10 +39,10 @@ class LocalLatentSampleSource:
     repo_bundle: LocalRepoBundle
     rows: list[dict[str, Any]]
     video_latents: torch.Tensor
-    latent_layout_metadata: dict[str, dict[str, int]]
+    latent_layout_metadata: dict[str, Any]
     primary_payload: dict[str, Any]
     condition_latents: torch.Tensor | None
-    condition_layout_metadata: dict[str, dict[str, int]]
+    condition_layout_metadata: dict[str, Any]
     raw_frame_ids: list[int]
 
     def conditioning_for_frame(

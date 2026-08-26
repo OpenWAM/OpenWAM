@@ -10,7 +10,7 @@ from open_wam.models.video_backbone.contracts import (
     CacheUpdateMetadata,
 )
 
-from .contracts import VisualCoreInput, VisualCoreOutput
+from .contracts import VisualComponentTopology, VisualCoreInput, VisualCoreOutput
 from .runtime_programs import RuntimeStepInput, RuntimeStepOutput
 from .sequence_adapters import prepare_runtime_sequence
 
@@ -119,6 +119,11 @@ class PackedSequenceVisualCore(nn.Module):
             ]
         )
         self.final_norm = nn.LayerNorm(self.config.hidden_size)
+
+    def component_topology(self) -> VisualComponentTopology:
+        """Declare the generic core as one shared-video component."""
+
+        return VisualComponentTopology(shared_video_backbone=(self,))
 
     def forward(self, core_input: VisualCoreInput) -> VisualCoreOutput:
         hidden_states = core_input.tokens

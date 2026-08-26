@@ -27,8 +27,19 @@ from torch.distributed.checkpoint.state_dict import (
 from open_wam.artifacts import load_tensor_artifact as _load_tensor_artifact
 from open_wam.configs import CheckpointMode, ExperimentConfig
 from open_wam.configs.enums import serialize_enum_values
+from open_wam.configs.runtime_backbone_components import (
+    is_complete_runtime_backbone_selection as _is_complete_runtime_backbone_selection,
+)
+from open_wam.runtime.runtime_backbone_manifest import (
+    RuntimeBackboneManifest as _RuntimeBackboneManifest,
+)
+from open_wam.runtime.runtime_backbone_manifest import (
+    write_runtime_backbone_manifest as _write_runtime_backbone_manifest,
+)
 
-from .checkpoint_export import merge_state_dict_overlay as _merge_state_dict_overlay
+from .checkpoint_export import (
+    merge_state_dict_overlay as _merge_state_dict_overlay,
+)
 from .checkpoint_storage import (
     _atomic_torch_save,
     _is_rank_zero,
@@ -242,9 +253,7 @@ def _filter_unexpected_distributed_model_state(
     shape-mismatched current keys to the state-dict loader.
     """
 
-    expected_keys = {
-        name for name, _ in model.named_parameters(remove_duplicate=False)
-    }
+    expected_keys = {name for name, _ in model.named_parameters(remove_duplicate=False)}
     expected_keys.update(
         name for name, _ in model.named_buffers(remove_duplicate=False)
     )
@@ -261,9 +270,7 @@ def _filter_unexpected_distributed_model_state(
         stacklevel=2,
     )
     return {
-        key: value
-        for key, value in model_state_dict.items()
-        if key in expected_keys
+        key: value for key, value in model_state_dict.items() if key in expected_keys
     }
 
 
@@ -278,6 +285,7 @@ class CheckpointManager:
         checkpoint_mode: CheckpointMode | str,
         max_checkpoints_to_keep: int | None = None,
         export_runtime_backbone: bool = False,
+        runtime_backbone_export_keys: frozenset[str] | None = None,
     ) -> None:
         self.root_dir = root_dir
         self.root_dir.mkdir(parents=True, exist_ok=True)
@@ -294,6 +302,24 @@ class CheckpointManager:
             max_checkpoints_to_keep = int(max_checkpoints_to_keep)
         self.max_checkpoints_to_keep = max_checkpoints_to_keep
         self.export_runtime_backbone = export_runtime_backbone
+        export_components = tuple(
+            self.config.trainer.runtime_backbone_export_components
+        )
+        narrow_export = not _is_complete_runtime_backbone_selection(export_components)
+        if (
+            export_runtime_backbone
+            and narrow_export
+            and runtime_backbone_export_keys is None
+        ):
+            raise ValueError(
+                "Scoped runtime-backbone export keys must be resolved before "
+                "distributed strategy wrapping."
+            )
+        if not narrow_export and runtime_backbone_export_keys is not None:
+            raise ValueError(
+                "A complete runtime-backbone export must not provide scoped state keys."
+            )
+        self.runtime_backbone_export_keys = runtime_backbone_export_keys
 
     def checkpoint_dir_for_step(self, step: int) -> Path:
         return self.root_dir / f"checkpoint_step_{step}"
@@ -312,9 +338,7 @@ class CheckpointManager:
         payload_marker = checkpoint_dir / ".checkpoint_payload_complete"
         completion_marker = checkpoint_dir / ".checkpoint_complete"
         error_marker = checkpoint_dir / ".checkpoint_error"
-        wait_timeout_seconds = float(
-            self.config.trainer.distributed_timeout_seconds
-        )
+        wait_timeout_seconds = float(self.config.trainer.distributed_timeout_seconds)
         if _is_rank_zero():
             checkpoint_dir.mkdir(parents=True, exist_ok=True)
             for marker in (payload_marker, completion_marker, error_marker):
@@ -536,7 +560,7 @@ class CheckpointManager:
                     warnings.warn(
                         "Promoting model_state.pt resume path to sibling full_training_state.pt "
                         "because trainer.checkpoint_mode=full_training_state. Pass a checkpoint "
-                        "directory or full_training_state.pt for exact training resumes.",
+                        "directory or full_training_state.pt for full-state training resumes.",
                         RuntimeWarning,
                         stacklevel=2,
                     )
@@ -597,8 +621,7 @@ class CheckpointManager:
         checkpoint_dirs = self._complete_checkpoint_dirs()
         preserve = preserve.resolve()
         if preserve.is_dir() and all(
-            checkpoint_dir.resolve() != preserve
-            for checkpoint_dir in checkpoint_dirs
+            checkpoint_dir.resolve() != preserve for checkpoint_dir in checkpoint_dirs
         ):
             # The current checkpoint is intentionally unmarked until pruning
             # succeeds. Count it toward retention without exposing it as a
@@ -661,13 +684,21 @@ class CheckpointManager:
         visual_tower = getattr(pipeline, "visual_tower", None)
         if visual_tower is None or getattr(visual_tower, "action_dim", None) is None:
             return
+        topology = pipeline.module_topology()
         backbone = visual_tower.get_runtime_backbone(
             action_dim=int(visual_tower.action_dim)
         )
         backbone_state_dict = get_model_state_dict(
             backbone, options=_save_state_dict_options()
         )
-        for overlay in pipeline.module_topology().runtime_backbone_state_overlays:
+        export_components = tuple(
+            self.config.trainer.runtime_backbone_export_components
+        )
+        narrow_export = not _is_complete_runtime_backbone_selection(export_components)
+        selected_state_keys = (
+            set(self.runtime_backbone_export_keys or ()) if narrow_export else None
+        )
+        for overlay in topology.runtime_backbone_state_overlays:
             overlay_state_dict = get_model_state_dict(
                 overlay.module,
                 options=_save_state_dict_options(),
@@ -678,6 +709,22 @@ class CheckpointManager:
                 map_key=overlay.map_key,
                 exclusive_target_prefixes=overlay.exclusive_target_prefixes,
             )
+        if selected_state_keys is not None:
+            unavailable = sorted(selected_state_keys - set(backbone_state_dict))
+            if unavailable:
+                raise ValueError(
+                    "Runtime-backbone component ownership resolved keys absent from "
+                    f"the exported state: {unavailable[:20]}."
+                )
+            backbone_state_dict = {
+                key: value
+                for key, value in backbone_state_dict.items()
+                if key in selected_state_keys
+            }
+            if not backbone_state_dict:
+                raise ValueError(
+                    "Runtime-backbone export selectors resolved no state tensors."
+                )
         if not _is_rank_zero():
             return
         transformer_dir = checkpoint_dir / "transformer"
@@ -696,3 +743,10 @@ class CheckpointManager:
         )
         with (transformer_dir / "config.json").open("w", encoding="utf-8") as handle:
             json.dump(config_payload, handle, indent=2, sort_keys=True, default=str)
+        _write_runtime_backbone_manifest(
+            transformer_dir,
+            _RuntimeBackboneManifest(
+                components=export_components,
+                state_keys=tuple(sorted(state_dict_bf16)),
+            ),
+        )

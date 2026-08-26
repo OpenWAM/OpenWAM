@@ -14,6 +14,7 @@ from open_wam.runtime.checkpoint_artifacts import (
     CHECKPOINT_FILENAMES,
     CheckpointSearchLayout,
     find_checkpoint_state_file,
+    is_usable_transformer_dir,
 )
 
 _PRESERVED_BASE_DATA_FIELDS = frozenset(
@@ -119,7 +120,7 @@ def resolve_checkpoint_step_dir_from_transformer_dir(transformer_dir: str | Path
     candidate = Path(transformer_dir).expanduser().resolve()
     if candidate.name != "transformer":
         raise ValueError(
-            "Expected `backbone.transformer_subdir` to point at a "
+            "Expected the runtime-backbone artifact to point at a "
             f"`.../checkpoint_step_*/transformer` directory, got {candidate}."
         )
     checkpoint_step_dir = candidate.parent
@@ -310,8 +311,10 @@ def _apply_portable_checkpoint_backbone_paths(
         backbone_updates["pretrained_model_name_or_path"] = str(base_pretrained.resolve())
 
     checkpoint_transformer = checkpoint_dir / "transformer"
-    if checkpoint_transformer.is_dir() and any(checkpoint_transformer.iterdir()):
-        backbone_updates["transformer_subdir"] = str(checkpoint_transformer.resolve())
+    if is_usable_transformer_dir(checkpoint_transformer):
+        backbone_updates["runtime_backbone_artifact_path"] = str(
+            checkpoint_transformer.resolve()
+        )
 
     if not backbone_updates:
         return config

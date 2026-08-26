@@ -14,6 +14,17 @@ from open_wam.models.video_backbone.contracts import (
     TokenGridMetadata,
 )
 
+VisualComponent = torch.nn.Module | torch.nn.Parameter
+
+
+@dataclass(frozen=True)
+class VisualComponentTopology:
+    """Semantic component ownership exposed to generic training controls."""
+
+    shared_video_backbone: tuple[VisualComponent, ...] = ()
+    shared_action_runtime: tuple[VisualComponent, ...] = ()
+    shared_runtime_adapters: tuple[VisualComponent, ...] = ()
+
 
 @dataclass(frozen=True)
 class VisualRuntimeStateSnapshot:

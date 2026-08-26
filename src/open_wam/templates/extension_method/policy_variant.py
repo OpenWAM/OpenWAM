@@ -12,6 +12,7 @@ from open_wam.sdk.policy import (
     PolicyInferContext,
     PolicyInferOutput,
     PolicyInferState,
+    PolicyPipelineRequirements,
     PolicyPreparedInputs,
     PolicyTrainBatch,
     PolicyTrainOutput,
@@ -30,6 +31,25 @@ class TemplatePolicyVariant(PolicyVariant):
 
     def required_visual_stages(self) -> tuple[PolicyVisualStage, ...]:
         return (PolicyVisualStage.FRONTEND, PolicyVisualStage.CORE)
+
+    def pipeline_requirements(
+        self,
+        *,
+        default_action_dim: int,
+        default_action_horizon: int,
+        default_state_dim: int,
+    ) -> PolicyPipelineRequirements:
+        conditioning = self.config.conditioning_requirements
+        return PolicyPipelineRequirements(
+            action_dim=default_action_dim,
+            action_horizon=default_action_horizon,
+            state_dim=default_state_dim,
+            proprio_context_mode=conditioning.proprio_context_mode,
+            dynamics_mode_context_enabled=(
+                conditioning.dynamics_mode_context_enabled
+            ),
+            text_conditioning_mode=conditioning.text_conditioning_mode,
+        )
 
     def prepare_train_inputs(
         self,

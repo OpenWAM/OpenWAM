@@ -24,6 +24,7 @@ from .auxiliary_validation import (
     _resolve_auxiliary_validation_source,
     build_auxiliary_validation_runs,
 )
+from .checkpoint_export import resolve_runtime_backbone_export_keys
 from .checkpoints import CheckpointManager
 from .controls import TrainabilityReport, apply_training_component_controls
 from .data_loading import (
@@ -148,6 +149,17 @@ class TrainingRuntime:
             # Variant-owned warm starts must happen before strategy wrapping so
             # replicated modules all inherit the same initialized weights.
             policy_variant.initialize_for_training(visual_tower)
+        runtime_backbone_export_keys = None
+        if config.trainer.export_runtime_backbone:
+            if visual_tower is None or action_dim is None:
+                raise ValueError(
+                    "Runtime-backbone export requires an initialized visual tower."
+                )
+            runtime_backbone_export_keys = resolve_runtime_backbone_export_keys(
+                backbone=visual_tower.get_runtime_backbone(action_dim=int(action_dim)),
+                topology=model.module_topology(),
+                selectors=config.trainer.runtime_backbone_export_components,
+            )
         trainability_report = apply_training_component_controls(model, config.training)
         dynamics_metric_namespace = model.action_decoder.dynamics_metric_namespace
         model = strategy.prepare_model(model)
@@ -167,17 +179,24 @@ class TrainingRuntime:
         optimizer = build_optimizer(model, config.training)
         scheduler = build_scheduler(optimizer, config.training)
         output_dir = resolve_runtime_output_dir(config)
-        checkpoint_root = Path(config.trainer.checkpoint_dir) if config.trainer.checkpoint_dir else output_dir / "checkpoints"
+        checkpoint_root = (
+            Path(config.trainer.checkpoint_dir)
+            if config.trainer.checkpoint_dir
+            else output_dir / "checkpoints"
+        )
         checkpoint_manager = CheckpointManager(
             root_dir=checkpoint_root,
             config=config,
             checkpoint_mode=config.trainer.checkpoint_mode,
             max_checkpoints_to_keep=config.trainer.max_checkpoints_to_keep,
             export_runtime_backbone=config.trainer.export_runtime_backbone,
+            runtime_backbone_export_keys=runtime_backbone_export_keys,
         )
         run_name = config.trainer.run_name or config.name
         train_state = TrainState(run_name=run_name)
-        log_sink = build_log_sink(config=config, output_dir=output_dir, run_name=run_name, strategy=strategy)
+        log_sink = build_log_sink(
+            config=config, output_dir=output_dir, run_name=run_name, strategy=strategy
+        )
         runtime = cls(
             config=config,
             model=model,
@@ -212,7 +231,9 @@ class TrainingRuntime:
         if train_state.run_name is None:
             train_state.run_name = current_run_name
         self.train_state = train_state
-        self.strategy.load_state_dict(payload.get("strategy_state_dict") if isinstance(payload, dict) else None)
+        self.strategy.load_state_dict(
+            payload.get("strategy_state_dict") if isinstance(payload, dict) else None
+        )
         self.log_sink.log_event(
             name="resume",
             payload={
@@ -248,7 +269,9 @@ class TrainingRuntime:
                         "source": run.config.source.value,
                         "resolved_source": run.resolved_source,
                         "mode_override": (
-                            None if run.config.mode_override is None else run.config.mode_override.value
+                            None
+                            if run.config.mode_override is None
+                            else run.config.mode_override.value
                         ),
                         "max_batches": run.config.max_batches,
                     }
@@ -263,18 +286,24 @@ class TrainingRuntime:
             if self.config.trainer.loop_policy == LoopPolicyName.STEPS:
                 max_steps = self.config.training.num_steps
                 if max_steps is None:
-                    raise ValueError("`training.num_steps` is required when `trainer.loop_policy = steps`.")
-                self._run_step_loop(StepLoopPolicy(
-                    max_steps=max_steps,
-                    limit_train_batches=self.config.trainer.limit_train_batches,
-                    limit_val_batches=self.config.trainer.limit_val_batches,
-                ))
+                    raise ValueError(
+                        "`training.num_steps` is required when `trainer.loop_policy = steps`."
+                    )
+                self._run_step_loop(
+                    StepLoopPolicy(
+                        max_steps=max_steps,
+                        limit_train_batches=self.config.trainer.limit_train_batches,
+                        limit_val_batches=self.config.trainer.limit_val_batches,
+                    )
+                )
             else:
-                self._run_epoch_loop(EpochLoopPolicy(
-                    max_epochs=self.config.trainer.max_epochs,
-                    limit_train_batches=self.config.trainer.limit_train_batches,
-                    limit_val_batches=self.config.trainer.limit_val_batches,
-                ))
+                self._run_epoch_loop(
+                    EpochLoopPolicy(
+                        max_epochs=self.config.trainer.max_epochs,
+                        limit_train_batches=self.config.trainer.limit_train_batches,
+                        limit_val_batches=self.config.trainer.limit_val_batches,
+                    )
+                )
         finally:
             self.log_sink.close()
             self.strategy.close()
@@ -296,13 +325,21 @@ class TrainingRuntime:
             for batch_idx, batch in enumerate(self.train_loader):
                 if batch_idx < resume_batch_idx:
                     continue
-                if policy.limit_train_batches is not None and batch_idx >= policy.limit_train_batches:
+                if (
+                    policy.limit_train_batches is not None
+                    and batch_idx >= policy.limit_train_batches
+                ):
                     break
                 previous_optimizer_step = self.train_state.optimizer_step
                 self._train_micro_step(batch)
-                if self._should_run_validation_interval(previous_optimizer_step=previous_optimizer_step):
+                if self._should_run_validation_interval(
+                    previous_optimizer_step=previous_optimizer_step
+                ):
                     self._run_all_validation(limit_batches=policy.limit_val_batches)
-                if self.train_state.optimizer_step != previous_optimizer_step and self._should_save_checkpoint():
+                if (
+                    self.train_state.optimizer_step != previous_optimizer_step
+                    and self._should_save_checkpoint()
+                ):
                     self._save_checkpoint(final=False)
             self._run_all_validation(limit_batches=policy.limit_val_batches)
             self.train_state.epoch_index += 1
@@ -325,19 +362,29 @@ class TrainingRuntime:
             for batch_idx, batch in enumerate(self.train_loader):
                 if batch_idx < resume_batch_idx:
                     continue
-                if policy.limit_train_batches is not None and batch_idx >= policy.limit_train_batches:
+                if (
+                    policy.limit_train_batches is not None
+                    and batch_idx >= policy.limit_train_batches
+                ):
                     break
                 saw_batch = True
                 previous_optimizer_step = self.train_state.optimizer_step
                 self._train_micro_step(batch)
-                if self._should_run_validation_interval(previous_optimizer_step=previous_optimizer_step):
+                if self._should_run_validation_interval(
+                    previous_optimizer_step=previous_optimizer_step
+                ):
                     self._run_all_validation(limit_batches=policy.limit_val_batches)
-                if self.train_state.optimizer_step != previous_optimizer_step and self._should_save_checkpoint():
+                if (
+                    self.train_state.optimizer_step != previous_optimizer_step
+                    and self._should_save_checkpoint()
+                ):
                     self._save_checkpoint(final=False)
                 if not policy.should_continue(self.train_state):
                     break
             if not saw_batch:
-                raise ValueError("Step-loop training received no batches from the train dataloader.")
+                raise ValueError(
+                    "Step-loop training received no batches from the train dataloader."
+                )
             self.train_state.epoch_index += 1
         self._run_all_validation(limit_batches=policy.limit_val_batches)
         self._save_checkpoint(final=True)
@@ -352,16 +399,24 @@ class TrainingRuntime:
         if epoch_batches <= 0:
             return 0
         if self.config.trainer.limit_train_batches is not None:
-            epoch_batches = min(epoch_batches, int(self.config.trainer.limit_train_batches))
+            epoch_batches = min(
+                epoch_batches, int(self.config.trainer.limit_train_batches)
+            )
         if epoch_batches <= 0:
             return 0
         return int(self.train_state.seen_batches % epoch_batches)
 
     def _train_micro_step(self, batch) -> None:
-        device_batch = self.step_executor.batch_adapter.move_to_device(batch, self.strategy.device)
+        device_batch = self.step_executor.batch_adapter.move_to_device(
+            batch, self.strategy.device
+        )
         self.model.train()
-        gradient_accumulation_steps = max(1, self.config.training.gradient_accumulation_steps)
-        should_update = (self.train_state.global_step + 1) % gradient_accumulation_steps == 0
+        gradient_accumulation_steps = max(
+            1, self.config.training.gradient_accumulation_steps
+        )
+        should_update = (
+            self.train_state.global_step + 1
+        ) % gradient_accumulation_steps == 0
         self.strategy.set_gradient_sync(self.model, enabled=should_update)
         with self.strategy.autocast_context():
             result = self.step_executor.forward_train(device_batch)
@@ -376,12 +431,16 @@ class TrainingRuntime:
 
         self.strategy.unscale_(self.optimizer)
         if self.config.training.max_grad_norm is not None:
-            grad_norm = self.strategy.clip_grad_norm_(self.model.parameters(), self.config.training.max_grad_norm)
+            grad_norm = self.strategy.clip_grad_norm_(
+                self.model.parameters(), self.config.training.max_grad_norm
+            )
         else:
             grad_norm = None
         if grad_norm is not None and not torch.isfinite(grad_norm):
             self._report_nonfinite_gradients()
-            raise RuntimeError(f"Non-finite gradient norm detected before optimizer step: {grad_norm.item()}.")
+            raise RuntimeError(
+                f"Non-finite gradient norm detected before optimizer step: {grad_norm.item()}."
+            )
         _normalize_optimizer_state_dtypes(self.optimizer)
         self.strategy.optimizer_step(self.optimizer)
         self.scheduler.step()
@@ -399,9 +458,14 @@ class TrainingRuntime:
             metric_payload["grad_norm"] = float(grad_norm.item())
         if (
             self.config.trainer.log_every_n_steps <= 1
-            or self.train_state.optimizer_step % self.config.trainer.log_every_n_steps == 0
+            or self.train_state.optimizer_step % self.config.trainer.log_every_n_steps
+            == 0
         ):
-            self.log_sink.log_metrics(step=self.train_state.optimizer_step, phase="train", metrics=metric_payload)
+            self.log_sink.log_metrics(
+                step=self.train_state.optimizer_step,
+                phase="train",
+                metrics=metric_payload,
+            )
 
     def _report_nonfinite_gradients(self, *, limit: int = 20) -> None:
         diagnostics: list[dict[str, object]] = []
@@ -421,7 +485,9 @@ class TrainingRuntime:
                     "name": name,
                     "shape": tuple(int(value) for value in local_grad.shape),
                     "nonfinite_count": nonfinite_count,
-                    "max_finite_abs": float(finite_abs.max().item()) if finite_abs.numel() else 0.0,
+                    "max_finite_abs": float(finite_abs.max().item())
+                    if finite_abs.numel()
+                    else 0.0,
                 }
             )
             if len(diagnostics) >= limit:
@@ -470,19 +536,29 @@ class TrainingRuntime:
             for batch_idx, batch in enumerate(loader):
                 if limit_batches is not None and batch_idx >= limit_batches:
                     break
-                device_batch = self.step_executor.batch_adapter.move_to_device(batch, self.strategy.device)
+                device_batch = self.step_executor.batch_adapter.move_to_device(
+                    batch, self.strategy.device
+                )
                 with self.strategy.autocast_context():
                     result = self.step_executor.forward_train(device_batch)
                 for name, value in result.metrics.items():
-                    metric_totals[name] = metric_totals.get(name, 0.0) + float(value.item())
+                    metric_totals[name] = metric_totals.get(name, 0.0) + float(
+                        value.item()
+                    )
                 batch_count += 1
         global_batch_count = float(
-            self._distributed_sum(torch.tensor(float(batch_count), device=self.strategy.device)).item()
+            self._distributed_sum(
+                torch.tensor(float(batch_count), device=self.strategy.device)
+            ).item()
         )
         if global_batch_count <= 0.0:
             return False
         averaged = {
-            name: float(self._distributed_sum(torch.tensor(value, device=self.strategy.device)).item())
+            name: float(
+                self._distributed_sum(
+                    torch.tensor(value, device=self.strategy.device)
+                ).item()
+            )
             / global_batch_count
             for name, value in metric_totals.items()
         }
@@ -495,7 +571,9 @@ class TrainingRuntime:
                     dynamics_metric_namespace=self.dynamics_metric_namespace,
                 )
             )
-        self.log_sink.log_metrics(step=self.train_state.optimizer_step, phase=phase, metrics=averaged)
+        self.log_sink.log_metrics(
+            step=self.train_state.optimizer_step, phase=phase, metrics=averaged
+        )
         return True
 
     def _should_run_validation_interval(self, *, previous_optimizer_step: int) -> bool:
@@ -515,16 +593,21 @@ class TrainingRuntime:
         save_interval = getattr(trainer_config, "save_interval", None)
         if save_interval is None or save_interval <= 0:
             return False
-        return self.train_state.optimizer_step > 0 and self.train_state.optimizer_step % save_interval == 0
+        return (
+            self.train_state.optimizer_step > 0
+            and self.train_state.optimizer_step % save_interval == 0
+        )
 
     def _save_checkpoint(self, *, final: bool) -> None:
-        should_write = (
-            self.config.trainer.enable_checkpointing
-            or (self.config.trainer.save_interval is not None and self.config.trainer.save_interval > 0)
+        should_write = self.config.trainer.enable_checkpointing or (
+            self.config.trainer.save_interval is not None
+            and self.config.trainer.save_interval > 0
         )
         if not should_write:
             return
-        checkpoint_dir = self.checkpoint_manager.checkpoint_dir_for_step(self.train_state.optimizer_step)
+        checkpoint_dir = self.checkpoint_manager.checkpoint_dir_for_step(
+            self.train_state.optimizer_step
+        )
         if final and self.train_state.last_checkpoint_path == str(checkpoint_dir):
             return
         checkpoint_dir = self.checkpoint_manager.save(
@@ -539,12 +622,18 @@ class TrainingRuntime:
         if self.strategy.is_main_process:
             self.log_sink.log_event(
                 name="checkpoint_saved",
-                payload={"path": str(checkpoint_dir), "final": final, "optimizer_step": self.train_state.optimizer_step},
+                payload={
+                    "path": str(checkpoint_dir),
+                    "final": final,
+                    "optimizer_step": self.train_state.optimizer_step,
+                },
             )
         self.strategy.barrier()
 
     def _accumulate_train_metrics(self, metrics: dict[str, torch.Tensor]) -> None:
-        gradient_accumulation_steps = max(1, self.config.training.gradient_accumulation_steps)
+        gradient_accumulation_steps = max(
+            1, self.config.training.gradient_accumulation_steps
+        )
         for name, value in metrics.items():
             scaled_value = value.detach() / gradient_accumulation_steps
             self._accumulated_train_metrics.setdefault(name, []).append(scaled_value)
@@ -587,5 +676,9 @@ def _set_sampler_epoch(loader: DataLoader, epoch: int) -> None:
 
 
 def resolve_runtime_output_dir(config: ExperimentConfig) -> Path:
-    root = Path(config.trainer.default_root_dir) if config.trainer.default_root_dir else Path("runs")
+    root = (
+        Path(config.trainer.default_root_dir)
+        if config.trainer.default_root_dir
+        else Path("runs")
+    )
     return root / (config.trainer.run_name or config.name)

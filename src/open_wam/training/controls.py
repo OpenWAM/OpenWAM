@@ -20,6 +20,9 @@ COMPONENT_ALIASES = {
     "visual_tower.core": TrainingComponentSelector.VISUAL_TOWER_CORE,
     "runtime_backbone": TrainingComponentSelector.VISUAL_TOWER_RUNTIME_BACKBONE,
     "visual_tower.runtime_backbone": TrainingComponentSelector.VISUAL_TOWER_RUNTIME_BACKBONE,
+    "visual_tower.shared_video_backbone": TrainingComponentSelector.VISUAL_TOWER_SHARED_VIDEO_BACKBONE,
+    "visual_tower.shared_action_runtime": TrainingComponentSelector.VISUAL_TOWER_SHARED_ACTION_RUNTIME,
+    "visual_tower.shared_runtime_adapters": TrainingComponentSelector.VISUAL_TOWER_SHARED_RUNTIME_ADAPTERS,
     "proprio_context_encoder": TrainingComponentSelector.VISUAL_TOWER_PROPRIO_CONTEXT_ENCODER,
     "visual_tower.proprio_context_encoder": TrainingComponentSelector.VISUAL_TOWER_PROPRIO_CONTEXT_ENCODER,
     "generalist_mode_context_encoder": TrainingComponentSelector.VISUAL_TOWER_GENERALIST_MODE_CONTEXT_ENCODER,
@@ -42,7 +45,7 @@ class TrainabilityReport:
     trainable_parameters: int
 
 
-ComponentResolver = Callable[[nn.Module], list[nn.Module]]
+ComponentResolver = Callable[[nn.Module], list[nn.Module | nn.Parameter]]
 
 
 def objective_enabled(training_config: TrainingConfig, objective_name: str) -> bool:
@@ -156,11 +159,17 @@ def _set_component_requires_grad(
             if module_id in visited_modules:
                 continue
             visited_modules.add(module_id)
+            if isinstance(target_module, nn.Parameter):
+                target_module.requires_grad = enabled
+                continue
             for parameter in target_module.parameters():
                 parameter.requires_grad = enabled
 
 
-def _resolve_component_modules(pipeline: nn.Module, selector: TrainingComponentSelector) -> list[nn.Module]:
+def _resolve_component_modules(
+    pipeline: nn.Module,
+    selector: TrainingComponentSelector,
+) -> list[nn.Module | nn.Parameter]:
     def _resolve_proprio_context_encoder(module: nn.Module) -> list[nn.Module]:
         encoders = [
             encoder
@@ -199,11 +208,29 @@ def _resolve_component_modules(pipeline: nn.Module, selector: TrainingComponentS
     def _resolve_visual_tower_runtime_backbone(module: nn.Module) -> list[nn.Module]:
         return list(module.module_topology().visual_runtime_modules)
 
+    def _resolve_shared_video_backbone(
+        module: nn.Module,
+    ) -> list[nn.Module | nn.Parameter]:
+        return list(module.module_topology().visual_components.shared_video_backbone)
+
+    def _resolve_shared_action_runtime(
+        module: nn.Module,
+    ) -> list[nn.Module | nn.Parameter]:
+        return list(module.module_topology().visual_components.shared_action_runtime)
+
+    def _resolve_shared_runtime_adapters(
+        module: nn.Module,
+    ) -> list[nn.Module | nn.Parameter]:
+        return list(module.module_topology().visual_components.shared_runtime_adapters)
+
     resolvers: dict[TrainingComponentSelector, ComponentResolver] = {
         TrainingComponentSelector.VISUAL_TOWER: lambda module: [module.visual_tower],
         TrainingComponentSelector.VISUAL_TOWER_FRONTEND: lambda module: [module.visual_tower.frontend],
         TrainingComponentSelector.VISUAL_TOWER_CORE: lambda module: [module.visual_tower.core],
         TrainingComponentSelector.VISUAL_TOWER_RUNTIME_BACKBONE: _resolve_visual_tower_runtime_backbone,
+        TrainingComponentSelector.VISUAL_TOWER_SHARED_VIDEO_BACKBONE: _resolve_shared_video_backbone,
+        TrainingComponentSelector.VISUAL_TOWER_SHARED_ACTION_RUNTIME: _resolve_shared_action_runtime,
+        TrainingComponentSelector.VISUAL_TOWER_SHARED_RUNTIME_ADAPTERS: _resolve_shared_runtime_adapters,
         TrainingComponentSelector.VISUAL_TOWER_PROPRIO_CONTEXT_ENCODER: _resolve_proprio_context_encoder,
         TrainingComponentSelector.VISUAL_TOWER_GENERALIST_MODE_CONTEXT_ENCODER: _resolve_generalist_mode_context_encoder,
         TrainingComponentSelector.POLICY_VARIANT: lambda module: [module.policy_variant],

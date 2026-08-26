@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import math
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Mapping
+from numbers import Real
+from typing import Any
 
 from .coercion import coerce_enum
 from .enums import (
@@ -12,7 +15,6 @@ from .enums import (
     TrainingObjective,
     coerce_fields,
 )
-
 
 OBJECTIVE_ALIASES = {
     "action": TrainingObjective.ACTION,
@@ -95,6 +97,25 @@ class TrainingConfig:
             transforms={
                 "enabled_objectives": normalize_enabled_objectives,
             },
+        )
+        dropout_probability = self.text_condition_dropout_prob
+        if isinstance(dropout_probability, bool) or not isinstance(
+            dropout_probability, Real
+        ):
+            raise TypeError(
+                "`text_condition_dropout_prob` must be a numeric probability."
+            )
+        dropout_probability = float(dropout_probability)
+        if not math.isfinite(dropout_probability) or not (
+            0.0 <= dropout_probability <= 1.0
+        ):
+            raise ValueError(
+                "`text_condition_dropout_prob` must be finite and within [0, 1]."
+            )
+        object.__setattr__(
+            self,
+            "text_condition_dropout_prob",
+            dropout_probability,
         )
         if self.sample_loss_weight_reference_steps is not None and self.sample_loss_weight_reference_steps <= 0:
             raise ValueError("`sample_loss_weight_reference_steps` must be positive when set.")

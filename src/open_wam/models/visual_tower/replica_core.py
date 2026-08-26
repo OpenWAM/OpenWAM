@@ -57,6 +57,7 @@ from .context_encoders import (
     ProprioHiddenContextEncoder,
 )
 from .contracts import (
+    VisualComponentTopology,
     VisualCoreInput,
     VisualCoreOutput,
 )
@@ -213,6 +214,29 @@ class SharedVideoTransformerCore(nn.Module):
         )
         self._exact_runtime_caches: dict[str, CacheState] = {}
         self._runtime_block_devices: tuple[torch.device, ...] = tuple()
+
+    def component_topology(self) -> VisualComponentTopology:
+        """Declare semantic groups owned by the shared transformer core."""
+
+        return VisualComponentTopology(
+            shared_video_backbone=(
+                self.rope,
+                self.time_conditioner,
+                self.text_proj,
+                self.patch_embedding_mlp,
+                self.blocks,
+                self.norm_out,
+                self.scale_shift_table,
+                self.proj_out,
+            ),
+            shared_action_runtime=(
+                self.action_time_conditioner,
+                self.action_text_proj,
+                self.action_embedder,
+                self.action_proj_out,
+            ),
+            shared_runtime_adapters=(self.runtime_stream_adapters,),
+        )
 
     def configure_runtime_block_devices(
         self,

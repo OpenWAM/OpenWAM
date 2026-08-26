@@ -43,7 +43,7 @@ def main() -> None:
         default=None,
         help=(
             "Checkpoint file, checkpoint_step_* directory, or run directory. "
-            "If omitted, use top-level checkpoint_path in the config, then infer from backbone.transformer_subdir."
+            "If omitted, use top-level checkpoint_path in the config, then infer from the runtime-backbone artifact."
         ),
     )
     parser.add_argument(
@@ -231,7 +231,7 @@ def main() -> None:
             checkpoint_error=(
                 "DualExpert visualization requires a trained checkpoint. Pass "
                 "`--checkpoint`, set top-level `checkpoint_path` in the config, "
-                "or point `backbone.transformer_subdir` at an exported checkpoint."
+                "or point `backbone.runtime_backbone_artifact_path` at an exported checkpoint."
             ),
             raw_window_frames=args.raw_window_frames,
             startup_model_obs_frames=args.startup_model_obs_frames,

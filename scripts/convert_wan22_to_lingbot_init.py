@@ -4,14 +4,20 @@ from __future__ import annotations
 import argparse
 import json
 import shutil
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
 import torch
-from safetensors import safe_open
 
-from open_wam.models.visual_tower.reference_loader import load_internal_wan_transformer_class
-
+from open_wam.models.visual_tower.reference_loader import (
+    load_internal_wan_transformer_class,
+)
+from open_wam.runtime.checkpoint_conversion import (
+    conv3d_to_linear,
+    load_selected_safetensors,
+    parse_torch_dtype,
+)
+from open_wam.runtime.publication import staged_output_directory
 
 TransformFn = Callable[[torch.Tensor, torch.Tensor], torch.Tensor]
 
@@ -21,19 +27,9 @@ def _identity(value: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
     return value
 
 
-def _conv3d_to_linear(value: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-    reshaped = value.reshape(value.shape[0], -1)
-    if reshaped.shape != target.shape:
-        raise ValueError(
-            "Unable to reshape Wan patch_embedding.weight into LingBot patch_embedding_mlp.weight: "
-            f"raw {tuple(value.shape)} -> {tuple(reshaped.shape)}, expected {tuple(target.shape)}."
-        )
-    return reshaped
-
-
 def build_wan22_to_lingbot_map(num_layers: int) -> dict[str, tuple[str, TransformFn]]:
     mapping: dict[str, tuple[str, TransformFn]] = {
-        "patch_embedding.weight": ("patch_embedding_mlp.weight", _conv3d_to_linear),
+        "patch_embedding.weight": ("patch_embedding_mlp.weight", conv3d_to_linear),
         "patch_embedding.bias": ("patch_embedding_mlp.bias", _identity),
         "text_embedding.0.weight": ("condition_embedder.text_embedder.linear_1.weight", _identity),
         "text_embedding.0.bias": ("condition_embedder.text_embedder.linear_1.bias", _identity),
@@ -114,54 +110,11 @@ def build_lingbot_config_from_wan_config(wan_config: dict[str, object], *, actio
     }
 
 
-def _load_selected_safetensors(root: Path, keys: set[str]) -> dict[str, torch.Tensor]:
-    index_path = root / "diffusion_pytorch_model.safetensors.index.json"
-    single_path = root / "diffusion_pytorch_model.safetensors"
-    state: dict[str, torch.Tensor] = {}
-    if index_path.exists():
-        payload = json.loads(index_path.read_text(encoding="utf-8"))
-        weight_map: dict[str, str] = payload.get("weight_map", {})
-        shard_to_keys: dict[str, list[str]] = {}
-        for key in sorted(keys):
-            shard_name = weight_map.get(key)
-            if shard_name is not None:
-                shard_to_keys.setdefault(shard_name, []).append(key)
-        for shard_name, shard_keys in shard_to_keys.items():
-            with safe_open(str(root / shard_name), framework="pt", device="cpu") as handle:
-                for key in shard_keys:
-                    state[key] = handle.get_tensor(key)
-        return state
-    if single_path.exists():
-        with safe_open(str(single_path), framework="pt", device="cpu") as handle:
-            available = set(handle.keys())
-            for key in sorted(keys & available):
-                state[key] = handle.get_tensor(key)
-        return state
-    raise FileNotFoundError(
-        "Unable to find Wan2.2 safetensors. Expected either "
-        f"{index_path} or {single_path}."
-    )
-
-
-def _parse_torch_dtype(name: str) -> torch.dtype:
-    choices = {
-        "float32": torch.float32,
-        "bfloat16": torch.bfloat16,
-        "float16": torch.float16,
-    }
-    try:
-        return choices[name]
-    except KeyError as exc:
-        raise ValueError(f"Unsupported dtype {name!r}; expected one of {sorted(choices)}.") from exc
-
-
 def _copy_auxiliary_components(source_root: Path, output_root: Path) -> None:
     for name in ("vae", "text_encoder", "tokenizer"):
         source = source_root / name
         if source.exists():
             target = output_root / name
-            if target.exists():
-                shutil.rmtree(target)
             shutil.copytree(source, target, symlinks=True)
 
 
@@ -176,6 +129,32 @@ def convert_wan22_to_lingbot_init(
     dtype: str = "bfloat16",
     copy_auxiliary_components: bool = False,
 ) -> dict[str, object]:
+    with staged_output_directory(output_root) as staging_root:
+        return _convert_wan22_to_lingbot_init(
+            wan_root=wan_root,
+            output_root=output_root,
+            staging_root=staging_root,
+            action_dim=action_dim,
+            attn_mode=attn_mode,
+            max_shard_size=max_shard_size,
+            seed=seed,
+            dtype=dtype,
+            copy_auxiliary_components=copy_auxiliary_components,
+        )
+
+
+def _convert_wan22_to_lingbot_init(
+    *,
+    wan_root: Path,
+    output_root: Path,
+    staging_root: Path,
+    action_dim: int,
+    attn_mode: str,
+    max_shard_size: str,
+    seed: int,
+    dtype: str,
+    copy_auxiliary_components: bool,
+) -> dict[str, object]:
     wan_config_path = wan_root / "config.json"
     if not wan_config_path.exists():
         raise FileNotFoundError(f"Missing Wan2.2 config: {wan_config_path}")
@@ -184,7 +163,7 @@ def convert_wan22_to_lingbot_init(
     num_layers = int(lingbot_config["num_layers"])
     mapping = build_wan22_to_lingbot_map(num_layers)
 
-    target_dtype = _parse_torch_dtype(dtype)
+    target_dtype = parse_torch_dtype(dtype)
     torch.manual_seed(seed)
     model_cls = load_internal_wan_transformer_class()
     model = model_cls(
@@ -205,7 +184,7 @@ def convert_wan22_to_lingbot_init(
         attn_mode=lingbot_config["attn_mode"],
     ).to(dtype=target_dtype)
     target_state = model.state_dict()
-    raw_state = _load_selected_safetensors(wan_root, set(mapping))
+    raw_state = load_selected_safetensors(wan_root, set(mapping))
 
     missing_raw = sorted(set(mapping) - set(raw_state))
     if missing_raw:
@@ -225,12 +204,17 @@ def convert_wan22_to_lingbot_init(
         loaded.append(target_key)
 
     model.load_state_dict(target_state, strict=True)
-    transformer_dir = output_root / "transformer"
-    transformer_dir.mkdir(parents=True, exist_ok=True)
-    model.save_pretrained(transformer_dir, safe_serialization=True, max_shard_size=max_shard_size)
+    staging_transformer_dir = staging_root / "transformer"
+    staging_transformer_dir.mkdir(parents=True, exist_ok=True)
+    model.save_pretrained(
+        staging_transformer_dir,
+        safe_serialization=True,
+        max_shard_size=max_shard_size,
+    )
     if copy_auxiliary_components:
-        _copy_auxiliary_components(wan_root, output_root)
+        _copy_auxiliary_components(wan_root, staging_root)
 
+    transformer_dir = output_root / "transformer"
     report = {
         "wan_root": str(wan_root),
         "output_root": str(output_root),
@@ -242,7 +226,10 @@ def convert_wan22_to_lingbot_init(
         "dtype": dtype,
         "copy_auxiliary_components": copy_auxiliary_components,
     }
-    (output_root / "wan22_to_lingbot_init_report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+    (staging_root / "wan22_to_lingbot_init_report.json").write_text(
+        json.dumps(report, indent=2),
+        encoding="utf-8",
+    )
     return report
 
 

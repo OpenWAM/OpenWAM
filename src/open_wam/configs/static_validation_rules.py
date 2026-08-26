@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping
 from typing import Any
+
+from open_wam.contracts.paths import validate_model_component_path
 
 from .enums import (
     ActionDecoderName,
@@ -32,12 +35,14 @@ from .enums import (
     ReplayStatusPolicy,
     SampleOrderMode,
     SampleWeightMode,
+    TextConditioningMode,
     TrainerAccelerator,
     TrainerPrecision,
     VideoActionProgram,
     VideoActionSequenceContract,
 )
 from .policy_video_action import fixed_conditioning_mode_for_program
+from .runtime_backbone_components import validate_runtime_backbone_components
 from .static_validation_contracts import _IssueBuilder
 from .static_validation_data import (
     _validate_action_mapping,
@@ -180,10 +185,41 @@ def _validate_experiment_config(raw: Mapping[str, Any], issues: _IssueBuilder, *
         _validate_enum(backbone, "train_attn_mode", AttentionMode, issues, "backbone")
         _validate_enum(backbone, "infer_attn_mode", AttentionMode, issues, "backbone")
         _validate_positive_ints(backbone, issues, "backbone", ("hidden_size", "num_layers", "num_heads"))
+        if "transformer_subdir" in backbone:
+            try:
+                validate_model_component_path(
+                    backbone["transformer_subdir"],
+                    field_name="backbone.transformer_subdir",
+                )
+            except (TypeError, ValueError) as exc:
+                issues.error("backbone.transformer_subdir", str(exc))
 
     trainer = _mapping(raw.get("trainer"))
+    training = _mapping(raw.get("training"))
+    inference = _mapping(raw.get("inference"))
     policy_variant = _mapping(raw.get("policy_variant"))
     action_decoder = _mapping(raw.get("action_decoder"))
+    dropout_probability: float | None = 0.0
+    if training is not None and "text_condition_dropout_prob" in training:
+        raw_dropout_probability = training["text_condition_dropout_prob"]
+        if isinstance(raw_dropout_probability, bool) or not isinstance(
+            raw_dropout_probability, (int, float)
+        ):
+            issues.error(
+                "training.text_condition_dropout_prob",
+                "Expected a numeric probability within [0, 1].",
+            )
+            dropout_probability = None
+        else:
+            dropout_probability = float(raw_dropout_probability)
+            if not math.isfinite(dropout_probability) or not (
+                0.0 <= dropout_probability <= 1.0
+            ):
+                issues.error(
+                    "training.text_condition_dropout_prob",
+                    "Expected a finite probability within [0, 1].",
+                )
+                dropout_probability = None
     if not relaxed and policy_variant is None:
         issues.error("policy_variant", "Expected an explicit `policy_variant` section.")
     if "action_head" in raw:
@@ -244,6 +280,88 @@ def _validate_experiment_config(raw: Mapping[str, Any], issues: _IssueBuilder, *
                 issues,
                 "policy_variant",
             )
+        if policy_name == PolicyVariantName.CAUSAL_VIDEO_PREDICTION.value:
+            if "require_text_conditioning" in policy_variant:
+                issues.error(
+                    "policy_variant.require_text_conditioning",
+                    "This field was removed; select "
+                    "`policy_variant.text_conditioning_mode: task_prompt` or "
+                    "`disabled`.",
+                )
+            _validate_enum(
+                policy_variant,
+                "text_conditioning_mode",
+                TextConditioningMode,
+                issues,
+                "policy_variant",
+            )
+            for field_name in ("chunk_size", "window_size"):
+                if training is not None and field_name in training:
+                    issues.error(
+                        f"training.{field_name}",
+                        "Causal video sample geometry is configured by "
+                        "`data.sample_construction.causal_prefix_suffix_buckets`; "
+                        "remove this unused generic training field.",
+                    )
+            guidance_scale = (inference or {}).get("guidance_scale", 1.0)
+            text_conditioning_mode = policy_variant.get(
+                "text_conditioning_mode",
+                TextConditioningMode.TASK_PROMPT.value,
+            )
+            if text_conditioning_mode == TextConditioningMode.DISABLED.value:
+                if dropout_probability not in (None, 0.0):
+                    issues.error(
+                        "training.text_condition_dropout_prob",
+                        "Disabled causal-video text conditioning requires 0.0; "
+                        "every sample already uses the blank-text embedding.",
+                    )
+                if guidance_scale != 1.0:
+                    issues.error(
+                        "inference.guidance_scale",
+                        "Disabled causal-video text conditioning requires 1.0; "
+                        "conditioned and unconditioned branches are identical.",
+                    )
+            elif (
+                text_conditioning_mode == TextConditioningMode.TASK_PROMPT.value
+                and dropout_probability is not None
+                and dropout_probability >= 1.0
+            ):
+                issues.error(
+                    "training.text_condition_dropout_prob",
+                    "Task-prompt causal-video conditioning requires a probability "
+                    "below 1.0; select `text_conditioning_mode: disabled` for "
+                    "unconditional training.",
+                )
+            if (
+                isinstance(dropout_probability, (int, float))
+                and not isinstance(dropout_probability, bool)
+                and float(dropout_probability) > 0.0
+                and (
+                    trainer is None
+                    or trainer.get("batch_adapter")
+                    != BatchAdapterName.LATENTS.value
+                )
+            ):
+                issues.error(
+                    "trainer.batch_adapter",
+                    "Causal video text-condition dropout requires "
+                    "`trainer.batch_adapter=latents`; the views adapter does not "
+                    "provide encoded text context.",
+                )
+            if (
+                isinstance(guidance_scale, (int, float))
+                and not isinstance(guidance_scale, bool)
+                and float(guidance_scale) > 1.0
+                and isinstance(dropout_probability, (int, float))
+                and not isinstance(dropout_probability, bool)
+                and float(dropout_probability) <= 0.0
+            ):
+                issues.error(
+                    "inference.guidance_scale",
+                    "Causal video classifier-free guidance requires "
+                    "`training.text_condition_dropout_prob > 0`; use guidance 1.0 "
+                    "when no unconditional branch was trained.",
+                )
         _validate_fixed_conditional_program(policy_variant, data, issues)
         _validate_program_timestep_contract(policy_variant, issues)
         if _active_dynamics_routes(data):
@@ -284,6 +402,17 @@ def _validate_experiment_config(raw: Mapping[str, Any], issues: _IssueBuilder, *
         _validate_enum(trainer, "accelerator", TrainerAccelerator, issues, "trainer")
         _validate_enum(trainer, "batch_adapter", BatchAdapterName, issues, "trainer")
         _validate_enum(trainer, "precision", TrainerPrecision, issues, "trainer")
+        if "runtime_backbone_export_components" in trainer:
+            try:
+                validate_runtime_backbone_components(
+                    trainer["runtime_backbone_export_components"],
+                    scope="`trainer.runtime_backbone_export_components`",
+                )
+            except (TypeError, ValueError) as exc:
+                issues.error(
+                    "trainer.runtime_backbone_export_components",
+                    str(exc),
+                )
         _validate_positive_ints(
             trainer,
             issues,
@@ -306,6 +435,27 @@ def _validate_extension_envelope(
     issues: _IssueBuilder,
     path: str,
 ) -> None:
+    _validate_enum(
+        section,
+        "proprio_context_mode",
+        ProprioContextMode,
+        issues,
+        path,
+    )
+    _validate_enum(
+        section,
+        "text_conditioning_mode",
+        TextConditioningMode,
+        issues,
+        path,
+    )
+    if "dynamics_mode_context_enabled" in section and not isinstance(
+        section["dynamics_mode_context_enabled"], bool
+    ):
+        issues.error(
+            f"{path}.dynamics_mode_context_enabled",
+            "Expected a boolean.",
+        )
     extension_type = section.get("extension_type")
     if (
         not isinstance(extension_type, str)

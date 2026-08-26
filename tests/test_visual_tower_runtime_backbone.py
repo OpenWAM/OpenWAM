@@ -11,9 +11,10 @@ from open_wam.configs import (
     ExportedRuntimeActionInitMode,
     SharedVideoTransformerConfig,
 )
-from open_wam.models.visual_tower.reference_core_weights import BackboneLoadReport
 from open_wam.models.video_backbone.contracts import CacheState
 from open_wam.models.visual_tower import VisualTower
+from open_wam.models.visual_tower import runtime_backbone as runtime_backbone_module
+from open_wam.models.visual_tower.reference_core_weights import BackboneLoadReport
 from open_wam.models.visual_tower.runtime_backbone import (
     ensure_runtime_module_device,
     initialize_runtime_backbone,
@@ -62,6 +63,50 @@ def test_runtime_backbone_initialization_is_idempotent_and_optional() -> None:
             action_dim=4,
         )
         is None
+    )
+
+
+def test_runtime_backbone_initialization_loads_absolute_component_without_model_root(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    core = nn.Linear(2, 2)
+    transformer_dir = tmp_path / "detached-transformer"
+    expected = BackboneLoadReport(
+        loaded_keys=("weight",),
+        missing_reference_keys=(),
+    )
+    config = replace(
+        _backbone_config(),
+        transformer_subdir=str(transformer_dir),
+    )
+
+    monkeypatch.setattr(
+        runtime_backbone_module,
+        "is_open_wam_exported_runtime_backbone_dir",
+        lambda path: False,
+    )
+
+    def load_reference(core_arg, *, backbone_config, action_dim):
+        assert core_arg is core
+        assert backbone_config is config
+        assert action_dim == 4
+        return expected
+
+    monkeypatch.setattr(
+        runtime_backbone_module,
+        "load_reference_weights_into_replica_core",
+        load_reference,
+    )
+
+    assert (
+        initialize_runtime_backbone(
+            current_report=None,
+            core=core,
+            config=config,
+            action_dim=4,
+        )
+        is expected
     )
 
 

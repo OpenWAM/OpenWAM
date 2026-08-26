@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from dataclasses import replace
 from pathlib import Path
 
@@ -25,6 +26,7 @@ from open_wam.models.policy_variants.dual_expert.packed_block import (
     DualExpertPackedBlockStack,
 )
 from open_wam.models.video_backbone.config import SharedVideoTransformerConfig
+from open_wam.models.visual_tower import VisualTower
 from open_wam.models.visual_tower.replica_core import SharedVideoTransformerCore
 from open_wam.pipelines import build_variant_pipeline_from_config
 from open_wam.training import apply_training_component_controls
@@ -32,9 +34,38 @@ from open_wam.training import apply_training_component_controls
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_dummy_visual_core_declares_shared_backbone_ownership() -> None:
+    tower = VisualTower(
+        SharedVideoTransformerConfig(
+            implementation="dummy",
+            hidden_size=8,
+            num_layers=1,
+            num_heads=1,
+        )
+    )
+
+    assert tower.component_topology().shared_video_backbone == (tower.core,)
+
+
+def test_visual_tower_rejects_core_without_component_ownership() -> None:
+    tower = VisualTower(
+        SharedVideoTransformerConfig(
+            implementation="dummy",
+            hidden_size=8,
+            num_layers=1,
+            num_heads=1,
+        )
+    )
+    tower.core = nn.Linear(8, 8)
+
+    with pytest.raises(TypeError, match="must declare semantic ownership"):
+        tower.component_topology()
+
 
 def test_parallel_stream_enabled_objectives_can_disable_action_loss() -> None:
-    config = load_experiment_config(REPO_ROOT / "configs/experiments/parallel_stream_robotwin_smoke.yaml")
+    config = load_experiment_config(
+        REPO_ROOT / "configs/experiments/parallel_stream_robotwin_smoke.yaml"
+    )
     config = replace(
         config,
         policy_variant=replace(config.policy_variant, action_norm_method="none"),
@@ -66,22 +97,37 @@ def test_parallel_stream_enabled_objectives_can_disable_action_loss() -> None:
         negative_text_context=latent_batch.negative_text_context,
     )
 
-    assert train_output.decoder_output.metrics["weighted_action_loss"].item() == pytest.approx(0.0)
+    assert train_output.decoder_output.metrics[
+        "weighted_action_loss"
+    ].item() == pytest.approx(0.0)
     assert train_output.decoder_output.loss.item() == pytest.approx(
         train_output.decoder_output.metrics["weighted_latent_loss"].item()
     )
 
 
-def test_apply_training_component_controls_supports_dual_expert_action_expert_selector() -> None:
-    config = load_experiment_config(REPO_ROOT / "configs/experiments/dual_expert_robotwin_smoke.yaml")
+def test_apply_training_component_controls_supports_dual_expert_action_expert_selector() -> (
+    None
+):
+    config = load_experiment_config(
+        REPO_ROOT / "configs/experiments/dual_expert_robotwin_smoke.yaml"
+    )
     pipeline = build_variant_pipeline_from_config(config)
 
     report = apply_training_component_controls(pipeline, config.training)
 
     assert report.trainable_components == ("policy_variant.action_expert",)
-    assert all(not parameter.requires_grad for parameter in pipeline.visual_tower.frontend.parameters())
-    assert all(not parameter.requires_grad for parameter in pipeline.visual_tower.core.parameters())
-    assert all(parameter.requires_grad for parameter in pipeline.policy_variant.action_expert.parameters())
+    assert all(
+        not parameter.requires_grad
+        for parameter in pipeline.visual_tower.frontend.parameters()
+    )
+    assert all(
+        not parameter.requires_grad
+        for parameter in pipeline.visual_tower.core.parameters()
+    )
+    assert all(
+        parameter.requires_grad
+        for parameter in pipeline.policy_variant.action_expert.parameters()
+    )
 
 
 def _build_dual_expert_packed_smoke_pipeline():
@@ -97,7 +143,9 @@ def _build_dual_expert_packed_smoke_pipeline():
 
     from open_wam.configs.enums import ProprioContextMode
 
-    config = load_experiment_config(REPO_ROOT / "configs/experiments/dual_expert_robotwin_smoke.yaml")
+    config = load_experiment_config(
+        REPO_ROOT / "configs/experiments/dual_expert_robotwin_smoke.yaml"
+    )
     policy_variant_config = _replace(
         config.policy_variant,
         proprio_context_mode=ProprioContextMode.PER_CHUNK_ADDITIVE,
@@ -136,12 +184,21 @@ def test_packed_coupling_action_expert_selector_only_trains_action_side() -> Non
     )
     # Each packed_block.action_block is trainable.
     for packed_block in pipeline.policy_variant.packed_block_stack.packed_blocks:
-        assert all(parameter.requires_grad for parameter in packed_block.action_block.parameters())
+        assert all(
+            parameter.requires_grad
+            for parameter in packed_block.action_block.parameters()
+        )
         # And video_block is NOT trainable.
-        assert all(not parameter.requires_grad for parameter in packed_block.video_block.parameters())
+        assert all(
+            not parameter.requires_grad
+            for parameter in packed_block.video_block.parameters()
+        )
     # Visual tower core (non-block parts) is NOT trainable except the zero-init
     # proprio adapter, which must learn even in action-only runs.
-    assert all(not parameter.requires_grad for parameter in _non_proprio_core_parameters(pipeline))
+    assert all(
+        not parameter.requires_grad
+        for parameter in _non_proprio_core_parameters(pipeline)
+    )
     assert all(
         parameter.requires_grad
         for parameter in pipeline.visual_tower.core.proprio_hidden_context_encoder.parameters()
@@ -167,9 +224,15 @@ def test_packed_coupling_runtime_backbone_selector_only_trains_video_side() -> N
     )
     # Each packed_block.video_block is trainable.
     for packed_block in pipeline.policy_variant.packed_block_stack.packed_blocks:
-        assert all(parameter.requires_grad for parameter in packed_block.video_block.parameters())
+        assert all(
+            parameter.requires_grad
+            for parameter in packed_block.video_block.parameters()
+        )
         # And action_block is NOT trainable.
-        assert all(not parameter.requires_grad for parameter in packed_block.action_block.parameters())
+        assert all(
+            not parameter.requires_grad
+            for parameter in packed_block.action_block.parameters()
+        )
     # action_expert (embedder/conditioner/proj) is NOT trainable.
     assert all(
         not parameter.requires_grad
@@ -212,6 +275,60 @@ def test_parallel_stream_uses_default_module_topology() -> None:
     assert topology.fsdp_block_stacks == (pipeline.visual_tower.core,)
     assert topology.fsdp_atomic_modules == ()
     assert topology.runtime_backbone_state_overlays == ()
+
+
+@pytest.mark.parametrize(
+    ("selector", "expected_names", "expected_parameters", "expected_digest"),
+    (
+        (
+            "visual_tower.shared_video_backbone",
+            42,
+            2_795_200,
+            "50a2d1b9aa745bcb1cebc4b62814d6beb5afff544e9ec662955bf6971cd53214",
+        ),
+        (
+            "visual_tower.shared_action_runtime",
+            14,
+            1_656_606,
+            "e54fef617e070e70364f8c487b1394030423ebcacb333b59c243d75ad5da5276",
+        ),
+        (
+            "visual_tower.shared_runtime_adapters",
+            9,
+            147_968,
+            "f8c2cc260c6bcfc8671341e3d7204c89c40e96ec3a9382a1484fdb6f99f91982",
+        ),
+    ),
+)
+def test_shared_component_selectors_have_stable_trainable_inventories(
+    selector: str,
+    expected_names: int,
+    expected_parameters: int,
+    expected_digest: str,
+) -> None:
+    """Keep semantic component selectors stable across ownership refactors."""
+
+    config, pipeline = _build_dual_expert_packed_smoke_pipeline()
+    config = replace(
+        config,
+        training=replace(
+            config.training,
+            trainable_components=(selector,),
+            frozen_components=("visual_tower.proprio_context_encoder",),
+        ),
+    )
+
+    report = apply_training_component_controls(pipeline, config.training)
+    names = sorted(
+        name
+        for name, parameter in pipeline.named_parameters()
+        if parameter.requires_grad
+    )
+    digest = hashlib.sha256("\n".join(names).encode("utf-8")).hexdigest()
+
+    assert len(names) == expected_names
+    assert report.trainable_parameters == expected_parameters
+    assert digest == expected_digest
 
 
 @pytest.mark.parametrize(
@@ -291,8 +408,14 @@ def test_packed_coupling_combined_selector_trains_both_sides() -> None:
     apply_training_component_controls(pipeline, config.training)
 
     for packed_block in pipeline.policy_variant.packed_block_stack.packed_blocks:
-        assert all(parameter.requires_grad for parameter in packed_block.video_block.parameters())
-        assert all(parameter.requires_grad for parameter in packed_block.action_block.parameters())
+        assert all(
+            parameter.requires_grad
+            for parameter in packed_block.video_block.parameters()
+        )
+        assert all(
+            parameter.requires_grad
+            for parameter in packed_block.action_block.parameters()
+        )
     assert any(
         parameter.requires_grad for parameter in pipeline.visual_tower.core.parameters()
     )
@@ -319,9 +442,18 @@ def test_packed_coupling_freeze_video_train_action() -> None:
     # Video side fully frozen even though the previous resolver collision
     # would otherwise have re-frozen action blocks.
     for packed_block in pipeline.policy_variant.packed_block_stack.packed_blocks:
-        assert all(not parameter.requires_grad for parameter in packed_block.video_block.parameters())
-        assert all(parameter.requires_grad for parameter in packed_block.action_block.parameters())
-    assert all(not parameter.requires_grad for parameter in _non_proprio_core_parameters(pipeline))
+        assert all(
+            not parameter.requires_grad
+            for parameter in packed_block.video_block.parameters()
+        )
+        assert all(
+            parameter.requires_grad
+            for parameter in packed_block.action_block.parameters()
+        )
+    assert all(
+        not parameter.requires_grad
+        for parameter in _non_proprio_core_parameters(pipeline)
+    )
     assert all(
         parameter.requires_grad
         for parameter in pipeline.visual_tower.core.proprio_hidden_context_encoder.parameters()
@@ -336,8 +468,12 @@ def test_split_cache_restore_transfers_block_ownership_once() -> None:
     _, pipeline = _build_dual_expert_packed_smoke_pipeline()
     packed_stack = pipeline.policy_variant.packed_block_stack
     assert packed_stack is not None
-    video_block_ids = [id(packed_block.video_block) for packed_block in packed_stack.packed_blocks]
-    action_block_ids = [id(packed_block.action_block) for packed_block in packed_stack.packed_blocks]
+    video_block_ids = [
+        id(packed_block.video_block) for packed_block in packed_stack.packed_blocks
+    ]
+    action_block_ids = [
+        id(packed_block.action_block) for packed_block in packed_stack.packed_blocks
+    ]
     assert len(pipeline.visual_tower.core.blocks) == 0
     assert len(pipeline.policy_variant.action_expert.blocks) == 0
 
@@ -348,8 +484,12 @@ def test_split_cache_restore_transfers_block_ownership_once() -> None:
     assert restored is True
     assert pipeline.policy_variant.packed_block_stack is None
     assert [id(block) for block in pipeline.visual_tower.core.blocks] == video_block_ids
-    assert [id(block) for block in pipeline.policy_variant.action_expert.blocks] == action_block_ids
-    assert not any(isinstance(module, DualExpertPackedBlockStack) for module in pipeline.modules())
+    assert [
+        id(block) for block in pipeline.policy_variant.action_expert.blocks
+    ] == action_block_ids
+    assert not any(
+        isinstance(module, DualExpertPackedBlockStack) for module in pipeline.modules()
+    )
     assert not any("packed_block_stack" in key for key in pipeline.state_dict())
     assert (
         pipeline.policy_variant.restore_packed_blocks_for_split_cache_inference(
@@ -374,7 +514,10 @@ def test_additive_proprio_context_encoder_trains_with_action_only_selector() -> 
     apply_training_component_controls(pipeline, config.training)
 
     assert all(parameter.requires_grad for parameter in encoder.parameters())
-    assert all(not parameter.requires_grad for parameter in pipeline.visual_tower.core.patch_embedding_mlp.parameters())
+    assert all(
+        not parameter.requires_grad
+        for parameter in pipeline.visual_tower.core.patch_embedding_mlp.parameters()
+    )
 
 
 def test_additive_proprio_context_encoder_can_be_explicitly_frozen() -> None:
@@ -410,7 +553,10 @@ def test_additive_proprio_context_encoder_respects_broad_visual_core_freeze() ->
 
     report = apply_training_component_controls(pipeline, config.training)
 
-    assert TrainingComponentSelector.VISUAL_TOWER_PROPRIO_CONTEXT_ENCODER not in report.trainable_components
+    assert (
+        TrainingComponentSelector.VISUAL_TOWER_PROPRIO_CONTEXT_ENCODER
+        not in report.trainable_components
+    )
     assert all(not parameter.requires_grad for parameter in encoder.parameters())
 
 
@@ -483,18 +629,26 @@ def test_generalist_mode_context_encoder_trains_with_frozen_backbone_selector() 
         TrainingConfig(trainable_components=("policy_variant",)),
     )
 
-    assert TrainingComponentSelector.VISUAL_TOWER_GENERALIST_MODE_CONTEXT_ENCODER in report.trainable_components
+    assert (
+        TrainingComponentSelector.VISUAL_TOWER_GENERALIST_MODE_CONTEXT_ENCODER
+        in report.trainable_components
+    )
     assert all(parameter.requires_grad for parameter in encoder.parameters())
-    assert all(not parameter.requires_grad for parameter in pipeline.visual_tower.core.patch_embedding_mlp.parameters())
+    assert all(
+        not parameter.requires_grad
+        for parameter in pipeline.visual_tower.core.patch_embedding_mlp.parameters()
+    )
 
 
-def test_dual_expert_generalist_mode_context_encoder_trains_with_frozen_backbone_selector() -> None:
+def test_dual_expert_generalist_mode_context_encoder_trains_with_frozen_backbone_selector() -> (
+    None
+):
     pipeline = _TinyGeneralistModePipeline()
     pipeline.policy_variant.config = DualExpertPolicyConfig(
         hidden_size=16,
         attach_site=AttachSite.POST_VISUAL_CORE,
         program=VideoActionProgram.GENERALIST_JOINT_DENOISING,
-            generalist_mode_text_token=True,
+        generalist_mode_text_token=True,
     )
     encoder = pipeline.visual_tower.core.generalist_mode_context_encoder
     assert encoder is not None
@@ -504,9 +658,15 @@ def test_dual_expert_generalist_mode_context_encoder_trains_with_frozen_backbone
         TrainingConfig(trainable_components=("policy_variant",)),
     )
 
-    assert TrainingComponentSelector.VISUAL_TOWER_GENERALIST_MODE_CONTEXT_ENCODER in report.trainable_components
+    assert (
+        TrainingComponentSelector.VISUAL_TOWER_GENERALIST_MODE_CONTEXT_ENCODER
+        in report.trainable_components
+    )
     assert all(parameter.requires_grad for parameter in encoder.parameters())
-    assert all(not parameter.requires_grad for parameter in pipeline.visual_tower.core.patch_embedding_mlp.parameters())
+    assert all(
+        not parameter.requires_grad
+        for parameter in pipeline.visual_tower.core.patch_embedding_mlp.parameters()
+    )
 
 
 def test_generalist_mode_context_encoder_can_be_explicitly_frozen() -> None:
@@ -522,5 +682,8 @@ def test_generalist_mode_context_encoder_can_be_explicitly_frozen() -> None:
         ),
     )
 
-    assert TrainingComponentSelector.VISUAL_TOWER_GENERALIST_MODE_CONTEXT_ENCODER not in report.trainable_components
+    assert (
+        TrainingComponentSelector.VISUAL_TOWER_GENERALIST_MODE_CONTEXT_ENCODER
+        not in report.trainable_components
+    )
     assert all(not parameter.requires_grad for parameter in encoder.parameters())

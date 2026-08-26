@@ -32,7 +32,7 @@ Open-WAM provides:
 - one typed train, resume, evaluation, and simulator runtime across policy
   architectures;
 - six standard video/action programs plus generalist joint denoising (GJD);
-- exact full-state checkpoint resume and versioned run provenance;
+- full-state checkpoint continuation and versioned run provenance;
 - adapters for LIBERO, RoboTwin, CALVIN, heterogeneous LeRobot data, and
   synthetic fixtures;
 - role-scoped extension APIs for datasets, policies, decoders, attention
@@ -151,9 +151,11 @@ uv run --extra train torchrun --standalone --nproc-per-node=4 \
   --expected-world-size 4
 ```
 
-`full_training_state.pt` restores optimizer, scheduler, strategy, RNG, and
-step state. `model_state.pt` is an inference artifact or warm start, not an
-exact resume. Every checkpoint stores its resolved config.
+`full_training_state.pt` restores optimizer, scheduler, strategy/scaler, and
+step state for stateful continuation. Process and dataloader RNG streams are
+not checkpointed, so a restarted run is not bitwise identical.
+`model_state.pt` is an inference artifact or warm start. Every checkpoint
+stores its resolved config.
 
 Conditional FDM/IDM uses the dynamics-routing data adapter. The maintained
 config mixes real demonstrations with encoded counterfactual train and

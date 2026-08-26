@@ -2,26 +2,28 @@
 
 from __future__ import annotations
 
+import json
+import random
 from collections import OrderedDict
 from dataclasses import dataclass
-import json
+from itertools import pairwise
+from numbers import Integral
 from pathlib import Path
-import random
 from typing import Any
 
-from einops import rearrange
 import pyarrow.parquet as pq
 import torch
+from einops import rearrange
 
 from open_wam.artifacts import load_tensor_artifact
 from open_wam.configs import DataConfig
+from open_wam.contracts import CanonicalViewLayout, ViewPlacement
 from open_wam.utils.latent_filenames import match_latent_window_filename
 
 from .latent_temporal import (
     CONDITION_SOURCE_FRAME_POLICY_NEXT_LATENT_SOURCE_OFFSET,
 )
 from .lerobot_v2 import LeRobotEpisodeRecord, LeRobotV2Metadata
-
 
 __all__ = [
     "LocalEpisodeWindow",
@@ -83,10 +85,10 @@ class LocalRepoBundle:
 
 CanonicalLatentWindowPayload = tuple[
     torch.Tensor,
-    dict[str, dict[str, int]],
+    dict[str, Any],
     dict[str, Any],
     torch.Tensor | None,
-    dict[str, dict[str, int]],
+    dict[str, Any],
 ]
 
 
@@ -144,19 +146,22 @@ class LocalLatentRepository:
     ) -> dict[str, dict[str, Any]]:
         latent_root = resolve_latent_root(window.repo_root, self.data_config)
         chunk_dir = (
-            latent_root
-            / f"chunk-{window.episode_index // metadata.chunk_size:03d}"
+            latent_root / f"chunk-{window.episode_index // metadata.chunk_size:03d}"
         )
         payloads: dict[str, dict[str, Any]] = {}
         for camera_name in self.data_config.latent_camera_names:
-            latent_path = chunk_dir / camera_name / latent_filename(
-                episode_index=window.episode_index,
-                start_frame=window.start_frame,
-                end_frame=window.end_frame,
+            latent_path = (
+                chunk_dir
+                / camera_name
+                / latent_filename(
+                    episode_index=window.episode_index,
+                    start_frame=window.start_frame,
+                    end_frame=window.end_frame,
+                )
             )
             payload = load_tensor_artifact(latent_path)
             if not isinstance(payload, dict):
-                raise ValueError(
+                raise TypeError(
                     f"Expected latent payload mapping at {latent_path}, "
                     f"got {type(payload).__name__}."
                 )
@@ -212,9 +217,7 @@ class LocalLatentRepository:
                         f"with --source-frame-offset {expected_offset} --overwrite. "
                         f"Mismatches: {preview}"
                     )
-        primary_payload = dict(
-            latent_payloads[self.data_config.latent_camera_names[0]]
-        )
+        primary_payload = dict(latent_payloads[self.data_config.latent_camera_names[0]])
         payload = (
             video_latents,
             latent_layout_metadata,
@@ -268,16 +271,32 @@ def assemble_canonical_latents(
     *,
     payload_key: str = "latent",
     require_payload_key: bool = True,
-) -> tuple[torch.Tensor | None, dict[str, dict[str, int]]]:
+) -> tuple[torch.Tensor | None, dict[str, Any]]:
     """Place per-camera payloads into the configured canonical latent canvas."""
 
-    canonical_latents = None
-    metadata: dict[str, dict[str, int]] = {}
-    for view_layout, camera_name in zip(
-        data_config.view_layout,
-        data_config.latent_camera_names,
-        strict=True,
-    ):
+    resolved_views: dict[str, torch.Tensor] = {}
+    placements: list[ViewPlacement] = []
+    reference_shape: tuple[int, int] | None = None
+    reference_dtype: torch.dtype | None = None
+    reference_device: torch.device | None = None
+    reference_frame_ids: tuple[int, ...] | None = None
+    reference_stride: tuple[int, int] | None = None
+    declared_camera_names = tuple(data_config.latent_camera_names)
+    layout_camera_names = tuple(view.source_name for view in data_config.view_layout)
+    if len(set(declared_camera_names)) != len(declared_camera_names):
+        raise ValueError("`latent_camera_names` must not contain duplicates.")
+    if len(set(layout_camera_names)) != len(layout_camera_names):
+        raise ValueError("`view_layout.source_name` values must be unique.")
+    if set(declared_camera_names) != set(layout_camera_names):
+        raise ValueError(
+            "`latent_camera_names` and `view_layout.source_name` must declare the "
+            "same camera set: "
+            f"latent_only={sorted(set(declared_camera_names) - set(layout_camera_names))}, "
+            f"layout_only={sorted(set(layout_camera_names) - set(declared_camera_names))}."
+        )
+
+    for view_layout in data_config.view_layout:
+        camera_name = view_layout.source_name
         payload = latent_payloads[camera_name]
         if payload_key not in payload:
             if require_payload_key:
@@ -287,46 +306,158 @@ def assemble_canonical_latents(
                 )
             return None, {}
         view_latents = reshape_latent_payload(payload, payload_key=payload_key)
+        frames = int(view_latents.shape[0])
         latent_height = int(view_latents.shape[1])
         latent_width = int(view_latents.shape[2])
-        stride_h = max(1, view_layout.height // latent_height)
-        stride_w = max(1, view_layout.width // latent_width)
+        channels = int(view_latents.shape[3])
+        shape = (frames, channels)
+        if reference_shape is None:
+            reference_shape = shape
+            reference_dtype = view_latents.dtype
+            reference_device = view_latents.device
+            reference_frame_ids = _latent_payload_frame_ids(payload)
+        else:
+            if shape != reference_shape:
+                raise ValueError(
+                    "Canonical latent views must have identical frame and channel "
+                    f"dimensions: expected={reference_shape}, got={shape} for "
+                    f"{camera_name!r}."
+                )
+            if view_latents.dtype != reference_dtype:
+                raise ValueError(
+                    "Canonical latent views must have identical dtypes: "
+                    f"expected={reference_dtype}, got={view_latents.dtype} for "
+                    f"{camera_name!r}."
+                )
+            if view_latents.device != reference_device:
+                raise ValueError(
+                    "Canonical latent views must be on the same device: "
+                    f"expected={reference_device}, got={view_latents.device} for "
+                    f"{camera_name!r}."
+                )
+            frame_ids = _latent_payload_frame_ids(payload)
+            if frame_ids != reference_frame_ids:
+                raise ValueError(
+                    "Canonical latent views must describe identical frame_ids: "
+                    f"expected={reference_frame_ids}, got={frame_ids} for "
+                    f"{camera_name!r}."
+                )
+
+        stride_h = _exact_latent_stride(
+            view_layout.height,
+            latent_height,
+            camera_name=camera_name,
+            axis="height",
+        )
+        stride_w = _exact_latent_stride(
+            view_layout.width,
+            latent_width,
+            camera_name=camera_name,
+            axis="width",
+        )
+        stride = (stride_h, stride_w)
+        if reference_stride is None:
+            reference_stride = stride
+        elif stride != reference_stride:
+            raise ValueError(
+                "Canonical latent views must use one spatial stride: "
+                f"expected={reference_stride}, got={stride} for {camera_name!r}."
+            )
+        for coordinate, stride_value, name in (
+            (view_layout.top, stride_h, "top"),
+            (view_layout.left, stride_w, "left"),
+            (data_config.canonical_height, stride_h, "canonical_height"),
+            (data_config.canonical_width, stride_w, "canonical_width"),
+        ):
+            if coordinate % stride_value != 0:
+                raise ValueError(
+                    f"Canonical latent {name}={coordinate} for {camera_name!r} "
+                    f"is not divisible by spatial stride {stride_value}."
+                )
         top = view_layout.top // stride_h
         left = view_layout.left // stride_w
-        full_height = data_config.canonical_height // stride_h
-        full_width = data_config.canonical_width // stride_w
-
-        if canonical_latents is None:
-            frames = int(view_latents.shape[0])
-            channels = int(view_latents.shape[-1])
-            canonical_latents = torch.zeros(
-                frames,
-                full_height,
-                full_width,
-                channels,
-                dtype=view_latents.dtype,
+        resolved_views[camera_name] = view_latents
+        placements.append(
+            ViewPlacement(
+                source_name=camera_name,
+                canonical_name=view_layout.canonical_name,
+                top=top,
+                left=left,
+                height=latent_height,
+                width=latent_width,
             )
+        )
+
+    if not resolved_views:
+        raise ValueError("Expected at least one latent camera payload.")
+    assert reference_shape is not None
+    assert reference_dtype is not None
+    assert reference_device is not None
+    assert reference_stride is not None
+    layout = CanonicalViewLayout(
+        canvas_height=data_config.canonical_height // reference_stride[0],
+        canvas_width=data_config.canonical_width // reference_stride[1],
+        placements=tuple(placements),
+    )
+    canonical_latents = torch.zeros(
+        reference_shape[0],
+        layout.canvas_height,
+        layout.canvas_width,
+        reference_shape[1],
+        dtype=reference_dtype,
+        device=reference_device,
+    )
+    for placement in layout.placements:
+        view_latents = resolved_views[placement.source_name]
         canonical_latents[
             :,
-            top : top + latent_height,
-            left : left + latent_width,
+            placement.top : placement.top + placement.height,
+            placement.left : placement.left + placement.width,
             :,
         ] = view_latents
-        metadata[camera_name] = {
-            "latent_height": latent_height,
-            "latent_width": latent_width,
-            "top": top,
-            "left": left,
-        }
-
-    if canonical_latents is None:
-        raise ValueError("Expected at least one latent camera payload.")
     return (
-        canonical_latents.permute(3, 0, 1, 2)
-        .contiguous()
-        .to(dtype=torch.float32),
-        metadata,
+        canonical_latents.permute(3, 0, 1, 2).contiguous().to(dtype=torch.float32),
+        layout.to_metadata(),
     )
+
+
+def _exact_latent_stride(
+    configured_size: int,
+    latent_size: int,
+    *,
+    camera_name: str,
+    axis: str,
+) -> int:
+    if latent_size <= 0 or configured_size % latent_size != 0:
+        raise ValueError(
+            f"Configured view {axis}={configured_size} for {camera_name!r} must "
+            f"be an exact positive multiple of latent {axis}={latent_size}."
+        )
+    return configured_size // latent_size
+
+
+def _latent_payload_frame_ids(payload: dict[str, Any]) -> tuple[int, ...] | None:
+    raw_frame_ids = payload.get("frame_ids")
+    if raw_frame_ids is None:
+        return None
+    if isinstance(raw_frame_ids, torch.Tensor):
+        raw_frame_ids = raw_frame_ids.detach().cpu().flatten().tolist()
+    if not isinstance(raw_frame_ids, (list, tuple)):
+        raise TypeError(
+            "Latent payload frame_ids must be a sequence or tensor, "
+            f"got {type(raw_frame_ids).__name__}."
+        )
+    if not raw_frame_ids:
+        raise ValueError("Latent payload frame_ids must be non-empty when provided.")
+    if any(
+        isinstance(value, bool) or not isinstance(value, Integral)
+        for value in raw_frame_ids
+    ):
+        raise TypeError("Latent payload frame_ids must contain only integral values.")
+    frame_ids = tuple(int(value) for value in raw_frame_ids)
+    if any(current < previous for previous, current in pairwise(frame_ids)):
+        raise ValueError("Latent payload frame_ids must be nondecreasing.")
+    return frame_ids
 
 
 def condition_latent_offset_mismatches(
@@ -348,9 +479,7 @@ def condition_latent_offset_mismatches(
                 # Legacy optional condition payloads predate explicit source
                 # metadata; only the unshifted contract can consume them.
                 continue
-            mismatches.append(
-                f"{camera_name}: missing condition_source_frame_offset"
-            )
+            mismatches.append(f"{camera_name}: missing condition_source_frame_offset")
             continue
         if int(payload_offset) != int(expected_offset):
             mismatches.append(
@@ -362,14 +491,9 @@ def condition_latent_offset_mismatches(
         if payload_policy is None:
             if int(expected_offset) == 0:
                 continue
-            mismatches.append(
-                f"{camera_name}: missing condition_source_frame_policy"
-            )
+            mismatches.append(f"{camera_name}: missing condition_source_frame_policy")
             continue
-        if (
-            payload_policy
-            != CONDITION_SOURCE_FRAME_POLICY_NEXT_LATENT_SOURCE_OFFSET
-        ):
+        if payload_policy != CONDITION_SOURCE_FRAME_POLICY_NEXT_LATENT_SOURCE_OFFSET:
             mismatches.append(
                 f"{camera_name}: condition_source_frame_policy={payload_policy!r} "
                 f"expected {CONDITION_SOURCE_FRAME_POLICY_NEXT_LATENT_SOURCE_OFFSET!r}"
@@ -377,7 +501,9 @@ def condition_latent_offset_mismatches(
     return mismatches
 
 
-def discover_local_lerobot_repo_bundles(local_root: str | Path) -> list[LocalRepoBundle]:
+def discover_local_lerobot_repo_bundles(
+    local_root: str | Path,
+) -> list[LocalRepoBundle]:
     """Discover one or more local LeRobot-style repo roots."""
 
     root = Path(local_root).expanduser()
@@ -385,9 +511,13 @@ def discover_local_lerobot_repo_bundles(local_root: str | Path) -> list[LocalRep
     if (root / "meta" / "info.json").exists():
         repo_roots.append(root)
     else:
-        repo_roots.extend(sorted(path.parent.parent for path in root.rglob("meta/info.json")))
+        repo_roots.extend(
+            sorted(path.parent.parent for path in root.rglob("meta/info.json"))
+        )
     if not repo_roots:
-        raise FileNotFoundError(f"No local LeRobot repo roots were discovered under {root}.")
+        raise FileNotFoundError(
+            f"No local LeRobot repo roots were discovered under {root}."
+        )
 
     bundles: list[LocalRepoBundle] = []
     for repo_root in repo_roots:
@@ -396,19 +526,25 @@ def discover_local_lerobot_repo_bundles(local_root: str | Path) -> list[LocalRep
             LocalRepoBundle(
                 root=repo_root,
                 metadata=metadata,
-                episodes_by_index={episode.episode_index: episode for episode in metadata.episodes},
+                episodes_by_index={
+                    episode.episode_index: episode for episode in metadata.episodes
+                },
             )
         )
     return bundles
 
 
-def scan_local_latent_windows(repo_root: Path, data_config: DataConfig) -> list[LocalEpisodeWindow]:
+def scan_local_latent_windows(
+    repo_root: Path, data_config: DataConfig
+) -> list[LocalEpisodeWindow]:
     """Scan a local latent export tree into reusable latent windows."""
 
     primary_camera = data_config.latent_camera_names[0]
     windows: list[LocalEpisodeWindow] = []
     latent_root = resolve_latent_root(repo_root, data_config)
-    for camera_dir in sorted((path for path in latent_root.glob(f"chunk-*/{primary_camera}") if path.is_dir())):
+    for camera_dir in sorted(
+        path for path in latent_root.glob(f"chunk-*/{primary_camera}") if path.is_dir()
+    ):
         chunk_dir = camera_dir.parent
         for latent_file in sorted(camera_dir.glob("episode_*.pth")):
             match = match_latent_window_filename(latent_file.name)
@@ -428,7 +564,9 @@ def scan_local_latent_windows(repo_root: Path, data_config: DataConfig) -> list[
                     latent_frame_count = int(raw_latent_num_frames)
                 raw_frame_ids = payload.get("frame_ids")
                 if isinstance(raw_frame_ids, torch.Tensor):
-                    observed_frame_ids = tuple(int(value) for value in raw_frame_ids.flatten().tolist())
+                    observed_frame_ids = tuple(
+                        int(value) for value in raw_frame_ids.flatten().tolist()
+                    )
                 elif isinstance(raw_frame_ids, (list, tuple)):
                     observed_frame_ids = tuple(int(value) for value in raw_frame_ids)
             windows.append(
@@ -490,7 +628,9 @@ def load_lerobot_v2_local_metadata(repo_root: Path) -> LeRobotV2Metadata:
             )
             for record in episodes
         ),
-        tasks_by_index={int(record["task_index"]): str(record["task"]) for record in tasks},
+        tasks_by_index={
+            int(record["task_index"]): str(record["task"]) for record in tasks
+        },
     )
 
 
@@ -517,7 +657,9 @@ def read_jsonl_local(path: Path) -> list[dict[str, Any]]:
         return [json.loads(line) for line in handle if line.strip()]
 
 
-def reshape_latent_payload(payload: dict[str, Any], *, payload_key: str = "latent") -> torch.Tensor:
+def reshape_latent_payload(
+    payload: dict[str, Any], *, payload_key: str = "latent"
+) -> torch.Tensor:
     latent = payload[payload_key]
     if not isinstance(latent, torch.Tensor):
         latent = torch.tensor(latent)

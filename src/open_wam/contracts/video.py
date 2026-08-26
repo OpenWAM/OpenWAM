@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 import math
-from typing import Literal
-
+from collections.abc import Mapping
+from dataclasses import dataclass
+from typing import Any, ClassVar, Literal
 
 WAN_TEMPORAL_CHUNK_SIZE = 4
 
@@ -20,6 +20,192 @@ class ViewPlacement:
     left: int
     height: int
     width: int
+
+
+@dataclass(frozen=True)
+class CanonicalViewLayout:
+    """Validated view placements in one canonical image or latent canvas."""
+
+    SCHEMA_VERSION: ClassVar[str] = "open_wam.canonical_view_layout.v1"
+
+    canvas_height: int
+    canvas_width: int
+    placements: tuple[ViewPlacement, ...]
+
+    def __post_init__(self) -> None:
+        if not _is_metadata_int(self.canvas_height) or not _is_metadata_int(
+            self.canvas_width
+        ):
+            raise TypeError("Canonical view layout canvas dimensions must be integers.")
+        if self.canvas_height <= 0 or self.canvas_width <= 0:
+            raise ValueError(
+                "Canonical view layout requires positive canvas dimensions, "
+                f"got {(self.canvas_height, self.canvas_width)}."
+            )
+        if not self.placements:
+            raise ValueError("Canonical view layout requires at least one placement.")
+        for placement in self.placements:
+            if not isinstance(placement, ViewPlacement):
+                raise TypeError(
+                    "Canonical view layout placements must be ViewPlacement values."
+                )
+            if not isinstance(placement.source_name, str) or not placement.source_name:
+                raise ValueError("Canonical view layout requires non-empty source names.")
+            if (
+                not isinstance(placement.canonical_name, str)
+                or not placement.canonical_name
+            ):
+                raise ValueError(
+                    "Canonical view layout requires non-empty canonical names."
+                )
+            if not all(
+                _is_metadata_int(value)
+                for value in (
+                    placement.top,
+                    placement.left,
+                    placement.height,
+                    placement.width,
+                )
+            ):
+                raise TypeError("Canonical view placement coordinates must be integers.")
+        source_names = tuple(placement.source_name for placement in self.placements)
+        canonical_names = tuple(
+            placement.canonical_name for placement in self.placements
+        )
+        if len(set(source_names)) != len(source_names):
+            raise ValueError("Canonical view layout source names must be unique.")
+        if len(set(canonical_names)) != len(canonical_names):
+            raise ValueError("Canonical view layout canonical names must be unique.")
+        for placement in self.placements:
+            if (
+                placement.top < 0
+                or placement.left < 0
+                or placement.height <= 0
+                or placement.width <= 0
+            ):
+                raise ValueError(f"Invalid canonical view placement: {placement}.")
+            if (
+                placement.top + placement.height > self.canvas_height
+                or placement.left + placement.width > self.canvas_width
+            ):
+                raise ValueError(
+                    f"Canonical view placement {placement.source_name!r} exceeds "
+                    f"canvas {(self.canvas_height, self.canvas_width)}."
+                )
+        for index, placement in enumerate(self.placements):
+            for other in self.placements[index + 1 :]:
+                if _placements_overlap(placement, other):
+                    raise ValueError(
+                        "Canonical view placements overlap: "
+                        f"{placement.source_name!r} and {other.source_name!r}."
+                    )
+
+    @classmethod
+    def from_metadata(cls, raw: Mapping[str, Any]) -> CanonicalViewLayout:
+        """Parse the one canonical layout metadata representation."""
+
+        schema_version = raw.get("schema_version")
+        if schema_version != cls.SCHEMA_VERSION:
+            raise ValueError(
+                "Unsupported canonical view layout schema: "
+                f"expected {cls.SCHEMA_VERSION!r}, got {schema_version!r}."
+            )
+        raw_placements = raw.get("placements")
+        if not isinstance(raw_placements, list) or not raw_placements:
+            raise ValueError(
+                "Canonical latent layout requires a non-empty `placements` list."
+            )
+        canvas_height = _required_metadata_int(raw, "canvas_height", scope="layout")
+        canvas_width = _required_metadata_int(raw, "canvas_width", scope="layout")
+        placements: list[ViewPlacement] = []
+        for index, item in enumerate(raw_placements):
+            if not isinstance(item, Mapping):
+                raise TypeError(
+                    f"Canonical latent layout placement #{index} must be a mapping."
+                )
+            source_name = item.get("source_name")
+            canonical_name = item.get("canonical_name")
+            if not isinstance(source_name, str) or not source_name:
+                raise ValueError(
+                    f"Canonical latent layout placement #{index} requires a source name."
+                )
+            if not isinstance(canonical_name, str) or not canonical_name:
+                raise ValueError(
+                    f"Canonical latent layout placement #{index} requires a canonical name."
+                )
+            placements.append(
+                ViewPlacement(
+                    source_name=source_name,
+                    canonical_name=canonical_name,
+                    top=_required_metadata_int(item, "top", scope=f"placement #{index}"),
+                    left=_required_metadata_int(
+                        item,
+                        "left",
+                        scope=f"placement #{index}",
+                    ),
+                    height=_required_metadata_int(
+                        item,
+                        "height",
+                        scope=f"placement #{index}",
+                    ),
+                    width=_required_metadata_int(
+                        item,
+                        "width",
+                        scope=f"placement #{index}",
+                    ),
+                )
+            )
+        return cls(
+            canvas_height=canvas_height,
+            canvas_width=canvas_width,
+            placements=tuple(placements),
+        )
+
+    def to_metadata(self) -> dict[str, Any]:
+        return {
+            "schema_version": self.SCHEMA_VERSION,
+            "canvas_height": self.canvas_height,
+            "canvas_width": self.canvas_width,
+            "placements": [
+                {
+                    "source_name": placement.source_name,
+                    "canonical_name": placement.canonical_name,
+                    "top": placement.top,
+                    "left": placement.left,
+                    "height": placement.height,
+                    "width": placement.width,
+                }
+                for placement in self.placements
+            ],
+        }
+
+
+def _required_metadata_int(
+    raw: Mapping[str, Any],
+    key: str,
+    *,
+    scope: str,
+) -> int:
+    value = raw.get(key)
+    if not _is_metadata_int(value):
+        raise TypeError(
+            f"Canonical latent {scope} requires integer `{key}`, got {value!r}."
+        )
+    assert isinstance(value, int)
+    return value
+
+
+def _is_metadata_int(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _placements_overlap(left: ViewPlacement, right: ViewPlacement) -> bool:
+    return not (
+        left.left + left.width <= right.left
+        or right.left + right.width <= left.left
+        or left.top + left.height <= right.top
+        or right.top + right.height <= left.top
+    )
 
 
 @dataclass(frozen=True)
@@ -164,4 +350,4 @@ def normalized_video_frame_count(
         raise ValueError("`source_fps` must be positive.")
     if target <= 0:
         raise ValueError("`target_fps` must be positive or None.")
-    return max(1, int(math.ceil((float(length) * target) / source)))
+    return max(1, math.ceil((float(length) * target) / source))

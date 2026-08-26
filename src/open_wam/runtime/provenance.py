@@ -5,18 +5,20 @@ from __future__ import annotations
 import hashlib
 import importlib.metadata
 import json
+import os
 import platform
-from enum import StrEnum
-from pathlib import Path
 import subprocess
 import sys
-from typing import Any, Mapping
+from collections.abc import Mapping, Sequence
+from enum import StrEnum
+from pathlib import Path
+from typing import Any
 
 from open_wam import __version__
 from open_wam.contracts import find_repo_root
 
-
 OPEN_WAM_PROVENANCE_SCHEMA_V1 = "open_wam.provenance.v1"
+_STANDARD_DIRECTORY_HASH_LIMIT_BYTES = 1024 * 1024
 
 
 class ProvenanceMode(StrEnum):
@@ -47,12 +49,80 @@ def collect_runtime_provenance(
         "source": _git_identity(),
         "command_argv": list(sys.argv if argv is None else argv),
         "config": config_identity,
-        "checkpoint": _file_identity(
+        "checkpoint": collect_artifact_identity(
             checkpoint_path,
-            include_sha256=resolved_mode is ProvenanceMode.FULL,
+            mode=resolved_mode,
         ),
         "dataset": _dataset_identity(dataset_root),
         "environment": _environment_identity(),
+    }
+
+
+def collect_artifact_identity(
+    path: str | Path | None,
+    *,
+    mode: ProvenanceMode | str = ProvenanceMode.STANDARD,
+    relative_paths: Sequence[str] | None = None,
+    file_patterns: Sequence[str] = (),
+) -> dict[str, Any]:
+    """Describe a file or directory artifact at the requested provenance cost."""
+
+    resolved_mode = ProvenanceMode(mode)
+    if path is None or (isinstance(path, str) and not path.strip()):
+        return {"path": None, "exists": False, "sha256": None}
+    resolved = Path(path).expanduser().resolve()
+    if resolved.is_file():
+        return _file_identity(
+            resolved,
+            include_sha256=resolved_mode is ProvenanceMode.FULL,
+        )
+    if not resolved.is_dir():
+        return {"path": str(resolved), "exists": False, "sha256": None}
+
+    candidates: dict[str, Path] = {}
+
+    def add_candidate(candidate: Path, *, source: str) -> None:
+        lexical_path = Path(os.path.abspath(candidate))
+        try:
+            relative_path = lexical_path.relative_to(resolved).as_posix()
+        except ValueError as exc:
+            raise ValueError(f"Artifact identity {source} escapes its root.") from exc
+        if lexical_path.is_file():
+            candidates[relative_path] = lexical_path
+
+    if relative_paths is None:
+        for candidate in resolved.rglob("*"):
+            add_candidate(candidate, source=f"file {candidate}")
+    else:
+        for relative_path in relative_paths:
+            if Path(relative_path).is_absolute():
+                raise ValueError(
+                    f"Artifact identity path escapes its root: {relative_path!r}."
+                )
+            add_candidate(
+                resolved / relative_path,
+                source=f"path {relative_path!r}",
+            )
+    for pattern in file_patterns:
+        for candidate in resolved.glob(pattern):
+            add_candidate(candidate, source=f"pattern {pattern!r}")
+
+    files: list[dict[str, Any]] = []
+    for relative_path, candidate in sorted(candidates.items()):
+        include_sha256 = resolved_mode is ProvenanceMode.FULL or (
+            candidate.stat().st_size <= _STANDARD_DIRECTORY_HASH_LIMIT_BYTES
+        )
+        identity = _file_identity(candidate, include_sha256=include_sha256)
+        identity["relative_path"] = relative_path
+        if candidate.is_symlink():
+            identity["symlink_target"] = str(candidate.resolve())
+        files.append(identity)
+    return {
+        "path": str(resolved),
+        "exists": True,
+        "sha256": None,
+        "kind": "directory",
+        "files": files,
     }
 
 
@@ -113,9 +183,10 @@ def _git_identity(package_file: str | Path | None = None) -> dict[str, Any]:
         (root / "src" / "open_wam").resolve(),
         (root / "open_wam").resolve(),
     )
-    if imported_package_root not in source_package_roots or not (
-        root / ".git"
-    ).exists():
+    if (
+        imported_package_root not in source_package_roots
+        or not (root / ".git").exists()
+    ):
         return {"root": None, "commit": None, "dirty": None}
     commit = _run_git(root, "rev-parse", "HEAD")
     status = _run_git(root, "status", "--porcelain", "--untracked-files=normal")
@@ -177,5 +248,6 @@ def _sha256_file(path: Path) -> str:
 __all__ = [
     "OPEN_WAM_PROVENANCE_SCHEMA_V1",
     "ProvenanceMode",
+    "collect_artifact_identity",
     "collect_runtime_provenance",
 ]

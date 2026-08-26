@@ -1137,9 +1137,11 @@ def test_unified_gjd_configs_default_to_step3500_video_only_initialization() -> 
     )
 
     assert "checkpoint_step_3500/transformer" in str(
-        parallel_stream_config.backbone.transformer_subdir
+        parallel_stream_config.backbone.runtime_backbone_artifact_path
     )
-    assert "checkpoint_step_3500/transformer" in str(dual_expert_config.backbone.transformer_subdir)
+    assert "checkpoint_step_3500/transformer" in str(
+        dual_expert_config.backbone.runtime_backbone_artifact_path
+    )
     assert str(parallel_stream_config.backbone.exported_runtime_action_init_mode) == "random"
     assert str(dual_expert_config.backbone.exported_runtime_action_init_mode) == "random"
     assert (

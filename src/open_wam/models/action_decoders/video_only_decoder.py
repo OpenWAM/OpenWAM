@@ -9,8 +9,14 @@ from open_wam.models.action_decoders.base import (
     ActionDecoder,
     ActionDecoderInferOutput,
     ActionDecoderTrainOutput,
+    require_decoder_artifact_payload,
 )
 from open_wam.models.policy_variants.contracts import PolicyInferOutput, PolicyTrainBatch, PolicyTrainOutput
+from open_wam.models.policy_variants.video_flow_artifacts import (
+    VIDEO_FLOW_DECODER_ARTIFACT_CONTRACT,
+    VideoFlowInferArtifacts,
+    VideoFlowTrainArtifacts,
+)
 
 
 def _masked_video_flow_match_loss(
@@ -67,37 +73,39 @@ class VideoOnlyActionDecoder(ActionDecoder):
         self.training_config = training_config
         self.inference_config = inference_config
 
+    @property
+    def decoder_artifact_contract(self) -> str:
+        return VIDEO_FLOW_DECODER_ARTIFACT_CONTRACT
+
     def _empty_action_prediction(self, batch_size: int, *, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
         return torch.zeros(batch_size, self.action_horizon, self.action_dim, device=device, dtype=dtype)
 
     def forward_train(self, policy_output: PolicyTrainOutput, batch: PolicyTrainBatch) -> ActionDecoderTrainOutput:
         del batch
-        flow_pred = policy_output.aux["flow_pred"]
-        flow_targets = policy_output.aux["flow_targets"]
-        target_latents = policy_output.aux["target_latents"]
-        predicted_latents = policy_output.aux["predicted_latents"]
-        timesteps = policy_output.aux["timesteps"]
-        scheduler = policy_output.aux["scheduler"]
-        future_loss_mask = policy_output.aux["future_loss_mask"]
+        artifacts = require_decoder_artifact_payload(
+            policy_output,
+            contract=VIDEO_FLOW_DECODER_ARTIFACT_CONTRACT,
+            payload_type=VideoFlowTrainArtifacts,
+        )
 
         latent_loss = _masked_video_flow_match_loss(
-            flow_pred=flow_pred,
-            targets=flow_targets,
-            timesteps=timesteps,
-            scheduler=scheduler,
-            future_loss_mask=future_loss_mask,
+            flow_pred=artifacts.flow_pred,
+            targets=artifacts.targets,
+            timesteps=artifacts.timesteps,
+            scheduler=artifacts.scheduler,
+            future_loss_mask=artifacts.future_loss_mask,
         )
         latent_mse = _masked_video_latent_mse(
-            predicted_latents=predicted_latents,
-            target_latents=target_latents,
-            future_loss_mask=future_loss_mask,
+            predicted_latents=artifacts.predicted_latents,
+            target_latents=artifacts.target_latents,
+            future_loss_mask=artifacts.future_loss_mask,
         )
         weighted_latent_loss = latent_loss * self.training_config.objective_weight("latent")
         return ActionDecoderTrainOutput(
             action_pred=self._empty_action_prediction(
-                predicted_latents.shape[0],
-                device=predicted_latents.device,
-                dtype=predicted_latents.dtype,
+                artifacts.predicted_latents.shape[0],
+                device=artifacts.predicted_latents.device,
+                dtype=artifacts.predicted_latents.dtype,
             ),
             loss=weighted_latent_loss,
             metrics={
@@ -106,8 +114,8 @@ class VideoOnlyActionDecoder(ActionDecoder):
                 "weighted_latent_loss": weighted_latent_loss.detach(),
             },
             aux={
-                "predicted_latents": predicted_latents.detach(),
-                "predicted_video_latents": predicted_latents.detach(),
+                "predicted_latents": artifacts.predicted_latents.detach(),
+                "predicted_video_latents": artifacts.predicted_latents.detach(),
             },
         )
 
@@ -117,9 +125,12 @@ class VideoOnlyActionDecoder(ActionDecoder):
         previous_state: Any | None = None,
     ) -> ActionDecoderInferOutput:
         del previous_state
-        predicted_latents = policy_output.aux.get("predicted_latents")
-        if not isinstance(predicted_latents, torch.Tensor):
-            raise ValueError("Video-only inference expects `policy_output.aux['predicted_latents']`.")
+        artifacts = require_decoder_artifact_payload(
+            policy_output,
+            contract=VIDEO_FLOW_DECODER_ARTIFACT_CONTRACT,
+            payload_type=VideoFlowInferArtifacts,
+        )
+        predicted_latents = artifacts.predicted_latents
         return ActionDecoderInferOutput(
             action_pred=self._empty_action_prediction(
                 predicted_latents.shape[0],

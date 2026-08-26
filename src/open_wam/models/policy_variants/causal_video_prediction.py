@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
 import torch
 
-from open_wam.configs import InferenceConfig, TrainingConfig
+from open_wam.configs import InferenceConfig, TextConditioningMode, TrainingConfig
 from open_wam.configs.policy_contracts import CausalVideoPredictionPolicyConfig
 from open_wam.contracts import VideoFrameMapping
 from open_wam.models.common.flow_schedule import (
@@ -19,16 +20,22 @@ from open_wam.models.video_backbone.contracts import TokenGridMetadata
 from open_wam.models.visual_tower import VisualStageOutputs, VisualTower
 
 from .base import PolicyVariant
-from .common.rollout import advance_rollout_cursor
 from .contracts import (
+    DecoderArtifactEnvelope,
     PolicyInferContext,
     PolicyInferOutput,
     PolicyInferState,
+    PolicyPipelineRequirements,
     PolicyPreparedInputs,
     PolicyTrainBatch,
     PolicyTrainOutput,
     PolicyVisualStage,
     RolloutCursor,
+)
+from .video_flow_artifacts import (
+    VIDEO_FLOW_DECODER_ARTIFACT_CONTRACT,
+    VideoFlowInferArtifacts,
+    VideoFlowTrainArtifacts,
 )
 
 
@@ -53,6 +60,129 @@ class CausalVideoPredictionPolicyVariant(PolicyVariant):
         self.training_config = training_config
         self.inference_config = inference_config
 
+    @property
+    def decoder_artifact_contract(self) -> str:
+        return VIDEO_FLOW_DECODER_ARTIFACT_CONTRACT
+
+    def pipeline_requirements(
+        self,
+        *,
+        default_action_dim: int,
+        default_action_horizon: int,
+        default_state_dim: int,
+    ) -> PolicyPipelineRequirements:
+        conditioning = self.config.conditioning_requirements
+        return PolicyPipelineRequirements(
+            action_dim=default_action_dim,
+            action_horizon=default_action_horizon,
+            state_dim=default_state_dim,
+            text_conditioning_mode=conditioning.text_conditioning_mode,
+        )
+
+    @staticmethod
+    def _validate_text_tensor(
+        value: torch.Tensor | None,
+        *,
+        batch_size: int,
+        description: str,
+        require_nonzero: bool,
+    ) -> torch.Tensor:
+        if value is None:
+            raise ValueError(
+                f"Causal video prediction requires {description} embeddings."
+            )
+        if (
+            value.ndim != 3
+            or int(value.shape[0]) != batch_size
+            or int(value.shape[1]) <= 0
+            or int(value.shape[2]) <= 0
+        ):
+            raise ValueError(
+                f"Causal video prediction expects {description} embeddings with "
+                f"shape [B, tokens, dim], got {tuple(value.shape)}."
+            )
+        flattened = value.detach().reshape(batch_size, -1)
+        if not bool(torch.isfinite(flattened).all()):
+            raise ValueError(
+                f"Causal video {description} embeddings must contain finite values."
+            )
+        if require_nonzero and bool((flattened.abs().sum(dim=1) == 0).any()):
+            raise ValueError(
+                "Causal video prediction received an all-zero text embedding "
+                f"for {description}; a real encoded embedding is required."
+            )
+        return value
+
+    def _validate_text_conditioning(
+        self,
+        *,
+        text_context: torch.Tensor | None,
+        negative_text_context: torch.Tensor | None = None,
+        task_text: object,
+        batch_size: int,
+        require_negative_text: bool = False,
+    ) -> None:
+        """Validate the effective text context selected by the shared frontend."""
+
+        mode = self.config.text_conditioning_mode
+        if mode == TextConditioningMode.DISABLED and require_negative_text:
+            raise ValueError(
+                "Classifier-free guidance is unavailable when causal video text "
+                "conditioning is disabled."
+            )
+        if (
+            mode == TextConditioningMode.DISABLED
+            and text_context is None
+            and negative_text_context is None
+        ):
+            return
+        if mode == TextConditioningMode.TASK_PROMPT and (
+            not isinstance(task_text, tuple)
+            or len(task_text) != batch_size
+            or any(
+                not isinstance(value, str) or not value.strip() for value in task_text
+            )
+        ):
+            raise ValueError(
+                "Task-prompt causal video prediction requires one non-empty task "
+                "instruction per sample."
+            )
+
+        description = (
+            "task-prompt text"
+            if mode == TextConditioningMode.TASK_PROMPT
+            else "blank-text"
+        )
+        resolved_text_context = self._validate_text_tensor(
+            text_context,
+            batch_size=batch_size,
+            description=description,
+            require_nonzero=mode == TextConditioningMode.TASK_PROMPT,
+        )
+        negative_required = (
+            mode == TextConditioningMode.DISABLED or require_negative_text
+        )
+        if negative_text_context is None:
+            if negative_required:
+                raise ValueError(
+                    f"Causal video prediction requires negative text embeddings "
+                    f"for {mode.value!r} conditioning."
+                )
+            return
+        if tuple(negative_text_context.shape) != tuple(resolved_text_context.shape):
+            raise ValueError(
+                "Causal video prediction requires effective and negative text "
+                "embeddings with identical shapes, got "
+                f"positive={tuple(resolved_text_context.shape)}, "
+                f"negative={tuple(negative_text_context.shape)}."
+            )
+        self._validate_text_tensor(
+            negative_text_context,
+            batch_size=batch_size,
+            description="negative text",
+            require_nonzero=negative_required,
+        )
+
     def required_visual_stages(self) -> tuple[PolicyVisualStage, ...]:
         return (PolicyVisualStage.FRONTEND,)
 
@@ -65,18 +195,32 @@ class CausalVideoPredictionPolicyVariant(PolicyVariant):
         return PolicyPreparedInputs(batch=batch)
 
     @staticmethod
-    def _metadata_tuple(batch: PolicyTrainBatch) -> tuple[dict[str, Any], ...]:
-        metadata = batch.extra.get("metadata", ())
+    def _metadata_tuple(
+        metadata: object,
+        *,
+        expected_batch_size: int,
+    ) -> tuple[Mapping[str, Any], ...]:
         if not isinstance(metadata, tuple):
             raise TypeError(
                 "Causal video prediction expects batched metadata as a tuple of mappings."
             )
+        if len(metadata) != expected_batch_size:
+            raise ValueError(
+                "Causal video prediction metadata cardinality must match the latent "
+                f"batch size: metadata={len(metadata)}, batch={expected_batch_size}."
+            )
+        for index, sample_metadata in enumerate(metadata):
+            if not isinstance(sample_metadata, Mapping):
+                raise TypeError(
+                    "Causal video prediction metadata entries must be mappings; "
+                    f"entry {index} is {type(sample_metadata).__name__}."
+                )
         return metadata
 
     def _resolve_layouts(
         self,
         *,
-        metadata: tuple[dict[str, Any], ...],
+        metadata: tuple[Mapping[str, Any], ...],
         available_frames: int,
         frame_mapping: dict[str, Any] | None = None,
     ) -> list[_PrefixSuffixLayout]:
@@ -188,6 +332,7 @@ class CausalVideoPredictionPolicyVariant(PolicyVariant):
         visual_tower: VisualTower,
         visual_outputs: VisualStageOutputs,
         metadata: tuple[dict[str, Any], ...],
+        text_context: torch.Tensor | None,
     ) -> dict[str, Any]:
         video_latents = visual_outputs.frontend.video_latents
         batch_size, _, num_frames, _, _ = video_latents.shape
@@ -248,7 +393,7 @@ class CausalVideoPredictionPolicyVariant(PolicyVariant):
         flow_pred = visual_tower.predict_video_flow(
             noisy_latents=noisy_latents,
             timesteps=timesteps,
-            text_context=visual_outputs.frontend.conditioning.text_context,
+            text_context=text_context,
             frame_start=0,
             attention_mask=attention_mask,
         )
@@ -275,12 +420,32 @@ class CausalVideoPredictionPolicyVariant(PolicyVariant):
         visual_outputs: VisualStageOutputs,
         prepared_inputs: PolicyPreparedInputs,
     ) -> PolicyTrainOutput:
+        conditioning = visual_outputs.frontend.conditioning
+        batch_size = int(visual_outputs.frontend.video_latents.shape[0])
+        text_context_to_validate = conditioning.text_context
+        if (
+            self.config.text_conditioning_mode == TextConditioningMode.TASK_PROMPT
+            and prepared_inputs.batch.source_text_context is not None
+        ):
+            text_context_to_validate = prepared_inputs.batch.source_text_context
+        self._validate_text_conditioning(
+            text_context=text_context_to_validate,
+            negative_text_context=conditioning.negative_text_context,
+            task_text=prepared_inputs.batch.extra.get("task_text"),
+            batch_size=batch_size,
+            require_negative_text=(
+                float(self.training_config.text_condition_dropout_prob) > 0.0
+            ),
+        )
         rollout = self._build_train_rollout(
             visual_tower=visual_tower,
             visual_outputs=visual_outputs,
-            metadata=self._metadata_tuple(prepared_inputs.batch),
+            metadata=self._metadata_tuple(
+                prepared_inputs.batch.extra.get("metadata"),
+                expected_batch_size=batch_size,
+            ),
+            text_context=conditioning.text_context,
         )
-        batch_size = visual_outputs.frontend.video_latents.shape[0]
         policy_features = visual_outputs.frontend.video_latents.new_zeros(
             batch_size, 0, self.config.hidden_size
         )
@@ -294,10 +459,22 @@ class CausalVideoPredictionPolicyVariant(PolicyVariant):
             metrics={
                 "future_frame_count": future_frame_counts.mean().detach(),
             },
+            decoder_artifacts=DecoderArtifactEnvelope(
+                contract=VIDEO_FLOW_DECODER_ARTIFACT_CONTRACT,
+                payload=VideoFlowTrainArtifacts(
+                    flow_pred=rollout["flow_pred"],
+                    targets=rollout["flow_targets"],
+                    timesteps=rollout["timesteps"],
+                    scheduler=rollout["scheduler"],
+                    predicted_latents=rollout["predicted_latents"],
+                    target_latents=rollout["target_latents"],
+                    future_loss_mask=rollout["future_loss_mask"],
+                ),
+            ),
             aux={
                 "variant": self.config.name,
                 "architecture": "causal_video_prediction",
-                **rollout,
+                "layouts": rollout["layouts"],
             },
         )
 
@@ -325,12 +502,24 @@ class CausalVideoPredictionPolicyVariant(PolicyVariant):
         context: PolicyInferContext,
         infer_state: PolicyInferState,
     ) -> PolicyInferOutput:
-        metadata = context.extra.get("metadata")
-        if not isinstance(metadata, tuple) or not metadata:
+        video_latents = visual_outputs.frontend.video_latents
+        batch_size = int(video_latents.shape[0])
+        if batch_size != 1:
             raise ValueError(
-                "Causal video prediction inference expects metadata with `observed_prefix_frames` "
-                "and `future_suffix_frames`."
+                "Causal video prediction inference currently supports batch size 1; "
+                f"got {batch_size}."
             )
+        self._validate_text_conditioning(
+            text_context=visual_outputs.frontend.conditioning.text_context,
+            negative_text_context=visual_outputs.frontend.conditioning.negative_text_context,
+            task_text=context.extra.get("task_text"),
+            batch_size=batch_size,
+            require_negative_text=self.inference_config.guidance_scale > 1.0,
+        )
+        metadata = self._metadata_tuple(
+            context.extra.get("metadata"),
+            expected_batch_size=batch_size,
+        )
         layouts = self._resolve_layouts(
             metadata=metadata,
             available_frames=int(visual_outputs.frontend.video_latents.shape[2]),
@@ -338,12 +527,7 @@ class CausalVideoPredictionPolicyVariant(PolicyVariant):
                 "video_frame_mapping"
             ),
         )
-        if len(layouts) != 1:
-            raise ValueError(
-                "Causal video prediction inference currently supports batch size 1."
-            )
         layout = layouts[0]
-        video_latents = visual_outputs.frontend.video_latents
         observed_prefix = video_latents[:, :, : layout.observed_frames]
         future_template = torch.zeros_like(
             video_latents[:, :, layout.observed_frames : layout.total_frames]
@@ -353,7 +537,7 @@ class CausalVideoPredictionPolicyVariant(PolicyVariant):
             future_template=future_template,
             text_context=visual_outputs.frontend.conditioning.text_context,
             negative_text_context=visual_outputs.frontend.conditioning.negative_text_context,
-            frame_start=int(infer_state.cursor.current_start_frame),
+            frame_start=0,
             num_inference_steps=self.inference_config.video_num_inference_steps,
             num_train_timesteps=self.training_config.video_num_train_timesteps,
             sigma_shift=self.training_config.video_sigma_shift,
@@ -363,15 +547,20 @@ class CausalVideoPredictionPolicyVariant(PolicyVariant):
         policy_features = video_latents.new_zeros(
             video_latents.shape[0], 0, self.config.hidden_size
         )
-        next_cursor = advance_rollout_cursor(infer_state.cursor)
         return PolicyInferOutput(
             policy_features=policy_features,
             next_state=PolicyInferState(
-                step_index=infer_state.step_index + 1, cursor=next_cursor
+                step_index=infer_state.step_index + 1,
+                cursor=infer_state.cursor,
+            ),
+            decoder_artifacts=DecoderArtifactEnvelope(
+                contract=VIDEO_FLOW_DECODER_ARTIFACT_CONTRACT,
+                payload=VideoFlowInferArtifacts(
+                    predicted_latents=predicted_latents,
+                ),
             ),
             aux={
                 "variant": self.config.name,
                 "architecture": "causal_video_prediction",
-                "predicted_latents": predicted_latents,
             },
         )

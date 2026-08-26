@@ -7,10 +7,15 @@ from typing import Any, TypeVar
 
 import torch
 
-from open_wam.configs.enums import DynamicsObjective, ProprioContextMode
+from open_wam.configs.enums import (
+    DynamicsObjective,
+    ProprioContextMode,
+    TextConditioningMode,
+)
 from open_wam.configs.policy_contracts import PolicyConditioningRequirements
 from open_wam.models.common import RolloutCursor
 from open_wam.models.common.dynamics_contracts import DynamicsRolloutRequest
+from open_wam.models.visual_tower.contracts import VisualComponentTopology
 
 _DecoderArtifactT = TypeVar("_DecoderArtifactT")
 
@@ -67,6 +72,9 @@ class PolicyModuleTopology:
     """
 
     visual_runtime_modules: tuple[torch.nn.Module, ...]
+    visual_components: VisualComponentTopology = field(
+        default_factory=VisualComponentTopology
+    )
     action_expert_modules: tuple[torch.nn.Module, ...] = ()
     fsdp_block_stacks: tuple[torch.nn.Module, ...] = ()
     fsdp_atomic_modules: tuple[torch.nn.Module, ...] = ()
@@ -87,6 +95,7 @@ class PolicyPipelineRequirements:
     state_dim: int
     proprio_context_mode: ProprioContextMode = ProprioContextMode.NONE
     dynamics_mode_context_enabled: bool = False
+    text_conditioning_mode: TextConditioningMode = TextConditioningMode.TASK_PROMPT
     source_action_channel_ids: tuple[int, ...] = ()
     accepted_source_action_shapes: tuple[tuple[int, int], ...] = ()
 
@@ -95,6 +104,11 @@ class PolicyPipelineRequirements:
             self,
             "proprio_context_mode",
             ProprioContextMode(self.proprio_context_mode),
+        )
+        object.__setattr__(
+            self,
+            "text_conditioning_mode",
+            TextConditioningMode(self.text_conditioning_mode),
         )
         if int(self.action_dim) <= 0:
             raise ValueError(
@@ -228,6 +242,7 @@ class PolicyPipelineRequirements:
         expected = PolicyConditioningRequirements(
             proprio_context_mode=self.proprio_context_mode,
             dynamics_mode_context_enabled=self.dynamics_mode_context_enabled,
+            text_conditioning_mode=self.text_conditioning_mode,
         )
         if configured == expected:
             return
@@ -273,12 +288,19 @@ class DecoderArtifactEnvelope:
 
 @dataclass
 class PolicyTrainBatch:
-    """Structured policy training inputs independent from attachment site."""
+    """Structured policy training inputs independent from attachment site.
+
+    ``source_text_context`` retains the positive conditioning tensor when the
+    training executor selects an unconditional context for classifier-free
+    dropout. Policies that validate their conditioning source can inspect it
+    without changing the effective context consumed by the visual stack.
+    """
 
     actions: torch.Tensor
     action_mask: torch.Tensor | None = None
     state: torch.Tensor | None = None
     extra: dict[str, Any] = field(default_factory=dict)
+    source_text_context: torch.Tensor | None = None
 
 
 @dataclass

@@ -109,7 +109,7 @@ backbone:
   attention_head_dim: 128
   ffn_dim: 14336
   pretrained_model_name_or_path: "${paths.models.lingbot_va_base}"
-  transformer_subdir: "${paths.checkpoints.libero_videoonly_all_subsets_step_3500}"
+  runtime_backbone_artifact_path: "${paths.checkpoints.libero_videoonly_all_subsets_step_3500}"
   exported_runtime_action_init_mode: random
   max_text_tokens: 512
   load_wan_vae_frontend: true

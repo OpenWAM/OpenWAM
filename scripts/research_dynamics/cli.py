@@ -554,7 +554,9 @@ def _repair_runtime_config_for_local_eval(
     if data_updates:
         config = replace(config, data=replace(config.data, **data_updates))
 
-    backbone_updates: dict[str, Any] = {"transformer_subdir": str(transformer_dir)}
+    backbone_updates: dict[str, Any] = {
+        "runtime_backbone_artifact_path": str(transformer_dir)
+    }
     base_pretrained = Path(
         str(base_config.backbone.pretrained_model_name_or_path)
     ).expanduser()

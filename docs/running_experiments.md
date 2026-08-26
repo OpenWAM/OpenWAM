@@ -24,6 +24,11 @@ uv run open-wam-validate-config configs/experiments/<experiment>.yaml
 uv run open-wam-inspect-config --cfg configs/experiments/<experiment>.yaml
 ```
 
+Static validation targets authored YAML. Checkpoint-generated
+`resolved_config.yaml` files contain fully serialized typed defaults and should
+be loaded through checkpoint-aware runtime commands rather than passed to
+`open-wam-validate-config`.
+
 ## Supported Configs
 
 The generic runtime covers these representative maintained families:
@@ -35,6 +40,9 @@ The generic runtime covers these representative maintained families:
 | GJD, either architecture | `<architecture>_libero_generalist_joint_denoising.yaml` |
 | Dual expert conditional FDM/IDM | `dual_expert_libero_conditional_dynamics.yaml` |
 | Video-only | `causal_video_prediction_libero_latent_local.yaml` |
+
+The complete Wan/LingBot initialization, latent-data, scoped-export, and
+rollout workflow is in [Video-Only Training](video_only_training.md).
 
 This table identifies semantic families, not resource tiers. Use the public
 tiny lifecycle in the [quickstart](quickstart.md#complete-cpu-first-run) for a
@@ -191,12 +199,27 @@ singleton-`t0`, text-dropped, one-video-boundary history contract.
 `val_require_replay_status: false`. Reusing the former failure-only validation
 split would make that split empty because the failed rows are now in training.
 
-### Initialization And Exact Resume
+### Initialization And Full-State Resume
 
-Use `--transformer-subdir` to initialize a new run from a video-transformer
-export. Use `--checkpoint-root` for a `checkpoint_step_*` directory: it selects
+Use `--runtime-backbone-path` to initialize a new run from a detached
+video-transformer export. `backbone.transformer_subdir` normally names a
+relative component inside `pretrained_model_name_or_path`; absolute values
+remain supported for authored and historical configs. The explicit
+`runtime_backbone_artifact_path` takes precedence and is preferred for new
+detached-artifact configs. Use `--checkpoint-root` for a `checkpoint_step_*`
+directory: it selects
 `full_training_state.pt` when available and falls back to model-only state only
 when no full state exists.
+
+When a checkpoint is also intended to supply a standalone runtime backbone,
+retain its checkpoint-local `transformer/` export. Do not rely on a
+machine-specific `runtime_backbone_artifact_path` recorded by an older run, or
+reinterpret a relative `transformer_subdir` as a path beneath the checkpoint
+directory. Relative component paths always resolve beneath
+`pretrained_model_name_or_path`.
+When only a detached transformer is available, pass it explicitly with
+`--runtime-backbone-path`. Ordinary full-state continuation still uses the state
+files described below.
 
 ```bash
 uv run --extra train open-wam-train \
@@ -205,10 +228,11 @@ uv run --extra train open-wam-train \
   --checkpoint-root runs/<run-name>/checkpoints/checkpoint_step_N
 ```
 
-For an exact continuation, confirm the source checkpoint contains
-`full_training_state.pt`. This restores optimizer, scheduler, RNG, strategy,
-and step state. `--resume-from` can select that file explicitly. A
-`model_state.pt` checkpoint is a warm start, not an exact resume.
+For stateful continuation, confirm the source checkpoint contains
+`full_training_state.pt`. This restores optimizer, scheduler, strategy/scaler,
+and step state. `--resume-from` can select that file explicitly. Process and
+dataloader RNG streams are not checkpointed, so a restarted run is not a
+bitwise continuation. A `model_state.pt` checkpoint is a warm start.
 
 Distributed runs use `trainer.distributed_timeout_seconds: 1800` by default.
 The timeout includes rank-0 reads and writes of full-state checkpoints before
@@ -244,7 +268,7 @@ open-wam-train \
   --config-name dual_expert_libero_generalist_joint_denoising \
   --save-root runs/dual-expert-gjd-mode-token \
   --dataset-root /path/to/libero_10 \
-  --transformer-subdir /path/to/base/transformer \
+  --runtime-backbone-path /path/to/base/transformer \
   --enable-wandb \
   --wandb-project openwam-gjd \
   --set policy_variant.generalist_mode_text_token=true

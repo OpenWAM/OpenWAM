@@ -22,11 +22,21 @@ running from that Git checkout; a wheel never borrows identity from an
 unrelated checkout in the working directory and instead relies on its package
 version plus the release artifact checksum.
 
-Use standard provenance for routine runs. It records checkpoint path, size,
-and modification time without reading a multi-gigabyte artifact. Use
-`--provenance-mode full` for publication artifacts; it additionally records
-the checkpoint SHA-256. Config and discovered dataset metadata are always
+Use standard provenance for routine runs. File checkpoints record path, size,
+and modification time without reading a multi-gigabyte artifact. Directory
+checkpoints additionally record a deterministic relative-file inventory,
+hashing metadata files up to 1 MiB while retaining size and modification time
+for larger shards. Use `--provenance-mode full` for publication artifacts; it
+hashes every checkpoint file. Config and discovered dataset metadata are always
 hashed.
+
+Standard provenance is not a content-addressed artifact identity. Two large
+files with the same path, size, and modification time can have the same standard
+record even if their bytes differ. It is suitable for routine traceability, not
+deduplication, cache keys, or exact publication claims. Source identity is part
+of the result envelope, but a command-specific output-directory name may use a
+smaller identity payload; consult that command's guide before treating a path
+suffix as reproducibility evidence.
 
 ```bash
 open-wam-eval --cfg evaluation.yaml --output-json result.json \

@@ -37,6 +37,7 @@ from open_wam.configs import (
     WindowSamplingMode,
 )
 from open_wam.configs import load_experiment_config
+from open_wam.contracts.video import CanonicalViewLayout
 from open_wam.data import (
     MixedVideoCatalog as PublicMixedVideoCatalog,
     MixedVideoWindowPlanner as PublicMixedVideoWindowPlanner,
@@ -1465,14 +1466,22 @@ def test_mixed_video_latent_view_assembly_supports_weighted_combinations(tmp_pat
         for sample in (train_dataset[index] for index in range(len(train_dataset)))
     }
     assert samples["front_only"].video_latents.shape == (48, 8, 2, 4)
-    assert samples["front_only"].metadata["latent_view_assembly"]["placements"] == [
-        {"slot": "observation.images.slot0", "top": 0, "left": 1, "height": 2, "width": 2}
-    ]
+    front_only_layout = CanonicalViewLayout.from_metadata(
+        samples["front_only"].metadata["latent_layout"]
+    )
+    assert front_only_layout.placements[0].source_name == "observation.images.slot0"
+    assert (front_only_layout.placements[0].top, front_only_layout.placements[0].left) == (0, 1)
     assert samples["front_wrist"].video_latents.shape == (48, 8, 2, 4)
-    assert samples["front_wrist"].metadata["latent_view_assembly"]["placements"] == [
-        {"slot": "observation.images.slot0", "top": 0, "left": 0, "height": 2, "width": 2},
-        {"slot": "observation.images.slot1", "top": 0, "left": 2, "height": 2, "width": 2},
-    ]
+    front_wrist_layout = CanonicalViewLayout.from_metadata(
+        samples["front_wrist"].metadata["latent_layout"]
+    )
+    assert tuple(
+        (placement.source_name, placement.top, placement.left)
+        for placement in front_wrist_layout.placements
+    ) == (
+        ("observation.images.slot0", 0, 0),
+        ("observation.images.slot1", 0, 2),
+    )
 
     batch = collate_latent_wam_samples([samples["front_only"], samples["front_wrist"]])
     assert batch.video_latents.shape == (2, 48, 8, 2, 4)
@@ -1616,9 +1625,23 @@ def test_mixed_video_latent_view_assembly_layouts_one_to_four_views() -> None:
     assert two.shape == (2, 3, 4, 10)
     assert two_meta["placements"][1]["left"] == 5
     assert three.shape == (2, 3, 8, 10)
-    assert three_meta["placements"][2] == {"slot": "c", "top": 4, "left": 2, "height": 4, "width": 5}
+    assert three_meta["placements"][2] == {
+        "source_name": "c",
+        "canonical_name": "c",
+        "top": 4,
+        "left": 2,
+        "height": 4,
+        "width": 5,
+    }
     assert four.shape == (2, 3, 8, 10)
-    assert four_meta["placements"][3] == {"slot": "d", "top": 4, "left": 5, "height": 4, "width": 5}
+    assert four_meta["placements"][3] == {
+        "source_name": "d",
+        "canonical_name": "d",
+        "top": 4,
+        "left": 5,
+        "height": 4,
+        "width": 5,
+    }
 
 
 def test_mixed_video_decord_fallback_does_not_restart_after_partial_emit(
@@ -2126,8 +2149,8 @@ def test_mixed_video_latent_encoder_canonical_and_per_view_manifest_is_trainable
         output_root,
         temporary_root=tmp_path,
     ) == (
-        18774,
-        "ee98d66e75f6f1bb47044a64ed304b2c1919f557a2a0e58180a2a6e4f6330ced",
+        18924,
+        "89cb8ffcf1fe102d4927cfda916184fb704b68431aa1d1886ab0371b350ade18",
     )
 
 

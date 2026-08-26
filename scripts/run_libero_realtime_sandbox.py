@@ -72,7 +72,10 @@ from open_wam.integrations.realtime_scheduling import (
 from open_wam.models.policy_variants.dual_expert.inference_backend import (
     ensure_dual_expert_inference_backend,
 )
-from open_wam.models.visual_tower import VisualRuntimeStateSnapshot
+from open_wam.models.visual_tower import (
+    VisualRuntimeStateSnapshot,
+    resolve_runtime_backbone_dir,
+)
 from open_wam.pipelines import (
     LingbotExactRunner,
     VariantRolloutRunner,
@@ -80,6 +83,7 @@ from open_wam.pipelines import (
 )
 from open_wam.runtime import checkpoints as runtime_checkpoints
 from open_wam.runtime import rollout as rollout_runtime
+from open_wam.runtime.checkpoint_artifacts import is_usable_transformer_dir
 from open_wam.utils import (
     apply_config_overrides,
     merge_runtime_config_from_checkpoint,
@@ -189,7 +193,7 @@ def main() -> None:
         type=str,
         default=None,
         help="Checkpoint file, checkpoint_step_* directory, or run directory. "
-        "If omitted, exact/joint variants use `backbone.transformer_subdir`; sequence-style variants infer from that directory.",
+        "If omitted, infer it from the configured runtime-backbone artifact.",
     )
     parser.add_argument(
         "--transformer-dir",
@@ -445,7 +449,7 @@ def main() -> None:
         checkpoint_path = None
         object.__setattr__(
             config.backbone,
-            "transformer_subdir",
+            "runtime_backbone_artifact_path",
             str(resolve_transformer_dir_override(args.transformer_dir)),
         )
         checkpoint_runtime_config_path = None
@@ -607,20 +611,20 @@ def _resolve_exact_startup_bootstrap_padding(
 def _resolve_checkpoint_path_for_config(*, config, checkpoint_arg: str | None) -> Path | None:
     if checkpoint_arg is not None:
         return runtime_checkpoints.resolve_checkpoint_file(Path(checkpoint_arg))
-    transformer_subdir = getattr(config.backbone, "transformer_subdir", None)
-    if transformer_subdir is None:
+    runtime_backbone_dir = resolve_runtime_backbone_dir(config.backbone)
+    if runtime_backbone_dir is None:
         return None
     try:
         return runtime_checkpoints.resolve_checkpoint_file(
             runtime_checkpoints.resolve_checkpoint_step_dir_from_transformer_dir(
-                str(transformer_subdir)
+                runtime_backbone_dir
             )
         )
     except (FileNotFoundError, ValueError) as exc:
         if VERBOSE:
             print(
                 "[realtime_sandbox] Failed to infer a checkpoint file from "
-                f"backbone.transformer_subdir={transformer_subdir!r}: {exc}",
+                f"runtime backbone {runtime_backbone_dir}: {exc}",
                 file=sys.stderr,
             )
         return None
@@ -631,12 +635,12 @@ def _apply_checkpoint_backbone_override(config, *, checkpoint_path: Path | None)
         return
     checkpoint_step_dir = checkpoint_path.parent
     transformer_dir = checkpoint_step_dir / "transformer"
-    if _is_usable_transformer_dir(transformer_dir):
-        object.__setattr__(config.backbone, "transformer_subdir", str(transformer_dir.resolve()))
-
-
-def _is_usable_transformer_dir(path: Path) -> bool:
-    return path.is_dir() and any(path.iterdir())
+    if is_usable_transformer_dir(transformer_dir):
+        object.__setattr__(
+            config.backbone,
+            "runtime_backbone_artifact_path",
+            str(transformer_dir.resolve()),
+        )
 
 
 def _apply_common_inference_overrides(
@@ -743,7 +747,7 @@ def _run_exact_like_realtime_rollout(
         "policy_variant": str(config.policy_variant.name),
         "runtime_mode": str(config.policy_variant.runtime_mode),
         "checkpoint_file": None if checkpoint_path is None else str(checkpoint_path.resolve()),
-        "transformer_dir": str(config.backbone.transformer_subdir),
+        "transformer_dir": str(resolve_runtime_backbone_dir(config.backbone)),
         "runtime_device": str(runtime_device),
         "frontend_device": str(frontend_device),
         "decode_device": str(decode_device),
@@ -1509,7 +1513,7 @@ def _run_exact_like_realtime_rollout(
                 "frontend_device": str(frontend_device),
                 "decode_device": str(decode_device),
                 "checkpoint_file": None if checkpoint_path is None else str(checkpoint_path.resolve()),
-                "transformer_dir": str(config.backbone.transformer_subdir),
+                "transformer_dir": str(resolve_runtime_backbone_dir(config.backbone)),
                 "reference_assets_device_policy": str(config.backbone.reference_assets_device_policy),
                 "video_num_inference_steps": int(runner.policy_variant.inference_config.video_num_inference_steps),
                 "action_num_inference_steps": int(runner.policy_variant.inference_config.action_num_inference_steps),
@@ -1676,7 +1680,7 @@ def _run_sequence_policy_realtime_rollout(
         "policy_variant": str(config.policy_variant.name),
         "rollout_label": str(rollout_label),
         "checkpoint_file": str(checkpoint_path.resolve()),
-        "transformer_dir": str(config.backbone.transformer_subdir),
+        "transformer_dir": str(resolve_runtime_backbone_dir(config.backbone)),
         "runtime_device": str(runtime_device),
         "runtime_prep_device": str(runtime_prep_device),
         "runtime_output_device": str(runtime_output_device),
@@ -2404,7 +2408,7 @@ def _run_sequence_policy_realtime_rollout(
                 "decode_device": str(decode_device),
                 "runtime_devices": [str(device) for device in runtime_devices],
                 "checkpoint_file": str(checkpoint_path.resolve()),
-                "transformer_dir": str(config.backbone.transformer_subdir),
+                "transformer_dir": str(resolve_runtime_backbone_dir(config.backbone)),
                 "reference_assets_device_policy": str(config.backbone.reference_assets_device_policy),
                 "video_num_inference_steps": int(config.inference.video_num_inference_steps),
                 "action_num_inference_steps": int(config.inference.action_num_inference_steps),

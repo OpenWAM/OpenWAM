@@ -37,6 +37,7 @@ policy_variant:
   name: causal_video_prediction
   attach_site: post_visual_core
   hidden_size: 256
+  text_conditioning_mode: disabled
 
 action_decoder:
   name: video_only_decoder

@@ -114,6 +114,7 @@ policy_variant:
   name: causal_video_prediction
   attach_site: post_visual_core
   hidden_size: 256
+  text_conditioning_mode: disabled
 
 action_decoder:
   name: video_only_decoder
@@ -129,12 +130,13 @@ training:
   warmup_steps: 100
   gradient_accumulation_steps: 20
   num_steps: 5000
-  chunk_size: 2
-  window_size: 8
   enabled_objectives: [latent]
   latent_loss_weight: 1.0
   action_loss_weight: 0.0
-  trainable_components: [visual_tower.runtime_backbone]
+  trainable_components: [visual_tower.shared_video_backbone]
+  frozen_components:
+    - visual_tower.shared_action_runtime
+    - visual_tower.shared_runtime_adapters
 
 inference:
   video_num_inference_steps: 20
@@ -152,5 +154,6 @@ trainer:
   default_root_dir: "${paths.outputs.train_runs_root}"
   save_interval: 100
   export_runtime_backbone: true
+  runtime_backbone_export_components: [visual_tower.shared_video_backbone]
   enable_wandb: true
   wandb_project: openwam-mixed-video-pretrain

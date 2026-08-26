@@ -8,10 +8,17 @@ training or inference runtime, while tensor deserialization remains owned by
 
 from __future__ import annotations
 
+import json
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
+from typing import Any
 
+from open_wam.contracts.paths import (
+    resolve_model_component_path,
+    validate_model_component_path,
+)
 
 CHECKPOINT_FILENAMES = ("model_state.pt", "full_training_state.pt")
 
@@ -175,10 +182,10 @@ def resolve_transformer_only_input(path: Path) -> tuple[Path | None, str | None]
     """Resolve a canonical transformer export supplied without model state."""
 
     candidate = path.expanduser().resolve()
-    if is_transformer_only_input_dir(candidate):
+    if is_usable_transformer_dir(candidate):
         return candidate, "input_transformer_dir"
     nested = candidate / "transformer"
-    if is_transformer_only_input_dir(nested):
+    if is_usable_transformer_dir(nested):
         return nested.resolve(), "input_transformer_subdir"
     return None, None
 
@@ -207,47 +214,58 @@ def resolve_runtime_transformer_dir(
     return (
         None,
         None,
-        "missing usable transformer export directory or resolved_config transformer_subdir fallback",
+        "missing usable transformer export directory or resolved_config runtime-backbone fallback",
     )
 
 
 def transformer_dir_from_resolved_config(config_path: Path) -> Path | None:
-    """Read and resolve ``backbone.transformer_subdir`` from checkpoint config."""
+    """Read and resolve the runtime-backbone locator from checkpoint config."""
 
     if not config_path.is_file():
         return None
-    transformer_value = read_backbone_transformer_subdir(config_path)
-    if not transformer_value:
+    backbone = _read_backbone_config(config_path)
+    if not backbone:
         return None
-    transformer_dir = Path(str(transformer_value)).expanduser()
-    if not transformer_dir.is_absolute():
-        transformer_dir = (config_path.parent / transformer_dir).resolve()
-    return transformer_dir
+    try:
+        transformer_subdir = backbone.get("transformer_subdir") or "transformer"
+        validate_model_component_path(
+            transformer_subdir,
+            field_name="backbone.transformer_subdir",
+        )
+        return resolve_model_component_path(
+            backbone.get("pretrained_model_name_or_path"),
+            transformer_subdir,
+            artifact_path=backbone.get("runtime_backbone_artifact_path"),
+            field_name="backbone.transformer_subdir",
+        )
+    except (TypeError, ValueError):
+        return None
 
 
-def read_backbone_transformer_subdir(config_path: Path) -> str | None:
-    """Read the configured transformer path with a minimal-parser fallback."""
-
+def _read_backbone_config(config_path: Path) -> dict[str, Any]:
     text = config_path.read_text(encoding="utf-8")
     try:
         import yaml  # type: ignore
     except ModuleNotFoundError:
-        return read_backbone_transformer_subdir_without_yaml(text)
+        return _read_backbone_config_without_yaml(text)
     raw = yaml.safe_load(text) or {}
     if not isinstance(raw, dict):
-        return None
+        return {}
     backbone = raw.get("backbone", {})
-    if not isinstance(backbone, dict):
-        return None
-    value = backbone.get("transformer_subdir")
-    return str(value) if value else None
+    return dict(backbone) if isinstance(backbone, dict) else {}
 
 
-def read_backbone_transformer_subdir_without_yaml(text: str) -> str | None:
-    """Read the one required YAML key when PyYAML is unavailable."""
+def _read_backbone_config_without_yaml(text: str) -> dict[str, str]:
+    """Read path-valued backbone fields without importing the config stack."""
 
     in_backbone = False
     backbone_indent: int | None = None
+    values: dict[str, str] = {}
+    field_names = {
+        "pretrained_model_name_or_path",
+        "runtime_backbone_artifact_path",
+        "transformer_subdir",
+    }
     for raw_line in text.splitlines():
         line = raw_line.split("#", 1)[0].rstrip()
         if not line.strip():
@@ -260,33 +278,68 @@ def read_backbone_transformer_subdir_without_yaml(text: str) -> str | None:
             continue
         if in_backbone and backbone_indent is not None and indent <= backbone_indent:
             in_backbone = False
-        if not in_backbone or not stripped.startswith("transformer_subdir:"):
+        if not in_backbone:
             continue
-        value = stripped.split(":", 1)[1].strip().strip("'\"")
-        return value or None
-    return None
+        key, separator, raw_value = stripped.partition(":")
+        if separator and key in field_names:
+            value = raw_value.strip().strip("'\"")
+            if value.lower() not in {"", "null", "~"}:
+                values[key] = value
+    return values
 
 
 def is_usable_transformer_dir(path: Path) -> bool:
-    """Return whether a checkpoint-local or configured transformer is nonempty."""
-
-    return path.is_dir() and any(path.iterdir())
-
-
-def is_transformer_only_input_dir(path: Path) -> bool:
-    """Return whether ``path`` is a canonical standalone transformer export."""
-
-    return path.is_dir() and (path / "config.json").is_file() and has_transformer_weights(path)
-
-
-def has_transformer_weights(path: Path) -> bool:
-    """Return whether a transformer export contains supported safetensors."""
+    """Return whether ``path`` is a complete, loadable transformer export."""
 
     return (
-        (path / "diffusion_pytorch_model.safetensors").is_file()
-        or (path / "diffusion_pytorch_model.safetensors.index.json").is_file()
-        or any(path.glob("diffusion_pytorch_model-*.safetensors"))
+        path.is_dir()
+        and _read_json_mapping(path / "config.json") is not None
+        and _has_transformer_weights(path)
     )
+
+
+def _has_transformer_weights(path: Path) -> bool:
+    """Return whether an export contains one complete safetensors payload."""
+
+    single_file = path / "diffusion_pytorch_model.safetensors"
+    if _is_nonempty_file(single_file):
+        return True
+
+    index_path = path / "diffusion_pytorch_model.safetensors.index.json"
+    index = _read_json_mapping(index_path)
+    if index is None:
+        return False
+    weight_map = index.get("weight_map")
+    if not isinstance(weight_map, Mapping) or not weight_map:
+        return False
+    shard_values = tuple(weight_map.values())
+    if not all(isinstance(name, str) and name.strip() for name in shard_values):
+        return False
+    shard_names = set(shard_values)
+    for shard_name in shard_names:
+        relative_path = Path(shard_name)
+        if relative_path.is_absolute() or ".." in relative_path.parts:
+            return False
+        if not _is_nonempty_file(path / relative_path):
+            return False
+    return True
+
+
+def _read_json_mapping(path: Path) -> Mapping[str, Any] | None:
+    if not _is_nonempty_file(path):
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, Mapping) else None
+
+
+def _is_nonempty_file(path: Path) -> bool:
+    try:
+        return path.is_file() and path.stat().st_size > 0
+    except OSError:
+        return False
 
 
 __all__ = [
@@ -295,11 +348,7 @@ __all__ = [
     "CheckpointSearchLayout",
     "checkpoint_step",
     "find_checkpoint_state_file",
-    "has_transformer_weights",
-    "is_transformer_only_input_dir",
     "is_usable_transformer_dir",
-    "read_backbone_transformer_subdir",
-    "read_backbone_transformer_subdir_without_yaml",
     "resolve_checkpoint_artifacts",
     "resolve_runtime_transformer_dir",
     "resolve_transformer_only_input",

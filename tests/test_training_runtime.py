@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 import yaml
+from safetensors import safe_open
 from torch.utils.data import DataLoader, Dataset, TensorDataset
 from torch.utils.data.distributed import DistributedSampler
 
@@ -21,7 +22,12 @@ from open_wam.configs import (
     TrainingConfig,
     load_experiment_config,
 )
-from open_wam.configs.enums import BatchAdapterName, CheckpointMode, SampleOrderMode
+from open_wam.configs.enums import (
+    BatchAdapterName,
+    CheckpointMode,
+    SampleOrderMode,
+    TrainingComponentSelector,
+)
 from open_wam.contracts import DYNAMICS_ROUTING_MODE_METADATA_KEY
 from open_wam.data import (
     LatentWAMSample,
@@ -30,12 +36,18 @@ from open_wam.data import (
     move_latent_wam_batch_to_device,
 )
 from open_wam.models.policy_variants import PolicyTrainBatch
+from open_wam.pipelines import build_variant_pipeline_from_config
+from open_wam.runtime.runtime_backbone_manifest import (
+    RUNTIME_BACKBONE_MANIFEST_FILENAME,
+    load_runtime_backbone_manifest,
+)
 from open_wam.training import TrainingRuntime
 from open_wam.training.auxiliary_validation import (
     AuxiliaryValidationDataset,
     _resolve_auxiliary_validation_source,
     build_auxiliary_validation_runs,
 )
+from open_wam.training.checkpoint_export import resolve_runtime_backbone_export_keys
 from open_wam.training.checkpoints import CheckpointManager
 from open_wam.training.data_loading import (
     _validate_dynamics_source_sampling,
@@ -57,8 +69,14 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 def test_runtime_compatibility_aliases_keep_canonical_owner_identity() -> None:
     assert runtime_module.AuxiliaryValidationDataset is AuxiliaryValidationDataset
-    assert runtime_module._normalize_optimizer_state_dtypes is _normalize_optimizer_state_dtypes
-    assert runtime_module._resolve_auxiliary_validation_source is _resolve_auxiliary_validation_source
+    assert (
+        runtime_module._normalize_optimizer_state_dtypes
+        is _normalize_optimizer_state_dtypes
+    )
+    assert (
+        runtime_module._resolve_auxiliary_validation_source
+        is _resolve_auxiliary_validation_source
+    )
     assert (
         runtime_module._validate_dynamics_source_sampling
         is _validate_dynamics_source_sampling
@@ -254,6 +272,8 @@ def test_composable_runtime_trains_shared_core_method_smokes(
     final_state = runtime.run()
 
     assert final_state.optimizer_step == 1
+
+
 def test_step_loop_reshuffles_distributed_sampler_each_loader_pass(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -442,9 +462,7 @@ def test_sample_loss_weight_rejects_reduced_multi_sample_batches() -> None:
         )
 
 
-def test_dynamics_source_sampling_runtime_guard_rejects_non_uniform_weights() -> (
-    None
-):
+def test_dynamics_source_sampling_runtime_guard_rejects_non_uniform_weights() -> None:
     config = load_experiment_config(
         REPO_ROOT / "configs/experiments/parallel_stream_robotwin_smoke.yaml"
     )
@@ -668,7 +686,8 @@ def test_single_route_gjd_validation_preserves_explicit_conditional_probes(
             return self
 
     config = load_experiment_config(
-        REPO_ROOT / "configs/experiments/dual_expert_libero_generalist_joint_denoising.yaml"
+        REPO_ROOT
+        / "configs/experiments/dual_expert_libero_generalist_joint_denoising.yaml"
     )
     config = apply_config_overrides(
         config,
@@ -828,7 +847,9 @@ def test_strict_dynamics_preflight_checks_only_encoded_inputs(
     monkeypatch.setattr(
         data_loading_module,
         "preflight_dataset_artifacts",
-        lambda _: pytest.fail("conditional-only routes must not preflight planning data"),
+        lambda _: pytest.fail(
+            "conditional-only routes must not preflight planning data"
+        ),
     )
     monkeypatch.setattr(
         data_loading_module,
@@ -928,9 +949,15 @@ def test_training_runtime_runs_primary_and_auxiliary_validation_phases(
                 loss=value,
                 metrics={
                     "loss": value,
-                    f"{dynamics_metric_namespace}/action_loss_active": torch.tensor(0.0),
-                    f"{dynamics_metric_namespace}/latent_loss_active": torch.tensor(1.0),
-                    f"{dynamics_metric_namespace}/action_conditioned_video/count": torch.tensor(1.0),
+                    f"{dynamics_metric_namespace}/action_loss_active": torch.tensor(
+                        0.0
+                    ),
+                    f"{dynamics_metric_namespace}/latent_loss_active": torch.tensor(
+                        1.0
+                    ),
+                    f"{dynamics_metric_namespace}/action_conditioned_video/count": torch.tensor(
+                        1.0
+                    ),
                 },
             )
 
@@ -1046,6 +1073,8 @@ def test_composable_runtime_trains_causal_video_prediction_smoke(
     final_state = runtime.run()
 
     assert final_state.optimizer_step == 1
+
+
 def test_training_runtime_initializes_dual_expert_variant_before_strategy_wrap(
     tmp_path: Path,
 ) -> None:
@@ -1502,6 +1531,136 @@ def test_composable_runtime_exports_runtime_backbone(tmp_path: Path) -> None:
     )
     assert (checkpoint_dir / "diffusion_pytorch_model.safetensors").exists()
     assert (checkpoint_dir / "config.json").exists()
+    assert (checkpoint_dir / RUNTIME_BACKBONE_MANIFEST_FILENAME).exists()
+    manifest = load_runtime_backbone_manifest(checkpoint_dir)
+    assert manifest is not None
+    assert manifest.components == ("visual_tower.runtime_backbone",)
+
+
+def test_composable_runtime_exports_only_selected_backbone_components(
+    tmp_path: Path,
+) -> None:
+    config = load_experiment_config(
+        REPO_ROOT / "configs/examples/public_tiny_synthetic_contract.yaml"
+    )
+    config = replace(
+        config,
+        training=replace(config.training, num_steps=1),
+        trainer=replace(
+            config.trainer,
+            runtime="composable",
+            batch_adapter="latents",
+            loop_policy="steps",
+            strategy="single_device",
+            default_root_dir=str(tmp_path),
+            enable_checkpointing=True,
+            save_interval=1,
+            checkpoint_mode="model_only",
+            export_runtime_backbone=True,
+            runtime_backbone_export_components=(
+                TrainingComponentSelector.VISUAL_TOWER_SHARED_VIDEO_BACKBONE,
+            ),
+        ),
+    )
+
+    TrainingRuntime.from_config(config).run()
+
+    transformer_dir = (
+        tmp_path / config.name / "checkpoints" / "checkpoint_step_1" / "transformer"
+    )
+    manifest = load_runtime_backbone_manifest(transformer_dir)
+    assert manifest is not None
+    assert manifest.components == (
+        TrainingComponentSelector.VISUAL_TOWER_SHARED_VIDEO_BACKBONE,
+    )
+    with safe_open(
+        transformer_dir / "diffusion_pytorch_model.safetensors",
+        framework="pt",
+    ) as handle:
+        exported_keys = set(handle.keys())
+    assert exported_keys == set(manifest.state_keys)
+    assert "patch_embedding_mlp.weight" in exported_keys
+    assert "action_embedder.weight" not in exported_keys
+    assert not any(key.startswith("action_time_conditioner.") for key in exported_keys)
+
+
+def test_scoped_export_keys_survive_activation_checkpoint_wrapping(
+    tmp_path: Path,
+) -> None:
+    from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
+        checkpoint_wrapper,
+    )
+
+    config = load_experiment_config(
+        REPO_ROOT
+        / "configs/experiments/causal_video_prediction_libero_latent_local.yaml"
+    )
+    config = replace(
+        config,
+        backbone=replace(
+            config.backbone,
+            hidden_size=16,
+            num_layers=1,
+            num_heads=4,
+            attention_head_dim=4,
+            ffn_dim=32,
+            text_dim=8,
+            freq_dim=8,
+            pretrained_model_name_or_path=None,
+            load_reference_core_weights=False,
+        ),
+        trainer=replace(
+            config.trainer,
+            checkpoint_mode=CheckpointMode.MODEL_ONLY,
+            export_runtime_backbone=True,
+            runtime_backbone_export_components=(
+                TrainingComponentSelector.VISUAL_TOWER_SHARED_VIDEO_BACKBONE,
+            ),
+        ),
+    )
+    pipeline = build_variant_pipeline_from_config(config)
+    backbone = pipeline.visual_tower.get_runtime_backbone(
+        action_dim=int(pipeline.visual_tower.action_dim)
+    )
+    export_keys = resolve_runtime_backbone_export_keys(
+        backbone=backbone,
+        topology=pipeline.module_topology(),
+        selectors=config.trainer.runtime_backbone_export_components,
+    )
+    assert export_keys is not None
+    expected_block_keys = {key for key in export_keys if key.startswith("blocks.0.")}
+    assert expected_block_keys
+
+    backbone.blocks[0] = checkpoint_wrapper(
+        backbone.blocks[0],
+        preserve_rng_state=False,
+    )
+    assert any(
+        "_checkpoint_wrapped_module" in name for name, _ in backbone.named_parameters()
+    )
+
+    manager = CheckpointManager(
+        root_dir=tmp_path / "checkpoints",
+        config=config,
+        checkpoint_mode=CheckpointMode.MODEL_ONLY,
+        export_runtime_backbone=True,
+        runtime_backbone_export_keys=export_keys,
+    )
+    checkpoint_dir = manager.save(
+        step=1,
+        model=pipeline,
+        optimizer=None,
+        scheduler=None,
+        train_state=TrainState(run_name="scoped_export"),
+    )
+    with safe_open(
+        checkpoint_dir / "transformer" / "diffusion_pytorch_model.safetensors",
+        framework="pt",
+    ) as handle:
+        exported_keys = set(handle.keys())
+
+    assert expected_block_keys <= exported_keys
+    assert exported_keys == set(export_keys)
 
 
 def test_composable_runtime_disable_checkpointing_suppresses_export_runtime_backbone(

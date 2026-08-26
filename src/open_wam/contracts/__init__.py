@@ -19,6 +19,7 @@ from .sample_metadata import (
 )
 from .video import (
     WAN_TEMPORAL_CHUNK_SIZE,
+    CanonicalViewLayout,
     FpsSource,
     ResolvedSourceFps,
     ResolvedVideoClip,
@@ -44,6 +45,7 @@ __all__ = [
     "DYNAMICS_ROUTING_SOURCE_METADATA_KEY",
     "REPO_ROOT",
     "WAN_TEMPORAL_CHUNK_SIZE",
+    "CanonicalViewLayout",
     "ConditionalDynamicsSequenceLayout",
     "DynamicsRoutingSampleMetadata",
     "FpsSource",

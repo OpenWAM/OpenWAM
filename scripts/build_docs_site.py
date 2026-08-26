@@ -39,6 +39,7 @@ PUBLIC_MARKDOWN_PATHS = (
     Path("reproducibility.md"),
     Path("running_experiments.md"),
     Path("testing.md"),
+    Path("video_only_training.md"),
 )
 _MARKDOWN_LINK = re.compile(r"!?\[[^\]]*\]\(\s*(?P<target><[^>]+>|[^)\s]+)")
 _REPOSITORY_REFERENCE = re.compile(

@@ -218,6 +218,28 @@ def test_find_checkpoint_resolved_config_uses_checkpoint_dir(tmp_path: Path) -> 
     assert resolved_config_path == (checkpoint_dir / "resolved_config.yaml").resolve()
 
 
+def test_find_checkpoint_resolved_config_prefers_latest_checkpoint_config(
+    tmp_path: Path,
+) -> None:
+    run_root = tmp_path / "run"
+    run_root.mkdir()
+    (run_root / "resolved_config.yaml").write_text(
+        "name: run-root\n",
+        encoding="utf-8",
+    )
+    checkpoint_dir = run_root / "checkpoint_step_12"
+    checkpoint_dir.mkdir()
+    (checkpoint_dir / "model_state.pt").write_bytes(b"")
+    (checkpoint_dir / "resolved_config.yaml").write_text(
+        "name: checkpoint\n",
+        encoding="utf-8",
+    )
+
+    resolved_config_path = find_checkpoint_resolved_config(run_root)
+
+    assert resolved_config_path == (checkpoint_dir / "resolved_config.yaml").resolve()
+
+
 def test_merge_runtime_config_from_checkpoint_keeps_data_sources_but_restores_runtime_contract(tmp_path: Path) -> None:
     base_config_path = (
         REPO_ROOT / "configs/experiments/parallel_stream_libero_video_then_action.yaml"
@@ -254,6 +276,7 @@ def test_merge_runtime_config_from_checkpoint_keeps_data_sources_but_restores_ru
     assert merged_config.data.val_batch_size == 77
     assert str(merged_config.backbone.pretrained_model_name_or_path) == str(checkpoint_pretrained)
     assert int(merged_config.policy_variant.attn_window) == 31
+    assert merged_config.training == base_config.training
     assert int(merged_config.inference.action_num_inference_steps) == 37
 
 
@@ -317,6 +340,9 @@ def test_merge_runtime_config_from_checkpoint_rehomes_nonportable_backbone_paths
     checkpoint_transformer = checkpoint_dir / "transformer"
     checkpoint_transformer.mkdir()
     (checkpoint_transformer / "config.json").write_text("{}", encoding="utf-8")
+    (checkpoint_transformer / "diffusion_pytorch_model.safetensors").write_bytes(
+        b"weights"
+    )
 
     checkpoint_config = yaml.safe_load(base_config_path.read_text(encoding="utf-8"))
     checkpoint_config["backbone"]["pretrained_model_name_or_path"] = "/missing/remote/lingbot-va-base"
@@ -329,4 +355,7 @@ def test_merge_runtime_config_from_checkpoint_rehomes_nonportable_backbone_paths
     merged_config, _ = merge_runtime_config_from_checkpoint(base_config, checkpoint_dir)
 
     assert str(merged_config.backbone.pretrained_model_name_or_path) == str(base_pretrained.resolve())
-    assert str(merged_config.backbone.transformer_subdir) == str(checkpoint_transformer.resolve())
+    assert str(merged_config.backbone.runtime_backbone_artifact_path) == str(
+        checkpoint_transformer.resolve()
+    )
+    assert merged_config.backbone.transformer_subdir == "/missing/remote/transformer"

@@ -5,15 +5,25 @@ from __future__ import annotations
 from importlib import import_module
 from typing import Any
 
-
 _LAZY_EXPORTS = {
+    "CausalVideoPredictionRollout": "video_prediction",
+    "decode_canonical_latent_views": "video_prediction",
     "EvaluationRequest": "evaluation_contracts",
     "EvaluationSummary": "evaluation_contracts",
     "resolve_evaluation_request": "evaluation_contracts",
     "run_evaluation": "evaluate",
+    "rollout_causal_video_prediction": "video_prediction",
 }
 
-__all__ = sorted(_LAZY_EXPORTS)
+__all__ = [
+    "CausalVideoPredictionRollout",
+    "EvaluationRequest",
+    "EvaluationSummary",
+    "decode_canonical_latent_views",
+    "resolve_evaluation_request",
+    "rollout_causal_video_prediction",
+    "run_evaluation",
+]
 
 
 def __getattr__(name: str) -> Any:

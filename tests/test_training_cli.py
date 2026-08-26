@@ -51,6 +51,33 @@ def test_train_cli_accepts_ordered_extensions() -> None:
     )
 
 
+def test_train_cli_accepts_runtime_backbone_path() -> None:
+    overrides = parse_train_cli(
+        [
+            "--config-name",
+            "parallel_stream_robotwin_smoke",
+            "--runtime-backbone-path",
+            "/artifacts/checkpoint_step_10/transformer",
+        ]
+    )
+
+    assert overrides.runtime_backbone_artifact_path == (
+        "/artifacts/checkpoint_step_10/transformer"
+    )
+
+
+def test_train_cli_rejects_removed_transformer_subdir_alias() -> None:
+    with pytest.raises(ValueError, match="section.field=value"):
+        parse_train_cli(
+            [
+                "--config-name",
+                "parallel_stream_robotwin_smoke",
+                "--transformer-subdir",
+                "/artifacts/checkpoint_step_10/transformer",
+            ]
+        )
+
+
 def test_resolve_experiment_config_path_from_config_name() -> None:
     overrides = TrainCliOverrides(config_name="parallel_stream_robotwin_smoke")
     resolved = resolve_experiment_config_path(overrides)
@@ -187,7 +214,9 @@ def test_cli_overrides_map_save_root_and_env_defaults(tmp_path: Path) -> None:
     assert config.data.local_root == "/datasets/local_libero"
     assert config.data.latent_root == "/datasets/local_libero/latents"
     assert config.trainer.resume_from == str(checkpoint_root / "full_training_state.pt")
-    assert config.backbone.transformer_subdir == str(checkpoint_root / "transformer")
+    assert config.backbone.runtime_backbone_artifact_path == str(
+        checkpoint_root / "transformer"
+    )
     assert config.trainer.devices == 6
     assert config.trainer.runtime == TrainerRuntimeName.COMPOSABLE
     assert config.trainer.batch_adapter == BatchAdapterName.LATENTS

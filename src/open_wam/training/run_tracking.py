@@ -247,6 +247,9 @@ def build_run_tracking_metadata(
             else None
         ),
         "backbone_implementation": str(config.backbone.implementation),
+        "backbone_runtime_backbone_artifact_path": (
+            config.backbone.runtime_backbone_artifact_path
+        ),
         "backbone_transformer_subdir": config.backbone.transformer_subdir,
         "runtime": str(config.trainer.runtime),
         "batch_adapter": str(config.trainer.batch_adapter),

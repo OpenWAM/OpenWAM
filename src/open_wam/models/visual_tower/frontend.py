@@ -5,11 +5,15 @@ from dataclasses import asdict
 import torch
 from torch import nn
 
-from open_wam.contracts import ViewPlacement
-from open_wam.configs.enums import serialize_enum_values
-from open_wam.models.common.video_geometry import video_token_grid_from_latent_shape
 from open_wam.configs.backbone import SharedVideoTransformerConfig
-from open_wam.models.video_backbone.contracts import ChunkMetadata, ConditioningState, TokenGridMetadata
+from open_wam.configs.enums import TextConditioningMode, serialize_enum_values
+from open_wam.contracts import ViewPlacement
+from open_wam.models.common.video_geometry import video_token_grid_from_latent_shape
+from open_wam.models.video_backbone.contracts import (
+    ChunkMetadata,
+    ConditioningState,
+    TokenGridMetadata,
+)
 
 from .contracts import VisualFrontendOutput
 from .reference_assets import LingbotReferenceAssets, ReferenceAssetsRuntimeSnapshot
@@ -21,6 +25,7 @@ class SharedVideoFrontend(nn.Module):
     def __init__(self, config: SharedVideoTransformerConfig | None = None) -> None:
         super().__init__()
         self.config = config or SharedVideoTransformerConfig()
+        self.text_conditioning_mode = TextConditioningMode.TASK_PROMPT
         self.reference_assets = LingbotReferenceAssets.maybe_load(self.config)
         self.latentizer = nn.Conv3d(
             in_channels=self.config.input_channels,
@@ -61,20 +66,16 @@ class SharedVideoFrontend(nn.Module):
             placements=placements,
             reset_reference_cache=not preserve_stream_cache,
         )
-        resolved_text_context = text_context
-        if resolved_text_context is None:
-            resolved_text_context = self.reference_assets.encode_text(
-                task_text,
+        resolved_text_context, resolved_negative_text_context = (
+            self._resolve_text_conditioning(
+                task_text=task_text,
+                text_context=text_context,
+                negative_text_context=negative_text_context,
+                batch_size=int(canonical_video.shape[0]),
                 device=canonical_video.device,
                 dtype=canonical_video.dtype,
             )
-        resolved_negative_text_context = negative_text_context
-        if resolved_negative_text_context is None and resolved_text_context is not None:
-            resolved_negative_text_context = self.reference_assets.encode_blank_text(
-                batch_size=canonical_video.shape[0],
-                device=canonical_video.device,
-                dtype=canonical_video.dtype,
-            )
+        )
         return self._build_output(
             canonical_video=canonical_video,
             video_latents=video_latents,
@@ -106,20 +107,16 @@ class SharedVideoFrontend(nn.Module):
                 video_latents.shape[3] * self.config.latent_stride,
                 video_latents.shape[4] * self.config.latent_stride,
             )
-        resolved_text_context = text_context
-        if resolved_text_context is None:
-            resolved_text_context = self.reference_assets.encode_text(
-                task_text,
+        resolved_text_context, resolved_negative_text_context = (
+            self._resolve_text_conditioning(
+                task_text=task_text,
+                text_context=text_context,
+                negative_text_context=negative_text_context,
+                batch_size=int(video_latents.shape[0]),
                 device=video_latents.device,
                 dtype=video_latents.dtype,
             )
-        resolved_negative_text_context = negative_text_context
-        if resolved_negative_text_context is None and resolved_text_context is not None:
-            resolved_negative_text_context = self.reference_assets.encode_blank_text(
-                batch_size=video_latents.shape[0],
-                device=video_latents.device,
-                dtype=video_latents.dtype,
-            )
+        )
         return self._build_output(
             canonical_video=canonical,
             video_latents=video_latents,
@@ -127,6 +124,50 @@ class SharedVideoFrontend(nn.Module):
             text_context=resolved_text_context,
             negative_text_context=resolved_negative_text_context,
         )
+
+    def configure_text_conditioning(
+        self,
+        mode: TextConditioningMode | str,
+    ) -> None:
+        """Select the semantic text source used by every frontend entrypoint."""
+
+        self.text_conditioning_mode = TextConditioningMode(mode)
+
+    def _resolve_text_conditioning(
+        self,
+        *,
+        task_text: tuple[str | None, ...] | None,
+        text_context: torch.Tensor | None,
+        negative_text_context: torch.Tensor | None,
+        batch_size: int,
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> tuple[torch.Tensor | None, torch.Tensor | None]:
+        if self.text_conditioning_mode == TextConditioningMode.DISABLED:
+            blank_context = negative_text_context
+            if blank_context is None:
+                blank_context = self.reference_assets.encode_blank_text(
+                    batch_size=batch_size,
+                    device=device,
+                    dtype=dtype,
+                )
+            return blank_context, blank_context
+
+        resolved_text_context = text_context
+        if resolved_text_context is None:
+            resolved_text_context = self.reference_assets.encode_text(
+                task_text,
+                device=device,
+                dtype=dtype,
+            )
+        resolved_negative_text_context = negative_text_context
+        if resolved_negative_text_context is None and resolved_text_context is not None:
+            resolved_negative_text_context = self.reference_assets.encode_blank_text(
+                batch_size=batch_size,
+                device=device,
+                dtype=dtype,
+            )
+        return resolved_text_context, resolved_negative_text_context
 
     def reset_runtime_state(self) -> None:
         self.reference_assets.reset_runtime_state()

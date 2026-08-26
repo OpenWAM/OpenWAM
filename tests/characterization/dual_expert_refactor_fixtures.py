@@ -54,7 +54,9 @@ def configure_characterization_paths(
         "data.empty_text_embedding_path": str(assets.empty_text_embedding),
         "data.num_workers": 0,
         "backbone.pretrained_model_name_or_path": str(assets.base_model_root),
-        "backbone.transformer_subdir": str(assets.video_transformer_root),
+        "backbone.runtime_backbone_artifact_path": str(
+            assets.video_transformer_root
+        ),
     }
     if include_counterfactual:
         if (

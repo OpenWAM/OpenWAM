@@ -51,13 +51,16 @@ from open_wam.configs import (
     SampleWeightMode,
     SegmentContextPolicy,
     TailPaddingPolicy,
+    TextConditioningMode,
     TrainingComponentSelector,
+    TrainingConfig,
     VideoActionProgram,
     VideoActionSequenceContract,
     WindowSamplingMode,
     load_experiment_config,
     normalize_video_action_policy_fields,
     read_yaml_with_local_paths,
+    validate_config_file,
 )
 from open_wam.models.policy_variants.parallel_stream.variant import (
     ParallelStreamPolicyVariant,
@@ -3294,6 +3297,9 @@ def test_composable_runtime_fields_load(tmp_path: Path) -> None:
     raw["trainer"]["checkpoint_mode"] = "model_only"
     raw["trainer"]["max_checkpoints_to_keep"] = 3
     raw["trainer"]["export_runtime_backbone"] = True
+    raw["trainer"]["runtime_backbone_export_components"] = [
+        "visual_tower.shared_video_backbone"
+    ]
     raw["trainer"]["resume_from"] = "/tmp/open-wam-test/checkpoints/checkpoint_step_5"
     raw["trainer"]["enable_jsonl_logging"] = True
     raw["trainer"]["metrics_filename"] = "run.jsonl"
@@ -3340,6 +3346,9 @@ def test_composable_runtime_fields_load(tmp_path: Path) -> None:
     assert config.trainer.checkpoint_mode == "model_only"
     assert config.trainer.max_checkpoints_to_keep == 3
     assert config.trainer.export_runtime_backbone is True
+    assert config.trainer.runtime_backbone_export_components == (
+        TrainingComponentSelector.VISUAL_TOWER_SHARED_VIDEO_BACKBONE,
+    )
     assert config.trainer.resume_from == "/tmp/open-wam-test/checkpoints/checkpoint_step_5"
     assert config.trainer.enable_jsonl_logging is True
     assert config.trainer.metrics_filename == "run.jsonl"
@@ -3359,18 +3368,265 @@ def test_causal_video_prediction_config_loads() -> None:
     )
 
     assert isinstance(config.policy_variant, CausalVideoPredictionPolicyConfig)
+    assert (
+        config.policy_variant.text_conditioning_mode
+        == TextConditioningMode.TASK_PROMPT
+    )
     assert config.action_decoder.name == ActionDecoderName.VIDEO_ONLY
     assert config.data.sample_construction.mode == WindowSamplingMode.CAUSAL_PREFIX_SUFFIX
     assert config.training.enabled_objectives == ("latent",)
     assert config.training.trainable_components == (
-        TrainingComponentSelector.VISUAL_TOWER_RUNTIME_BACKBONE,
+        TrainingComponentSelector.VISUAL_TOWER_SHARED_VIDEO_BACKBONE,
     )
-    assert config.training.frozen_components == ()
+    assert config.training.frozen_components == (
+        TrainingComponentSelector.VISUAL_TOWER_SHARED_ACTION_RUNTIME,
+        TrainingComponentSelector.VISUAL_TOWER_SHARED_RUNTIME_ADAPTERS,
+    )
     assert config.data.sample_construction.causal_prefix_suffix_buckets == (
         CausalPrefixSuffixBucketConfig(observed_frames=1, future_frames=3),
         CausalPrefixSuffixBucketConfig(observed_frames=2, future_frames=6),
-        CausalPrefixSuffixBucketConfig(observed_frames=5, future_frames=10),
+        CausalPrefixSuffixBucketConfig(observed_frames=3, future_frames=9),
+        CausalPrefixSuffixBucketConfig(observed_frames=4, future_frames=12),
+        CausalPrefixSuffixBucketConfig(observed_frames=5, future_frames=15),
     )
+    assert config.trainer.runtime_backbone_export_components == (
+        TrainingComponentSelector.VISUAL_TOWER_SHARED_VIDEO_BACKBONE,
+    )
+    assert config.training.text_condition_dropout_prob == pytest.approx(0.1)
+    assert config.inference.guidance_scale == pytest.approx(5.0)
+
+
+@pytest.mark.parametrize("value", (-0.1, 1.1, float("nan")))
+def test_training_config_rejects_invalid_text_dropout_probabilities(value: float) -> None:
+    with pytest.raises(ValueError, match=r"within \[0, 1\]"):
+        TrainingConfig(text_condition_dropout_prob=value)
+
+
+def test_training_config_rejects_non_numeric_text_dropout_probability() -> None:
+    with pytest.raises(TypeError, match="numeric probability"):
+        TrainingConfig(text_condition_dropout_prob=True)
+
+
+def test_causal_video_disabled_text_conditioning_loads(tmp_path: Path) -> None:
+    source = (
+        REPO_ROOT
+        / "configs/experiments/causal_video_prediction_libero_latent_local.yaml"
+    )
+    raw = yaml.safe_load(source.read_text(encoding="utf-8"))
+    raw["policy_variant"]["text_conditioning_mode"] = "disabled"
+    raw["training"]["text_condition_dropout_prob"] = 0.0
+    raw["inference"]["guidance_scale"] = 1.0
+    config_path = tmp_path / "causal_text_disabled.yaml"
+    config_path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+
+    config = load_experiment_config(config_path)
+
+    assert (
+        config.policy_variant.text_conditioning_mode
+        == TextConditioningMode.DISABLED
+    )
+
+
+@pytest.mark.parametrize(
+    ("section", "field_name", "value", "message"),
+    (
+        (
+            "training",
+            "text_condition_dropout_prob",
+            0.1,
+            "every sample already uses the blank-text embedding",
+        ),
+        (
+            "inference",
+            "guidance_scale",
+            2.0,
+            "conditioned and unconditioned branches are identical",
+        ),
+    ),
+)
+def test_causal_video_disabled_text_conditioning_rejects_conflicting_controls(
+    tmp_path: Path,
+    section: str,
+    field_name: str,
+    value: float,
+    message: str,
+) -> None:
+    source = (
+        REPO_ROOT
+        / "configs/experiments/causal_video_prediction_libero_latent_local.yaml"
+    )
+    raw = yaml.safe_load(source.read_text(encoding="utf-8"))
+    raw["policy_variant"]["text_conditioning_mode"] = "disabled"
+    raw["training"]["text_condition_dropout_prob"] = 0.0
+    raw["inference"]["guidance_scale"] = 1.0
+    raw[section][field_name] = value
+    config_path = tmp_path / f"causal_text_disabled_{field_name}.yaml"
+    config_path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+
+    with pytest.raises(ValueError, match=message):
+        load_experiment_config(config_path)
+
+
+def test_causal_video_task_prompt_rejects_full_text_dropout(tmp_path: Path) -> None:
+    source = (
+        REPO_ROOT
+        / "configs/experiments/causal_video_prediction_libero_latent_local.yaml"
+    )
+    raw = yaml.safe_load(source.read_text(encoding="utf-8"))
+    raw["training"]["text_condition_dropout_prob"] = 1.0
+    config_path = tmp_path / "causal_task_prompt_full_dropout.yaml"
+    config_path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="select.*disabled"):
+        load_experiment_config(config_path)
+
+
+def test_causal_video_rejects_removed_text_requirement_boolean(tmp_path: Path) -> None:
+    source = (
+        REPO_ROOT
+        / "configs/experiments/causal_video_prediction_libero_latent_local.yaml"
+    )
+    raw = yaml.safe_load(source.read_text(encoding="utf-8"))
+    raw["policy_variant"]["require_text_conditioning"] = True
+    config_path = tmp_path / "causal_removed_text_boolean.yaml"
+    config_path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="require_text_conditioning.*was removed"):
+        load_experiment_config(config_path)
+
+
+def test_causal_video_cfg_requires_a_trained_unconditional_branch(
+    tmp_path: Path,
+) -> None:
+    source = (
+        REPO_ROOT
+        / "configs/experiments/causal_video_prediction_libero_latent_local.yaml"
+    )
+    raw = yaml.safe_load(source.read_text(encoding="utf-8"))
+    raw["training"]["text_condition_dropout_prob"] = 0.0
+    raw["inference"]["guidance_scale"] = 2.0
+    config_path = tmp_path / "causal_cfg.yaml"
+    config_path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="text_condition_dropout_prob > 0"):
+        load_experiment_config(config_path)
+
+    raw["training"]["text_condition_dropout_prob"] = 0.1
+    config_path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+    assert load_experiment_config(config_path).inference.guidance_scale == 2.0
+
+
+def test_causal_video_text_dropout_requires_latent_batch_adapter(
+    tmp_path: Path,
+) -> None:
+    source = (
+        REPO_ROOT
+        / "configs/experiments/causal_video_prediction_libero_latent_local.yaml"
+    )
+    raw = yaml.safe_load(source.read_text(encoding="utf-8"))
+    raw["training"]["text_condition_dropout_prob"] = 0.1
+    raw["trainer"]["batch_adapter"] = "views"
+    config_path = tmp_path / "causal_views_dropout.yaml"
+    config_path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="batch_adapter=latents"):
+        load_experiment_config(config_path)
+
+
+@pytest.mark.parametrize("field_name", ["chunk_size", "window_size"])
+def test_causal_video_rejects_unused_generic_training_geometry(
+    tmp_path: Path,
+    field_name: str,
+) -> None:
+    source = (
+        REPO_ROOT
+        / "configs/experiments/causal_video_prediction_libero_latent_local.yaml"
+    )
+    raw = yaml.safe_load(source.read_text(encoding="utf-8"))
+    raw["training"][field_name] = 8
+    config_path = tmp_path / "causal_unused_geometry.yaml"
+    config_path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+
+    report = validate_config_file(config_path, repo_root=REPO_ROOT)
+
+    assert any(
+        issue.path == f"training.{field_name}"
+        and "causal_prefix_suffix_buckets" in issue.message
+        for issue in report.errors
+    )
+
+
+@pytest.mark.parametrize(
+    ("field_name", "override_value"),
+    [("chunk_size", 7), ("window_size", 9)],
+)
+def test_causal_video_cli_override_rejects_unused_training_geometry(
+    field_name: str,
+    override_value: int,
+) -> None:
+    config = load_experiment_config(
+        REPO_ROOT
+        / "configs/experiments/causal_video_prediction_libero_latent_local.yaml"
+    )
+
+    with pytest.raises(ValueError, match=rf"training\.{field_name}"):
+        apply_config_overrides(
+            config,
+            {f"training.{field_name}": override_value},
+        )
+
+
+def test_backbone_transformer_subdir_accepts_absolute_historical_path() -> None:
+    config = load_experiment_config(
+        REPO_ROOT
+        / "configs/experiments/causal_video_prediction_libero_latent_local.yaml"
+    )
+
+    backbone = replace(
+        config.backbone,
+        transformer_subdir="/detached/transformer",
+    )
+
+    assert backbone.transformer_subdir == "/detached/transformer"
+
+
+def test_backbone_relative_transformer_subdir_cannot_escape_model_root() -> None:
+    config = load_experiment_config(
+        REPO_ROOT
+        / "configs/experiments/causal_video_prediction_libero_latent_local.yaml"
+    )
+
+    with pytest.raises(ValueError, match=r"cannot contain `\.\.`"):
+        replace(config.backbone, transformer_subdir="../transformer")
+
+
+def test_runtime_backbone_export_components_must_be_unique() -> None:
+    config = load_experiment_config(
+        REPO_ROOT
+        / "configs/experiments/causal_video_prediction_libero_latent_local.yaml"
+    )
+
+    with pytest.raises(ValueError, match="must not contain duplicates"):
+        replace(
+            config.trainer,
+            runtime_backbone_export_components=(
+                TrainingComponentSelector.VISUAL_TOWER_SHARED_VIDEO_BACKBONE,
+                TrainingComponentSelector.VISUAL_TOWER_SHARED_VIDEO_BACKBONE,
+            ),
+        )
+
+
+def test_runtime_backbone_export_components_must_be_a_sequence() -> None:
+    config = load_experiment_config(
+        REPO_ROOT
+        / "configs/experiments/causal_video_prediction_libero_latent_local.yaml"
+    )
+
+    with pytest.raises(TypeError, match="must be a sequence of component selectors"):
+        replace(
+            config.trainer,
+            runtime_backbone_export_components="visual_tower.shared_video_backbone",
+        )
 
 
 def test_causal_video_prediction_mixed_video_config_loads() -> None:
@@ -3380,6 +3636,16 @@ def test_causal_video_prediction_mixed_video_config_loads() -> None:
     assert isinstance(config.data, MixedVideoDataConfig)
     assert config.backbone.load_wan_vae_frontend is True
     assert config.trainer.batch_adapter == BatchAdapterName.VIEWS
+    assert config.training.trainable_components == (
+        TrainingComponentSelector.VISUAL_TOWER_SHARED_VIDEO_BACKBONE,
+    )
+    assert config.training.frozen_components == (
+        TrainingComponentSelector.VISUAL_TOWER_SHARED_ACTION_RUNTIME,
+        TrainingComponentSelector.VISUAL_TOWER_SHARED_RUNTIME_ADAPTERS,
+    )
+    assert config.trainer.runtime_backbone_export_components == (
+        TrainingComponentSelector.VISUAL_TOWER_SHARED_VIDEO_BACKBONE,
+    )
     assert config.data.sample_construction.causal_prefix_suffix_buckets[0] == CausalPrefixSuffixBucketConfig(
         observed_frames=1,
         future_frames=4,

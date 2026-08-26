@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 import torch
 
+from open_wam.contracts.video import CanonicalViewLayout
 from open_wam.data import assemble_latent_views
 from open_wam.data.latent_view_assembly import (
     assemble_mixed_video_latent_views,
@@ -47,10 +48,11 @@ def test_assemble_latent_views_places_one_to_four_views(
 
     assert canvas.shape == expected_shape
     assert canvas.is_contiguous()
-    assert metadata["slots"] == list(slots)
+    layout = CanonicalViewLayout.from_metadata(metadata)
+    assert tuple(placement.source_name for placement in layout.placements) == slots
+    assert tuple(placement.canonical_name for placement in layout.placements) == slots
     assert tuple(
-        (placement["top"], placement["left"])
-        for placement in metadata["placements"]
+        (placement.top, placement.left) for placement in layout.placements
     ) == expected_placements
 
 
@@ -62,15 +64,11 @@ def test_single_view_is_centered_in_larger_configured_canvas() -> None:
     )
 
     assert canvas.shape == (2, 3, 8, 10)
-    assert metadata["placements"] == [
-        {
-            "slot": "wrist",
-            "top": 2,
-            "left": 2,
-            "height": 4,
-            "width": 5,
-        }
-    ]
+    layout = CanonicalViewLayout.from_metadata(metadata)
+    assert layout.canvas_height == 8
+    assert layout.canvas_width == 10
+    assert layout.placements[0].source_name == "wrist"
+    assert (layout.placements[0].top, layout.placements[0].left) == (2, 2)
     assert torch.equal(canvas[:, :, 2:6, 2:7], _views(1)[0])
 
 
@@ -109,10 +107,41 @@ def test_assembly_preserves_gradients_for_every_selected_view() -> None:
 
 
 @pytest.mark.parametrize(
+    ("second", "message"),
+    [
+        (torch.zeros(2, 3, 4, 5, dtype=torch.float64), "requires one dtype"),
+        (torch.empty(2, 3, 4, 5, device="meta"), "requires one device"),
+    ],
+)
+def test_assembly_rejects_cross_view_storage_mismatches(
+    second: torch.Tensor,
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        assemble_latent_views(
+            [torch.zeros(2, 3, 4, 5), second],
+            slots=("front", "wrist"),
+        )
+
+
+@pytest.mark.parametrize("canvas_view_count", [True, 2.5])
+def test_assembly_requires_integral_canvas_view_count(
+    canvas_view_count: object,
+) -> None:
+    with pytest.raises(ValueError, match="must be an integer"):
+        assemble_latent_views(
+            _views(1),
+            slots=("front",),
+            canvas_view_count=canvas_view_count,  # type: ignore[arg-type]
+        )
+
+
+@pytest.mark.parametrize(
     ("views", "slots", "canvas_view_count", "message"),
     [
         (_views(1), (), 1, "Expected one latent tensor per slot"),
         ((), (), 1, "supports 1 to 4 views"),
+        (_views(1), ("a",), 0, "canvas supports 1 to 4 views"),
         (_views(1), ("a",), 5, "canvas supports 1 to 4 views"),
         (_views(2), ("a", "b"), 1, "cannot hold 2 selected views"),
         (

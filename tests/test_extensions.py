@@ -12,6 +12,7 @@ from open_wam.configs import (
     ExtensionPolicyConfig,
     GenericDataConfig,
     ProprioContextMode,
+    TextConditioningMode,
     load_experiment_config,
 )
 from open_wam.data import build_synthetic_batch, build_train_val_datasets
@@ -199,6 +200,7 @@ def test_out_of_tree_extension_loads_typed_policy_and_decoder_from_yaml(
         "attach_site": "post_visual_core",
         "proprio_context_mode": "per_chunk_additive",
         "dynamics_mode_context_enabled": True,
+        "text_conditioning_mode": "disabled",
         "options": {"attention_profile": "acme.block_sparse", "width": 32},
     }
     raw["action_decoder"] = {
@@ -226,6 +228,11 @@ def test_out_of_tree_extension_loads_typed_policy_and_decoder_from_yaml(
         ProprioContextMode.PER_CHUNK_ADDITIVE
     )
     assert config.policy_variant.conditioning_requirements.dynamics_mode_context_enabled
+    assert config.policy_variant.text_conditioning_mode is TextConditioningMode.DISABLED
+    assert (
+        config.policy_variant.conditioning_requirements.text_conditioning_mode
+        is TextConditioningMode.DISABLED
+    )
     assert config.policy_variant.options == {
         "attention_profile": "acme.block_sparse",
         "width": 32,
@@ -300,6 +307,7 @@ def test_out_of_tree_policy_and_decoder_run_full_pipeline(
         "extension_type": policy_type,
         "hidden_size": 32,
         "attach_site": "post_visual_core",
+        "text_conditioning_mode": "disabled",
         "options": {},
     }
     raw["action_decoder"] = {
@@ -317,6 +325,10 @@ def test_out_of_tree_policy_and_decoder_run_full_pipeline(
     load_extension_module(module_name)
     config = load_experiment_config(config_path)
     pipeline = build_variant_pipeline_from_config(config)
+    assert (
+        pipeline.visual_tower.frontend.text_conditioning_mode
+        is TextConditioningMode.DISABLED
+    )
     batch = build_synthetic_batch(config.data, batch_size=1)
     train_batch = PolicyTrainBatch(
         actions=batch.actions,

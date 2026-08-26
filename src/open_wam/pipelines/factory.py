@@ -157,6 +157,7 @@ def build_variant_pipeline_from_config(config: ExperimentConfig) -> VariantPipel
         dynamics_mode_context_enabled=(
             conditioning_requirements.dynamics_mode_context_enabled
         ),
+        text_conditioning_mode=conditioning_requirements.text_conditioning_mode,
     )
     visual_tower.initialize_configured_weights()
 

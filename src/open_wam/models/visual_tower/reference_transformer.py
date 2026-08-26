@@ -5,7 +5,7 @@ import torch
 from open_wam.configs import ReferenceCoreInitMode
 from open_wam.configs.backbone import SharedVideoTransformerConfig
 
-from .reference_loader import load_wan_transformer_class, resolve_pretrained_component_dir
+from .reference_loader import load_wan_transformer_class, resolve_runtime_backbone_dir
 
 
 def preferred_reference_dtype(device: torch.device) -> torch.dtype:
@@ -21,10 +21,7 @@ def build_reference_transformer(
 ) -> torch.nn.Module:
     model_cls = load_wan_transformer_class(backbone_config)
     preferred_dtype = preferred_reference_dtype(torch.device("cuda" if torch.cuda.is_available() else "cpu"))
-    transformer_dir = resolve_pretrained_component_dir(
-        backbone_config.pretrained_model_name_or_path,
-        backbone_config.transformer_subdir,
-    )
+    transformer_dir = resolve_runtime_backbone_dir(backbone_config)
     if transformer_dir is not None and transformer_dir.exists():
         init_mode = getattr(backbone_config, "reference_core_init_mode", ReferenceCoreInitMode.FULL)
         if init_mode == ReferenceCoreInitMode.VIDEO_ONLY:

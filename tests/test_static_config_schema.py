@@ -39,6 +39,155 @@ def test_static_validator_accepts_public_tiny_configs() -> None:
 
 
 @pytest.mark.unit
+def test_static_validator_rejects_transformer_subdir_parent_traversal(
+    tmp_path: Path,
+) -> None:
+    source = REPO_ROOT / "configs/experiments/dual_expert_libero_joint.yaml"
+    raw = yaml.safe_load(source.read_text(encoding="utf-8"))
+    raw["backbone"]["transformer_subdir"] = "../transformer"
+    config_path = tmp_path / "invalid_transformer_subdir.yaml"
+    config_path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+
+    report = validate_config_file(config_path, repo_root=REPO_ROOT)
+
+    assert any(
+        issue.path == "backbone.transformer_subdir"
+        and "cannot contain" in issue.message
+        for issue in report.errors
+    )
+
+
+@pytest.mark.unit
+def test_static_validator_rejects_invalid_runtime_backbone_export_component(
+    tmp_path: Path,
+) -> None:
+    source = (
+        REPO_ROOT
+        / "configs/experiments/causal_video_prediction_libero_latent_local.yaml"
+    )
+    raw = yaml.safe_load(source.read_text(encoding="utf-8"))
+    raw["trainer"]["runtime_backbone_export_components"] = [
+        "visual_tower.typo"
+    ]
+    config_path = tmp_path / "invalid_export_component.yaml"
+    config_path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+
+    report = validate_config_file(config_path, repo_root=REPO_ROOT)
+
+    assert any(
+        issue.path == "trainer.runtime_backbone_export_components"
+        and "visual_tower.typo" in issue.message
+        for issue in report.errors
+    )
+
+
+@pytest.mark.unit
+def test_static_validator_requires_causal_video_cfg_training_dropout(
+    tmp_path: Path,
+) -> None:
+    source = (
+        REPO_ROOT
+        / "configs/experiments/causal_video_prediction_libero_latent_local.yaml"
+    )
+    raw = yaml.safe_load(source.read_text(encoding="utf-8"))
+    raw["training"]["text_condition_dropout_prob"] = 0.0
+    raw["inference"]["guidance_scale"] = 2.0
+    config_path = tmp_path / "causal_video_cfg.yaml"
+    config_path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+
+    report = validate_config_file(config_path, repo_root=REPO_ROOT)
+
+    assert any(
+        issue.path == "inference.guidance_scale"
+        and "text_condition_dropout_prob > 0" in issue.message
+        for issue in report.errors
+    )
+
+    raw["training"]["text_condition_dropout_prob"] = 0.1
+    config_path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+    assert validate_config_file(config_path, repo_root=REPO_ROOT).ok
+
+
+@pytest.mark.unit
+def test_static_validator_requires_latent_adapter_for_causal_video_text_dropout(
+    tmp_path: Path,
+) -> None:
+    source = (
+        REPO_ROOT
+        / "configs/experiments/causal_video_prediction_libero_latent_local.yaml"
+    )
+    raw = yaml.safe_load(source.read_text(encoding="utf-8"))
+    raw["training"]["text_condition_dropout_prob"] = 0.1
+    raw["trainer"]["batch_adapter"] = "views"
+    config_path = tmp_path / "causal_views_dropout.yaml"
+    config_path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+
+    report = validate_config_file(config_path, repo_root=REPO_ROOT)
+
+    assert any(
+        issue.path == "trainer.batch_adapter"
+        and "batch_adapter=latents" in issue.message
+        for issue in report.errors
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("section", "field_name", "value", "expected_path"),
+    (
+        (
+            "training",
+            "text_condition_dropout_prob",
+            0.1,
+            "training.text_condition_dropout_prob",
+        ),
+        ("inference", "guidance_scale", 2.0, "inference.guidance_scale"),
+    ),
+)
+def test_static_validator_rejects_disabled_text_conditioning_conflicts(
+    tmp_path: Path,
+    section: str,
+    field_name: str,
+    value: float,
+    expected_path: str,
+) -> None:
+    source = (
+        REPO_ROOT
+        / "configs/experiments/causal_video_prediction_libero_latent_local.yaml"
+    )
+    raw = yaml.safe_load(source.read_text(encoding="utf-8"))
+    raw["policy_variant"]["text_conditioning_mode"] = "disabled"
+    raw["training"]["text_condition_dropout_prob"] = 0.0
+    raw["inference"]["guidance_scale"] = 1.0
+    raw[section][field_name] = value
+    config_path = tmp_path / f"causal_disabled_{field_name}.yaml"
+    config_path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+
+    report = validate_config_file(config_path, repo_root=REPO_ROOT)
+
+    assert any(issue.path == expected_path for issue in report.errors)
+
+
+@pytest.mark.unit
+def test_static_validator_rejects_removed_causal_text_boolean(tmp_path: Path) -> None:
+    source = (
+        REPO_ROOT
+        / "configs/experiments/causal_video_prediction_libero_latent_local.yaml"
+    )
+    raw = yaml.safe_load(source.read_text(encoding="utf-8"))
+    raw["policy_variant"]["require_text_conditioning"] = True
+    config_path = tmp_path / "causal_removed_text_boolean.yaml"
+    config_path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+
+    report = validate_config_file(config_path, repo_root=REPO_ROOT)
+
+    assert any(
+        issue.path == "policy_variant.require_text_conditioning"
+        for issue in report.errors
+    )
+
+
+@pytest.mark.unit
 def test_static_validator_catches_enum_typos(tmp_path: Path) -> None:
     config_path = tmp_path / "bad.yaml"
     config_path.write_text(
@@ -1628,6 +1777,9 @@ policy_variant:
   name: extension
   extension_type: " "
   attach_site: post_visual_core
+  proprio_context_mode: typo
+  dynamics_mode_context_enabled: yes-please
+  text_conditioning_mode: typo
   options: []
 action_decoder:
   name: extension
@@ -1646,6 +1798,18 @@ trainer:
 
     assert not report.ok
     assert any(issue.path == "policy_variant.extension_type" for issue in report.errors)
+    assert any(
+        issue.path == "policy_variant.text_conditioning_mode"
+        for issue in report.errors
+    )
+    assert any(
+        issue.path == "policy_variant.proprio_context_mode"
+        for issue in report.errors
+    )
+    assert any(
+        issue.path == "policy_variant.dynamics_mode_context_enabled"
+        for issue in report.errors
+    )
     assert any(issue.path == "policy_variant.options" for issue in report.errors)
     assert any(issue.path == "action_decoder.extension_type" for issue in report.errors)
     assert any(issue.path == "action_decoder.options" for issue in report.errors)

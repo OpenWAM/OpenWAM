@@ -2751,9 +2751,7 @@ def test_encoded_dynamics_dataset_and_router_have_separate_owners() -> None:
     from open_wam.data import encoded_dynamics_ordering as source_order
 
     dataset_path = PACKAGE_ROOT / "data" / "encoded_dynamics_dataset.py"
-    materialization_path = (
-        PACKAGE_ROOT / "data" / "encoded_dynamics_materialization.py"
-    )
+    materialization_path = PACKAGE_ROOT / "data" / "encoded_dynamics_materialization.py"
     source_order_path = PACKAGE_ROOT / "data" / "encoded_dynamics_ordering.py"
     mixture_path = PACKAGE_ROOT / "data" / "dynamics_routing.py"
     dataset_definitions = _top_level_definitions(dataset_path)
@@ -4300,7 +4298,10 @@ def test_checkpoint_persistence_roles_have_one_owner() -> None:
         "storage": checkpoint_storage,
     }
     owner_names = {
-        "export": {"merge_state_dict_overlay"},
+        "export": {
+            "merge_state_dict_overlay",
+            "resolve_runtime_backbone_export_keys",
+        },
         "manager": {
             "CheckpointManager",
             "_cpu_align_non_dtensor_state_for_full_load",
@@ -4327,7 +4328,7 @@ def test_checkpoint_persistence_roles_have_one_owner() -> None:
     }
     all_names = set().union(*owner_names.values())
 
-    assert len(all_names) == 20
+    assert len(all_names) == 21
     assert all(
         sum(
             name in _top_level_definitions(path)
@@ -4339,7 +4340,8 @@ def test_checkpoint_persistence_roles_have_one_owner() -> None:
     for role, names in owner_names.items():
         assert _top_level_definitions(CHECKPOINT_ROLE_PATHS[role]) == names
     assert _module_all_names(CHECKPOINT_ROLE_PATHS["export"]) == {
-        "merge_state_dict_overlay"
+        "merge_state_dict_overlay",
+        "resolve_runtime_backbone_export_keys",
     }
     assert _module_all_names(CHECKPOINT_ROLE_PATHS["storage"]) == set()
     assert all(
@@ -7516,6 +7518,9 @@ def test_libero_dual_expert_drivers_delegate_to_the_package_episode_runner() -> 
     artifact_rendering_source = (
         PACKAGE_ROOT / "evals" / "libero_rollout_artifact_rendering.py"
     ).read_text(encoding="utf-8")
+    video_artifacts_source = (PACKAGE_ROOT / "evals" / "video_artifacts.py").read_text(
+        encoding="utf-8"
+    )
     visualization_source = (
         PACKAGE_ROOT / "evals" / "libero_visualization.py"
     ).read_text(encoding="utf-8")
@@ -7534,14 +7539,15 @@ def test_libero_dual_expert_drivers_delegate_to_the_package_episode_runner() -> 
     assert "._forward_infer_with_visual_outputs(" not in package_source
     assert "runner.reconcile_observed_history(" in package_source
     assert "persist_libero_rollout_artifacts(" in package_source
-    for rendering_implementation in (
-        "ImageDraw",
-        "VideoProcessor",
-        "_decode_latent_video",
-    ):
+    for rendering_implementation in ("ImageDraw",):
         assert rendering_implementation not in package_source
         assert rendering_implementation not in artifact_source
         assert rendering_implementation in artifact_rendering_source
+    for video_implementation in ("VideoProcessor", "_decode_latent_video"):
+        assert video_implementation not in package_source
+        assert video_implementation not in artifact_source
+        assert video_implementation not in artifact_rendering_source
+        assert video_implementation in video_artifacts_source
     for persistence_implementation in (
         "_actions.jsonl",
         "_chunks.json",
@@ -8176,11 +8182,7 @@ def test_checkpoint_artifact_discovery_has_one_lightweight_owner() -> None:
         "CheckpointSearchLayout",
         "checkpoint_step",
         "find_checkpoint_state_file",
-        "has_transformer_weights",
-        "is_transformer_only_input_dir",
         "is_usable_transformer_dir",
-        "read_backbone_transformer_subdir",
-        "read_backbone_transformer_subdir_without_yaml",
         "resolve_checkpoint_artifacts",
         "resolve_runtime_transformer_dir",
         "resolve_transformer_only_input",

@@ -379,6 +379,7 @@ def test_apply_checkpoint_runtime_override_uses_checkpoint_local_transformer(tmp
     transformer_dir = checkpoint_dir / "transformer"
     transformer_dir.mkdir(parents=True)
     (transformer_dir / "config.json").write_text("{}", encoding="utf-8")
+    (transformer_dir / "diffusion_pytorch_model.safetensors").write_bytes(b"weights")
     model_state = checkpoint_dir / "model_state.pt"
     model_state.write_bytes(b"test")
 
@@ -388,16 +389,27 @@ def test_apply_checkpoint_runtime_override_uses_checkpoint_local_transformer(tmp
     )
 
     assert resolved == model_state
-    assert resolved_config.backbone.transformer_subdir == str(transformer_dir.resolve())
+    assert resolved_config.backbone.runtime_backbone_artifact_path == str(
+        transformer_dir.resolve()
+    )
     assert str(resolved_config.backbone.reference_core_init_mode) == "full"
-    assert config.backbone.transformer_subdir != str(transformer_dir.resolve())
+    assert config.backbone.runtime_backbone_artifact_path != str(
+        transformer_dir.resolve()
+    )
 
 
-def test_apply_checkpoint_runtime_override_ignores_empty_transformer_export(tmp_path: Path) -> None:
+@pytest.mark.parametrize("with_config", [False, True])
+def test_apply_checkpoint_runtime_override_ignores_incomplete_transformer_export(
+    tmp_path: Path,
+    with_config: bool,
+) -> None:
     config = load_experiment_config(REPO_ROOT / "configs/experiments/dual_expert_robotwin_smoke.yaml")
-    original_transformer_subdir = config.backbone.transformer_subdir
+    original_artifact_path = config.backbone.runtime_backbone_artifact_path
     checkpoint_dir = tmp_path / "checkpoint_step_42"
-    (checkpoint_dir / "transformer").mkdir(parents=True)
+    transformer_dir = checkpoint_dir / "transformer"
+    transformer_dir.mkdir(parents=True)
+    if with_config:
+        (transformer_dir / "config.json").write_text("{}", encoding="utf-8")
     model_state = checkpoint_dir / "model_state.pt"
     model_state.write_bytes(b"test")
 
@@ -408,7 +420,10 @@ def test_apply_checkpoint_runtime_override_ignores_empty_transformer_export(tmp_
 
     assert resolved == model_state
     assert resolved_config is config
-    assert resolved_config.backbone.transformer_subdir == original_transformer_subdir
+    assert (
+        resolved_config.backbone.runtime_backbone_artifact_path
+        == original_artifact_path
+    )
 
 
 def test_run_evaluation_accepts_checkpoint_step_directory(tmp_path: Path) -> None:

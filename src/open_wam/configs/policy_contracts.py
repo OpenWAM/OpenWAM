@@ -13,6 +13,7 @@ from .enums import (
     DynamicsObjective,
     PolicyVariantName,
     ProprioContextMode,
+    TextConditioningMode,
     coerce_fields,
 )
 
@@ -23,12 +24,18 @@ class PolicyConditioningRequirements:
 
     proprio_context_mode: ProprioContextMode = ProprioContextMode.NONE
     dynamics_mode_context_enabled: bool = False
+    text_conditioning_mode: TextConditioningMode = TextConditioningMode.TASK_PROMPT
 
     def __post_init__(self) -> None:
         object.__setattr__(
             self,
             "proprio_context_mode",
             ProprioContextMode(self.proprio_context_mode),
+        )
+        object.__setattr__(
+            self,
+            "text_conditioning_mode",
+            TextConditioningMode(self.text_conditioning_mode),
         )
 
 
@@ -87,20 +94,24 @@ class ExtensionPolicyConfig(PolicyVariantConfig):
     options: Mapping[str, Any] = field(default_factory=dict)
     proprio_context_mode: ProprioContextMode = ProprioContextMode.NONE
     dynamics_mode_context_enabled: bool = False
+    text_conditioning_mode: TextConditioningMode = TextConditioningMode.TASK_PROMPT
 
     @property
     def conditioning_requirements(self) -> PolicyConditioningRequirements:
         return PolicyConditioningRequirements(
             proprio_context_mode=self.proprio_context_mode,
             dynamics_mode_context_enabled=bool(self.dynamics_mode_context_enabled),
+            text_conditioning_mode=self.text_conditioning_mode,
         )
 
     def __post_init__(self) -> None:
         super().__post_init__()
-        object.__setattr__(
+        coerce_fields(
             self,
-            "proprio_context_mode",
-            ProprioContextMode(self.proprio_context_mode),
+            enum_fields={
+                "proprio_context_mode": ProprioContextMode,
+                "text_conditioning_mode": TextConditioningMode,
+            },
         )
         if self.name != PolicyVariantName.EXTENSION:
             raise ValueError("Extension policy requires `name = extension`.")
@@ -126,6 +137,7 @@ class CausalVideoPredictionPolicyConfig(PolicyVariantConfig):
     name: PolicyVariantName = PolicyVariantName.CAUSAL_VIDEO_PREDICTION
     hidden_size: int = 256
     attach_site: AttachSite = AttachSite.POST_VISUAL_CORE
+    text_conditioning_mode: TextConditioningMode = TextConditioningMode.TASK_PROMPT
 
     @property
     def default_action_decoder(self) -> ActionDecoderName:
@@ -137,8 +149,18 @@ class CausalVideoPredictionPolicyConfig(PolicyVariantConfig):
     ) -> tuple[BackboneImplementation, ...]:
         return (BackboneImplementation.SHARED_TRANSFORMER,)
 
+    @property
+    def conditioning_requirements(self) -> PolicyConditioningRequirements:
+        return PolicyConditioningRequirements(
+            text_conditioning_mode=self.text_conditioning_mode,
+        )
+
     def __post_init__(self) -> None:
         super().__post_init__()
+        coerce_fields(
+            self,
+            enum_fields={"text_conditioning_mode": TextConditioningMode},
+        )
         if self.attach_site != AttachSite.POST_VISUAL_CORE:
             raise ValueError(
                 "Causal video prediction requires `attach_site = post_visual_core`, "

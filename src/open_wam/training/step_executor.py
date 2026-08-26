@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Protocol
 
 import torch
@@ -233,7 +233,10 @@ class PipelineTrainStepExecutor:
             metrics["sample_loss_weight"] = sample_loss_weight.detach()
         return TrainStepResult(loss=loss, metrics=metrics, output=output)
 
-    def _apply_text_condition_dropout(self, prepared: PreparedTrainInput) -> PreparedTrainInput:
+    def _apply_text_condition_dropout(
+        self,
+        prepared: PreparedTrainInput,
+    ) -> PreparedTrainInput:
         prob = float(self.training_config.text_condition_dropout_prob)
         if prob <= 0.0 or prepared.text_context is None or not self.pipeline.training:
             return prepared
@@ -246,13 +249,13 @@ class PipelineTrainStepExecutor:
             text_context[drop_mask] = prepared.negative_text_context[drop_mask]
         else:
             text_context[drop_mask] = 0.0
-        return PreparedTrainInput(
-            policy_batch=prepared.policy_batch,
-            views=prepared.views,
-            video_latents=prepared.video_latents,
-            canonical_video=prepared.canonical_video,
+        return replace(
+            prepared,
             text_context=text_context,
-            negative_text_context=prepared.negative_text_context,
+            policy_batch=replace(
+                prepared.policy_batch,
+                source_text_context=prepared.text_context,
+            ),
         )
 
 

@@ -65,6 +65,7 @@ from open_wam.models.policy_variants import (
     PolicyVariant,
 )
 from open_wam.pipelines import VariantRolloutRunner, build_variant_pipeline_from_config
+from open_wam.runtime.checkpoint_artifacts import is_usable_transformer_dir
 from open_wam.runtime.checkpoints import (
     CheckpointCompatibilityPolicy,
     load_pipeline_checkpoint,
@@ -102,13 +103,13 @@ def _apply_checkpoint_runtime_override(
 
     checkpoint_file = resolve_checkpoint_file(checkpoint_path)
     transformer_dir = checkpoint_file.parent / "transformer"
-    if not _is_usable_transformer_dir(transformer_dir):
+    if not is_usable_transformer_dir(transformer_dir):
         return experiment_config, checkpoint_file
     resolved_config = replace(
         experiment_config,
         backbone=replace(
             experiment_config.backbone,
-            transformer_subdir=str(transformer_dir.resolve()),
+            runtime_backbone_artifact_path=str(transformer_dir.resolve()),
             reference_core_init_mode=ReferenceCoreInitMode.FULL,
         ),
     )
@@ -127,11 +128,6 @@ def _resolve_evaluation_runtime(
         experiment_config,
         request.checkpoint_path,
     )
-
-
-def _is_usable_transformer_dir(path: Path) -> bool:
-    return path.is_dir() and any(path.iterdir())
-
 
 def _resolve_device(device: str, experiment_config: ExperimentConfig) -> torch.device:
     if device != "auto":

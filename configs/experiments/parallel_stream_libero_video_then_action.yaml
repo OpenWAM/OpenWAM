@@ -94,9 +94,9 @@ backbone:
   ffn_dim: 14336
   # Reference asset loading knobs
   # - pretrained_model_name_or_path points at the base LingBot-VA assets
-  # - transformer_subdir can point at a posttrain checkpoint transformer export
+  # - runtime_backbone_artifact_path selects the posttrain transformer export
   pretrained_model_name_or_path: "${paths.models.lingbot_va_base}"
-  transformer_subdir: "${paths.checkpoints.parallel_stream_exact_libero_step_400}/transformer"
+  runtime_backbone_artifact_path: "${paths.checkpoints.parallel_stream_exact_libero_step_400}/transformer"
   max_text_tokens: 512
   load_wan_vae_frontend: true
   load_text_conditioning: true

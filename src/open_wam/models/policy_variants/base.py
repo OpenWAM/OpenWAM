@@ -85,6 +85,7 @@ class PolicyVariant(nn.Module, ABC):
 
         return PolicyModuleTopology(
             visual_runtime_modules=(visual_tower.core,),
+            visual_components=visual_tower.component_topology(),
             fsdp_block_stacks=(visual_tower.core,),
         )
 
@@ -195,6 +196,7 @@ class VideoActionPolicyVariant(PolicyVariant, ABC):
             state_dim=default_state_dim,
             proprio_context_mode=conditioning.proprio_context_mode,
             dynamics_mode_context_enabled=conditioning.dynamics_mode_context_enabled,
+            text_conditioning_mode=conditioning.text_conditioning_mode,
             source_action_channel_ids=self.source_action_channel_ids,
             accepted_source_action_shapes=self.accepted_source_action_shapes,
         )

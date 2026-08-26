@@ -4,6 +4,7 @@ import json
 import importlib.util
 from pathlib import Path
 
+import pytest
 import torch
 from safetensors.torch import save_file
 
@@ -150,3 +151,36 @@ def test_convert_wan22_to_lingbot_init_uses_remapped_weights_and_keeps_extra_key
     assert report["left_random_lingbot_keys"] == ["action_embedder.weight"]
     assert (output_root / "transformer" / "fake_model.txt").exists()
     assert (output_root / "wan22_to_lingbot_init_report.json").exists()
+
+
+def test_raw_converter_preserves_existing_output_and_cleans_failed_publication(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    existing = tmp_path / "existing"
+    existing.mkdir()
+    sentinel = existing / "keep.txt"
+    sentinel.write_text("keep", encoding="utf-8")
+
+    with pytest.raises(FileExistsError, match="already exists"):
+        converter.convert_wan22_to_lingbot_init(
+            wan_root=tmp_path / "unused",
+            output_root=existing,
+        )
+    assert sentinel.read_text(encoding="utf-8") == "keep"
+
+    def _fail_conversion(**kwargs):
+        staging_root = kwargs["staging_root"]
+        (staging_root / "partial.txt").write_text("partial", encoding="utf-8")
+        raise RuntimeError("save failed")
+
+    monkeypatch.setattr(converter, "_convert_wan22_to_lingbot_init", _fail_conversion)
+    failed = tmp_path / "failed"
+    with pytest.raises(RuntimeError, match="save failed"):
+        converter.convert_wan22_to_lingbot_init(
+            wan_root=tmp_path / "unused",
+            output_root=failed,
+        )
+
+    assert not failed.exists()
+    assert not list(tmp_path.glob(".failed.tmp-*"))

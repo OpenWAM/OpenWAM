@@ -25,7 +25,7 @@ def test_docs_site_stages_curated_public_docs_only(tmp_path: Path) -> None:
 
     summary = builder.build_docs_site(output)
 
-    assert summary["public_pages"] == len(builder.PUBLIC_MARKDOWN_PATHS) == 25
+    assert summary["public_pages"] == len(builder.PUBLIC_MARKDOWN_PATHS) == 26
     assert summary["notes_published"] is False
     assert summary["broken_local_links"] == 0
     assert summary["missing_repository_paths"] == 0
@@ -36,6 +36,7 @@ def test_docs_site_stages_curated_public_docs_only(tmp_path: Path) -> None:
     assert (output / "policy_architectures.md").is_file()
     assert (output / "benchmarks.md").is_file()
     assert (output / "running_experiments.md").is_file()
+    assert (output / "video_only_training.md").is_file()
     assert not (output / "engineering-notes").exists()
     assert not (output / "CHECKPOINT.md").exists()
     assert not (output / "camera_sync_deploy_issue.md").exists()

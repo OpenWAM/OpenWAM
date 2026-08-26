@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import replace
 import json
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -10,6 +10,23 @@ from typing import Any
 import imageio.v2 as imageio
 import torch
 
+from open_wam.configs import (
+    ExperimentConfig,
+    load_experiment_config,
+    load_local_path_registry,
+    resolve_experiment_config_reference,
+    serialize_experiment_config,
+)
+from open_wam.runtime import build_result_envelope
+from open_wam.runtime.checkpoint_artifacts import is_usable_transformer_dir
+from open_wam.runtime.checkpoints import (
+    CheckpointCompatibilityPolicy,
+    load_pipeline_checkpoint,
+    resolve_checkpoint_file,
+    resolve_checkpoint_step_dir_from_transformer_dir,
+)
+from open_wam.runtime.provenance import collect_runtime_provenance
+from open_wam.runtime.results import write_result_json
 from open_wam.simulators import (
     SimulatorBackend,
     run_closed_loop_sim_rollout,
@@ -19,25 +36,9 @@ from open_wam.simulators.builtins import (
     normalize_builtin_simulator_options,
     register_builtin_simulator_adapters,
 )
-from open_wam.runtime import build_result_envelope
-from open_wam.runtime.provenance import collect_runtime_provenance
-from open_wam.runtime.results import write_result_json
 from open_wam.simulators.registry import (
     SimulatorFactoryContext,
     build_simulator_adapter,
-)
-from open_wam.runtime.checkpoints import (
-    CheckpointCompatibilityPolicy,
-    load_pipeline_checkpoint,
-    resolve_checkpoint_file,
-    resolve_checkpoint_step_dir_from_transformer_dir,
-)
-from open_wam.configs import (
-    ExperimentConfig,
-    load_experiment_config,
-    load_local_path_registry,
-    resolve_experiment_config_reference,
-    serialize_experiment_config,
 )
 from open_wam.utils import seed_everywhere
 
@@ -77,7 +78,10 @@ def run_simulator_rollout_command(args: argparse.Namespace) -> dict[str, Any]:
             device=device,
         )
     else:
-        from open_wam.pipelines import VariantRolloutRunner, build_variant_pipeline_from_config
+        from open_wam.pipelines import (
+            VariantRolloutRunner,
+            build_variant_pipeline_from_config,
+        )
 
         pipeline = build_variant_pipeline_from_config(config).to(device)
         pipeline.eval()
@@ -250,12 +254,14 @@ def _resolve_device(value: str) -> torch.device:
 def _resolve_checkpoint_for_config(*, config: Any, checkpoint_arg: str | None) -> Path | None:
     if checkpoint_arg is not None:
         return resolve_checkpoint_file(Path(checkpoint_arg))
-    transformer_subdir = getattr(config.backbone, "transformer_subdir", None)
-    if transformer_subdir is None:
+    from open_wam.models.visual_tower import resolve_runtime_backbone_dir
+
+    transformer_dir = resolve_runtime_backbone_dir(config.backbone)
+    if transformer_dir is None:
         return None
     try:
         checkpoint_step_dir = resolve_checkpoint_step_dir_from_transformer_dir(
-            Path(str(transformer_subdir))
+            transformer_dir
         )
         return resolve_checkpoint_file(checkpoint_step_dir)
     except (FileNotFoundError, ValueError):
@@ -268,12 +274,12 @@ def _with_checkpoint_backbone_override(
     checkpoint_path: Path,
 ) -> ExperimentConfig:
     transformer_dir = checkpoint_path.parent / "transformer"
-    if not transformer_dir.is_dir():
+    if not is_usable_transformer_dir(transformer_dir):
         return config
     return replace(
         config,
         backbone=replace(
             config.backbone,
-            transformer_subdir=str(transformer_dir.resolve()),
+            runtime_backbone_artifact_path=str(transformer_dir.resolve()),
         ),
     )

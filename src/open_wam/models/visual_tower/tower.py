@@ -5,7 +5,11 @@ from typing import Any
 import torch
 from torch import nn
 
-from open_wam.configs import BackboneImplementation, ProprioContextMode
+from open_wam.configs import (
+    BackboneImplementation,
+    ProprioContextMode,
+    TextConditioningMode,
+)
 from open_wam.configs.backbone import (
     SharedVideoTransformerConfig,
     normalize_backbone_implementation,
@@ -24,6 +28,7 @@ from open_wam.models.video_backbone.contracts import (
 
 from .cache_lifecycle import _MAX_CACHED_FRAMES_UNSET, RuntimeCacheLifecycle
 from .contracts import (
+    VisualComponentTopology,
     VisualCoreInput,
     VisualRuntimeStateSnapshot,
     VisualStageOutputs,
@@ -88,6 +93,23 @@ class VisualTower(nn.Module):
             )
         self.reference_core_load_report: BackboneLoadReport | None = None
 
+    def component_topology(self) -> VisualComponentTopology:
+        """Return semantic component groups without exposing core internals."""
+
+        resolver = getattr(self.core, "component_topology", None)
+        if not callable(resolver):
+            raise TypeError(
+                "Visual cores must declare semantic ownership through "
+                "`component_topology()`."
+            )
+        topology = resolver()
+        if not isinstance(topology, VisualComponentTopology):
+            raise TypeError(
+                "Visual core `component_topology()` must return "
+                "VisualComponentTopology."
+            )
+        return topology
+
     def initialize_configured_weights(self) -> None:
         """Load eagerly requested weights after policy adapters are configured."""
 
@@ -113,12 +135,17 @@ class VisualTower(nn.Module):
         *,
         proprio_context_mode: ProprioContextMode | str,
         dynamics_mode_context_enabled: bool,
+        text_conditioning_mode: TextConditioningMode | str = (
+            TextConditioningMode.TASK_PROMPT
+        ),
     ) -> None:
         """Configure backbone-facing conditioning hooks for a policy.
 
         Policy architectures select semantic conditioning modes; the visual
         tower owns the concrete core capabilities that implement them.
         """
+
+        self.frontend.configure_text_conditioning(text_conditioning_mode)
 
         if dynamics_mode_context_enabled:
             configure_mode = getattr(

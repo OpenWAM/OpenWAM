@@ -234,8 +234,9 @@ The generic training runtime owns optimizer, scheduler, logging, validation,
 distributed strategy, and checkpoint lifecycle. Policy differences enter only
 through configured batches and pipeline outputs.
 
-`CheckpointManager` writes model state and, when configured, exact-resume
-training state. Architecture refactors must preserve parameter names,
+`CheckpointManager` writes model state and, when configured, full optimizer,
+scheduler, strategy/scaler, and progress state. Architecture refactors must
+preserve parameter names,
 registration order, state-dict keys, optimizer mapping, and recurrent cache
 semantics for maintained checkpoints.
 

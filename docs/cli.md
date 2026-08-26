@@ -49,6 +49,14 @@ uv run --extra train open-wam-train \
 uv run open-wam-validate-config configs/examples/public_tiny_synthetic_contract.yaml
 ```
 
+`open-wam-validate-config` checks authored experiment and evaluation YAML. Do
+not use it to lint checkpoint-generated `resolved_config.yaml` files: those
+artifacts serialize typed defaults, including fields intentionally omitted from
+an authored method config. Load such files through the runtime checkpoint path,
+which applies checkpoint compatibility when required. For a current-schema
+artifact, `open-wam-inspect-config` can display the typed configuration without
+treating it as authored YAML.
+
 ```bash
 uv run --extra train open-wam-train \
   --cfg configs/examples/public_tiny_synthetic_contract.yaml \
@@ -85,3 +93,12 @@ results produced under that opt-in should not be reported as normal evals.
 Third-party simulator adapters use `--extension`, an application-owned
 `--benchmark` identifier, and repeatable `--sim-option KEY=VALUE` values. See
 the [simulator adapter cookbook](cookbooks/new_simulator_adapter.md).
+
+## Source-Checkout Utilities
+
+Model conversion, dataset generation, research diagnostics, and specialized
+artifact visualization can require a source checkout. In particular, the Wan
+conversion scripts and `scripts/generate_video_only_rollout.py` are not installed
+console commands and are not included in release distributions. Their guides
+label them as source-checkout integrations. They may compose package APIs, but
+they are not stable package entrypoints.

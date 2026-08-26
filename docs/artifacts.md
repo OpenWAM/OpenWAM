@@ -67,9 +67,16 @@ checkpoint_step_N/
   model_state.pt
   transformer/
     config.json
-    ...
+    diffusion_pytorch_model.safetensors
 ```
 
 Transformer-only runtime paths may point directly at `checkpoint_step_N/transformer`.
 Code that accepts checkpoint roots should also accept roots containing a
 `transformer/` child when possible.
+
+A usable transformer export contains a valid JSON object in `config.json` and
+either one nonempty `diffusion_pytorch_model.safetensors` file or a
+`diffusion_pytorch_model.safetensors.index.json` whose `weight_map` references
+only present, nonempty shards. Runtime, checkpoint, evaluation, and CLI paths
+all enforce this same contract; a directory containing only `config.json` is
+not a model artifact.

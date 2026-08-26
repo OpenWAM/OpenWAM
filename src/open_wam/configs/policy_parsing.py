@@ -168,14 +168,33 @@ def parse_policy_variant_config(
                 resolved_raw.get("dynamics_mode_context_enabled", False),
                 field_name="policy_variant.dynamics_mode_context_enabled",
             ),
+            text_conditioning_mode=_coerce_enum(
+                config_enums.TextConditioningMode,
+                resolved_raw.get(
+                    "text_conditioning_mode",
+                    config_enums.TextConditioningMode.TASK_PROMPT,
+                ),
+            ),
         )
     if name == config_enums.PolicyVariantName.CAUSAL_VIDEO_PREDICTION:
+        if "require_text_conditioning" in resolved_raw:
+            raise ValueError(
+                "`policy_variant.require_text_conditioning` was removed; select "
+                "`policy_variant.text_conditioning_mode: task_prompt` or `disabled`."
+            )
         return CausalVideoPredictionPolicyConfig(
             hidden_size=hidden_size,
             attach_site=_coerce_enum(
                 config_enums.AttachSite,
                 resolved_raw.get(
                     "attach_site", config_enums.AttachSite.POST_VISUAL_CORE
+                ),
+            ),
+            text_conditioning_mode=_coerce_enum(
+                config_enums.TextConditioningMode,
+                resolved_raw.get(
+                    "text_conditioning_mode",
+                    config_enums.TextConditioningMode.TASK_PROMPT,
                 ),
             ),
         )

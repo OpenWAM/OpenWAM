@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from operator import index
 from typing import Any
 
 import torch
+
+from open_wam.contracts.video import CanonicalViewLayout, ViewPlacement
 
 
 def assemble_latent_views(
@@ -26,12 +29,16 @@ def assemble_latent_views(
             f"Mixed-video latent view assembly supports 1 to 4 views, got {len(latents)}."
         )
     first = latents[0]
+    if not isinstance(first, torch.Tensor):
+        raise TypeError("Latent views must be torch.Tensor instances.")
     if first.ndim != 4:
         raise ValueError(
             f"Expected latent views shaped [C,T,H,W], got {tuple(first.shape)}."
         )
     channels, frames, height, width = (int(value) for value in first.shape)
     for slot, latent in zip(slot_names, latents, strict=True):
+        if not isinstance(latent, torch.Tensor):
+            raise TypeError(f"Latent view {slot!r} must be a torch.Tensor.")
         if latent.ndim != 4:
             raise ValueError(
                 f"Expected latent view {slot!r} shaped [C,T,H,W], "
@@ -48,8 +55,30 @@ def assemble_latent_views(
                 f"got first={(channels, frames, height, width)} and "
                 f"{slot!r}={tuple(latent.shape)}."
             )
+        if latent.dtype != first.dtype:
+            raise ValueError(
+                "Mixed-video latent view assembly requires one dtype, "
+                f"got first={first.dtype} and {slot!r}={latent.dtype}."
+            )
+        if latent.device != first.device:
+            raise ValueError(
+                "Mixed-video latent view assembly requires one device, "
+                f"got first={first.device} and {slot!r}={latent.device}."
+            )
 
-    resolved_canvas_views = int(canvas_view_count or len(latents))
+    if canvas_view_count is None:
+        resolved_canvas_views = len(latents)
+    else:
+        if isinstance(canvas_view_count, bool):
+            raise ValueError(
+                "Mixed-video latent assembly canvas_view_count must be an integer."
+            )
+        try:
+            resolved_canvas_views = index(canvas_view_count)
+        except TypeError as exc:
+            raise ValueError(
+                "Mixed-video latent assembly canvas_view_count must be an integer."
+            ) from exc
     if not 1 <= resolved_canvas_views <= 4:
         raise ValueError(
             "Mixed-video latent assembly canvas supports 1 to 4 views, "
@@ -72,7 +101,7 @@ def assemble_latent_views(
         view_height=height,
         view_width=width,
     )
-    placement_metadata: list[dict[str, Any]] = []
+    view_placements: list[ViewPlacement] = []
     for slot, latent, (top, left) in zip(
         slot_names,
         latents,
@@ -80,24 +109,22 @@ def assemble_latent_views(
         strict=True,
     ):
         canvas[:, :, top : top + height, left : left + width] = latent
-        placement_metadata.append(
-            {
-                "slot": slot,
-                "top": int(top),
-                "left": int(left),
-                "height": int(height),
-                "width": int(width),
-            }
+        view_placements.append(
+            ViewPlacement(
+                source_name=slot,
+                canonical_name=slot,
+                top=int(top),
+                left=int(left),
+                height=int(height),
+                width=int(width),
+            )
         )
-    return canvas.contiguous(), {
-        "slots": list(slot_names),
-        "canvas_view_count": resolved_canvas_views,
-        "canvas_height": int(canvas_height),
-        "canvas_width": int(canvas_width),
-        "view_height": int(height),
-        "view_width": int(width),
-        "placements": placement_metadata,
-    }
+    layout = CanonicalViewLayout(
+        canvas_height=int(canvas_height),
+        canvas_width=int(canvas_width),
+        placements=tuple(view_placements),
+    )
+    return canvas.contiguous(), layout.to_metadata()
 
 
 def _latent_assembly_canvas_shape(

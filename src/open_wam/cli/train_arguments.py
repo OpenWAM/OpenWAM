@@ -29,7 +29,12 @@ def build_train_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--run-name", type=str)
     parser.add_argument("--dataset-root", type=str)
     parser.add_argument("--latent-root", type=str)
-    parser.add_argument("--transformer-subdir", type=str)
+    parser.add_argument(
+        "--runtime-backbone-path",
+        dest="runtime_backbone_artifact_path",
+        type=str,
+        help="Detached runtime-backbone artifact used to initialize model weights.",
+    )
     parser.add_argument(
         "--devices",
         type=int,

@@ -92,3 +92,24 @@ uv run pytest -m sim
 
 Tests that require real datasets or simulator roots should skip with an
 actionable message when the resource is missing.
+
+## Video-Only Parity
+
+The CPU semantic suite permanently fixes the causal-video training contract at
+the gradient level. A fixed tiny shared transformer, latent/text batch,
+diffusion seed, and SGD update must preserve the exact trainable-name set and
+parameter inventory. It compares the loss, predicted latents, every named
+gradient, and every named updated parameter elementwise against an immutable
+`safetensors` golden. Names, shapes, and dtypes must match exactly; numerical
+values use a small tolerance because supported CPU kernels are not
+byte-identical across hosts. The companion inference test executes the real
+causal policy over multiple chunks while also verifying clean-prefix
+preservation and complete generated-history progression.
+
+Additional focused tests require exact converter tensor provenance, strict
+template model-schema coverage, topology-scoped export ownership, complete
+prefix timestep-zero conditioning, exact cross-view latent metadata and
+geometry, explicit text-dropout source preservation, typed policy-to-decoder video-flow
+artifacts, strict CFG requirements, and create-only atomic publication.
+Real-checkpoint GPU runs remain the resource-gated confirmation that
+dtype/device integration matches these CPU contracts.

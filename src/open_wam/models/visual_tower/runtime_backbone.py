@@ -18,12 +18,12 @@ from .exported_runtime_backbone import (
     is_allowed_runtime_missing_key,
     is_open_wam_exported_runtime_backbone_dir,
     load_exported_runtime_backbone_into_replica_core,
-    resolve_runtime_backbone_dir,
 )
 from .reference_core_weights import (
     BackboneLoadReport,
     load_reference_weights_into_replica_core,
 )
+from .reference_loader import resolve_runtime_backbone_dir
 from .reference_transformer import preferred_reference_dtype
 
 
@@ -38,10 +38,10 @@ def initialize_runtime_backbone(
 
     if current_report is not None:
         return current_report
-    if config.pretrained_model_name_or_path is None:
-        return None
 
     runtime_backbone_dir = resolve_runtime_backbone_dir(config)
+    if runtime_backbone_dir is None:
+        return None
     is_exported_runtime_dir = is_open_wam_exported_runtime_backbone_dir(
         runtime_backbone_dir
     )

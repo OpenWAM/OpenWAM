@@ -194,12 +194,13 @@ runtime implementation and checkpoint/parity coverage. There is no
 Use a policy extension for application-owned learned parameters,
 packing/conditioning semantics, runtime-program selection, or recurrent
 inference state. Declare standard shared-tower adapters through the extension
-config's `proprio_context_mode` and `dynamics_mode_context_enabled` fields; they
-must be known before modules are allocated. Return `PolicyPipelineRequirements`
-from `pipeline_requirements()` to validate model-space geometry and carry any
-source-to-model action channel projection into the decoder. Pass policy-specific
-outputs through a typed `DecoderArtifactEnvelope`; do not expose decoder-private
-tensors through unstructured pipeline keys. See
+config's `proprio_context_mode`, `dynamics_mode_context_enabled`, and
+`text_conditioning_mode` fields; they must be known before modules are
+allocated. Return `PolicyPipelineRequirements` from `pipeline_requirements()`
+to validate model-space geometry and carry any source-to-model action channel
+projection into the decoder. Pass policy-specific outputs through a typed
+`DecoderArtifactEnvelope`; do not expose decoder-private tensors through
+unstructured pipeline keys. See
 [Adding A Policy Variant](#adding-a-policy-variant).
 
 ### ActionDecoder
@@ -292,6 +293,7 @@ policy_variant:
   extension_type: acme.block_sparse_policy
   hidden_size: 1536
   attach_site: within_visual_core
+  text_conditioning_mode: task_prompt
   options:
     block_size: 64
     history_chunks: 8
@@ -568,7 +570,7 @@ policy variant or transformer block.
 Built-in optimizer, scheduler, precision, strategy, loop, checkpoint, and
 logging choices are config driven. They are not SDK registries. An application
 may call a `VariantPipeline` from its own research loop, but then it owns
-distributed coordination, exact resume, validation, and logging. Reusable
+distributed coordination, resume semantics, validation, and logging. Reusable
 behavior belongs in a generic typed in-tree training contract, not a policy- or
 benchmark-named trainer branch.
 

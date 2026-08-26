@@ -70,7 +70,7 @@ inference:
 
 trainer:
   # This fixture intentionally exercises the complete public checkpoint and
-  # exact-resume lifecycle while remaining CPU-safe.
+  # full-state resume lifecycle while remaining CPU-safe.
   max_epochs: 1
   limit_train_batches: 1
   limit_val_batches: 1

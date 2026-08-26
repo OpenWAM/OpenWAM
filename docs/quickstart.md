@@ -61,8 +61,9 @@ uv run --extra eval open-wam-eval \
 ```
 
 The run directory now contains the resolved config, logs, model state, and full
-optimizer/scheduler/RNG state. `full_training_state.pt` provides exact resume;
-`model_state.pt` is the inference artifact and warm-start surface.
+optimizer/scheduler/strategy state. `full_training_state.pt` provides stateful
+continuation; process and dataloader RNG streams are not checkpointed, so it is
+not a bitwise replay. `model_state.pt` is the inference and warm-start surface.
 
 For a single-command numerical contract check, run:
 

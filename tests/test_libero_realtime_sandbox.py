@@ -1875,7 +1875,7 @@ def test_strict_split_cache_dual_expert_realtime_init_calls_env_with_single_fram
     config.data.action_schema.action_dim = 7
     config.data.action_target.gripper_representation = "action_command"
     config.backbone = SimpleNamespace(
-        transformer_subdir="/tmp/transformer",
+        runtime_backbone_artifact_path="/tmp/transformer",
         reference_assets_device_policy="runtime",
     )
     init_calls = []

@@ -7,7 +7,10 @@ from pathlib import Path
 
 from open_wam._shims.loader import ensure_flash_attn_shims
 from open_wam.configs.backbone import LingbotCompatibleVideoBackboneConfig
-from open_wam.contracts.paths import resolve_repo_path
+from open_wam.contracts.paths import (
+    resolve_model_component_path,
+    resolve_repo_path,
+)
 
 
 def resolve_reference_model_path(config: LingbotCompatibleVideoBackboneConfig) -> Path:
@@ -59,12 +62,17 @@ def resolve_pretrained_component_dir(
     pretrained_model_name_or_path: str | None,
     subdir: str,
 ) -> Path | None:
-    if pretrained_model_name_or_path is None:
-        return None
-    root = Path(pretrained_model_name_or_path).expanduser()
-    candidate = root / subdir
-    if candidate.exists():
-        return candidate
-    if (root / "config.json").exists():
-        return root
-    return candidate
+    return resolve_model_component_path(pretrained_model_name_or_path, subdir)
+
+
+def resolve_runtime_backbone_dir(
+    config: LingbotCompatibleVideoBackboneConfig,
+) -> Path | None:
+    """Resolve a detached runtime artifact or a transformer bundled under a root."""
+
+    return resolve_model_component_path(
+        getattr(config, "pretrained_model_name_or_path", None),
+        getattr(config, "transformer_subdir", "transformer"),
+        artifact_path=getattr(config, "runtime_backbone_artifact_path", None),
+        field_name="backbone.transformer_subdir",
+    )

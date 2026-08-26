@@ -435,6 +435,13 @@ class PolicyVariantName(StrEnum):
     EXTENSION = "extension"
 
 
+class TextConditioningMode(StrEnum):
+    """How a policy supplies semantic text context to the visual stack."""
+
+    TASK_PROMPT = "task_prompt"
+    DISABLED = "disabled"
+
+
 class DualExpertActionExpertInitMode(StrEnum):
     """How the DualExpert action expert should initialize from the video expert."""
 

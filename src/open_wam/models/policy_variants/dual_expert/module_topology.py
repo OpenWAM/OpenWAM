@@ -8,7 +8,7 @@ from open_wam.models.policy_variants.contracts import (
     PolicyModuleTopology,
     PolicyStateDictOverlay,
 )
-from open_wam.models.visual_tower import VisualTower
+from open_wam.models.visual_tower import VisualComponentTopology, VisualTower
 
 from .packed_block import DualExpertPackedBlockStack
 
@@ -41,11 +41,13 @@ def build_dual_expert_module_topology(
     if packed_block_stack is None:
         return PolicyModuleTopology(
             visual_runtime_modules=(visual_tower.core,),
+            visual_components=visual_tower.component_topology(),
             action_expert_modules=(action_expert,),
             fsdp_block_stacks=(visual_tower.core, action_expert),
         )
 
     packed_blocks = tuple(packed_block_stack.packed_blocks)
+    visual_components = visual_tower.component_topology()
     return PolicyModuleTopology(
         visual_runtime_modules=(
             visual_tower.core,
@@ -54,6 +56,14 @@ def build_dual_expert_module_topology(
         action_expert_modules=(
             action_expert,
             *(block.action_block for block in packed_blocks),
+        ),
+        visual_components=VisualComponentTopology(
+            shared_video_backbone=(
+                *visual_components.shared_video_backbone,
+                *(block.video_block for block in packed_blocks),
+            ),
+            shared_action_runtime=visual_components.shared_action_runtime,
+            shared_runtime_adapters=visual_components.shared_runtime_adapters,
         ),
         fsdp_atomic_modules=packed_blocks,
         runtime_backbone_state_overlays=(

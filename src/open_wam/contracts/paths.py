@@ -63,3 +63,60 @@ def resolve_repo_path(value: str | Path, *, repo_root: str | Path | None = None)
         return path.resolve()
     root = find_repo_root() if repo_root is None else Path(repo_root).expanduser().resolve()
     return (root / path).resolve()
+
+
+def validate_model_component_path(
+    value: str | Path,
+    *,
+    field_name: str = "model component path",
+) -> Path:
+    """Validate an absolute artifact path or a component beneath a model root."""
+
+    if not isinstance(value, (str, Path)) or not str(value).strip():
+        raise ValueError(f"`{field_name}` must be a non-empty path.")
+    path = Path(value).expanduser()
+    if not path.is_absolute() and ".." in path.parts:
+        raise ValueError(
+            f"Relative `{field_name}` cannot contain `..`; use an absolute path "
+            "for an artifact outside the model root."
+        )
+    return path
+
+
+def resolve_model_component_path(
+    pretrained_model_name_or_path: str | Path | None,
+    component_path: str | Path,
+    *,
+    artifact_path: str | Path | None = None,
+    field_name: str = "model component path",
+) -> Path | None:
+    """Resolve an explicit artifact or a component located under a model root.
+
+    Explicit artifacts take precedence. An absolute component path remains
+    usable for historical configs; a relative component path is interpreted
+    beneath ``pretrained_model_name_or_path``.
+    """
+
+    if not isinstance(component_path, (str, Path)) or not str(
+        component_path
+    ).strip():
+        raise ValueError(f"`{field_name}` must be a non-empty path.")
+    component = Path(component_path).expanduser()
+    if artifact_path is not None:
+        if not isinstance(artifact_path, (str, Path)) or not str(
+            artifact_path
+        ).strip():
+            raise ValueError("`artifact_path` must be a non-empty path when set.")
+        return Path(artifact_path).expanduser()
+    if component.is_absolute():
+        return component
+    if pretrained_model_name_or_path is None:
+        return None
+
+    root = Path(pretrained_model_name_or_path).expanduser()
+    candidate = root / component
+    if candidate.exists():
+        return candidate
+    if (root / "config.json").exists():
+        return root
+    return candidate

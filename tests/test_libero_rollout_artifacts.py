@@ -14,6 +14,7 @@ from open_wam.evals import libero_rollout_artifact_diagnostics as artifact_diagn
 from open_wam.evals import libero_rollout_artifact_rendering as artifact_rendering
 from open_wam.evals import libero_rollout_artifact_storage as artifact_storage
 from open_wam.evals import libero_rollout_artifacts as artifacts
+from open_wam.evals import video_artifacts
 
 
 def _observation(index: int) -> dict[str, np.ndarray]:
@@ -47,17 +48,19 @@ def test_artifact_facade_exports_canonical_role_objects_by_identity() -> None:
             "append_predicted_latent_chunk",
             "build_libero_fallback_timeline_video_frames",
             "build_libero_realtime_video_frames",
-            "decode_latent_video_chunks",
             "extract_predicted_latents",
             "iter_comparison_video_frames",
             "iter_rollout_video_frames",
-            "to_uint8",
             "with_title",
-            "write_video_frames",
         ),
         artifact_storage: (
             "build_libero_realtime_output_stem",
             "build_libero_rollout_output_path",
+        ),
+        video_artifacts: (
+            "decode_latent_video_chunks",
+            "to_uint8",
+            "write_video_frames",
         ),
     }
 
@@ -310,7 +313,7 @@ def test_write_video_frames_streams_to_imageio_writer(
         assert fps == 7.0
         return _Writer()
 
-    monkeypatch.setattr(artifacts.imageio, "get_writer", _fake_get_writer)
+    monkeypatch.setattr(video_artifacts.imageio, "get_writer", _fake_get_writer)
 
     artifacts.write_video_frames(
         tmp_path / "out.mp4",

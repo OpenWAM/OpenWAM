@@ -26,11 +26,13 @@ from open_wam.models.common.rollout_history import (
 from open_wam.models.policy_variants.dual_expert.inference_backend import (
     ensure_dual_expert_inference_backend,
 )
+from open_wam.models.visual_tower import resolve_runtime_backbone_dir
 from open_wam.pipelines import (
     VariantPipeline,
     VariantRolloutRunner,
     build_variant_pipeline_from_config,
 )
+from open_wam.runtime.checkpoint_artifacts import is_usable_transformer_dir
 from open_wam.runtime.checkpoints import (
     CheckpointCompatibilityPolicy,
     load_pipeline_checkpoint,
@@ -140,7 +142,7 @@ def load_dual_expert_libero_runtime(options: DualExpertLiberoLoadOptions) -> Dua
         checkpoint_arg=(
             None if options.checkpoint is None else str(options.checkpoint)
         ),
-        transformer_subdir=str(config.backbone.transformer_subdir),
+        runtime_backbone_artifact_path=resolve_runtime_backbone_dir(config.backbone),
     )
     if checkpoint_path is None:
         raise ValueError(options.checkpoint_error)
@@ -163,10 +165,10 @@ def load_dual_expert_libero_runtime(options: DualExpertLiberoLoadOptions) -> Dua
         allow_deprecated=options.allow_deprecated_libero_config,
     )
     transformer_dir = checkpoint_path.parent / "transformer"
-    if transformer_dir.is_dir():
+    if is_usable_transformer_dir(transformer_dir):
         object.__setattr__(
             config.backbone,
-            "transformer_subdir",
+            "runtime_backbone_artifact_path",
             str(transformer_dir.resolve()),
         )
         object.__setattr__(
@@ -411,7 +413,7 @@ def _resolve_dual_expert_checkpoint_path(
     *,
     config_path: Path,
     checkpoint_arg: str | None,
-    transformer_subdir: str | None,
+    runtime_backbone_artifact_path: str | Path | None,
 ) -> Path | None:
     if checkpoint_arg is not None:
         return resolve_checkpoint_file(Path(checkpoint_arg))
@@ -419,11 +421,13 @@ def _resolve_dual_expert_checkpoint_path(
     raw_checkpoint = raw.get("checkpoint_path")
     if raw_checkpoint is not None:
         return resolve_checkpoint_file(Path(str(raw_checkpoint)))
-    if transformer_subdir is None:
+    if runtime_backbone_artifact_path is None:
         return None
     try:
         return resolve_checkpoint_file(
-            resolve_checkpoint_step_dir_from_transformer_dir(transformer_subdir)
+            resolve_checkpoint_step_dir_from_transformer_dir(
+                runtime_backbone_artifact_path
+            )
         )
     except (FileNotFoundError, ValueError):
         return None
@@ -461,6 +465,7 @@ def _build_component_report(
     backbone = config.backbone
     policy_variant = pipeline.policy_variant
     action_expert = getattr(policy_variant, "action_expert", None)
+    runtime_backbone_dir = resolve_runtime_backbone_dir(backbone)
     return {
         "pipeline": "open_wam_dual_expert",
         "runtime_device": str(runtime_device),
@@ -493,10 +498,12 @@ def _build_component_report(
         "trainable_parameters": _count_trainable_parameters(pipeline),
         "total_parameters": sum(parameter.numel() for parameter in pipeline.parameters()),
         "backbone_pretrained_root": str(backbone.pretrained_model_name_or_path),
-        "transformer_subdir": str(backbone.transformer_subdir),
-        "config_sha256": _sha256_if_exists(Path(backbone.pretrained_model_name_or_path) / "transformer" / "config.json")
-        if backbone.pretrained_model_name_or_path
-        else None,
+        "runtime_backbone_artifact_path": (
+            None if runtime_backbone_dir is None else str(runtime_backbone_dir)
+        ),
+        "config_sha256": _sha256_if_exists(
+            None if runtime_backbone_dir is None else runtime_backbone_dir / "config.json"
+        ),
     }
 
 

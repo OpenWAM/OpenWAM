@@ -10,12 +10,16 @@ from . import enums
 from .coercion import coerce_enum, coerce_strict_chunk_size, raw_enum_value
 from .data_contracts import DataConfig
 from .experiment import ExperimentConfig
-from .policy_contracts import PolicyVariantConfig
+from .policy_contracts import (
+    CausalVideoPredictionPolicyConfig,
+    PolicyVariantConfig,
+)
 from .policy_video_action import (
     VideoActionPolicyConfig,
     fixed_conditioning_mode_for_program,
     supports_dynamics_routing,
 )
+from .training import TrainingConfig
 
 __all__ = [
     "apply_video_action_sequence_contract",
@@ -163,6 +167,65 @@ def validate_experiment_config_runtime_contract(
     config: ExperimentConfig,
 ) -> ExperimentConfig:
     """Validate cross-section runtime contracts after YAML and CLI overrides."""
+
+    if isinstance(config.policy_variant, CausalVideoPredictionPolicyConfig):
+        default_training = TrainingConfig()
+        for field_name in ("chunk_size", "window_size"):
+            configured_value = getattr(config.training, field_name)
+            default_value = getattr(default_training, field_name)
+            if configured_value != default_value:
+                raise ValueError(
+                    f"Causal video sample geometry is configured by "
+                    "`data.sample_construction.causal_prefix_suffix_buckets`; "
+                    f"`training.{field_name}` must remain at its unused default "
+                    f"{default_value!r}, got {configured_value!r}."
+                )
+
+        text_mode = config.policy_variant.text_conditioning_mode
+        dropout_probability = float(config.training.text_condition_dropout_prob)
+        guidance_scale = float(config.inference.guidance_scale)
+        if text_mode == enums.TextConditioningMode.DISABLED:
+            if dropout_probability != 0.0:
+                raise ValueError(
+                    "Causal video `text_conditioning_mode=disabled` requires "
+                    "`training.text_condition_dropout_prob=0.0`; every sample "
+                    "already uses the blank-text embedding."
+                )
+            if guidance_scale != 1.0:
+                raise ValueError(
+                    "Causal video `text_conditioning_mode=disabled` requires "
+                    "`inference.guidance_scale=1.0`; conditioned and "
+                    "unconditioned branches are identical."
+                )
+        elif dropout_probability >= 1.0:
+            raise ValueError(
+                "Causal video `text_conditioning_mode=task_prompt` requires "
+                "`training.text_condition_dropout_prob < 1.0`; select "
+                "`text_conditioning_mode=disabled` for unconditional training."
+            )
+
+    if (
+        isinstance(config.policy_variant, CausalVideoPredictionPolicyConfig)
+        and float(config.training.text_condition_dropout_prob) > 0.0
+        and config.trainer.batch_adapter != enums.BatchAdapterName.LATENTS
+    ):
+        raise ValueError(
+            "Causal video text-condition dropout requires "
+            "`trainer.batch_adapter=latents`; the views adapter does not provide "
+            "the encoded text context on which training dropout operates."
+        )
+
+    if (
+        isinstance(config.policy_variant, CausalVideoPredictionPolicyConfig)
+        and float(config.inference.guidance_scale) > 1.0
+        and float(config.training.text_condition_dropout_prob) <= 0.0
+    ):
+        raise ValueError(
+            "Causal video classifier-free guidance requires "
+            "`training.text_condition_dropout_prob > 0`; use "
+            "`inference.guidance_scale=1.0` for checkpoints trained without an "
+            "unconditional branch."
+        )
 
     policy_program = (
         config.policy_variant.program

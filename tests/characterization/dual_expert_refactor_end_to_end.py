@@ -382,7 +382,7 @@ def _runtime_asset_overrides(
         "data.local_root": str(assets.dataset_root),
         "data.empty_text_embedding_path": str(assets.empty_text_embedding),
         "backbone.pretrained_model_name_or_path": str(assets.base_model_root),
-        "backbone.transformer_subdir": str(assets.video_transformer_root),
+        "backbone.runtime_backbone_artifact_path": str(assets.video_transformer_root),
     }
     if include_counterfactual:
         if (

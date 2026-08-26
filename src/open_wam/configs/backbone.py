@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Literal, Mapping
+from typing import Any, Literal
+
+from open_wam.contracts.paths import validate_model_component_path
 
 from .coercion import coerce_enum, coerce_optional_enum
 from .enums import (
@@ -58,6 +61,7 @@ class SharedVideoTransformerConfig:
     train_attn_mode: AttentionMode | None = None
     infer_attn_mode: AttentionMode | None = None
     pretrained_model_name_or_path: str | None = None
+    runtime_backbone_artifact_path: str | None = None
     transformer_subdir: str = "transformer"
     vae_subdir: str = "vae"
     text_encoder_subdir: str = "text_encoder"
@@ -92,6 +96,10 @@ class SharedVideoTransformerConfig:
             transforms={
                 "implementation": normalize_backbone_implementation,
             },
+        )
+        validate_model_component_path(
+            self.transformer_subdir,
+            field_name="backbone.transformer_subdir",
         )
 
 
@@ -147,6 +155,10 @@ def parse_shared_video_transformer_config(
             raw.get("infer_attn_mode", defaults.infer_attn_mode),
         ),
         pretrained_model_name_or_path=pretrained_model_name_or_path,
+        runtime_backbone_artifact_path=raw.get(
+            "runtime_backbone_artifact_path",
+            defaults.runtime_backbone_artifact_path,
+        ),
         transformer_subdir=raw.get("transformer_subdir", defaults.transformer_subdir),
         vae_subdir=raw.get("vae_subdir", defaults.vae_subdir),
         text_encoder_subdir=raw.get(

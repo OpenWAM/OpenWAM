@@ -52,7 +52,9 @@ def test_load_dual_expert_libero_runtime_preserves_composition_order_and_contrac
         policy_variant=DualExpertPolicyConfig(
             program=VideoActionProgram.VIDEO_THEN_ACTION
         ),
-        backbone=SimpleNamespace(transformer_subdir="/unused/transformer"),
+        backbone=SimpleNamespace(
+            runtime_backbone_artifact_path="/unused/transformer"
+        ),
         data=SimpleNamespace(
             num_frames=4,
             action_schema=SimpleNamespace(action_horizon=16),

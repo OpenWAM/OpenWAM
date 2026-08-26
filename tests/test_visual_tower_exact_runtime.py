@@ -97,3 +97,42 @@ def test_prepare_exact_single_stream_input_preserves_reference_grid_dtypes() -> 
     assert action_input["grid_id"].dtype == torch.float32
     assert video_input["grid_id"].shape == (1, 4, 8)
     assert action_input["grid_id"].shape == (1, 4, 8)
+
+
+def test_prepare_exact_single_stream_input_conditions_the_complete_prefix() -> None:
+    """Inference must label every clean observed frame exactly as training does."""
+
+    config = SharedVideoTransformerConfig(
+        patch_size_t=1,
+        patch_size_h=2,
+        patch_size_w=2,
+    )
+    latents = torch.arange(1 * 4 * 6 * 4 * 4, dtype=torch.float32).reshape(
+        1, 4, 6, 4, 4
+    )
+    condition = torch.full((1, 4, 3, 4, 4), 7.0)
+
+    prepared = prepare_exact_single_stream_input(
+        latents=latents,
+        timestep=500.0,
+        text_emb=torch.zeros(1, 2, 3),
+        frame_st_id=0,
+        backbone_config=config,
+        action_mode=False,
+        cond=condition,
+    )
+
+    torch.testing.assert_close(
+        prepared["noisy_latents"][:, :, :3],
+        condition,
+        rtol=0.0,
+        atol=0.0,
+    )
+    torch.testing.assert_close(
+        prepared["noisy_latents"][:, :, 3:],
+        latents[:, :, 3:],
+        rtol=0.0,
+        atol=0.0,
+    )
+    assert torch.count_nonzero(prepared["timesteps"][:, :3]).item() == 0
+    assert torch.all(prepared["timesteps"][:, 3:] == 500.0)

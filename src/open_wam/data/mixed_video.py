@@ -430,7 +430,7 @@ class MixedVideoLatentWindowDataset(MixedVideoWindowDataset):
                 "latent_shape": list(video_latents.shape),
                 "view_combination_name": window.view_combination_name,
                 "view_combination_slots": list(window.view_combination_slots),
-                "latent_view_assembly": assembly_metadata,
+                "latent_layout": assembly_metadata,
                 "stream_keys": {
                     stream.target_slot: stream.stream_key
                     for stream in episode.streams

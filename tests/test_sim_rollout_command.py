@@ -13,7 +13,6 @@ from open_wam.cli import sim_rollout as cli
 from open_wam.evals import sim_rollout as runtime
 from open_wam.simulators import SimActionCommitMode, SimRolloutResult
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -174,18 +173,22 @@ def test_checkpoint_backbone_override_is_pure(tmp_path: Path) -> None:
     config = runtime.load_experiment_config(
         REPO_ROOT / "configs" / "examples" / "public_tiny_synthetic_contract.yaml"
     )
-    original_transformer = config.backbone.transformer_subdir
+    original_artifact_path = config.backbone.runtime_backbone_artifact_path
     checkpoint_path = tmp_path / "checkpoint_step_4" / "model_state.pt"
     transformer_dir = checkpoint_path.parent / "transformer"
     transformer_dir.mkdir(parents=True)
+    (transformer_dir / "config.json").write_text("{}", encoding="utf-8")
+    (transformer_dir / "diffusion_pytorch_model.safetensors").write_bytes(b"weights")
 
     resolved = runtime._with_checkpoint_backbone_override(
         config,
         checkpoint_path=checkpoint_path,
     )
 
-    assert resolved.backbone.transformer_subdir == str(transformer_dir.resolve())
-    assert config.backbone.transformer_subdir == original_transformer
+    assert resolved.backbone.runtime_backbone_artifact_path == str(
+        transformer_dir.resolve()
+    )
+    assert config.backbone.runtime_backbone_artifact_path == original_artifact_path
 
 
 def test_sim_rollout_command_closes_adapter_when_rollout_fails(monkeypatch, tmp_path: Path) -> None:

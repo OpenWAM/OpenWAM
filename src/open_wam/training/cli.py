@@ -22,7 +22,7 @@ from open_wam.utils.config_overrides import (
 
 
 def _default_resume_path(checkpoint_root: Path) -> Path:
-    """Prefer exact training-state resumes, with model-only as a fallback for legacy checkpoints.
+    """Prefer full training-state resumes, with model-only as a fallback.
 
     Raises FileNotFoundError when neither candidate exists so operators see
     the misconfiguration before the training pipeline builds a model and
@@ -55,7 +55,7 @@ class TrainCliOverrides:
     run_name: str | None = None
     dataset_root: str | None = None
     latent_root: str | None = None
-    transformer_subdir: str | None = None
+    runtime_backbone_artifact_path: str | None = None
     devices: int | None = None
     expected_world_size: int | None = None
     num_steps: int | None = None
@@ -95,7 +95,7 @@ def parse_train_cli(argv: list[str] | None = None) -> TrainCliOverrides:
         run_name=args.run_name,
         dataset_root=args.dataset_root,
         latent_root=args.latent_root,
-        transformer_subdir=args.transformer_subdir,
+        runtime_backbone_artifact_path=args.runtime_backbone_artifact_path,
         devices=args.devices,
         expected_world_size=args.expected_world_size,
         num_steps=args.num_steps,
@@ -163,16 +163,20 @@ def apply_train_cli_overrides(
         checkpoint_root = Path(overrides.checkpoint_root).expanduser()
         if overrides.resume_from is None:
             update_map["trainer.resume_from"] = str(_default_resume_path(checkpoint_root))
-        if overrides.transformer_subdir is None:
-            update_map["backbone.transformer_subdir"] = str(checkpoint_root / "transformer")
+        if overrides.runtime_backbone_artifact_path is None:
+            update_map["backbone.runtime_backbone_artifact_path"] = str(
+                checkpoint_root / "transformer"
+            )
     if overrides.resume_from is not None:
         update_map["trainer.resume_from"] = overrides.resume_from
     if overrides.dataset_root is not None:
         update_map["data.local_root"] = overrides.dataset_root
     if overrides.latent_root is not None:
         update_map["data.latent_root"] = overrides.latent_root
-    if overrides.transformer_subdir is not None:
-        update_map["backbone.transformer_subdir"] = overrides.transformer_subdir
+    if overrides.runtime_backbone_artifact_path is not None:
+        update_map["backbone.runtime_backbone_artifact_path"] = (
+            overrides.runtime_backbone_artifact_path
+        )
     if overrides.devices is not None:
         update_map["trainer.devices"] = overrides.devices
     if overrides.num_steps is not None:

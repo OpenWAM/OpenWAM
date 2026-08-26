@@ -113,8 +113,11 @@ def prepare_exact_single_stream_input(
         "text_emb": text_emb,
     }
     if cond is not None:
-        input_dict["noisy_latents"][:, :, 0:1] = cond[:, :, 0:1]
-        input_dict["timesteps"][:, 0:1] *= 0
+        condition_frames = int(cond.shape[2])
+        input_dict["noisy_latents"][:, :, :condition_frames] = cond[
+            :, :, :condition_frames
+        ]
+        input_dict["timesteps"][:, :condition_frames] *= 0
     if action_mode and action_channel_mask is not None:
         input_dict["noisy_latents"] = input_dict[
             "noisy_latents"

@@ -84,7 +84,7 @@ backbone:
   attention_head_dim: 128
   ffn_dim: 14336
   pretrained_model_name_or_path: "${paths.models.lingbot_va_base}"
-  transformer_subdir: "${paths.checkpoints.parallel_stream_joint_libero_step_600_0402}/transformer"
+  runtime_backbone_artifact_path: "${paths.checkpoints.parallel_stream_joint_libero_step_600_0402}/transformer"
   max_text_tokens: 512
   load_wan_vae_frontend: true
   load_text_conditioning: true

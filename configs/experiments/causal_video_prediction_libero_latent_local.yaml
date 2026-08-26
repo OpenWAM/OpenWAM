@@ -1,14 +1,13 @@
+# Text-conditioned causal video pretraining over one or more local LIBERO
+# latent repositories. Only the shared video backbone is optimized/exported.
 name: causal_video_prediction_libero_latent_local
 
 data:
   dataset_name: libero
   dataset_type: lerobot_v2_latent_local
   local_root: "${paths.datasets.libero_root}"
-  replay_status_path: "${paths.datasets.libero_replay_status_path}"
-  replay_status_policy: successful_only
-  val_replay_status_policy: failure_only
-  require_replay_status: true
-  val_require_replay_status: true
+  replay_status_policy: include_all
+  val_replay_status_policy: include_all
   empty_text_embedding_path: "${paths.datasets.empty_text_embedding}"
   latent_subdir: latents
   camera_names:
@@ -32,11 +31,11 @@ data:
       left: 128
       height: 128
       width: 128
-  num_frames: 15
+  num_frames: 20
   frame_stride: 1
   sample_stride: 1
   episode_cache_size: 1
-  train_fraction: 1.0
+  train_fraction: 0.98
   train_batch_size: 1
   val_batch_size: 1
   num_workers: 4
@@ -49,9 +48,10 @@ data:
     representation: raw
     source_key: action
     pose_source_key: observation.state
+  # Counts are latent frames because this adapter reads encoded latents.
   sample_construction:
     mode: causal_prefix_suffix
-    num_frames: 15
+    num_frames: 20
     action_horizon: 0
     state_horizon: 0
     frame_stride: 1
@@ -60,8 +60,12 @@ data:
         future_frames: 3
       - observed_frames: 2
         future_frames: 6
+      - observed_frames: 3
+        future_frames: 9
+      - observed_frames: 4
+        future_frames: 12
       - observed_frames: 5
-        future_frames: 10
+        future_frames: 15
 
 backbone:
   implementation: shared_transformer
@@ -86,6 +90,8 @@ policy_variant:
   name: causal_video_prediction
   attach_site: post_visual_core
   hidden_size: 256
+  # Switch to `disabled` for unconditional training with the blank-text context.
+  text_conditioning_mode: task_prompt
 
 action_decoder:
   name: video_only_decoder
@@ -101,16 +107,20 @@ training:
   warmup_steps: 100
   gradient_accumulation_steps: 20
   num_steps: 5000
-  chunk_size: 2
-  window_size: 8
+  # Train a blank-prompt branch for the standard video CFG used at inference.
+  text_condition_dropout_prob: 0.1
   enabled_objectives: [latent]
   latent_loss_weight: 1.0
   action_loss_weight: 0.0
-  trainable_components: [visual_tower.runtime_backbone]
+  trainable_components: [visual_tower.shared_video_backbone]
+  frozen_components:
+    - visual_tower.shared_action_runtime
+    - visual_tower.shared_runtime_adapters
 
 inference:
   video_num_inference_steps: 20
-  guidance_scale: 1.0
+  # Paired with the 0.1 blank-prompt dropout above.
+  guidance_scale: 5.0
   use_cache: false
   frame_chunk_size: 1
 
@@ -124,5 +134,6 @@ trainer:
   default_root_dir: "${paths.outputs.train_runs_root}"
   save_interval: 100
   export_runtime_backbone: true
+  runtime_backbone_export_components: [visual_tower.shared_video_backbone]
   enable_wandb: true
   wandb_project: openwam-libero-video-pretrain

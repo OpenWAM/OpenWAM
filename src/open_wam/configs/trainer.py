@@ -13,8 +13,12 @@ from .enums import (
     TrainerAccelerator,
     TrainerPrecision,
     TrainerRuntimeName,
+    TrainingComponentSelector,
     WandBMode,
     coerce_fields,
+)
+from .runtime_backbone_components import (
+    validate_runtime_backbone_components,
 )
 
 
@@ -49,6 +53,9 @@ class TrainerConfig:
     checkpoint_mode: CheckpointMode = CheckpointMode.FULL_TRAINING_STATE
     max_checkpoints_to_keep: int | None = None
     export_runtime_backbone: bool = False
+    runtime_backbone_export_components: tuple[TrainingComponentSelector, ...] = (
+        TrainingComponentSelector.VISUAL_TOWER_RUNTIME_BACKBONE,
+    )
     resume_from: str | None = None
 
     # Logging/tracking knobs
@@ -83,6 +90,14 @@ class TrainerConfig:
                 "checkpoint_mode": CheckpointMode,
                 "wandb_mode": WandBMode,
             },
+        )
+        object.__setattr__(
+            self,
+            "runtime_backbone_export_components",
+            validate_runtime_backbone_components(
+                self.runtime_backbone_export_components,
+                scope="`trainer.runtime_backbone_export_components`",
+            ),
         )
         if isinstance(self.devices, bool) or int(self.devices) <= 0:
             raise ValueError("`trainer.devices` must be a positive integer.")
@@ -156,6 +171,10 @@ def parse_trainer_config(raw_value: Mapping[str, Any] | None) -> TrainerConfig:
         ),
         max_checkpoints_to_keep=raw.get("max_checkpoints_to_keep"),
         export_runtime_backbone=raw.get("export_runtime_backbone", False),
+        runtime_backbone_export_components=raw.get(
+            "runtime_backbone_export_components",
+            (TrainingComponentSelector.VISUAL_TOWER_RUNTIME_BACKBONE,),
+        ),
         resume_from=raw.get("resume_from"),
         enable_jsonl_logging=raw.get("enable_jsonl_logging", False),
         metrics_filename=raw.get("metrics_filename", "metrics.jsonl"),

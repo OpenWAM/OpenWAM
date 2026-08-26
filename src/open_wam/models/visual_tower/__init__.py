@@ -2,6 +2,7 @@
 
 from .cache_lifecycle import RuntimeCacheLifecycle
 from .contracts import (
+    VisualComponentTopology,
     VisualCoreInput,
     VisualCoreOutput,
     VisualFrontendOutput,
@@ -19,6 +20,7 @@ from .exact_runtime import (
     resolve_runtime_module_dtype,
     run_exact_single_stream_forward,
 )
+from .reference_loader import resolve_runtime_backbone_dir
 from .reference_transformer import (
     build_reference_transformer,
     preferred_reference_dtype,
@@ -62,6 +64,7 @@ __all__ = [
     "SharedTransformerBlock",
     "SharedTransformerRotaryPositionalEmbedding",
     "SharedTransformerTimeEmbedding",
+    "VisualComponentTopology",
     "VisualCoreInput",
     "VisualCoreOutput",
     "VisualFrontendOutput",
@@ -86,6 +89,7 @@ __all__ = [
     "prepare_exact_single_stream_forward_input",
     "prepare_exact_single_stream_input",
     "repeat_exact_single_stream_input_for_cfg",
+    "resolve_runtime_backbone_dir",
     "resolve_runtime_module_dtype",
     "rms_norm_with_materialized_weight",
     "run_exact_single_stream_forward",
