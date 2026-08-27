@@ -13,6 +13,7 @@ from safetensors import safe_open
 from torch.utils.data import DataLoader, Dataset, TensorDataset
 from torch.utils.data.distributed import DistributedSampler
 
+import open_wam.training.checkpoints as checkpoints_module
 import open_wam.training.data_loading as data_loading_module
 import open_wam.training.runtime as runtime_module
 from open_wam.configs import (
@@ -1582,6 +1583,52 @@ def test_composable_runtime_exports_only_selected_backbone_components(
     assert "patch_embedding_mlp.weight" in exported_keys
     assert "action_embedder.weight" not in exported_keys
     assert not any(key.startswith("action_time_conditioner.") for key in exported_keys)
+
+
+def test_scoped_runtime_backbone_export_accepts_rank_zero_only_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = load_experiment_config(
+        REPO_ROOT / "configs/examples/public_tiny_synthetic_contract.yaml"
+    )
+    config = replace(
+        config,
+        trainer=replace(
+            config.trainer,
+            export_runtime_backbone=True,
+            runtime_backbone_export_components=(
+                TrainingComponentSelector.VISUAL_TOWER_SHARED_VIDEO_BACKBONE,
+            ),
+        ),
+    )
+    pipeline = build_variant_pipeline_from_config(config)
+    backbone = pipeline.visual_tower.get_runtime_backbone(
+        action_dim=int(pipeline.visual_tower.action_dim)
+    )
+    export_keys = resolve_runtime_backbone_export_keys(
+        backbone=backbone,
+        topology=pipeline.module_topology(),
+        selectors=config.trainer.runtime_backbone_export_components,
+    )
+    assert export_keys
+    manager = CheckpointManager(
+        root_dir=tmp_path / "checkpoints",
+        config=config,
+        checkpoint_mode=CheckpointMode.MODEL_ONLY,
+        export_runtime_backbone=True,
+        runtime_backbone_export_keys=export_keys,
+    )
+    monkeypatch.setattr(checkpoints_module, "_is_rank_zero", lambda: False)
+    monkeypatch.setattr(
+        checkpoints_module,
+        "get_model_state_dict",
+        lambda model, options: {},
+    )
+
+    manager._export_runtime_backbone(tmp_path, pipeline)
+
+    assert not (tmp_path / "transformer").exists()
 
 
 def test_scoped_export_keys_survive_activation_checkpoint_wrapping(

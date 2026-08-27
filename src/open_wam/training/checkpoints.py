@@ -709,6 +709,8 @@ class CheckpointManager:
                 map_key=overlay.map_key,
                 exclusive_target_prefixes=overlay.exclusive_target_prefixes,
             )
+        if not _is_rank_zero():
+            return
         if selected_state_keys is not None:
             unavailable = sorted(selected_state_keys - set(backbone_state_dict))
             if unavailable:
@@ -725,8 +727,6 @@ class CheckpointManager:
                 raise ValueError(
                     "Runtime-backbone export selectors resolved no state tensors."
                 )
-        if not _is_rank_zero():
-            return
         transformer_dir = checkpoint_dir / "transformer"
         transformer_dir.mkdir(parents=True, exist_ok=True)
         state_dict_bf16 = {
