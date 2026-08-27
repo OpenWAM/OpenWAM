@@ -128,6 +128,33 @@ launched processes. A single process gets no sharding benefit regardless of how
 many GPUs are visible, so single-device memory must fit the whole model plus its
 optimizer state.
 
+#### Effective batch does not follow the config across process counts
+
+The optimizer sees `train_batch_size x gradient_accumulation_steps x
+WORLD_SIZE` samples per step. Gradients are averaged across ranks, so adding
+processes multiplies the effective batch instead of splitting the existing one.
+The shipped LIBERO configs set `train_batch_size: 1` and
+`gradient_accumulation_steps: 10`, which is an effective batch of 10 on one
+process. Launching the same config under `--nproc-per-node=4` trains at 40, and
+nothing in the config or the logs says so.
+
+Divide the accumulation when you change the process count:
+
+| Processes | `gradient_accumulation_steps` | Effective batch |
+| ---: | ---: | ---: |
+| 1 | 10 | 10 |
+| 2 | 5 | 10 |
+| 5 | 2 | 10 |
+
+```bash
+torchrun --standalone --nproc-per-node=5 \
+  -m open_wam.cli.train \
+  --cfg configs/experiments/dual_expert_libero_video_then_action.yaml \
+  --save-root runs/<run-name> \
+  --expected-world-size 5 \
+  --set training.gradient_accumulation_steps=2
+```
+
 Load an external dataset or policy extension before config construction:
 
 ```bash
@@ -152,6 +179,53 @@ only one noisy modality per stage, so another value is rejected instead of
 being stored and silently ignored. Joint, noisy-condition, and GJD programs
 may still set an explicit timestep-coupling ablation such as `match_sigma`.
 Sequence contracts never choose or rewrite the noise clock.
+
+### Recorded LIBERO Recipes
+
+Both recipes below run from a clean checkout with no data or sampling
+overrides. PR #23 moved the validated LIBERO recipe into the config files, so
+the only flags here are operational: where to save, how long to run, and the
+accumulation divisor that keeps the effective batch at the recipe's 10.
+
+Joint denoising:
+
+```bash
+torchrun --standalone --nproc-per-node=1 \
+  -m open_wam.cli.train \
+  --cfg configs/experiments/dual_expert_libero_joint.yaml \
+  --save-root runs/libero-joint \
+  --run-name libero-joint \
+  --expected-world-size 1 \
+  --num-steps 10000 \
+  --set trainer.save_interval=500 \
+  --set trainer.max_checkpoints_to_keep=3 \
+  --disable-wandb
+```
+
+Video-then-action, the same recipe with only the config swapped:
+
+```bash
+torchrun --standalone --nproc-per-node=1 \
+  -m open_wam.cli.train \
+  --cfg configs/experiments/dual_expert_libero_video_then_action.yaml \
+  --save-root runs/libero-vta \
+  --run-name libero-vta \
+  --expected-world-size 1 \
+  --num-steps 10000 \
+  --set trainer.save_interval=500 \
+  --set trainer.max_checkpoints_to_keep=3 \
+  --disable-wandb
+```
+
+Architecture selects execution, not the data recipe, so the two differ only in
+`--cfg`. On more than one process add
+`--set training.gradient_accumulation_steps=$((10 / N))`; see
+[Effective batch](#effective-batch-does-not-follow-the-config-across-process-counts).
+
+Scoring a checkpoint means running the LIBERO evaluator once per episode and
+counting the outcome recorded in each result filename. Count the first result
+for a given task and episode and never re-run a failure: re-rolling only the
+failures converges a directory to all-`True`.
 
 ### LIBERO Policy Planning Default
 
