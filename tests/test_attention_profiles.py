@@ -13,9 +13,13 @@ from open_wam.models.common.attention_profiles import (
     normalize_chunked_temporal_exact_coupling,
     normalize_history_stream_visibility,
 )
+from open_wam.models.common.chunked_attention import (
+    build_chunked_conditioned_video_attention_profile,
+)
 from open_wam.models.common.packed_token_layout import (
     PackedTokenKind,
     PackedTokenStream,
+    build_exact_conditioned_video_token_layout,
     build_exact_video_action_token_layout,
 )
 from open_wam.models.policy_variants.parallel_stream.reference_runtime import (
@@ -74,6 +78,82 @@ _CHUNKED_ATTENTION_LAYOUTS = (
 def test_omitted_history_stream_visibility_defaults_to_video_only() -> None:
     assert normalize_history_stream_visibility(None) == (
         HistoryStreamVisibility.VIDEO_ONLY.value
+    )
+
+
+def test_conditioned_video_layout_is_exact_vta_video_marginal() -> None:
+    common = {
+        "batch_size": 1,
+        "latent_frames": 5,
+        "latent_height": 2,
+        "latent_width": 2,
+        "patch_size": (1, 1, 1),
+        "chunk_size": 2,
+        "chunk_origin_frame": 0,
+        "current_block_coupling": "video_then_action",
+        "device": torch.device("cpu"),
+        "prefix_condition_frames": 1,
+    }
+    video_layout = build_exact_conditioned_video_token_layout(**common)
+    vta_layout = build_exact_video_action_token_layout(
+        **common,
+        action_frames=4,
+        action_height=1,
+        action_width=1,
+    )
+    video_token_count = video_layout.token_count
+    for field in (
+        "token_kind",
+        "seq_id",
+        "frame_id",
+        "chunk_id",
+        "block_id",
+        "stream_id",
+        "noise_id",
+        "valid_as_query",
+        "valid_as_kv",
+        "valid_for_loss",
+    ):
+        torch.testing.assert_close(
+            getattr(video_layout, field),
+            getattr(vta_layout, field)[:video_token_count],
+        )
+
+    profile_kwargs = {
+        "latent_shape": (1, 2, 5, 2, 2),
+        "padded_length": 0,
+        "chunk_size": 2,
+        "window_size": 8,
+        "patch_size": (1, 1, 1),
+        "text_token_count": 3,
+        "chunk_origin_frame": 0,
+        "device": torch.device("cpu"),
+        "build_dense_masks": True,
+        "current_block_coupling": "video_then_action",
+        "prefix_condition_frames": 1,
+    }
+    video_profile = build_chunked_conditioned_video_attention_profile(
+        **profile_kwargs
+    )
+    vta_profile = build_chunked_temporal_exact_attention_profile(
+        **profile_kwargs,
+        action_shape=(1, 2, 4, 1, 1),
+        history_stream_visibility=HistoryStreamVisibility.VIDEO_ONLY,
+    )
+    assert video_profile.self_attention_mask is not None
+    assert vta_profile.self_attention_mask is not None
+    torch.testing.assert_close(
+        video_profile.self_attention_mask,
+        vta_profile.self_attention_mask[:video_token_count, :video_token_count],
+    )
+    assert not torch.any(
+        vta_profile.self_attention_mask[:video_token_count, video_token_count:]
+    )
+    assert video_profile.cross_attention_mask is not None
+    assert vta_profile.cross_attention_mask is not None
+    torch.testing.assert_close(
+        video_profile.cross_attention_mask,
+        vta_profile.cross_attention_mask[:video_token_count],
     )
 
 

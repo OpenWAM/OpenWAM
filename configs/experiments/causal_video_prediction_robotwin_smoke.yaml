@@ -35,6 +35,7 @@ backbone:
 policy_variant:
   # Video-only causal prefix/suffix prediction over the shared core
   name: causal_video_prediction
+  program: prefix_suffix
   attach_site: post_visual_core
   hidden_size: 256
   text_conditioning_mode: disabled

@@ -50,8 +50,8 @@ from open_wam.utils import resolve_transformer_dir_override, seed_everywhere
 def build_argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Generate future latents from the exact causal prefix/suffix layout "
-            "returned by a configured latent dataset adapter."
+            "Generate future latents with the causal-video program and sample "
+            "layout returned by a configured latent dataset adapter."
         )
     )
     parser.add_argument("--cfg", "--config", dest="config", required=True)
@@ -81,7 +81,10 @@ def build_argument_parser() -> argparse.ArgumentParser:
         "--num-chunks",
         type=int,
         default=1,
-        help="One exact target chunk plus optional untargeted open-loop chunks.",
+        help=(
+            "Number of chunks to generate; the prefix/suffix program may extend "
+            "past its exact target while the chunked program uses available targets."
+        ),
     )
     parser.add_argument(
         "--video-steps",

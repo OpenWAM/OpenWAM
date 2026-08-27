@@ -435,6 +435,13 @@ class PolicyVariantName(StrEnum):
     EXTENSION = "extension"
 
 
+class CausalVideoProgram(StrEnum):
+    """Sequence and supervision contract for video-only prediction."""
+
+    PREFIX_SUFFIX = "prefix_suffix"
+    CHUNKED_CONDITIONED_VIDEO = "chunked_conditioned_video"
+
+
 class TextConditioningMode(StrEnum):
     """How a policy supplies semantic text context to the visual stack."""
 

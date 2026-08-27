@@ -190,12 +190,22 @@ def parse_policy_variant_config(
                     "attach_site", config_enums.AttachSite.POST_VISUAL_CORE
                 ),
             ),
+            program=_coerce_enum(
+                config_enums.CausalVideoProgram,
+                resolved_raw.get("program"),
+            ),
             text_conditioning_mode=_coerce_enum(
                 config_enums.TextConditioningMode,
                 resolved_raw.get(
                     "text_conditioning_mode",
                     config_enums.TextConditioningMode.TASK_PROMPT,
                 ),
+            ),
+            noisy_video_condition_prob=resolved_raw.get(
+                "noisy_video_condition_prob"
+            ),
+            use_activation_checkpointing=resolved_raw.get(
+                "use_activation_checkpointing", False
             ),
         )
     if name == config_enums.PolicyVariantName.DUAL_EXPERT:

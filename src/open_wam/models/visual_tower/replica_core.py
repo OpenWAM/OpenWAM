@@ -4,6 +4,7 @@ import copy
 import math
 
 import torch
+import torch.utils.checkpoint
 from diffusers.models.embeddings import PixArtAlphaTextProjection
 from diffusers.models.normalization import FP32LayerNorm
 from einops import rearrange
@@ -86,6 +87,7 @@ from .runtime_tensor_transport import (
 )
 from .sequence_adapters import (
     PreparedExactTrainSequence,
+    prepare_exact_conditioned_video_sequence,
     prepare_exact_dual_stream_train_sequence,
     prepare_runtime_sequence,
 )
@@ -753,33 +755,8 @@ class SharedVideoTransformerCore(nn.Module):
             rope=self.rope,
         )
         batch_size = prepared.batch_size
-        hidden_states = prepared.hidden_states
-        text_hidden_states = prepared.text_hidden_states
-        rotary_emb = prepared.rotary_emb
-        temb = prepared.temb
-        timestep_proj = prepared.timestep_proj
-        split_list = prepared.split_list
-        exact_attention_profile = prepared.attention_profile
-
-        for block in self.blocks:
-            hidden_states, _, _ = block(
-                hidden_states,
-                encoder_hidden_states=text_hidden_states,
-                temb=timestep_proj,
-                rotary_emb=rotary_emb,
-                attention_profile=exact_attention_profile,
-            )
-
-        temb_scale_shift_table = self.scale_shift_table[None] + temb[:, :, None, ...]
-        shift, scale = _select_chunk_slices(temb_scale_shift_table, 2)
-        shift = shift.to(hidden_states.device)
-        scale = scale.to(hidden_states.device)
-        hidden_states = (
-            self.norm_out(hidden_states.float()) * (1.0 + scale) + shift
-        ).type_as(hidden_states)
-        latent_hidden_states, _, action_hidden_states, _, _ = _select_split_segments(
-            hidden_states,
-            tuple(int(length) for length in split_list),
+        latent_hidden_states, _, action_hidden_states, _, _ = (
+            self._forward_exact_train_sequence(prepared)
         )
         latent_hidden_states = self.proj_out(latent_hidden_states)
         latent_hidden_states = rearrange(
@@ -1142,6 +1119,68 @@ class SharedVideoTransformerCore(nn.Module):
         )
         return video_prediction, action_prediction
 
+    def _forward_exact_train_sequence(
+        self, prepared: PreparedExactTrainSequence
+    ) -> tuple[torch.Tensor, ...]:
+        """Execute one prepared packed sequence through the shared video core."""
+
+        hidden_states = prepared.hidden_states
+
+        def forward_block(
+            current_hidden_states: torch.Tensor,
+            text_hidden_states: torch.Tensor,
+            timestep_proj: torch.Tensor,
+            rotary_emb: torch.Tensor,
+            current_block: nn.Module,
+        ) -> torch.Tensor:
+            return current_block(
+                current_hidden_states,
+                encoder_hidden_states=text_hidden_states,
+                temb=timestep_proj,
+                rotary_emb=rotary_emb,
+                attention_profile=prepared.attention_profile,
+            )[0]
+
+        for block in self.blocks:
+            checkpoint_active = (
+                prepared.use_activation_checkpointing
+                and torch.is_grad_enabled()
+                and not getattr(
+                    block,
+                    "_open_wam_activation_checkpoint_wrapped",
+                    False,
+                )
+            )
+            block_args = (
+                hidden_states,
+                prepared.text_hidden_states,
+                prepared.timestep_proj,
+                prepared.rotary_emb,
+                block,
+            )
+            if checkpoint_active:
+                hidden_states = torch.utils.checkpoint.checkpoint(
+                    forward_block,
+                    *block_args,
+                    use_reentrant=False,
+                )
+            else:
+                hidden_states = forward_block(*block_args)
+
+        temb_scale_shift_table = self.scale_shift_table[None] + prepared.temb[
+            :, :, None, ...
+        ]
+        shift, scale = _select_chunk_slices(temb_scale_shift_table, 2)
+        hidden_states = (
+            self.norm_out(hidden_states.float())
+            * (1.0 + scale.to(hidden_states.device))
+            + shift.to(hidden_states.device)
+        ).type_as(hidden_states)
+        return _select_split_segments(
+            hidden_states,
+            tuple(int(length) for length in prepared.split_list),
+        )
+
     def execute_runtime_step(self, step_input: RuntimeStepInput) -> RuntimeStepOutput:
         prepared = prepare_runtime_sequence(
             step_input,
@@ -1173,6 +1212,33 @@ class SharedVideoTransformerCore(nn.Module):
                     encode_proprio_context=self.encode_proprio_hidden_context,
                 )
             ),
+            conditioned_video_preparer=lambda payload: (
+                prepare_exact_conditioned_video_sequence(
+                    payload,
+                    config=self.config,
+                    patch_size=self.patch_size,
+                    model_dtype=self.patch_embedding_mlp.weight.dtype,
+                    input_embed=lambda tensor, input_type: self._input_embed(
+                        tensor, input_type=input_type
+                    ),
+                    exact_text_hidden_states=lambda text_emb: (
+                        self._exact_text_hidden_states(
+                            text_emb,
+                            dtype=self.patch_embedding_mlp.weight.dtype,
+                        )
+                    ),
+                    time_embed=lambda timesteps, height, width, dtype, action_mode: (
+                        self._time_embed(
+                            timesteps,
+                            height,
+                            width,
+                            dtype=dtype,
+                            action_mode=action_mode,
+                        )
+                    ),
+                    rope=self.rope,
+                )
+            ),
         )
         if prepared.mode == "core_input":
             if prepared.core_input is None:
@@ -1202,37 +1268,8 @@ class SharedVideoTransformerCore(nn.Module):
                 raise ValueError(
                     "Exact-train runtime step requires prepared exact-train state."
                 )
-            hidden_states = prepared.exact_train.hidden_states
-            text_hidden_states = prepared.exact_train.text_hidden_states
-            rotary_emb = prepared.exact_train.rotary_emb
-            temb = prepared.exact_train.temb
-            timestep_proj = prepared.exact_train.timestep_proj
-            split_list = prepared.exact_train.split_list
-            exact_attention_profile = prepared.exact_train.attention_profile
-
-            for block in self.blocks:
-                hidden_states, _, _ = block(
-                    hidden_states,
-                    encoder_hidden_states=text_hidden_states,
-                    temb=timestep_proj,
-                    rotary_emb=rotary_emb,
-                    attention_profile=exact_attention_profile,
-                )
-
-            temb_scale_shift_table = (
-                self.scale_shift_table[None] + temb[:, :, None, ...]
-            )
-            shift, scale = _select_chunk_slices(temb_scale_shift_table, 2)
-            shift = shift.to(hidden_states.device)
-            scale = scale.to(hidden_states.device)
-            hidden_states = (
-                self.norm_out(hidden_states.float()) * (1.0 + scale) + shift
-            ).type_as(hidden_states)
             latent_hidden_states, _, action_hidden_states, _, _ = (
-                _select_split_segments(
-                    hidden_states,
-                    tuple(int(length) for length in split_list),
-                )
+                self._forward_exact_train_sequence(prepared.exact_train)
             )
             video_prediction = self.proj_out(latent_hidden_states)
             video_prediction = rearrange(
@@ -1255,6 +1292,29 @@ class SharedVideoTransformerCore(nn.Module):
                 aux={
                     "runtime_program": step_input.program.name,
                     "sequence_family": step_input.program.sequence_family.value,
+                },
+            )
+        if prepared.mode == "exact_conditioned_video":
+            if prepared.exact_conditioned_video is None:
+                raise ValueError(
+                    "Conditioned-video runtime step requires prepared video state."
+                )
+            video_hidden_states, _, _ = self._forward_exact_train_sequence(
+                prepared.exact_conditioned_video
+            )
+            video_prediction = self.proj_out(video_hidden_states)
+            video_prediction = rearrange(
+                video_prediction,
+                "1 (b l) (n c) -> b (l n) c",
+                n=math.prod(self.patch_size),
+                b=prepared.exact_conditioned_video.batch_size,
+            )
+            return RuntimeStepOutput(
+                projected_outputs={"video_prediction": video_prediction},
+                aux={
+                    "runtime_program": step_input.program.name,
+                    "sequence_family": step_input.program.sequence_family.value,
+                    "stream_output_head_family": "video_only",
                 },
             )
         if prepared.mode == "exact_inference":

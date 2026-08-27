@@ -144,6 +144,40 @@ def validate_policy_data_sequence_contract(
     data_config: DataConfig,
     policy_variant_config: PolicyVariantConfig,
 ) -> None:
+    if isinstance(policy_variant_config, CausalVideoPredictionPolicyConfig):
+        sample_config = data_config.sample_construction
+        if policy_variant_config.program == enums.CausalVideoProgram.PREFIX_SUFFIX:
+            if sample_config.mode != enums.WindowSamplingMode.CAUSAL_PREFIX_SUFFIX:
+                raise ValueError(
+                    "Causal video `program=prefix_suffix` requires "
+                    "`data.sample_construction.mode=causal_prefix_suffix`."
+                )
+        else:
+            if sample_config.mode != enums.WindowSamplingMode.UNIFORM_SEGMENT:
+                raise ValueError(
+                    "Causal video `program=chunked_conditioned_video` requires "
+                    "`data.sample_construction.mode=uniform_segment`."
+                )
+            if int(sample_config.condition_source_frame_offset) != -1:
+                raise ValueError(
+                    "Chunked conditioned video requires "
+                    "`data.sample_construction.condition_source_frame_offset=-1`."
+                )
+            if sample_config.target_alignment != enums.SampleTargetAlignment.LEGACY:
+                raise ValueError(
+                    "Chunked conditioned video is the M5 VTA legacy-prefix marginal "
+                    "and requires `data.sample_construction.target_alignment=legacy`."
+                )
+            if int(sample_config.start_padding_frames) != 0:
+                raise ValueError(
+                    "Chunked conditioned video requires "
+                    "`data.sample_construction.start_padding_frames=0`."
+                )
+            if sample_config.causal_prefix_suffix_buckets:
+                raise ValueError(
+                    "Chunked conditioned video does not accept causal prefix/suffix buckets."
+                )
+        return
     if not isinstance(policy_variant_config, VideoActionPolicyConfig):
         return
     if (
@@ -169,17 +203,78 @@ def validate_experiment_config_runtime_contract(
     """Validate cross-section runtime contracts after YAML and CLI overrides."""
 
     if isinstance(config.policy_variant, CausalVideoPredictionPolicyConfig):
-        default_training = TrainingConfig()
-        for field_name in ("chunk_size", "window_size"):
-            configured_value = getattr(config.training, field_name)
-            default_value = getattr(default_training, field_name)
-            if configured_value != default_value:
+        if config.action_decoder.name != enums.ActionDecoderName.VIDEO_ONLY:
+            raise ValueError(
+                "Causal video prediction requires `action_decoder.name=video_only_decoder`."
+            )
+        if (
+            int(config.data.action_schema.action_horizon) != 0
+            or int(config.data.action_schema.state_horizon) != 0
+            or int(config.action_decoder.action_horizon) != 0
+        ):
+            raise ValueError(
+                "Causal video prediction must not materialize action or state "
+                "targets; data action/state horizons and the decoder action "
+                "horizon must all be zero."
+            )
+        if config.policy_variant.program == enums.CausalVideoProgram.PREFIX_SUFFIX:
+            default_training = TrainingConfig()
+            for field_name in ("chunk_size", "window_size"):
+                configured_value = getattr(config.training, field_name)
+                default_value = getattr(default_training, field_name)
+                if configured_value != default_value:
+                    raise ValueError(
+                        "Prefix/suffix video sample geometry is configured by "
+                        "`data.sample_construction.causal_prefix_suffix_buckets`; "
+                        f"`training.{field_name}` must remain at its unused default "
+                        f"{default_value!r}, got {configured_value!r}."
+                    )
+        else:
+            sample_config = config.data.sample_construction
+            if int(config.backbone.patch_size_t) != 1:
                 raise ValueError(
-                    f"Causal video sample geometry is configured by "
-                    "`data.sample_construction.causal_prefix_suffix_buckets`; "
-                    f"`training.{field_name}` must remain at its unused default "
-                    f"{default_value!r}, got {configured_value!r}."
+                    "The M5 VTA legacy-prefix video marginal requires "
+                    "`backbone.patch_size_t=1`."
                 )
+            if config.training.enabled_objectives != (
+                enums.TrainingObjective.LATENT,
+            ):
+                raise ValueError(
+                    "Chunked conditioned-video prediction requires "
+                    "`training.enabled_objectives=[latent]`."
+                )
+            if float(config.training.action_loss_weight) != 0.0:
+                raise ValueError(
+                    "Chunked conditioned-video prediction requires "
+                    "`training.action_loss_weight=0.0`."
+                )
+            if int(config.data.train_batch_size) != 1:
+                raise ValueError(
+                    "Randomized chunked conditioned-video geometry requires "
+                    "`data.train_batch_size=1`."
+                )
+            if sample_config.sample_order_mode != enums.SampleOrderMode.REPLACEMENT:
+                raise ValueError(
+                    "Chunked conditioned-video training requires replacement sampling."
+                )
+            if not sample_config.randomize_geometry:
+                raise ValueError(
+                    "Chunked conditioned-video training requires randomized VTA "
+                    "chunk/window geometry."
+                )
+            if not sample_config.require_full_segment:
+                raise ValueError(
+                    "Chunked conditioned-video training requires full segments."
+                )
+            for field_name in ("chunk_size", "window_size"):
+                data_value = int(getattr(sample_config, field_name))
+                training_value = int(getattr(config.training, field_name))
+                if training_value != data_value:
+                    raise ValueError(
+                        "Chunked conditioned-video VTA geometry must agree across "
+                        f"data and training config: data.{field_name}={data_value}, "
+                        f"training.{field_name}={training_value}."
+                    )
 
         text_mode = config.policy_variant.text_conditioning_mode
         dropout_probability = float(config.training.text_condition_dropout_prob)

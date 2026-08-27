@@ -15,6 +15,7 @@ class RuntimeSequenceFamily(StrEnum):
     DENSE = "dense_default"
     CHUNKED_DUAL_STREAM_TRAIN = "chunked_dual_stream_exact"
     CHUNKED_DUAL_STREAM_INFERENCE = "chunked_dual_stream_exact_inference"
+    CHUNKED_CONDITIONED_VIDEO = "chunked_conditioned_video_exact"
     SINGLE_STREAM = "single_stream_exact"
 
 
@@ -106,6 +107,13 @@ def build_chunked_dual_stream_exact_inference_program(
         name="chunked_dual_stream_exact_inference",
         sequence_family=RuntimeSequenceFamily.CHUNKED_DUAL_STREAM_INFERENCE,
         attention_profile_name=attention_profile_name,
+    )
+
+
+def build_chunked_conditioned_video_runtime_program() -> RuntimeProgramSpec:
+    return RuntimeProgramSpec(
+        name="chunked_conditioned_video",
+        sequence_family=RuntimeSequenceFamily.CHUNKED_CONDITIONED_VIDEO,
     )
 
 

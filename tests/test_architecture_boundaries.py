@@ -4443,6 +4443,8 @@ def test_attention_profile_roles_have_one_owner_and_a_stable_facade() -> None:
             "normalize_history_stream_visibility",
         },
         "profiles": {
+            "_build_chunked_temporal_attention_profile",
+            "build_chunked_conditioned_video_attention_profile",
             "build_chunked_temporal_exact_attention_profile",
             "build_chunked_text_context_cross_attention_mask",
             "build_lingbot_chunked_exact_attention_profile",
@@ -4458,7 +4460,7 @@ def test_attention_profile_roles_have_one_owner_and_a_stable_facade() -> None:
     }
     all_names = set().union(*owner_names.values())
 
-    assert len(all_names) == 22
+    assert len(all_names) == 24
     assert not _top_level_definitions(ATTENTION_PROFILE_ROLE_PATHS["facade"])
     assert all(
         sum(
@@ -4498,6 +4500,7 @@ def test_attention_profile_roles_have_one_owner_and_a_stable_facade() -> None:
         "normalize_history_stream_visibility",
     }
     assert _module_all_names(ATTENTION_PROFILE_ROLE_PATHS["profiles"]) == {
+        "build_chunked_conditioned_video_attention_profile",
         "build_chunked_temporal_exact_attention_profile",
         "build_chunked_text_context_cross_attention_mask",
         "build_lingbot_chunked_exact_attention_profile",
@@ -4544,6 +4547,7 @@ def test_attention_profile_roles_have_one_owner_and_a_stable_facade() -> None:
     assert facade_consumers == []
 
     internal_visibility_names = {
+        "_build_chunked_temporal_attention_profile",
         "align_frame_context_to_previous_chunk_boundary",
         "_build_chunked_cross_attention_visibility",
         "_build_chunked_self_attention_visibility",
@@ -4569,6 +4573,9 @@ def test_attention_profile_roles_have_one_owner_and_a_stable_facade() -> None:
         "AttentionProfileSpec": attention_contracts.AttentionProfileSpec,
         "PreparedAttentionProfile": attention_contracts.PreparedAttentionProfile,
         "apply_attention_backend": attention_backends.apply_attention_backend,
+        "build_chunked_conditioned_video_attention_profile": (
+            chunked_attention.build_chunked_conditioned_video_attention_profile
+        ),
         "build_chunked_temporal_exact_attention_profile": (
             chunked_attention.build_chunked_temporal_exact_attention_profile
         ),
@@ -4616,6 +4623,7 @@ def test_attention_profile_roles_have_one_owner_and_a_stable_facade() -> None:
         "VIDEO_THEN_ACTION_COUPLING",
         "annotations",
         "apply_attention_backend",
+        "build_chunked_conditioned_video_attention_profile",
         "build_chunked_temporal_exact_attention_profile",
         "build_chunked_text_context_cross_attention_mask",
         "build_exact_video_action_token_layout",

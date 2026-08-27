@@ -21,6 +21,7 @@ from .enums import (
     AuxiliaryValidationSource,
     BackboneImplementation,
     BatchAdapterName,
+    CausalVideoProgram,
     ContextConditionLatentSource,
     DataSplit,
     DualExpertActionExpertInitMode,
@@ -290,19 +291,59 @@ def _validate_experiment_config(raw: Mapping[str, Any], issues: _IssueBuilder, *
                 )
             _validate_enum(
                 policy_variant,
+                "program",
+                CausalVideoProgram,
+                issues,
+                "policy_variant",
+            )
+            program = policy_variant.get("program")
+            if program is None:
+                issues.error(
+                    "policy_variant.program",
+                    "Causal video prediction requires an explicit program.",
+                )
+            _validate_enum(
+                policy_variant,
                 "text_conditioning_mode",
                 TextConditioningMode,
                 issues,
                 "policy_variant",
             )
-            for field_name in ("chunk_size", "window_size"):
-                if training is not None and field_name in training:
+            if program == CausalVideoProgram.PREFIX_SUFFIX.value:
+                if "noisy_video_condition_prob" in policy_variant:
                     issues.error(
-                        f"training.{field_name}",
-                        "Causal video sample geometry is configured by "
-                        "`data.sample_construction.causal_prefix_suffix_buckets`; "
-                        "remove this unused generic training field.",
+                        "policy_variant.noisy_video_condition_prob",
+                        "Prefix/suffix video prediction keeps its observed prefix "
+                        "clean; remove this field.",
                     )
+                for field_name in ("chunk_size", "window_size"):
+                    if training is not None and field_name in training:
+                        issues.error(
+                            f"training.{field_name}",
+                            "Prefix/suffix video geometry is configured by "
+                            "`data.sample_construction.causal_prefix_suffix_buckets`; "
+                            "remove this unused field.",
+                        )
+            elif program == CausalVideoProgram.CHUNKED_CONDITIONED_VIDEO.value:
+                probability = policy_variant.get("noisy_video_condition_prob")
+                if not isinstance(probability, (int, float)) or isinstance(
+                    probability, bool
+                ):
+                    issues.error(
+                        "policy_variant.noisy_video_condition_prob",
+                        "Chunked conditioned video requires an explicit numeric probability.",
+                    )
+                elif not 0.0 <= float(probability) <= 1.0:
+                    issues.error(
+                        "policy_variant.noisy_video_condition_prob",
+                        "Expected a probability in [0, 1].",
+                    )
+                for field_name in ("chunk_size", "window_size"):
+                    if training is None or field_name not in training:
+                        issues.error(
+                            f"training.{field_name}",
+                            "Chunked conditioned video requires explicit VTA geometry.",
+                        )
             guidance_scale = (inference or {}).get("guidance_scale", 1.0)
             text_conditioning_mode = policy_variant.get(
                 "text_conditioning_mode",

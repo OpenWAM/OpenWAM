@@ -24,6 +24,8 @@ from open_wam.models.common.chunked_attention_visibility import (
     _effective_frame_ids_for_singleton_cutoff,
 )
 from open_wam.models.common.packed_token_layout import (
+    PackedTokenLayout,
+    build_exact_conditioned_video_token_layout,
     build_exact_video_action_token_layout,
 )
 
@@ -99,10 +101,10 @@ def build_chunked_text_context_cross_attention_mask(
     return mask[None, :, :].expand(resolved_batch_size, -1, -1).contiguous()
 
 
-def build_chunked_temporal_exact_attention_profile(
+def _build_chunked_temporal_attention_profile(
     *,
     latent_shape: tuple[int, int, int, int, int],
-    action_shape: tuple[int, int, int, int, int],
+    action_shape: tuple[int, int, int, int, int] | None,
     padded_length: int,
     chunk_size: int,
     window_size: int,
@@ -120,6 +122,7 @@ def build_chunked_temporal_exact_attention_profile(
     prefix_condition_frames: int = 0,
     singleton_chunk_frame: int | None = None,
     conditional_history_policy: str | None = None,
+    layout: PackedTokenLayout | None = None,
 ) -> PreparedAttentionProfile:
     # History visibility applies only to past chunks. Same-chunk cross-stream
     # visibility remains owned by the current-block coupling program.
@@ -138,7 +141,10 @@ def build_chunked_temporal_exact_attention_profile(
     prefix_condition_frames = max(0, int(prefix_condition_frames))
 
     batch_size, _, latent_frames, latent_height, latent_width = latent_shape
-    _, _, action_frames, action_height, action_width = action_shape
+    if action_shape is None:
+        action_frames = action_height = action_width = 0
+    else:
+        _, _, action_frames, action_height, action_width = action_shape
     patch_t, patch_h, patch_w = patch_size
     text_token_count = int(text_token_count)
     resolved_base_text_token_count = (
@@ -170,23 +176,34 @@ def build_chunked_temporal_exact_attention_profile(
             f"proprio={resolved_proprio_context_token_count}, text={text_token_count}."
         )
 
-    layout = build_exact_video_action_token_layout(
-        batch_size=batch_size,
-        latent_frames=latent_frames,
-        latent_height=latent_height,
-        latent_width=latent_width,
-        action_frames=action_frames,
-        action_height=action_height,
-        action_width=action_width,
-        patch_size=patch_size,
-        chunk_size=chunk_size,
-        chunk_origin_frame=chunk_origin_frame,
-        current_block_coupling=current_block_coupling,
-        device=device,
-        action_context_mask=action_context_mask,
-        prefix_condition_frames=prefix_condition_frames,
-        singleton_chunk_frame=singleton_chunk_frame,
-    )
+    if layout is None:
+        if action_shape is None:
+            raise ValueError(
+                "Chunked video/action attention requires an action shape when no "
+                "explicit packed layout is supplied."
+            )
+        layout = build_exact_video_action_token_layout(
+            batch_size=batch_size,
+            latent_frames=latent_frames,
+            latent_height=latent_height,
+            latent_width=latent_width,
+            action_frames=action_frames,
+            action_height=action_height,
+            action_width=action_width,
+            patch_size=patch_size,
+            chunk_size=chunk_size,
+            chunk_origin_frame=chunk_origin_frame,
+            current_block_coupling=current_block_coupling,
+            device=device,
+            action_context_mask=action_context_mask,
+            prefix_condition_frames=prefix_condition_frames,
+            singleton_chunk_frame=singleton_chunk_frame,
+        )
+    elif action_context_mask is not None:
+        raise ValueError(
+            "An explicit packed attention layout cannot be combined with "
+            "`action_context_mask`."
+        )
     layout = layout.with_padding(padded_length)
     latent_token_count = (
         int(batch_size)
@@ -194,18 +211,25 @@ def build_chunked_temporal_exact_attention_profile(
         * int(latent_height // patch_h)
         * int(latent_width // patch_w)
     )
-    action_token_count = (
-        int(batch_size) * int(action_frames) * int(action_height) * int(action_width)
-    )
-    action_token_valid = layout.valid_as_kv[
-        2 * latent_token_count : 2 * latent_token_count + action_token_count
-    ]
-    invalid_action_token_count = int((~action_token_valid).sum().item())
-    action_context_valid_tokens: tuple[bool, ...] | None = (
-        tuple(bool(value) for value in action_token_valid.detach().cpu().tolist())
-        if action_context_mask is not None
-        else None
-    )
+    if action_shape is None:
+        invalid_action_token_count = 0
+        action_context_valid_tokens = None
+    else:
+        action_token_count = (
+            int(batch_size)
+            * int(action_frames)
+            * int(action_height)
+            * int(action_width)
+        )
+        action_token_valid = layout.valid_as_kv[
+            2 * latent_token_count : 2 * latent_token_count + action_token_count
+        ]
+        invalid_action_token_count = int((~action_token_valid).sum().item())
+        action_context_valid_tokens = (
+            tuple(bool(value) for value in action_token_valid.detach().cpu().tolist())
+            if action_context_mask is not None
+            else None
+        )
 
     seq_ids = layout.seq_id
     block_ids = layout.block_id
@@ -395,7 +419,11 @@ def build_chunked_temporal_exact_attention_profile(
             "chunk_size": int(chunk_size),
             "window_size": int(window_size),
             "latent_shape": tuple(int(v) for v in latent_shape),
-            "action_shape": tuple(int(v) for v in action_shape),
+            "action_shape": (
+                None
+                if action_shape is None
+                else tuple(int(v) for v in action_shape)
+            ),
             "padded_length": int(padded_length),
             "text_token_count": int(text_token_count),
             "base_text_token_count": int(resolved_base_text_token_count),
@@ -414,11 +442,115 @@ def build_chunked_temporal_exact_attention_profile(
     )
 
 
+def build_chunked_temporal_exact_attention_profile(
+    *,
+    latent_shape: tuple[int, int, int, int, int],
+    action_shape: tuple[int, int, int, int, int],
+    padded_length: int,
+    chunk_size: int,
+    window_size: int,
+    patch_size: tuple[int, int, int],
+    text_token_count: int,
+    base_text_token_count: int | None = None,
+    proprio_context_token_count: int = 0,
+    chunk_origin_frame: int = 0,
+    device: torch.device,
+    action_context_mask: torch.Tensor | None = None,
+    build_dense_masks: bool = False,
+    build_flex_masks: bool = False,
+    current_block_coupling: str | None = None,
+    history_stream_visibility: HistoryStreamVisibility | str | None = None,
+    prefix_condition_frames: int = 0,
+    singleton_chunk_frame: int | None = None,
+    conditional_history_policy: str | None = None,
+) -> PreparedAttentionProfile:
+    """Build the canonical four-stream video/action attention profile."""
+
+    return _build_chunked_temporal_attention_profile(
+        latent_shape=latent_shape,
+        action_shape=action_shape,
+        padded_length=padded_length,
+        chunk_size=chunk_size,
+        window_size=window_size,
+        patch_size=patch_size,
+        text_token_count=text_token_count,
+        base_text_token_count=base_text_token_count,
+        proprio_context_token_count=proprio_context_token_count,
+        chunk_origin_frame=chunk_origin_frame,
+        device=device,
+        action_context_mask=action_context_mask,
+        build_dense_masks=build_dense_masks,
+        build_flex_masks=build_flex_masks,
+        current_block_coupling=current_block_coupling,
+        history_stream_visibility=history_stream_visibility,
+        prefix_condition_frames=prefix_condition_frames,
+        singleton_chunk_frame=singleton_chunk_frame,
+        conditional_history_policy=conditional_history_policy,
+    )
+
+
+def build_chunked_conditioned_video_attention_profile(
+    *,
+    latent_shape: tuple[int, int, int, int, int],
+    padded_length: int,
+    chunk_size: int,
+    window_size: int,
+    patch_size: tuple[int, int, int],
+    text_token_count: int,
+    chunk_origin_frame: int = 0,
+    device: torch.device,
+    build_dense_masks: bool = False,
+    build_flex_masks: bool = False,
+    current_block_coupling: str | None = None,
+    prefix_condition_frames: int = 0,
+    singleton_chunk_frame: int | None = None,
+    conditional_history_policy: str | None = None,
+) -> PreparedAttentionProfile:
+    """Build VTA video-marginal attention over two native video streams."""
+
+    if current_block_coupling is None:
+        current_block_coupling = VIDEO_THEN_ACTION_COUPLING
+    batch_size, _, latent_frames, latent_height, latent_width = latent_shape
+    layout = build_exact_conditioned_video_token_layout(
+        batch_size=batch_size,
+        latent_frames=latent_frames,
+        latent_height=latent_height,
+        latent_width=latent_width,
+        patch_size=patch_size,
+        chunk_size=chunk_size,
+        chunk_origin_frame=chunk_origin_frame,
+        current_block_coupling=current_block_coupling,
+        device=device,
+        prefix_condition_frames=prefix_condition_frames,
+        singleton_chunk_frame=singleton_chunk_frame,
+    )
+    return _build_chunked_temporal_attention_profile(
+        latent_shape=latent_shape,
+        action_shape=None,
+        padded_length=padded_length,
+        chunk_size=chunk_size,
+        window_size=window_size,
+        patch_size=patch_size,
+        text_token_count=text_token_count,
+        chunk_origin_frame=chunk_origin_frame,
+        device=device,
+        build_dense_masks=build_dense_masks,
+        build_flex_masks=build_flex_masks,
+        current_block_coupling=current_block_coupling,
+        history_stream_visibility=HistoryStreamVisibility.VIDEO_ONLY,
+        prefix_condition_frames=prefix_condition_frames,
+        singleton_chunk_frame=singleton_chunk_frame,
+        conditional_history_policy=conditional_history_policy,
+        layout=layout,
+    )
+
+
 def build_lingbot_chunked_exact_attention_profile(**kwargs) -> PreparedAttentionProfile:
     return build_chunked_temporal_exact_attention_profile(**kwargs)
 
 
 __all__ = [
+    "build_chunked_conditioned_video_attention_profile",
     "build_chunked_temporal_exact_attention_profile",
     "build_chunked_text_context_cross_attention_mask",
     "build_lingbot_chunked_exact_attention_profile",

@@ -17,6 +17,7 @@ from open_wam.configs import (
     AuxiliaryValidationSource,
     BatchAdapterName,
     CausalPrefixSuffixBucketConfig,
+    CausalVideoProgram,
     CausalVideoPredictionPolicyConfig,
     ContextConditionLatentSource,
     CurrentBlockCoupling,
@@ -1074,6 +1075,7 @@ backbone:
   implementation: shared_transformer
 policy_variant:
   name: causal_video_prediction
+  program: prefix_suffix
 action_decoder:
   name: video_only_decoder
   action_dim: 1
@@ -1156,6 +1158,7 @@ backbone:
   load_wan_vae_frontend: true
 policy_variant:
   name: causal_video_prediction
+  program: prefix_suffix
 action_decoder:
   name: video_only_decoder
   action_dim: 1
@@ -1213,6 +1216,7 @@ backbone:
   load_wan_vae_frontend: true
 policy_variant:
   name: causal_video_prediction
+  program: prefix_suffix
 action_decoder:
   name: video_only_decoder
   action_dim: 1
@@ -1260,6 +1264,7 @@ backbone:
   implementation: shared_transformer
 policy_variant:
   name: causal_video_prediction
+  program: prefix_suffix
 action_decoder:
   name: video_only_decoder
   action_dim: 1
@@ -3412,6 +3417,7 @@ def test_causal_video_prediction_config_loads() -> None:
     )
 
     assert isinstance(config.policy_variant, CausalVideoPredictionPolicyConfig)
+    assert config.policy_variant.program == CausalVideoProgram.PREFIX_SUFFIX
     assert (
         config.policy_variant.text_conditioning_mode
         == TextConditioningMode.TASK_PROMPT
@@ -3438,6 +3444,59 @@ def test_causal_video_prediction_config_loads() -> None:
     )
     assert config.training.text_condition_dropout_prob == pytest.approx(0.1)
     assert config.inference.guidance_scale == pytest.approx(5.0)
+
+
+def test_chunked_conditioned_video_config_loads_as_vta_video_marginal() -> None:
+    config = load_experiment_config(
+        REPO_ROOT
+        / "configs/experiments/causal_video_prediction_libero_chunked_conditioned.yaml"
+    )
+    m5_config = load_experiment_config(
+        REPO_ROOT / "configs/experiments/dual_expert_libero_video_then_action.yaml"
+    )
+
+    assert config.policy_variant.program == (
+        CausalVideoProgram.CHUNKED_CONDITIONED_VIDEO
+    )
+    assert config.policy_variant.noisy_video_condition_prob == pytest.approx(0.5)
+    assert config.data.sample_construction.mode == WindowSamplingMode.UNIFORM_SEGMENT
+    assert config.data.sample_construction.randomize_geometry is True
+    assert config.data.sample_construction.require_full_segment is True
+    assert config.data.sample_construction.condition_source_frame_offset == -1
+    assert config.data.sample_construction.target_alignment == SampleTargetAlignment.LEGACY
+    assert config.data.sample_construction.start_padding_frames == 0
+    assert config.data.action_schema.action_horizon == 0
+    assert config.data.action_schema.state_horizon == 0
+    assert config.training.enabled_objectives == ("latent",)
+    assert config.training.action_loss_weight == 0.0
+    assert config.action_decoder.name == ActionDecoderName.VIDEO_ONLY
+    assert config.policy_variant.use_activation_checkpointing is True
+
+    assert config.data.sample_construction == m5_config.data.sample_construction
+    assert replace(
+        config.backbone,
+        load_wan_vae_frontend=m5_config.backbone.load_wan_vae_frontend,
+        load_text_conditioning=m5_config.backbone.load_text_conditioning,
+        reference_assets_device_policy=(
+            m5_config.backbone.reference_assets_device_policy
+        ),
+    ) == m5_config.backbone
+    assert replace(
+        config.training,
+        enabled_objectives=m5_config.training.enabled_objectives,
+        action_loss_weight=m5_config.training.action_loss_weight,
+        trainable_components=m5_config.training.trainable_components,
+        frozen_components=m5_config.training.frozen_components,
+    ) == m5_config.training
+    assert replace(
+        config.inference,
+        action_num_inference_steps=m5_config.inference.action_num_inference_steps,
+        use_cache=m5_config.inference.use_cache,
+    ) == m5_config.inference
+    assert (
+        config.policy_variant.use_activation_checkpointing
+        == m5_config.policy_variant.use_activation_checkpointing
+    )
 
 
 @pytest.mark.parametrize("value", (-0.1, 1.1, float("nan")))

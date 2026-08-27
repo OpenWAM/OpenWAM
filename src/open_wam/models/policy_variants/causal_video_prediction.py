@@ -6,15 +6,23 @@ from typing import Any
 
 import torch
 
-from open_wam.configs import InferenceConfig, TextConditioningMode, TrainingConfig
+from open_wam.configs import (
+    CausalVideoProgram,
+    InferenceConfig,
+    TextConditioningMode,
+    TrainingConfig,
+)
 from open_wam.configs.policy_contracts import CausalVideoPredictionPolicyConfig
-from open_wam.contracts import VideoFrameMapping
+from open_wam.contracts import SampleConstructionMetadata, VideoFrameMapping
 from open_wam.models.common.flow_schedule import (
     FlowMatchScheduler,
     sample_timestep_id,
 )
 from open_wam.models.common.flow_supervision import (
     denoised_video_latents_from_flow,
+)
+from open_wam.models.common.flow_training import (
+    build_video_flow_match_train_artifacts,
 )
 from open_wam.models.video_backbone.contracts import TokenGridMetadata
 from open_wam.models.visual_tower import VisualStageOutputs, VisualTower
@@ -46,8 +54,17 @@ class _PrefixSuffixLayout:
     total_frames: int
 
 
+@dataclass(frozen=True)
+class _ChunkedConditionedLayout:
+    chunk_size: int
+    window_size: int
+    frame_shift: int
+    chunk_origin_frame: int
+    singleton_chunk_frame: int | None
+
+
 class CausalVideoPredictionPolicyVariant(PolicyVariant):
-    """Standalone causal prefix/suffix video prediction over the shared visual backbone."""
+    """Text-conditioned video prediction over explicit sequence programs."""
 
     def __init__(
         self,
@@ -414,6 +431,136 @@ class CausalVideoPredictionPolicyVariant(PolicyVariant):
             "layouts": layouts,
         }
 
+    @staticmethod
+    def _resolve_chunked_conditioned_layout(
+        *,
+        metadata: tuple[Mapping[str, Any], ...],
+        target_frames: int,
+    ) -> _ChunkedConditionedLayout:
+        layouts: list[_ChunkedConditionedLayout] = []
+        for sample in metadata:
+            typed = SampleConstructionMetadata.from_mapping(sample)
+            if typed is None:  # pragma: no cover - mapping checked by caller
+                raise TypeError("Chunked conditioned-video metadata is missing.")
+            chunk_size = typed.sampled_chunk_size_for(target_frames)
+            window_size = typed.sampled_window_size
+            if chunk_size is None or window_size is None:
+                raise ValueError(
+                    "Chunked conditioned-video training requires sampled chunk and "
+                    "window geometry in every sample's metadata."
+                )
+            layouts.append(
+                _ChunkedConditionedLayout(
+                    chunk_size=int(chunk_size),
+                    window_size=int(window_size),
+                    frame_shift=0 if typed.frame_shift is None else int(typed.frame_shift),
+                    chunk_origin_frame=typed.chunk_origin_frame_for(
+                        observed_num_frames=target_frames
+                    ),
+                    singleton_chunk_frame=typed.singleton_chunk_frame_for(
+                        observed_num_frames=target_frames
+                    ),
+                )
+            )
+        first = layouts[0]
+        if any(layout != first for layout in layouts[1:]):
+            raise ValueError(
+                "Chunked conditioned-video batches must share sampled chunk, "
+                "window, and frame geometry. Use rank-local batch size 1 when "
+                "geometry is randomized."
+            )
+        return first
+
+    def _build_chunked_conditioned_train_rollout(
+        self,
+        *,
+        visual_tower: VisualTower,
+        visual_outputs: VisualStageOutputs,
+        batch: PolicyTrainBatch,
+        metadata: tuple[Mapping[str, Any], ...],
+        text_context: torch.Tensor | None,
+    ) -> dict[str, Any]:
+        target_latents = visual_outputs.frontend.video_latents
+        batch_size, _, target_frames, _, _ = target_latents.shape
+        condition_latents = batch.extra.get("condition_latents")
+        if not isinstance(condition_latents, torch.Tensor):
+            raise ValueError(
+                "Chunked conditioned-video training requires precomputed "
+                "`condition_latents` with source-frame offset -1."
+            )
+        if (
+            condition_latents.ndim != 5
+            or tuple(condition_latents.shape[:2]) != tuple(target_latents.shape[:2])
+            or tuple(condition_latents.shape[-2:]) != tuple(target_latents.shape[-2:])
+            or int(condition_latents.shape[2]) < 1
+        ):
+            raise ValueError(
+                "Chunked conditioned-video condition latents must match target "
+                "batch, channel, and spatial dimensions and contain an external "
+                "frame, "
+                f"got condition={tuple(condition_latents.shape)}, "
+                f"target={tuple(target_latents.shape)}."
+            )
+        layout = self._resolve_chunked_conditioned_layout(
+            metadata=metadata,
+            target_frames=target_frames,
+        )
+        prefix_latents = condition_latents[:, :, :1].to(
+            device=target_latents.device,
+            dtype=target_latents.dtype,
+        )
+        model_latents = torch.cat([prefix_latents, target_latents], dim=2)
+        artifacts = build_video_flow_match_train_artifacts(
+            model_latents,
+            training_config=self.training_config,
+            condition_latents=model_latents,
+            noisy_condition_prob=float(self.config.noisy_video_condition_prob or 0.0),
+            clean_prefix_frames=1,
+        )
+        loss_mask = torch.ones(
+            batch_size,
+            1,
+            target_frames + 1,
+            1,
+            1,
+            device=target_latents.device,
+            dtype=target_latents.dtype,
+        )
+        loss_mask[:, :, :1] = 0
+        flow_pred = visual_tower.predict_chunked_conditioned_video_flow(
+            noisy_latents=artifacts.noisy_latents,
+            condition_latents=artifacts.condition_latents,
+            timesteps=artifacts.timesteps,
+            condition_timesteps=artifacts.condition_timesteps,
+            text_context=text_context,
+            chunk_size=layout.chunk_size,
+            window_size=layout.window_size,
+            frame_start=layout.frame_shift - 1,
+            chunk_origin_frame=layout.chunk_origin_frame,
+            prefix_condition_frames=1,
+            singleton_chunk_frame=layout.singleton_chunk_frame,
+            use_activation_checkpointing=(
+                self.config.use_activation_checkpointing
+            ),
+            stage="train",
+        )
+        predicted_latents = denoised_video_latents_from_flow(
+            noisy_latents=artifacts.noisy_latents,
+            flow_pred=flow_pred,
+            timesteps=artifacts.timesteps,
+            scheduler=artifacts.scheduler,
+        )
+        return {
+            "flow_pred": flow_pred,
+            "flow_targets": artifacts.targets,
+            "predicted_latents": predicted_latents,
+            "target_latents": model_latents,
+            "timesteps": artifacts.timesteps,
+            "scheduler": artifacts.scheduler,
+            "future_loss_mask": loss_mask,
+            "layouts": (layout,),
+        }
+
     def forward_train(
         self,
         visual_tower: VisualTower,
@@ -437,27 +584,41 @@ class CausalVideoPredictionPolicyVariant(PolicyVariant):
                 float(self.training_config.text_condition_dropout_prob) > 0.0
             ),
         )
-        rollout = self._build_train_rollout(
-            visual_tower=visual_tower,
-            visual_outputs=visual_outputs,
-            metadata=self._metadata_tuple(
-                prepared_inputs.batch.extra.get("metadata"),
-                expected_batch_size=batch_size,
-            ),
-            text_context=conditioning.text_context,
+        metadata = self._metadata_tuple(
+            prepared_inputs.batch.extra.get("metadata"),
+            expected_batch_size=batch_size,
         )
+        if self.config.program == CausalVideoProgram.PREFIX_SUFFIX:
+            rollout = self._build_train_rollout(
+                visual_tower=visual_tower,
+                visual_outputs=visual_outputs,
+                metadata=metadata,
+                text_context=conditioning.text_context,
+            )
+            supervised_frame_count = torch.tensor(
+                [layout.future_frames for layout in rollout["layouts"]],
+                device=visual_outputs.frontend.video_latents.device,
+                dtype=torch.float32,
+            ).mean()
+        else:
+            rollout = self._build_chunked_conditioned_train_rollout(
+                visual_tower=visual_tower,
+                visual_outputs=visual_outputs,
+                batch=prepared_inputs.batch,
+                metadata=metadata,
+                text_context=conditioning.text_context,
+            )
+            supervised_frame_count = torch.tensor(
+                float(visual_outputs.frontend.video_latents.shape[2]),
+                device=visual_outputs.frontend.video_latents.device,
+            )
         policy_features = visual_outputs.frontend.video_latents.new_zeros(
             batch_size, 0, self.config.hidden_size
-        )
-        future_frame_counts = torch.tensor(
-            [layout.future_frames for layout in rollout["layouts"]],
-            device=visual_outputs.frontend.video_latents.device,
-            dtype=torch.float32,
         )
         return PolicyTrainOutput(
             policy_features=policy_features,
             metrics={
-                "future_frame_count": future_frame_counts.mean().detach(),
+                "future_frame_count": supervised_frame_count.detach(),
             },
             decoder_artifacts=DecoderArtifactEnvelope(
                 contract=VIDEO_FLOW_DECODER_ARTIFACT_CONTRACT,
@@ -474,6 +635,7 @@ class CausalVideoPredictionPolicyVariant(PolicyVariant):
             aux={
                 "variant": self.config.name,
                 "architecture": "causal_video_prediction",
+                "program": self.config.program.value,
                 "layouts": rollout["layouts"],
             },
         )
@@ -494,6 +656,85 @@ class CausalVideoPredictionPolicyVariant(PolicyVariant):
             chunk_size=self.inference_config.frame_chunk_size,
         )
         return PolicyInferState(step_index=0, cursor=cursor)
+
+    def _forward_chunked_conditioned_infer_step(
+        self,
+        *,
+        visual_tower: VisualTower,
+        visual_outputs: VisualStageOutputs,
+        context: PolicyInferContext,
+        infer_state: PolicyInferState,
+        metadata: tuple[Mapping[str, Any], ...],
+    ) -> PolicyInferOutput:
+        video_latents = visual_outputs.frontend.video_latents
+        sample_metadata = metadata[0]
+        observed_frames = int(sample_metadata.get("observed_prefix_frames", 1))
+        future_frames = int(
+            sample_metadata.get(
+                "future_suffix_frames",
+                int(video_latents.shape[2]) - observed_frames,
+            )
+        )
+        if observed_frames != 1 or future_frames <= 0:
+            raise ValueError(
+                "Chunked conditioned-video inference requires one external prefix "
+                f"and at least one target frame, got observed={observed_frames}, "
+                f"future={future_frames}."
+            )
+        if observed_frames + future_frames > int(video_latents.shape[2]):
+            raise ValueError(
+                "Chunked conditioned-video inference metadata exceeds its latent "
+                f"input: observed={observed_frames}, future={future_frames}, "
+                f"available={video_latents.shape[2]}."
+            )
+        observed_prefix = video_latents[:, :, :1]
+        future_template = video_latents[:, :, 1 : 1 + future_frames]
+        predicted_future = visual_tower.generate_chunked_conditioned_video_latents(
+            observed_prefix=observed_prefix,
+            future_template=future_template,
+            text_context=visual_outputs.frontend.conditioning.text_context,
+            negative_text_context=(
+                visual_outputs.frontend.conditioning.negative_text_context
+            ),
+            frame_start=int(sample_metadata.get("frame_shift", 0)),
+            chunk_size=int(self.inference_config.frame_chunk_size),
+            window_size=int(self.training_config.window_size),
+            chunk_origin_frame=int(sample_metadata.get("chunk_origin_frame", 0)),
+            num_inference_steps=int(
+                self.inference_config.video_num_inference_steps
+            ),
+            num_train_timesteps=int(self.training_config.video_num_train_timesteps),
+            sigma_shift=float(self.training_config.video_sigma_shift),
+            guidance_scale=float(self.inference_config.guidance_scale),
+            sample_seed=(
+                None
+                if context.extra.get("sample_seed") is None
+                else int(context.extra["sample_seed"])
+            ),
+        )
+        predicted_latents = torch.cat(
+            [observed_prefix, predicted_future], dim=2
+        )
+        return PolicyInferOutput(
+            policy_features=video_latents.new_zeros(
+                video_latents.shape[0], 0, self.config.hidden_size
+            ),
+            next_state=PolicyInferState(
+                step_index=infer_state.step_index + 1,
+                cursor=infer_state.cursor,
+            ),
+            decoder_artifacts=DecoderArtifactEnvelope(
+                contract=VIDEO_FLOW_DECODER_ARTIFACT_CONTRACT,
+                payload=VideoFlowInferArtifacts(
+                    predicted_latents=predicted_latents,
+                ),
+            ),
+            aux={
+                "variant": self.config.name,
+                "architecture": "causal_video_prediction",
+                "program": self.config.program.value,
+            },
+        )
 
     def forward_infer_step(
         self,
@@ -520,6 +761,14 @@ class CausalVideoPredictionPolicyVariant(PolicyVariant):
             context.extra.get("metadata"),
             expected_batch_size=batch_size,
         )
+        if self.config.program == CausalVideoProgram.CHUNKED_CONDITIONED_VIDEO:
+            return self._forward_chunked_conditioned_infer_step(
+                visual_tower=visual_tower,
+                visual_outputs=visual_outputs,
+                context=context,
+                infer_state=infer_state,
+                metadata=metadata,
+            )
         layouts = self._resolve_layouts(
             metadata=metadata,
             available_frames=int(visual_outputs.frontend.video_latents.shape[2]),
@@ -562,5 +811,6 @@ class CausalVideoPredictionPolicyVariant(PolicyVariant):
             aux={
                 "variant": self.config.name,
                 "architecture": "causal_video_prediction",
+                "program": self.config.program.value,
             },
         )

@@ -132,6 +132,7 @@ backbone:
 
 policy_variant:
   name: causal_video_prediction
+  program: prefix_suffix
   attach_site: post_visual_core
   hidden_size: 256
   text_conditioning_mode: disabled

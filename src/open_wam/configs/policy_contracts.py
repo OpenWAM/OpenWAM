@@ -10,6 +10,7 @@ from .enums import (
     ActionDecoderName,
     AttachSite,
     BackboneImplementation,
+    CausalVideoProgram,
     DynamicsObjective,
     PolicyVariantName,
     ProprioContextMode,
@@ -137,7 +138,11 @@ class CausalVideoPredictionPolicyConfig(PolicyVariantConfig):
     name: PolicyVariantName = PolicyVariantName.CAUSAL_VIDEO_PREDICTION
     hidden_size: int = 256
     attach_site: AttachSite = AttachSite.POST_VISUAL_CORE
+    program: CausalVideoProgram | None = None
     text_conditioning_mode: TextConditioningMode = TextConditioningMode.TASK_PROMPT
+    noisy_video_condition_prob: float | None = None
+    # Recompute shared video blocks during backward for long-segment training.
+    use_activation_checkpointing: bool = False
 
     @property
     def default_action_decoder(self) -> ActionDecoderName:
@@ -160,7 +165,40 @@ class CausalVideoPredictionPolicyConfig(PolicyVariantConfig):
         coerce_fields(
             self,
             enum_fields={"text_conditioning_mode": TextConditioningMode},
+            optional_enum_fields={"program": CausalVideoProgram},
         )
+        if self.program is None:
+            raise ValueError(
+                "Causal video prediction requires an explicit `policy_variant.program`."
+            )
+        if self.program == CausalVideoProgram.PREFIX_SUFFIX:
+            if self.noisy_video_condition_prob is not None:
+                raise ValueError(
+                    "`noisy_video_condition_prob` is not part of the prefix/suffix "
+                    "video program; omit it."
+                )
+            if self.use_activation_checkpointing:
+                raise ValueError(
+                    "`use_activation_checkpointing` is only implemented by the "
+                    "chunked conditioned-video program."
+                )
+        else:
+            if self.noisy_video_condition_prob is None:
+                raise ValueError(
+                    "Chunked conditioned video requires an explicit "
+                    "`noisy_video_condition_prob`."
+                )
+            if not 0.0 <= float(self.noisy_video_condition_prob) <= 1.0:
+                raise ValueError(
+                    "Chunked conditioned video requires "
+                    "`0 <= noisy_video_condition_prob <= 1`, got "
+                    f"{self.noisy_video_condition_prob!r}."
+                )
+            if not isinstance(self.use_activation_checkpointing, bool):
+                raise TypeError(
+                    "Chunked conditioned video requires "
+                    "`use_activation_checkpointing` to be boolean."
+                )
         if self.attach_site != AttachSite.POST_VISUAL_CORE:
             raise ValueError(
                 "Causal video prediction requires `attach_site = post_visual_core`, "

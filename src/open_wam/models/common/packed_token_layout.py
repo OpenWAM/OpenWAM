@@ -121,6 +121,206 @@ class PackedTokenLayout:
         )
 
 
+@dataclass(frozen=True)
+class _VideoTokenMetadata:
+    seq_id: torch.Tensor
+    frame_id: torch.Tensor
+    chunk_id: torch.Tensor
+    block_id: torch.Tensor
+    valid: torch.Tensor
+
+
+def _build_video_token_metadata(
+    *,
+    batch_size: int,
+    latent_frames: int,
+    latent_height: int,
+    latent_width: int,
+    patch_size: tuple[int, int, int],
+    chunk_size: int,
+    chunk_origin_frame: int,
+    current_block_coupling: CurrentBlockCoupling | str,
+    device: torch.device,
+    prefix_condition_frames: int,
+    singleton_chunk_frame: int | None,
+) -> _VideoTokenMetadata:
+    """Build video metadata shared by video-only and video/action layouts."""
+
+    batch_size = int(batch_size)
+    latent_frames = int(latent_frames)
+    latent_height = int(latent_height)
+    latent_width = int(latent_width)
+    patch_t, patch_h, patch_w = (int(value) for value in patch_size)
+    chunk_size = int(chunk_size)
+    chunk_origin_frame = int(chunk_origin_frame)
+    prefix_condition_frames = max(0, int(prefix_condition_frames))
+    coupling = CurrentBlockCoupling(current_block_coupling)
+    if batch_size <= 0:
+        raise ValueError(f"Expected batch_size > 0, got {batch_size}.")
+    if patch_t <= 0 or patch_h <= 0 or patch_w <= 0:
+        raise ValueError(f"Expected positive patch_size, got {patch_size}.")
+    if (
+        latent_frames % patch_t != 0
+        or latent_height % patch_h != 0
+        or latent_width % patch_w != 0
+    ):
+        raise ValueError(
+            "Latent shape must be divisible by patch_size, "
+            f"got latent=({latent_frames}, {latent_height}, {latent_width}), "
+            f"patch={patch_size}."
+        )
+    if chunk_size <= 0:
+        raise ValueError(f"Expected chunk_size > 0, got {chunk_size}.")
+    if prefix_condition_frames > 0 and prefix_condition_frames >= latent_frames:
+        raise ValueError(
+            "`prefix_condition_frames` must be smaller than latent_frames, "
+            f"got prefix_condition_frames={prefix_condition_frames}, "
+            f"latent_frames={latent_frames}."
+        )
+
+    seq_id = (
+        torch.arange(batch_size, device=device)[:, None, None, None]
+        .expand(
+            -1,
+            latent_frames // patch_t,
+            latent_height // patch_h,
+            latent_width // patch_w,
+        )
+        .flatten()
+    )
+    frame_id = (
+        torch.arange(latent_frames // patch_t, device=device)[None, :, None, None]
+        .expand(
+            batch_size,
+            -1,
+            latent_height // patch_h,
+            latent_width // patch_w,
+        )[None]
+        .flatten()
+    )
+    if prefix_condition_frames > 0:
+        target_frame_id = (frame_id - prefix_condition_frames).clamp_min(0)
+        target_chunk_id = frame_chunk_ids_for_origin(
+            target_frame_id,
+            chunk_origin_frame=chunk_origin_frame,
+            chunk_size=chunk_size,
+            singleton_chunk_frame=singleton_chunk_frame,
+        )
+        if singleton_chunk_frame is None:
+            prefix_target_chunk_id = torch.full_like(target_chunk_id, -1)
+        else:
+            prefix_reference_frame = max(0, int(singleton_chunk_frame) - 1)
+            prefix_target_chunk_id = frame_chunk_ids_for_origin(
+                torch.full_like(target_chunk_id, prefix_reference_frame),
+                chunk_origin_frame=chunk_origin_frame,
+                chunk_size=chunk_size,
+                singleton_chunk_frame=singleton_chunk_frame,
+            )
+        chunk_id = torch.where(
+            frame_id < prefix_condition_frames,
+            prefix_target_chunk_id + 1,
+            target_chunk_id + 1,
+        )
+        if singleton_chunk_frame is None:
+            block_id = torch.where(
+                frame_id < prefix_condition_frames,
+                torch.zeros_like(frame_id),
+                chunk_id * 2,
+            )
+        else:
+            block_id = chunk_id * 2
+    else:
+        chunk_id = frame_chunk_ids_for_origin(
+            frame_id,
+            chunk_origin_frame=chunk_origin_frame,
+            chunk_size=chunk_size,
+            singleton_chunk_frame=singleton_chunk_frame,
+        )
+        if coupling in {
+            CurrentBlockCoupling.ACTION_THEN_VIDEO,
+            CurrentBlockCoupling.ACTION_NOISY_TO_VIDEO,
+        }:
+            block_id = chunk_id * 2 + 1
+        else:
+            block_id = chunk_id * 2
+    return _VideoTokenMetadata(
+        seq_id=seq_id,
+        frame_id=frame_id,
+        chunk_id=chunk_id,
+        block_id=block_id,
+        valid=torch.ones_like(seq_id, dtype=torch.bool),
+    )
+
+
+def build_exact_conditioned_video_token_layout(
+    *,
+    batch_size: int,
+    latent_frames: int,
+    latent_height: int,
+    latent_width: int,
+    patch_size: tuple[int, int, int],
+    chunk_size: int,
+    chunk_origin_frame: int,
+    current_block_coupling: CurrentBlockCoupling | str,
+    device: torch.device,
+    prefix_condition_frames: int = 0,
+    singleton_chunk_frame: int | None = None,
+) -> PackedTokenLayout:
+    """Build native `[V_noisy, V_condition]` packed-token metadata."""
+
+    video = _build_video_token_metadata(
+        batch_size=batch_size,
+        latent_frames=latent_frames,
+        latent_height=latent_height,
+        latent_width=latent_width,
+        patch_size=patch_size,
+        chunk_size=chunk_size,
+        chunk_origin_frame=chunk_origin_frame,
+        current_block_coupling=current_block_coupling,
+        device=device,
+        prefix_condition_frames=prefix_condition_frames,
+        singleton_chunk_frame=singleton_chunk_frame,
+    )
+    coupling = CurrentBlockCoupling(current_block_coupling)
+    zeros = torch.zeros_like(video.frame_id)
+    ones = torch.ones_like(video.frame_id)
+    return PackedTokenLayout(
+        token_kind=torch.cat(
+            [
+                torch.full_like(video.frame_id, int(PackedTokenKind.VIDEO_NOISY)),
+                torch.full_like(video.frame_id, int(PackedTokenKind.VIDEO_CLEAN)),
+            ]
+        ),
+        seq_id=torch.cat([video.seq_id] * 2),
+        frame_id=torch.cat([video.frame_id] * 2),
+        chunk_id=torch.cat([video.chunk_id] * 2),
+        block_id=torch.cat([video.block_id] * 2),
+        stream_id=torch.full(
+            (2 * video.frame_id.numel(),),
+            int(PackedTokenStream.VIDEO),
+            device=device,
+            dtype=video.frame_id.dtype,
+        ),
+        noise_id=torch.cat([zeros, ones]),
+        valid_as_query=torch.cat([video.valid] * 2),
+        valid_as_kv=torch.cat([video.valid] * 2),
+        valid_for_loss=torch.cat([video.valid, torch.zeros_like(video.valid)]),
+        metadata={
+            "batch_size": int(batch_size),
+            "latent_frames": int(latent_frames),
+            "chunk_size": int(chunk_size),
+            "chunk_origin_frame": int(chunk_origin_frame),
+            "singleton_chunk_frame": (
+                None
+                if singleton_chunk_frame is None
+                else int(singleton_chunk_frame)
+            ),
+            "prefix_condition_frames": max(0, int(prefix_condition_frames)),
+            "current_block_coupling": coupling.value,
+        },
+    )
+
+
 def flatten_action_token_mask(
     action_context_mask: torch.Tensor,
     *,
@@ -213,35 +413,25 @@ def build_exact_video_action_token_layout(
     chunk_size = int(chunk_size)
     chunk_origin_frame = int(chunk_origin_frame)
     coupling = CurrentBlockCoupling(current_block_coupling)
-    if batch_size <= 0:
-        raise ValueError(f"Expected batch_size > 0, got {batch_size}.")
-    if patch_t <= 0 or patch_h <= 0 or patch_w <= 0:
-        raise ValueError(f"Expected positive patch_size, got {patch_size}.")
-    if latent_frames % patch_t != 0 or latent_height % patch_h != 0 or latent_width % patch_w != 0:
-        raise ValueError(
-            "Latent shape must be divisible by patch_size, "
-            f"got latent=({latent_frames}, {latent_height}, {latent_width}), patch={patch_size}."
-        )
-    if chunk_size <= 0:
-        raise ValueError(f"Expected chunk_size > 0, got {chunk_size}.")
-    prefix_condition_frames = max(0, int(prefix_condition_frames))
-    if prefix_condition_frames > 0 and prefix_condition_frames >= latent_frames:
-        raise ValueError(
-            "`prefix_condition_frames` must be smaller than latent_frames, "
-            f"got prefix_condition_frames={prefix_condition_frames}, latent_frames={latent_frames}."
-        )
-
-    latent_seq_id = (
-        torch.arange(batch_size, device=device)[:, None, None, None]
-        .expand(-1, latent_frames // patch_t, latent_height // patch_h, latent_width // patch_w)
-        .flatten()
+    video = _build_video_token_metadata(
+        batch_size=batch_size,
+        latent_frames=latent_frames,
+        latent_height=latent_height,
+        latent_width=latent_width,
+        patch_size=patch_size,
+        chunk_size=chunk_size,
+        chunk_origin_frame=chunk_origin_frame,
+        current_block_coupling=coupling,
+        device=device,
+        prefix_condition_frames=prefix_condition_frames,
+        singleton_chunk_frame=singleton_chunk_frame,
     )
+    prefix_condition_frames = max(0, int(prefix_condition_frames))
     action_seq_id = (
         torch.arange(batch_size, device=device)[:, None, None, None]
         .expand(-1, action_frames, action_height, action_width)
         .flatten()
     )
-    latent_token_valid = torch.ones_like(latent_seq_id, dtype=torch.bool)
     if action_context_mask is not None:
         action_token_valid = flatten_action_token_mask(
             action_context_mask,
@@ -254,39 +444,12 @@ def build_exact_video_action_token_layout(
     else:
         action_token_valid = torch.ones_like(action_seq_id, dtype=torch.bool)
 
-    latent_frame_id = (
-        torch.arange(latent_frames // patch_t, device=device)[None, :, None, None]
-        .expand(batch_size, -1, latent_height // patch_h, latent_width // patch_w)[None]
-        .flatten()
-    )
     action_frame_id = (
         torch.arange(action_frames, device=device)[None, :, None, None]
         .expand(batch_size, -1, action_height, action_width)[None]
         .flatten()
     )
     if prefix_condition_frames > 0:
-        latent_target_frame_id = (latent_frame_id - prefix_condition_frames).clamp_min(0)
-        target_latent_chunk_id = frame_chunk_ids_for_origin(
-            latent_target_frame_id,
-            chunk_origin_frame=chunk_origin_frame,
-            chunk_size=chunk_size,
-            singleton_chunk_frame=singleton_chunk_frame,
-        )
-        if singleton_chunk_frame is None:
-            prefix_target_chunk_id = torch.full_like(target_latent_chunk_id, -1)
-        else:
-            prefix_reference_frame = max(0, int(singleton_chunk_frame) - 1)
-            prefix_target_chunk_id = frame_chunk_ids_for_origin(
-                torch.full_like(target_latent_chunk_id, int(prefix_reference_frame)),
-                chunk_origin_frame=chunk_origin_frame,
-                chunk_size=chunk_size,
-                singleton_chunk_frame=singleton_chunk_frame,
-            )
-        latent_chunk_id = torch.where(
-            latent_frame_id < prefix_condition_frames,
-            prefix_target_chunk_id + 1,
-            target_latent_chunk_id + 1,
-        )
         action_chunk_id = (
             frame_chunk_ids_for_origin(
                 action_frame_id,
@@ -297,12 +460,6 @@ def build_exact_video_action_token_layout(
             + 1
         )
     else:
-        latent_chunk_id = frame_chunk_ids_for_origin(
-            latent_frame_id,
-            chunk_origin_frame=chunk_origin_frame,
-            chunk_size=chunk_size,
-            singleton_chunk_frame=singleton_chunk_frame,
-        )
         action_chunk_id = frame_chunk_ids_for_origin(
             action_frame_id,
             chunk_origin_frame=chunk_origin_frame,
@@ -310,46 +467,39 @@ def build_exact_video_action_token_layout(
             singleton_chunk_frame=singleton_chunk_frame,
         )
     if prefix_condition_frames > 0:
-        if singleton_chunk_frame is None:
-            latent_block_id = torch.where(
-                latent_frame_id < prefix_condition_frames,
-                torch.zeros_like(latent_frame_id),
-                latent_chunk_id * 2,
-            )
-        else:
-            latent_block_id = latent_chunk_id * 2
         action_block_id = action_chunk_id * 2 + 1
-    elif coupling in {CurrentBlockCoupling.ACTION_THEN_VIDEO, CurrentBlockCoupling.ACTION_NOISY_TO_VIDEO}:
-        latent_block_id = latent_chunk_id * 2 + 1
+    elif coupling in {
+        CurrentBlockCoupling.ACTION_THEN_VIDEO,
+        CurrentBlockCoupling.ACTION_NOISY_TO_VIDEO,
+    }:
         action_block_id = action_chunk_id * 2
     else:
-        latent_block_id = latent_chunk_id * 2
         action_block_id = action_chunk_id * 2 + 1
 
-    seq_id = torch.cat([latent_seq_id] * 2 + [action_seq_id] * 2)
-    frame_id = torch.cat([latent_frame_id] * 2 + [action_frame_id] * 2)
-    chunk_id = torch.cat([latent_chunk_id] * 2 + [action_chunk_id] * 2)
-    block_id = torch.cat([latent_block_id] * 2 + [action_block_id] * 2)
+    seq_id = torch.cat([video.seq_id] * 2 + [action_seq_id] * 2)
+    frame_id = torch.cat([video.frame_id] * 2 + [action_frame_id] * 2)
+    chunk_id = torch.cat([video.chunk_id] * 2 + [action_chunk_id] * 2)
+    block_id = torch.cat([video.block_id] * 2 + [action_block_id] * 2)
     stream_id = torch.cat(
         [
-            torch.full_like(latent_frame_id, int(PackedTokenStream.VIDEO)),
-            torch.full_like(latent_frame_id, int(PackedTokenStream.VIDEO)),
+            torch.full_like(video.frame_id, int(PackedTokenStream.VIDEO)),
+            torch.full_like(video.frame_id, int(PackedTokenStream.VIDEO)),
             torch.full_like(action_frame_id, int(PackedTokenStream.ACTION)),
             torch.full_like(action_frame_id, int(PackedTokenStream.ACTION)),
         ]
     )
     noise_id = torch.cat(
         [
-            torch.zeros_like(latent_frame_id),
-            torch.ones_like(latent_frame_id),
+            torch.zeros_like(video.frame_id),
+            torch.ones_like(video.frame_id),
             torch.zeros_like(action_frame_id),
             torch.ones_like(action_frame_id),
         ]
     )
     token_kind = torch.cat(
         [
-            torch.full_like(latent_frame_id, int(PackedTokenKind.VIDEO_NOISY)),
-            torch.full_like(latent_frame_id, int(PackedTokenKind.VIDEO_CLEAN)),
+            torch.full_like(video.frame_id, int(PackedTokenKind.VIDEO_NOISY)),
+            torch.full_like(video.frame_id, int(PackedTokenKind.VIDEO_CLEAN)),
             torch.full_like(action_frame_id, int(PackedTokenKind.ACTION_NOISY)),
             torch.full_like(action_frame_id, int(PackedTokenKind.ACTION_CLEAN)),
         ]
@@ -358,12 +508,12 @@ def build_exact_video_action_token_layout(
     # but never K/V context. Structural loss eligibility is narrower: only the
     # noisy target copies can be supervised, and objective-specific loss masks
     # can narrow this further upstream.
-    valid_as_query = torch.cat([latent_token_valid] * 2 + [torch.ones_like(action_token_valid)] * 2)
-    valid_as_kv = torch.cat([latent_token_valid] * 2 + [action_token_valid] * 2)
+    valid_as_query = torch.cat([video.valid] * 2 + [torch.ones_like(action_token_valid)] * 2)
+    valid_as_kv = torch.cat([video.valid] * 2 + [action_token_valid] * 2)
     valid_for_loss = torch.cat(
         [
-            latent_token_valid,
-            torch.zeros_like(latent_token_valid),
+            video.valid,
+            torch.zeros_like(video.valid),
             action_token_valid,
             torch.zeros_like(action_token_valid),
         ]
@@ -385,7 +535,11 @@ def build_exact_video_action_token_layout(
             "action_frames": action_frames,
             "chunk_size": chunk_size,
             "chunk_origin_frame": chunk_origin_frame,
-            "singleton_chunk_frame": None if singleton_chunk_frame is None else int(singleton_chunk_frame),
+            "singleton_chunk_frame": (
+                None
+                if singleton_chunk_frame is None
+                else int(singleton_chunk_frame)
+            ),
             "prefix_condition_frames": prefix_condition_frames,
             "current_block_coupling": coupling.value,
         },

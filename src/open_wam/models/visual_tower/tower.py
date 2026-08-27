@@ -18,6 +18,7 @@ from open_wam.contracts import ViewPlacement
 from open_wam.models.common import (
     FlowMatchScheduler,
     RolloutCursor,
+    combine_cfg_prediction,
     unpatchify_video_sequence,
 )
 from open_wam.models.video_backbone.contracts import (
@@ -53,6 +54,7 @@ from .runtime_backbone import (
 from .runtime_programs import (
     RuntimeStepInput,
     RuntimeStepOutput,
+    build_chunked_conditioned_video_runtime_program,
     build_dense_runtime_program,
     build_single_stream_exact_runtime_program,
 )
@@ -449,6 +451,118 @@ class VisualTower(nn.Module):
             batch_size=batch_size,
         ).to(dtype=noisy_latents.dtype)
 
+    def predict_chunked_conditioned_video_flow(
+        self,
+        *,
+        noisy_latents: torch.Tensor,
+        condition_latents: torch.Tensor,
+        timesteps: torch.Tensor,
+        condition_timesteps: torch.Tensor,
+        text_context: torch.Tensor | None,
+        chunk_size: int,
+        window_size: int,
+        frame_start: int,
+        chunk_origin_frame: int = 0,
+        prefix_condition_frames: int = 0,
+        singleton_chunk_frame: int | None = None,
+        use_activation_checkpointing: bool = False,
+        stage: str = "train",
+    ) -> torch.Tensor:
+        """Run native VTA-style conditioned video without action tokens."""
+
+        if noisy_latents.ndim != 5:
+            raise ValueError(
+                "Expected conditioned-video latents with shape [B, C, T, H, W], "
+                f"got {tuple(noisy_latents.shape)}."
+            )
+        if tuple(condition_latents.shape) != tuple(noisy_latents.shape):
+            raise ValueError(
+                "Conditioned-video streams must have identical shapes, "
+                f"got noisy={tuple(noisy_latents.shape)}, "
+                f"condition={tuple(condition_latents.shape)}."
+            )
+        batch_size, _, num_frames, latent_height, latent_width = noisy_latents.shape
+        expected_timestep_shape = (batch_size, num_frames)
+        for name, value in (
+            ("timesteps", timesteps),
+            ("condition_timesteps", condition_timesteps),
+        ):
+            if tuple(value.shape) != expected_timestep_shape:
+                raise ValueError(
+                    f"Conditioned-video {name} must have shape {expected_timestep_shape}, "
+                    f"got {tuple(value.shape)}."
+                )
+        model_dtype = resolve_runtime_module_dtype(self.core)
+        if text_context is None:
+            text_context = torch.zeros(
+                batch_size,
+                self.config.max_text_tokens,
+                self.config.text_dim,
+                device=noisy_latents.device,
+                dtype=model_dtype,
+            )
+        else:
+            text_context = text_context.to(
+                device=noisy_latents.device,
+                dtype=model_dtype,
+            )
+        grid_id = (
+            build_mesh_id(
+                f=num_frames // self.config.patch_size_t,
+                h=latent_height // self.config.patch_size_h,
+                w=latent_width // self.config.patch_size_w,
+                t=0.0,
+                f_shift=float(frame_start),
+                action=False,
+                device=noisy_latents.device,
+            )
+            .unsqueeze(0)
+            .expand(batch_size, -1, -1)
+        )
+        step_output = self.execute_runtime_step(
+            RuntimeStepInput(
+                program=build_chunked_conditioned_video_runtime_program(),
+                payload={
+                    "latent_dict": {
+                        "noisy_latents": noisy_latents.to(dtype=model_dtype),
+                        "latent": condition_latents.to(dtype=model_dtype),
+                        "timesteps": timesteps.to(
+                            device=noisy_latents.device,
+                            dtype=torch.float32,
+                        ),
+                        "cond_timesteps": condition_timesteps.to(
+                            device=noisy_latents.device,
+                            dtype=torch.float32,
+                        ),
+                        "grid_id": grid_id,
+                        "text_emb": text_context,
+                    },
+                    "chunk_size": int(chunk_size),
+                    "window_size": int(window_size),
+                    "chunk_origin_frame": int(chunk_origin_frame),
+                    "prefix_condition_frames": int(prefix_condition_frames),
+                    "singleton_chunk_frame": singleton_chunk_frame,
+                    "use_activation_checkpointing": bool(
+                        use_activation_checkpointing
+                    ),
+                    "stage": str(stage),
+                },
+            )
+        )
+        prediction = step_output.projected_outputs.get("video_prediction")
+        if prediction is None:
+            raise ValueError(
+                "Conditioned-video runtime did not return video flow tokens."
+            )
+        return unpatchify_video_sequence(
+            self.core.patch_size,
+            prediction,
+            num_frames,
+            latent_height,
+            latent_width,
+            batch_size=batch_size,
+        ).to(dtype=noisy_latents.dtype)
+
     def prefill_exact_video_cache(
         self,
         *,
@@ -809,6 +923,138 @@ class VisualTower(nn.Module):
                 latents[:, :, : observed_prefix.shape[2]] = observed_prefix
 
         return latents[:, :, observed_prefix.shape[2] :].to(dtype=future_template.dtype)
+
+    def generate_chunked_conditioned_video_latents(
+        self,
+        *,
+        observed_prefix: torch.Tensor,
+        future_template: torch.Tensor,
+        text_context: torch.Tensor | None,
+        negative_text_context: torch.Tensor | None,
+        frame_start: int,
+        chunk_size: int,
+        window_size: int,
+        chunk_origin_frame: int,
+        num_inference_steps: int,
+        num_train_timesteps: int,
+        sigma_shift: float,
+        guidance_scale: float,
+        sample_seed: int | None = None,
+    ) -> torch.Tensor:
+        """Denoise a video chunk with the native VTA video-marginal program."""
+
+        if observed_prefix.ndim != 5 or future_template.ndim != 5:
+            raise ValueError(
+                "Chunked conditioned-video generation expects [B, C, T, H, W] "
+                "prefix and future tensors."
+            )
+        if int(observed_prefix.shape[2]) != 1:
+            raise ValueError(
+                "Chunked conditioned-video generation requires exactly one "
+                f"external prefix frame, got {observed_prefix.shape[2]}."
+            )
+        if (
+            tuple(observed_prefix.shape[:2]) != tuple(future_template.shape[:2])
+            or tuple(observed_prefix.shape[-2:]) != tuple(future_template.shape[-2:])
+        ):
+            raise ValueError(
+                "Chunked conditioned-video prefix and future tensors must share "
+                "batch, channel, and spatial dimensions."
+            )
+        if int(future_template.shape[2]) <= 0:
+            raise ValueError("Expected at least one conditioned-video target frame.")
+        if int(chunk_size) <= 0 or int(window_size) <= 0:
+            raise ValueError(
+                "Chunked conditioned-video generation requires positive chunk "
+                f"and window sizes, got chunk={chunk_size}, window={window_size}."
+            )
+        if guidance_scale > 1.0 and negative_text_context is None:
+            raise ValueError(
+                "Chunked conditioned-video CFG requires negative text embeddings."
+            )
+
+        model_dtype = resolve_runtime_module_dtype(self.core)
+        generator = None
+        if sample_seed is not None:
+            generator = torch.Generator(device=future_template.device)
+            generator.manual_seed(int(sample_seed))
+        prefix = observed_prefix.to(device=future_template.device, dtype=model_dtype)
+        scheduler = FlowMatchScheduler(
+            shift=sigma_shift,
+            sigma_min=0.0,
+            extra_one_step=True,
+            num_train_timesteps=num_train_timesteps,
+        )
+        scheduler.set_timesteps(num_inference_steps)
+
+        generated_chunks: list[torch.Tensor] = []
+        with torch.inference_mode():
+            for chunk_start in range(0, int(future_template.shape[2]), int(chunk_size)):
+                chunk_end = min(
+                    chunk_start + int(chunk_size), int(future_template.shape[2])
+                )
+                current = torch.randn(
+                    future_template[:, :, chunk_start:chunk_end].shape,
+                    device=future_template.device,
+                    dtype=model_dtype,
+                    generator=generator,
+                )
+                history = torch.cat([prefix, *generated_chunks], dim=2)
+                condition_latents = torch.cat(
+                    [history, torch.zeros_like(current)], dim=2
+                )
+                history_frames = int(history.shape[2])
+                for timestep in scheduler.timesteps.to(device=future_template.device):
+                    model_latents = torch.cat([history, current], dim=2)
+                    timestep_values = torch.zeros(
+                        int(model_latents.shape[0]),
+                        int(model_latents.shape[2]),
+                        device=future_template.device,
+                        dtype=torch.float32,
+                    )
+                    timestep_values[:, history_frames:] = timestep
+                    condition_timesteps = torch.zeros_like(timestep_values)
+                    prediction = self.predict_chunked_conditioned_video_flow(
+                        noisy_latents=model_latents,
+                        condition_latents=condition_latents,
+                        timesteps=timestep_values,
+                        condition_timesteps=condition_timesteps,
+                        text_context=text_context,
+                        chunk_size=chunk_size,
+                        window_size=window_size,
+                        frame_start=int(frame_start) - 1,
+                        chunk_origin_frame=int(chunk_origin_frame),
+                        prefix_condition_frames=1,
+                        stage="infer",
+                    )
+                    if guidance_scale > 1.0:
+                        unconditioned_prediction = (
+                            self.predict_chunked_conditioned_video_flow(
+                                noisy_latents=model_latents,
+                                condition_latents=condition_latents,
+                                timesteps=timestep_values,
+                                condition_timesteps=condition_timesteps,
+                                text_context=negative_text_context,
+                                chunk_size=chunk_size,
+                                window_size=window_size,
+                                frame_start=int(frame_start) - 1,
+                                chunk_origin_frame=int(chunk_origin_frame),
+                                prefix_condition_frames=1,
+                                stage="infer",
+                            )
+                        )
+                        prediction = combine_cfg_prediction(
+                            prediction,
+                            unconditioned_prediction,
+                            guidance_scale=guidance_scale,
+                        )
+                    current = scheduler.step(
+                        prediction[:, :, history_frames:],
+                        timestep,
+                        current,
+                    )
+                generated_chunks.append(current)
+        return torch.cat(generated_chunks, dim=2).to(dtype=future_template.dtype)
 
     def cache_capability(self) -> str:
         if (

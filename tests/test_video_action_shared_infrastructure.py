@@ -7,6 +7,7 @@ import torch
 from open_wam.configs import (
     ActionDecoderName,
     ActionSchemaConfig,
+    CausalVideoProgram,
     DualExpertActionDecoderConfig,
     DynamicsObjective,
     DynamicsRouteConfig,
@@ -114,7 +115,7 @@ from open_wam.pipelines import build_variant_pipeline_from_config
             ActionDecoderName.PARALLEL_STREAM,
         ),
         (
-            CausalVideoPredictionPolicyConfig(),
+            CausalVideoPredictionPolicyConfig(program=CausalVideoProgram.PREFIX_SUFFIX),
             ActionDecoderName.VIDEO_ONLY,
         ),
     ],

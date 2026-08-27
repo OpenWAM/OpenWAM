@@ -73,6 +73,67 @@ def test_video_flow_match_train_artifacts_sample_timesteps_per_sample() -> None:
     assert not torch.equal(artifacts.timesteps[0], artifacts.timesteps[1])
 
 
+def test_video_flow_match_train_artifacts_preserve_clean_prefix() -> None:
+    torch.manual_seed(0)
+    video_latents = torch.randn(1, 4, 4, 2, 2)
+    condition_latents = torch.randn_like(video_latents)
+
+    torch.manual_seed(17)
+    baseline = build_video_flow_match_train_artifacts(
+        video_latents,
+        condition_latents=condition_latents,
+        noisy_condition_prob=1.0,
+        training_config=TrainingConfig(video_num_train_timesteps=8),
+    )
+    torch.manual_seed(17)
+    artifacts = build_video_flow_match_train_artifacts(
+        video_latents,
+        condition_latents=condition_latents,
+        noisy_condition_prob=1.0,
+        clean_prefix_frames=1,
+        training_config=TrainingConfig(video_num_train_timesteps=8),
+    )
+
+    torch.testing.assert_close(
+        artifacts.noisy_latents[:, :, :1], video_latents[:, :, :1]
+    )
+    torch.testing.assert_close(
+        artifacts.condition_latents[:, :, :1], condition_latents[:, :, :1]
+    )
+    assert not torch.any(artifacts.targets[:, :, :1])
+    assert not torch.any(artifacts.timesteps[:, :1])
+    assert not torch.any(artifacts.condition_timesteps[:, :1])
+    assert torch.all(artifacts.timesteps[:, 1:] > 0)
+    torch.testing.assert_close(
+        artifacts.noisy_latents[:, :, 1:], baseline.noisy_latents[:, :, 1:]
+    )
+    torch.testing.assert_close(artifacts.targets[:, :, 1:], baseline.targets[:, :, 1:])
+    torch.testing.assert_close(artifacts.timesteps[:, 1:], baseline.timesteps[:, 1:])
+    torch.testing.assert_close(
+        artifacts.condition_latents[:, :, 1:], baseline.condition_latents[:, :, 1:]
+    )
+    torch.testing.assert_close(
+        artifacts.condition_timesteps[:, 1:],
+        baseline.condition_timesteps[:, 1:],
+    )
+
+
+def test_clean_video_prefix_preserves_condition_autograd() -> None:
+    video_latents = torch.randn(1, 4, 4, 2, 2, requires_grad=True)
+    condition_latents = torch.randn_like(video_latents, requires_grad=True)
+
+    artifacts = build_video_flow_match_train_artifacts(
+        video_latents,
+        condition_latents=condition_latents,
+        clean_prefix_frames=1,
+        training_config=TrainingConfig(video_num_train_timesteps=8),
+    )
+    (artifacts.noisy_latents.sum() + artifacts.condition_latents.sum()).backward()
+
+    assert video_latents.grad is not None
+    assert condition_latents.grad is not None
+
+
 def test_block_coupled_action_flow_match_uses_per_sample_video_blocks() -> None:
     actions = torch.randn(2, 6, 7)
     future_video_timesteps = torch.tensor(

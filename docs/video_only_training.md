@@ -7,10 +7,10 @@ boundary as its video/action policies:
 ExperimentConfig -> VariantPipeline -> VisualTower -> PolicyVariant -> ActionDecoder
 ```
 
-`causal_video_prediction` owns observed-prefix/future-suffix semantics. The
-shared `VisualTower` executes the video transformer, and `video_only_decoder`
-computes masked latent-flow supervision. No training or evaluation path calls
-a concrete backbone directly.
+`causal_video_prediction` owns an explicit video sequence program. The shared
+`VisualTower` executes the video transformer, and `video_only_decoder` computes
+masked latent-flow supervision. No training or evaluation path calls a
+concrete backbone directly.
 
 This guide covers both the installed package and optional source-checkout
 utilities. Training uses the package-owned CLI. The Wan conversion commands and
@@ -72,6 +72,37 @@ Serialized view layouts use the strict
 `open_wam.canonical_view_layout.v1` schema; consumers should reject missing or
 unknown versions instead of guessing camera placement semantics.
 
+## Sequence Programs
+
+Video-only configs select one program explicitly; there is no checkpoint- or
+dataset-based inference:
+
+| Program | Data and model sequence | Supervision |
+| --- | --- | --- |
+| `prefix_suffix` | One noisy video stream from a causal prefix/suffix bucket | Future suffix only |
+| `chunked_conditioned_video` | Native `[V_noisy, V_condition]` sequence using VTA chunk/window attention | Every target frame after one external condition frame |
+
+`prefix_suffix` is the existing objective and remains selected by
+`causal_video_prediction_libero_latent_local.yaml`.
+
+`causal_video_prediction_libero_chunked_conditioned.yaml` is the video marginal
+of the maintained VTA recipe. It samples full trajectory segments with
+replacement, randomizes chunk size from 1 through 4 and attention window from
+4 through 64, prepends the separately encoded frame at offset `-1`, and applies
+independent frame-wise video noise. The condition copy is augmented with
+probability `0.5`; the external frame stays clean in both copies. Task-text
+dropout remains independent at probability `0.1`. The maintained preset enables
+per-block activation recomputation, matching the M5 recipe and keeping the
+1000-frame objective viable under single-device execution.
+
+The packed runtime contains only the two video copies. It does not construct a
+zero-width or placeholder action sequence, invoke the action embedder, or
+project an action output. Its attention profile applies the same VTA visibility
+predicate to a native video-only token layout. Video outputs therefore match
+the VTA video branch when action loss is disabled and history visibility is
+`video_only`; gradients from an enabled action objective are outside this
+marginal by definition.
+
 ## Text Conditioning
 
 Video-only training exposes one policy-level choice:
@@ -128,6 +159,27 @@ A source checkout also provides
 launcher for the same package training entrypoint. It is not a separate
 training implementation or an installed API.
 
+Select the VTA-marginal program through the same launcher, without a second
+training script:
+
+```bash
+uv run python scripts/augment_lerobot_latents_with_single_frame_condition.py \
+  --data-root /datasets/libero_subsets \
+  --reference-assets-root /models/lingbot-va-base \
+  --source-frame-offset -1 \
+  --sanity-check
+```
+
+The augmentation is idempotent unless `--overwrite` is supplied. The latent
+adapter rejects payloads whose recorded source offset does not match the
+program config.
+
+```bash
+CONFIG_NAME=causal_video_prediction_libero_chunked_conditioned \
+  scripts/run_causal_video_prediction_posttrain_libero.sh \
+  --save-root /runs/libero_chunked_conditioned_video
+```
+
 The preset trains only `visual_tower.shared_video_backbone` and freezes the
 action runtime and runtime adapters. Full training state remains the default,
 so optimizer, scheduler, strategy/scaler, and counters support stateful
@@ -160,10 +212,11 @@ uv run python scripts/generate_video_only_rollout.py \
   --output-dir outputs/video_only_rollout
 ```
 
-`--num-chunks 1` evaluates the adapter-produced target. Larger values append
-equal-width open-loop predictions by re-feeding the complete generated latent
-history; only the first chunk has a dataset target. Multi-view latents are
-decoded independently and reassembled from the canonical layout contract.
+For `prefix_suffix`, `--num-chunks 1` evaluates the adapter-produced target.
+Larger values append equal-width open-loop predictions by re-feeding the
+complete generated latent history; only the first chunk has a dataset target.
+Multi-view latents are decoded independently and reassembled from the canonical
+layout contract.
 The required `--checkpoint` selects transformer weights even when the source
 experiment config disabled initialization-time reference loading. `--config`
 remains the sole runtime and data contract after explicit CLI overrides.
@@ -189,6 +242,14 @@ visual-stack input used by every policy. View batches are rejected instead of
 silently training without the requested unconditional branch. Guidance is
 intentionally unavailable in `disabled` mode because its two text branches are
 identical.
+
+For `chunked_conditioned_video`, the same command reads the external condition
+latent from the uniform-segment adapter and evaluates up to
+`num_chunks * inference.frame_chunk_size` target frames autoregressively. Each
+completed video chunk is committed to both video-history streams before the
+next chunk is denoised. This preserves the VTA rollout contract without
+introducing action tokens or action caches. `prefix_suffix` retains its
+existing iterative open-loop behavior.
 
 Outputs are first written to a temporary sibling and then atomically published.
 The output identity includes the resolved config, checkpoint/reference file

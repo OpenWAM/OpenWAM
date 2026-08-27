@@ -14,6 +14,7 @@ from open_wam.configs.backbone import (
 )
 from open_wam.models.common import (
     PreparedAttentionProfile,
+    build_chunked_conditioned_video_attention_profile,
     build_chunked_temporal_exact_attention_profile,
     chunked_temporal_exact_coupling_from_profile_name,
     normalize_attention_profile_name,
@@ -30,7 +31,7 @@ from .runtime_programs import RuntimeSequenceFamily, RuntimeStepInput
 
 @dataclass(frozen=True)
 class PreparedExactTrainSequence:
-    """Prepared exact dual-stream train inputs for the shared backbone."""
+    """Prepared packed exact inputs for the shared video backbone."""
 
     hidden_states: torch.Tensor
     text_hidden_states: torch.Tensor
@@ -40,6 +41,19 @@ class PreparedExactTrainSequence:
     split_list: list[int]
     batch_size: int
     attention_profile: PreparedAttentionProfile | None
+    use_activation_checkpointing: bool = False
+
+
+@dataclass(frozen=True)
+class _PreparedExactVideoStreams:
+    payload: dict[str, Any]
+    noisy_hidden_states: torch.Tensor
+    condition_hidden_states: torch.Tensor
+    text_hidden_states: torch.Tensor
+    grid_id: torch.Tensor
+    temb: torch.Tensor
+    timestep_proj: torch.Tensor
+    batch_size: int
 
 
 @dataclass(frozen=True)
@@ -51,9 +65,132 @@ class PreparedRuntimeSequence:
     payload: dict[str, Any] | None = None
     exact_train: PreparedExactTrainSequence | None = None
     exact_inference: PreparedExactTrainSequence | None = None
+    exact_conditioned_video: PreparedExactTrainSequence | None = None
     update_cache: int = 0
     cache_name: str = "open_wam_exact"
     action_mode: bool = False
+
+
+def _cast_floating_payload(
+    payload: Mapping[str, Any], *, dtype: torch.dtype
+) -> dict[str, Any]:
+    return {
+        key: value.to(dtype)
+        if torch.is_tensor(value) and torch.is_floating_point(value)
+        else value
+        for key, value in payload.items()
+    }
+
+
+def _prepare_exact_video_streams(
+    latent_payload: Mapping[str, Any],
+    *,
+    model_dtype: torch.dtype,
+    input_embed: Callable[[torch.Tensor, str], torch.Tensor],
+    exact_text_hidden_states: Callable[[torch.Tensor], torch.Tensor],
+    time_embed: Callable[
+        [torch.Tensor, int, int, torch.dtype, bool], tuple[torch.Tensor, torch.Tensor]
+    ],
+) -> _PreparedExactVideoStreams:
+    """Embed the two video streams shared by exact VTA and video-only runtime."""
+
+    latent_dict = _cast_floating_payload(latent_payload, dtype=model_dtype)
+    noisy_latents = latent_dict.get("noisy_latents")
+    condition_latents = latent_dict.get("latent")
+    text_emb = latent_dict.get("text_emb")
+    grid_id = latent_dict.get("grid_id")
+    timesteps = latent_dict.get("timesteps")
+    condition_timesteps = latent_dict.get("cond_timesteps")
+    required = {
+        "noisy_latents": noisy_latents,
+        "latent": condition_latents,
+        "text_emb": text_emb,
+        "grid_id": grid_id,
+        "timesteps": timesteps,
+        "cond_timesteps": condition_timesteps,
+    }
+    missing = [name for name, value in required.items() if not torch.is_tensor(value)]
+    if missing:
+        raise TypeError(
+            "Exact video streams require tensor payload fields: "
+            + ", ".join(sorted(missing))
+            + "."
+        )
+    assert isinstance(noisy_latents, torch.Tensor)
+    assert isinstance(condition_latents, torch.Tensor)
+    assert isinstance(text_emb, torch.Tensor)
+    assert isinstance(grid_id, torch.Tensor)
+    assert isinstance(timesteps, torch.Tensor)
+    assert isinstance(condition_timesteps, torch.Tensor)
+    if tuple(noisy_latents.shape) != tuple(condition_latents.shape):
+        raise ValueError(
+            "Exact video noisy and condition streams must have identical shapes, "
+            f"got noisy={tuple(noisy_latents.shape)}, "
+            f"condition={tuple(condition_latents.shape)}."
+        )
+
+    noisy_hidden_states = (
+        input_embed(noisy_latents, "latent")
+        .flatten(0, 1)
+        .contiguous()[None]
+        .clone()
+    )
+    condition_hidden_states = (
+        input_embed(condition_latents, "latent")
+        .flatten(0, 1)
+        .contiguous()[None]
+        .clone()
+    )
+    text_hidden_states = (
+        exact_text_hidden_states(text_emb)
+        .flatten(0, 1)
+        .contiguous()[None]
+        .clone()
+    )
+    packed_grid_id = (
+        grid_id.permute(1, 0, 2).flatten(1).contiguous()[None].clone()
+    )
+    packed_timesteps = (
+        torch.cat(
+            [timesteps.flatten(0, 1), condition_timesteps.flatten(0, 1)],
+            dim=0,
+        )
+        .contiguous()[None]
+        .clone()
+    )
+    temb, timestep_proj = time_embed(
+        packed_timesteps,
+        int(noisy_latents.shape[-2]),
+        int(noisy_latents.shape[-1]),
+        noisy_hidden_states.dtype,
+        False,
+    )
+    return _PreparedExactVideoStreams(
+        payload=latent_dict,
+        noisy_hidden_states=noisy_hidden_states,
+        condition_hidden_states=condition_hidden_states,
+        text_hidden_states=text_hidden_states,
+        grid_id=packed_grid_id,
+        temb=temb,
+        timestep_proj=timestep_proj,
+        batch_size=int(noisy_latents.shape[0]),
+    )
+
+
+def _pad_exact_sequence(
+    *,
+    hidden_states: torch.Tensor,
+    rotary_emb: torch.Tensor,
+    temb: torch.Tensor,
+    timestep_proj: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, int]:
+    padded_length = (128 - int(hidden_states.shape[1]) % 128) % 128
+    if padded_length > 0:
+        hidden_states = F.pad(hidden_states, (0, 0, 0, padded_length))
+        rotary_emb = F.pad(rotary_emb, (0, 0, 0, 0, 0, padded_length))
+        temb = F.pad(temb, (0, 0, 0, padded_length))
+        timestep_proj = F.pad(timestep_proj, (0, 0, 0, 0, 0, padded_length))
+    return hidden_states, rotary_emb, temb, timestep_proj, padded_length
 
 
 def _apply_packed_video_action_proprio_context(
@@ -225,40 +362,18 @@ def prepare_exact_dual_stream_train_sequence(
     assert isinstance(latent_dict, dict)
     assert isinstance(action_dict, dict)
 
-    latent_dict = {
-        key: value.to(model_dtype)
-        if torch.is_tensor(value) and torch.is_floating_point(value)
-        else value
-        for key, value in latent_dict.items()
-    }
-    action_dict = {
-        key: value.to(model_dtype)
-        if torch.is_tensor(value) and torch.is_floating_point(value)
-        else value
-        for key, value in action_dict.items()
-    }
-
-    batch_size = int(latent_dict["noisy_latents"].shape[0])
-    latent_hidden_states = (
-        input_embed(latent_dict["noisy_latents"], "latent")
-        .flatten(0, 1)
-        .contiguous()[None]
-        .clone()
+    video = _prepare_exact_video_streams(
+        latent_dict,
+        model_dtype=model_dtype,
+        input_embed=input_embed,
+        exact_text_hidden_states=exact_text_hidden_states,
+        time_embed=time_embed,
     )
+    latent_dict = video.payload
+    action_dict = _cast_floating_payload(action_dict, dtype=model_dtype)
+    batch_size = video.batch_size
     action_hidden_states = (
         input_embed(action_dict["noisy_latents"], "action")
-        .flatten(0, 1)
-        .contiguous()[None]
-        .clone()
-    )
-    text_hidden_states = (
-        exact_text_hidden_states(latent_dict["text_emb"])
-        .flatten(0, 1)
-        .contiguous()[None]
-        .clone()
-    )
-    condition_latent_hidden_states = (
-        input_embed(latent_dict["latent"], "latent")
         .flatten(0, 1)
         .contiguous()[None]
         .clone()
@@ -272,33 +387,19 @@ def prepare_exact_dual_stream_train_sequence(
 
     hidden_states = torch.cat(
         [
-            latent_hidden_states,
-            condition_latent_hidden_states,
+            video.noisy_hidden_states,
+            video.condition_hidden_states,
             action_hidden_states,
             condition_action_hidden_states,
         ],
         dim=1,
     )
-    latent_grid_id = (
-        latent_dict["grid_id"].permute(1, 0, 2).flatten(1).contiguous()[None].clone()
-    )
     action_grid_id = (
         action_dict["grid_id"].permute(1, 0, 2).flatten(1).contiguous()[None].clone()
     )
-    full_grid_id = torch.cat([latent_grid_id] * 2 + [action_grid_id] * 2, dim=2)
+    full_grid_id = torch.cat([video.grid_id] * 2 + [action_grid_id] * 2, dim=2)
     rotary_emb = rope(full_grid_id)[:, :, None]
 
-    latent_time_steps = (
-        torch.cat(
-            [
-                latent_dict["timesteps"].flatten(0, 1),
-                latent_dict["cond_timesteps"].flatten(0, 1),
-            ],
-            dim=0,
-        )
-        .contiguous()[None]
-        .clone()
-    )
     action_time_steps = (
         torch.cat(
             [
@@ -310,13 +411,6 @@ def prepare_exact_dual_stream_train_sequence(
         .contiguous()[None]
         .clone()
     )
-    latent_temb, latent_timestep_proj = time_embed(
-        latent_time_steps,
-        int(latent_dict["noisy_latents"].shape[-2]),
-        int(latent_dict["noisy_latents"].shape[-1]),
-        hidden_states.dtype,
-        False,
-    )
     action_temb, action_timestep_proj = time_embed(
         action_time_steps,
         int(action_dict["noisy_latents"].shape[-2]),
@@ -324,23 +418,24 @@ def prepare_exact_dual_stream_train_sequence(
         hidden_states.dtype,
         True,
     )
-    temb = torch.cat([latent_temb, action_temb], dim=1)
-    timestep_proj = torch.cat([latent_timestep_proj, action_timestep_proj], dim=1)
+    temb = torch.cat([video.temb, action_temb], dim=1)
+    timestep_proj = torch.cat([video.timestep_proj, action_timestep_proj], dim=1)
 
-    total_length = int(hidden_states.shape[1])
-    padded_length = (128 - total_length % 128) % 128
+    hidden_states, rotary_emb, temb, timestep_proj, padded_length = (
+        _pad_exact_sequence(
+            hidden_states=hidden_states,
+            rotary_emb=rotary_emb,
+            temb=temb,
+            timestep_proj=timestep_proj,
+        )
+    )
     stream_lengths = [
-        int(latent_hidden_states.shape[1]),
-        int(condition_latent_hidden_states.shape[1]),
+        int(video.noisy_hidden_states.shape[1]),
+        int(video.condition_hidden_states.shape[1]),
         int(action_hidden_states.shape[1]),
         int(condition_action_hidden_states.shape[1]),
         int(padded_length),
     ]
-    if padded_length > 0:
-        hidden_states = F.pad(hidden_states, (0, 0, 0, padded_length))
-        rotary_emb = F.pad(rotary_emb, (0, 0, 0, 0, 0, padded_length))
-        temb = F.pad(temb, (0, 0, 0, padded_length))
-        timestep_proj = F.pad(timestep_proj, (0, 0, 0, 0, 0, padded_length))
 
     if input_dict.get("per_chunk_proprio_state") is not None:
         if encode_proprio_context is None:
@@ -433,13 +528,113 @@ def prepare_exact_dual_stream_train_sequence(
 
     return PreparedExactTrainSequence(
         hidden_states=hidden_states,
-        text_hidden_states=text_hidden_states,
+        text_hidden_states=video.text_hidden_states,
         rotary_emb=rotary_emb,
         temb=temb,
         timestep_proj=timestep_proj,
         split_list=stream_lengths,
         batch_size=batch_size,
         attention_profile=exact_attention_profile,
+    )
+
+
+def prepare_exact_conditioned_video_sequence(
+    input_dict: dict[str, Any],
+    *,
+    config: SharedVideoTransformerConfig,
+    patch_size: tuple[int, int, int],
+    model_dtype: torch.dtype,
+    input_embed: Callable[[torch.Tensor, str], torch.Tensor],
+    exact_text_hidden_states: Callable[[torch.Tensor], torch.Tensor],
+    time_embed: Callable[
+        [torch.Tensor, int, int, torch.dtype, bool], tuple[torch.Tensor, torch.Tensor]
+    ],
+    rope: Callable[[torch.Tensor], torch.Tensor],
+) -> PreparedExactTrainSequence:
+    """Prepare native conditioned-video execution without an action stream."""
+
+    if "action_dict" in input_dict:
+        raise ValueError(
+            "Conditioned-video runtime does not accept action stream payloads."
+        )
+    latent_payload = input_dict.get("latent_dict")
+    if not isinstance(latent_payload, Mapping):
+        raise TypeError(
+            "Conditioned-video runtime requires a mapping `latent_dict` payload."
+        )
+    video = _prepare_exact_video_streams(
+        latent_payload,
+        model_dtype=model_dtype,
+        input_embed=input_embed,
+        exact_text_hidden_states=exact_text_hidden_states,
+        time_embed=time_embed,
+    )
+    hidden_states = torch.cat(
+        [video.noisy_hidden_states, video.condition_hidden_states], dim=1
+    )
+    rotary_emb = rope(torch.cat([video.grid_id] * 2, dim=2))[:, :, None]
+    hidden_states, rotary_emb, temb, timestep_proj, padded_length = (
+        _pad_exact_sequence(
+            hidden_states=hidden_states,
+            rotary_emb=rotary_emb,
+            temb=video.temb,
+            timestep_proj=video.timestep_proj,
+        )
+    )
+    stream_lengths = [
+        int(video.noisy_hidden_states.shape[1]),
+        int(video.condition_hidden_states.shape[1]),
+        int(padded_length),
+    ]
+    runtime_stage = str(input_dict.get("stage", "train"))
+    if runtime_stage not in {"train", "infer"}:
+        raise ValueError(
+            "Conditioned-video runtime stage must be `train` or `infer`, "
+            f"got {runtime_stage!r}."
+        )
+    attention_mode = resolve_stage_attention_mode(
+        config,
+        stage=runtime_stage,
+        exact_runtime=True,
+    )
+    profile = build_chunked_conditioned_video_attention_profile(
+        latent_shape=tuple(
+            int(dim) for dim in video.payload["noisy_latents"].shape
+        ),
+        padded_length=int(padded_length),
+        chunk_size=int(input_dict["chunk_size"]),
+        window_size=int(input_dict["window_size"]),
+        patch_size=patch_size,
+        text_token_count=int(video.payload["text_emb"].shape[1]),
+        chunk_origin_frame=int(input_dict.get("chunk_origin_frame", 0) or 0),
+        prefix_condition_frames=int(
+            input_dict.get("prefix_condition_frames", 0) or 0
+        ),
+        singleton_chunk_frame=(
+            None
+            if input_dict.get("singleton_chunk_frame") is None
+            else int(input_dict["singleton_chunk_frame"])
+        ),
+        conditional_history_policy=input_dict.get("conditional_history_policy"),
+        device=hidden_states.device,
+        build_dense_masks=attention_mode != "flex" or hidden_states.device.type != "cuda",
+        build_flex_masks=(
+            attention_mode == "flex" and hidden_states.device.type == "cuda"
+        ),
+    )
+    return PreparedExactTrainSequence(
+        hidden_states=hidden_states,
+        text_hidden_states=video.text_hidden_states,
+        rotary_emb=rotary_emb,
+        temb=temb,
+        timestep_proj=timestep_proj,
+        split_list=stream_lengths,
+        batch_size=video.batch_size,
+        attention_profile=profile,
+        use_activation_checkpointing=(
+            runtime_stage == "train"
+            and bool(input_dict.get("use_activation_checkpointing", False))
+        ),
     )
 
 
@@ -468,6 +663,10 @@ def prepare_runtime_sequence(
     *,
     exact_train_preparer: Callable[
         [dict[str, torch.Tensor | dict[str, torch.Tensor]]], PreparedExactTrainSequence
+    ]
+    | None = None,
+    conditioned_video_preparer: Callable[
+        [dict[str, Any]], PreparedExactTrainSequence
     ]
     | None = None,
 ) -> PreparedRuntimeSequence:
@@ -515,6 +714,22 @@ def prepare_runtime_sequence(
             mode="exact_train",
             payload=payload,
             exact_train=exact_train_preparer(payload),
+        )
+    if family is RuntimeSequenceFamily.CHUNKED_CONDITIONED_VIDEO:
+        if step_input.payload is None:
+            raise ValueError(
+                f"Runtime program {step_input.program.name!r} requires a video payload."
+            )
+        if conditioned_video_preparer is None:
+            raise ValueError(
+                "Conditioned-video runtime preparation requires "
+                "`conditioned_video_preparer`."
+            )
+        payload = dict(step_input.payload)
+        return PreparedRuntimeSequence(
+            mode="exact_conditioned_video",
+            payload=payload,
+            exact_conditioned_video=conditioned_video_preparer(payload),
         )
     if family is RuntimeSequenceFamily.SINGLE_STREAM:
         if step_input.payload is None:

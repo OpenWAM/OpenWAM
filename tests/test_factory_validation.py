@@ -8,6 +8,7 @@ import torch
 from open_wam.configs import (
     ActionSchemaConfig,
     ActionTargetConfig,
+    CausalVideoProgram,
     CausalVideoPredictionPolicyConfig,
     DualExpertActionDecoderConfig,
     DualExpertPolicyConfig,
@@ -515,7 +516,10 @@ def test_causal_video_prediction_requires_shared_transformer_backbone() -> None:
             ),
         ),
         backbone=LingbotCompatibleVideoBackboneConfig(implementation="dummy"),
-        policy_variant=CausalVideoPredictionPolicyConfig(hidden_size=32),
+        policy_variant=CausalVideoPredictionPolicyConfig(
+            hidden_size=32,
+            program=CausalVideoProgram.PREFIX_SUFFIX,
+        ),
         action_decoder=VideoOnlyActionDecoderConfig(
             hidden_size=32, action_dim=4, action_horizon=0
         ),

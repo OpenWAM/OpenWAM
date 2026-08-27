@@ -9,6 +9,7 @@ from typing import Any
 import numpy as np
 import torch
 
+from open_wam.configs import CausalVideoProgram
 from open_wam.contracts import CanonicalViewLayout, ViewPlacement
 from open_wam.data import LatentWAMBatch
 from open_wam.evals.video_artifacts import decode_latent_video_chunks
@@ -37,14 +38,24 @@ def rollout_causal_video_prediction(
     """Generate fixed-width future chunks from one adapter-produced sample.
 
     The first chunk exactly matches the sample's latent prefix/suffix contract.
-    Additional chunks re-feed the complete generated latent history and are
-    open-loop extrapolations without dataset targets.
+    Prefix/suffix evaluation extrapolates additional chunks beyond that target;
+    chunked conditioned-video evaluation uses available segment targets while
+    committing each generated chunk to causal history.
     """
 
     if int(num_chunks) <= 0:
         raise ValueError(f"`num_chunks` must be positive, got {num_chunks}.")
     if int(batch.video_latents.shape[0]) != 1 or len(batch.metadata) != 1:
         raise ValueError("Causal video rollout currently requires batch size 1.")
+    if (
+        pipeline.policy_variant.config.program
+        == CausalVideoProgram.CHUNKED_CONDITIONED_VIDEO
+    ):
+        return _rollout_chunked_conditioned_video(
+            pipeline,
+            batch,
+            num_chunks=int(num_chunks),
+        )
 
     metadata = batch.metadata[0]
     observed_frames = _positive_frame_count(metadata, "observed_prefix_frames")
@@ -140,6 +151,101 @@ def rollout_causal_video_prediction(
         future_latent_frames=future_frames,
         context_latent_frames=tuple(context_sizes),
         first_chunk_future_mse=first_chunk_future_mse,
+    )
+
+
+def _rollout_chunked_conditioned_video(
+    pipeline: VariantPipeline,
+    batch: LatentWAMBatch,
+    *,
+    num_chunks: int,
+) -> CausalVideoPredictionRollout:
+    condition_latents = batch.condition_latents
+    if condition_latents is None or int(condition_latents.shape[2]) < 1:
+        raise ValueError(
+            "Chunked conditioned-video evaluation requires condition latents."
+        )
+    target_frames = min(
+        int(batch.video_latents.shape[2]),
+        int(num_chunks)
+        * int(pipeline.policy_variant.inference_config.frame_chunk_size),
+    )
+    if target_frames <= 0:
+        raise ValueError("Chunked conditioned-video evaluation has no target frames.")
+    observed_prefix = condition_latents[:, :, :1].to(
+        device=batch.video_latents.device,
+        dtype=batch.video_latents.dtype,
+    )
+    target_future = batch.video_latents[:, :, :target_frames]
+    model_input = torch.cat([observed_prefix, torch.zeros_like(target_future)], dim=2)
+    sample_metadata = batch.metadata[0]
+    runner = VariantRolloutRunner(pipeline)
+    session = runner.reset(
+        task_text=batch.task_text,
+        text_context=batch.text_context,
+        negative_text_context=batch.negative_text_context,
+    )
+    with torch.inference_mode():
+        step = runner.infer_step(
+            session=session,
+            context=PolicyInferContext(
+                extra={
+                    "task_text": batch.task_text,
+                    "metadata": (
+                        {
+                            "observed_prefix_frames": 1,
+                            "future_suffix_frames": target_frames,
+                            "frame_shift": int(sample_metadata.get("frame_shift", 0)),
+                            "chunk_origin_frame": int(
+                                sample_metadata.get("chunk_origin_frame", 0)
+                            ),
+                        },
+                    ),
+                }
+            ),
+            video_latents=model_input,
+        )
+    predicted = step.infer_output.decoder_output.aux.get("predicted_latents")
+    if not isinstance(predicted, torch.Tensor):
+        raise TypeError(
+            "Chunked conditioned-video decoder did not emit `predicted_latents`."
+        )
+    expected_shape = tuple(model_input.shape)
+    if tuple(predicted.shape) != expected_shape:
+        raise ValueError(
+            "Chunked conditioned-video decoder returned the wrong shape, "
+            f"expected={expected_shape}, actual={tuple(predicted.shape)}."
+        )
+    torch.testing.assert_close(
+        predicted[:, :, :1],
+        observed_prefix,
+        rtol=0.0,
+        atol=0.0,
+        msg="Chunked conditioned-video rollout modified its external prefix.",
+    )
+    target_latents = torch.cat([observed_prefix, target_future], dim=2)
+    frame_chunk_size = int(pipeline.policy_variant.inference_config.frame_chunk_size)
+    first_chunk_frames = min(frame_chunk_size, target_frames)
+    mse = float(
+        (
+            predicted[:, :, 1 : 1 + first_chunk_frames].float()
+            - target_future[:, :, :first_chunk_frames].float()
+        )
+        .square()
+        .mean()
+        .item()
+    )
+    context_sizes = [1]
+    for generated_frames in range(frame_chunk_size, target_frames, frame_chunk_size):
+        context_sizes.append(1 + generated_frames)
+    context_sizes.append(1 + target_frames)
+    return CausalVideoPredictionRollout(
+        predicted_latents=predicted,
+        target_latents=target_latents,
+        observed_latent_frames=1,
+        future_latent_frames=first_chunk_frames,
+        context_latent_frames=tuple(context_sizes),
+        first_chunk_future_mse=mse,
     )
 
 

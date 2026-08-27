@@ -265,18 +265,8 @@ class DualExpertPackedTrainingProgram:
             if dynamics_plan is not None
             and dynamics_plan.semantics.force_clean_video_condition
             else float(self.config.noisy_video_condition_prob),
+            clean_prefix_frames=prefix_condition_frames,
         )
-        if prefix_condition_frames > 0:
-            prefix_latents = video_latents[:, :, :prefix_condition_frames]
-            video_artifacts.noisy_latents[:, :, :prefix_condition_frames] = (
-                prefix_latents
-            )
-            video_artifacts.condition_latents[:, :, :prefix_condition_frames] = (
-                prefix_latents
-            )
-            video_artifacts.targets[:, :, :prefix_condition_frames] = 0
-            video_artifacts.timesteps[:, :prefix_condition_frames] = 0.0
-            video_artifacts.condition_timesteps[:, :prefix_condition_frames] = 0.0
         coupled_action_sigma_values = (
             frame_sigmas_for_timesteps(
                 video_artifacts.scheduler,

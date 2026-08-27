@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import subprocess
 from collections.abc import Mapping
+from enum import Enum
 from pathlib import Path
 from typing import Any
 
@@ -23,9 +24,14 @@ def _resolve_policy_architecture(config: ExperimentConfig) -> str:
 
 def _resolve_policy_program(
     config: ExperimentConfig,
-) -> VideoActionProgram | None:
+) -> Enum | None:
     program = getattr(config.policy_variant, "program", None)
-    return None if program is None else VideoActionProgram(program)
+    if program is not None and not isinstance(program, Enum):
+        raise TypeError(
+            "Policy programs must cross the config boundary as typed enums, "
+            f"got {type(program).__name__}."
+        )
+    return program
 
 
 def _resolve_workload_family(config: ExperimentConfig) -> str:
@@ -65,7 +71,7 @@ def build_run_tracking_metadata(
 ) -> dict[str, Any]:
     architecture = _resolve_policy_architecture(config)
     program = _resolve_policy_program(config)
-    program_label = None if program is None else program.value
+    program_label = None if program is None else str(program.value)
     workload_family = _resolve_workload_family(config)
     attach_site = getattr(config.policy_variant, "attach_site", None)
     runtime_mode = getattr(config.policy_variant, "runtime_mode", None)

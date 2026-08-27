@@ -147,11 +147,14 @@ def build_video_flow_match_train_artifacts(
     noisy_condition_prob: float = 0.0,
     condition_latents: torch.Tensor | None = None,
     timestep_ids: torch.Tensor | None = None,
+    clean_prefix_frames: int = 0,
 ) -> VideoFlowMatchTrainArtifacts:
     """Create LingBot-style noisy video latents with one timestep per frame.
 
     The sampled timestep is broadcast across channels and spatial positions of
-    each frame, matching LingBot's frame-wise latent diffusion semantics.
+    each frame, matching LingBot's frame-wise latent diffusion semantics. When
+    ``clean_prefix_frames`` is nonzero, those frames remain clean in both video
+    streams and are excluded from flow supervision.
     """
 
     if video_latents.ndim != 5:
@@ -168,6 +171,13 @@ def build_video_flow_match_train_artifacts(
     )
     scheduler.set_timesteps(training_config.video_num_train_timesteps, training=True)
     batch_size = video_latents.shape[0]
+    clean_prefix_frames = int(clean_prefix_frames)
+    if clean_prefix_frames < 0 or clean_prefix_frames >= num_frames:
+        if clean_prefix_frames != 0:
+            raise ValueError(
+                "Video flow-match clean_prefix_frames must leave at least one "
+                f"denoising target, got prefix={clean_prefix_frames}, frames={num_frames}."
+            )
     if timestep_ids is None:
         timestep_ids = sample_timestep_id(
             batch_size=batch_size,
@@ -196,9 +206,14 @@ def build_video_flow_match_train_artifacts(
         if tuple(condition_latents.shape) != tuple(video_latents.shape):
             raise ValueError(
                 "Video condition_latents must match video_latents exactly, "
-                f"got condition={tuple(condition_latents.shape)}, video={tuple(video_latents.shape)}."
+                f"got condition={tuple(condition_latents.shape)}, "
+                f"video={tuple(video_latents.shape)}."
             )
-        clean_condition_latents = condition_latents.to(device=video_latents.device, dtype=video_latents.dtype)
+        clean_condition_latents = condition_latents.to(
+            device=video_latents.device,
+            dtype=video_latents.dtype,
+        )
+    original_condition_latents = clean_condition_latents
     condition_timesteps = torch.zeros_like(timesteps)
     if noisy_condition_prob > 0.0:
         # Augmentation decision must be identical across ranks under FSDP:
@@ -217,7 +232,9 @@ def build_video_flow_match_train_artifacts(
                 num_train_timesteps=training_config.video_num_train_timesteps,
                 device=video_latents.device,
             )
-            condition_timesteps = scheduler.timesteps.to(device=video_latents.device)[condition_timestep_ids]
+            condition_timesteps = scheduler.timesteps.to(device=video_latents.device)[
+                condition_timestep_ids
+            ]
             condition_noise = torch.randn_like(video_latents)
             clean_condition_latents = scheduler.add_noise(
                 clean_condition_latents,
@@ -225,6 +242,16 @@ def build_video_flow_match_train_artifacts(
                 condition_timesteps,
                 t_dim=2,
             )
+    if clean_prefix_frames > 0:
+        prefix = slice(0, clean_prefix_frames)
+        noisy_latents[:, :, prefix] = video_latents[:, :, prefix]
+        targets[:, :, prefix] = 0
+        timesteps[:, prefix] = 0
+        if clean_condition_latents is not original_condition_latents:
+            clean_condition_latents[:, :, prefix] = original_condition_latents[
+                :, :, prefix
+            ]
+        condition_timesteps[:, prefix] = 0
     return VideoFlowMatchTrainArtifacts(
         timesteps=timesteps,
         noisy_latents=noisy_latents,

@@ -39,7 +39,8 @@ The generic runtime covers these representative maintained families:
 | Dual expert six video/action programs | `dual_expert_libero_<program>.yaml` |
 | GJD, either architecture | `<architecture>_libero_generalist_joint_denoising.yaml` |
 | Dual expert conditional FDM/IDM | `dual_expert_libero_conditional_dynamics.yaml` |
-| Video-only | `causal_video_prediction_libero_latent_local.yaml` |
+| Video-only prefix/suffix | `causal_video_prediction_libero_latent_local.yaml` |
+| Video-only VTA marginal | `causal_video_prediction_libero_chunked_conditioned.yaml` |
 
 The complete Wan/LingBot initialization, latent-data, scoped-export, and
 rollout workflow is in [Video-Only Training](video_only_training.md).

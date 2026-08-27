@@ -115,6 +115,9 @@ from open_wam.models.common.attention_contracts import (
     normalize_history_stream_visibility as normalize_history_stream_visibility,
 )
 from open_wam.models.common.chunked_attention import (
+    build_chunked_conditioned_video_attention_profile as build_chunked_conditioned_video_attention_profile,
+)
+from open_wam.models.common.chunked_attention import (
     build_chunked_temporal_exact_attention_profile as build_chunked_temporal_exact_attention_profile,
 )
 from open_wam.models.common.chunked_attention import (
@@ -167,6 +170,7 @@ from open_wam.models.common.packed_token_layout import (
     _resolve_compiled_create_block_mask,
     _resolve_compiled_flex_attention,
     apply_attention_backend,
+    build_chunked_conditioned_video_attention_profile,
     build_chunked_temporal_exact_attention_profile,
     build_chunked_text_context_cross_attention_mask,
     build_exact_video_action_token_layout,

@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from open_wam.configs import load_experiment_config
+from open_wam.configs import CausalVideoProgram, load_experiment_config
 from open_wam.configs.enums import TextConditioningMode, TrainingComponentSelector
 from open_wam.contracts import CanonicalViewLayout, ViewPlacement
 from open_wam.data import LatentWAMBatch
@@ -22,6 +22,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 class _RecordingVideoPredictionPipeline:
     def __init__(self) -> None:
         self.calls: list[dict[str, object]] = []
+        self.policy_variant = SimpleNamespace(
+            config=SimpleNamespace(program=CausalVideoProgram.PREFIX_SUFFIX)
+        )
 
     def forward_infer_step_from_latents(
         self,

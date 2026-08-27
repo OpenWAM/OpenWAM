@@ -11,6 +11,7 @@ from safetensors import safe_open
 from safetensors.torch import load_file
 
 from open_wam.configs import (
+    CausalVideoProgram,
     CausalVideoPredictionPolicyConfig,
     InferenceConfig,
     TextConditioningMode,
@@ -19,7 +20,11 @@ from open_wam.configs import (
 )
 from open_wam.data import LatentWAMBatch
 from open_wam.evals.video_prediction import rollout_causal_video_prediction
-from open_wam.models.policy_variants import PolicyInferContext, PolicyTrainBatch
+from open_wam.models.policy_variants import (
+    PolicyInferContext,
+    PolicyPreparedInputs,
+    PolicyTrainBatch,
+)
 from open_wam.models.policy_variants.causal_video_prediction import (
     CausalVideoPredictionPolicyVariant,
 )
@@ -51,6 +56,7 @@ MULTICHUNK_ROLLOUT_GOLDEN = (
 def test_task_prompt_causal_video_prediction_rejects_missing_conditioning() -> None:
     variant = CausalVideoPredictionPolicyVariant(
         config=CausalVideoPredictionPolicyConfig(
+            program=CausalVideoProgram.PREFIX_SUFFIX,
             text_conditioning_mode=TextConditioningMode.TASK_PROMPT
         ),
         training_config=TrainingConfig(),
@@ -86,6 +92,7 @@ def test_task_prompt_causal_video_prediction_rejects_missing_conditioning() -> N
 def test_causal_video_cfg_requires_shape_matched_finite_negative_text() -> None:
     variant = CausalVideoPredictionPolicyVariant(
         config=CausalVideoPredictionPolicyConfig(
+            program=CausalVideoProgram.PREFIX_SUFFIX,
             text_conditioning_mode=TextConditioningMode.TASK_PROMPT
         ),
         training_config=TrainingConfig(text_condition_dropout_prob=0.1),
@@ -136,7 +143,7 @@ def test_causal_video_cfg_requires_shape_matched_finite_negative_text() -> None:
 
 def test_causal_video_prediction_maps_raw_wan_windows_to_latent_layouts() -> None:
     variant = CausalVideoPredictionPolicyVariant(
-        config=CausalVideoPredictionPolicyConfig(),
+        config=CausalVideoPredictionPolicyConfig(program=CausalVideoProgram.PREFIX_SUFFIX),
         training_config=TrainingConfig(),
         inference_config=InferenceConfig(),
     )
@@ -166,7 +173,7 @@ def test_causal_video_prediction_maps_raw_wan_windows_to_latent_layouts() -> Non
 
 def test_causal_video_prediction_keeps_latent_layouts_in_identity_mapping() -> None:
     variant = CausalVideoPredictionPolicyVariant(
-        config=CausalVideoPredictionPolicyConfig(),
+        config=CausalVideoPredictionPolicyConfig(program=CausalVideoProgram.PREFIX_SUFFIX),
         training_config=TrainingConfig(),
         inference_config=InferenceConfig(),
     )
@@ -198,9 +205,107 @@ class _CaptureVideoFlowTower:
         return torch.zeros_like(kwargs["noisy_latents"])
 
 
+class _CaptureChunkedVideoTower:
+    def __init__(self) -> None:
+        self.kwargs = None
+
+    def predict_chunked_conditioned_video_flow(self, **kwargs):
+        self.kwargs = kwargs
+        return torch.zeros_like(kwargs["noisy_latents"])
+
+
+def test_chunked_conditioned_video_training_uses_external_prefix_and_full_target() -> None:
+    variant = CausalVideoPredictionPolicyVariant(
+        config=CausalVideoPredictionPolicyConfig(
+            program=CausalVideoProgram.CHUNKED_CONDITIONED_VIDEO,
+            noisy_video_condition_prob=0.0,
+            use_activation_checkpointing=True,
+        ),
+        training_config=TrainingConfig(
+            video_num_train_timesteps=8,
+            chunk_size=2,
+            window_size=4,
+        ),
+        inference_config=InferenceConfig(frame_chunk_size=2),
+    )
+    target = torch.randn(1, 48, 4, 2, 2)
+    condition = torch.full_like(target, 7.0)
+    frontend = VisualFrontendOutput(
+        canonical_video=torch.zeros(1, 3, 4, 32, 32),
+        video_latents=target,
+        video_tokens=torch.zeros(1, 4, 4),
+        input_source="video_latents",
+        token_grid=TokenGridMetadata(
+            num_frames=4,
+            latent_height=2,
+            latent_width=2,
+            patch_size=(1, 2, 2),
+            patches_per_frame_h=1,
+            patches_per_frame_w=1,
+            tokens_per_frame=1,
+            sequence_length=4,
+        ),
+        chunk=ChunkMetadata(
+            chunk_start_frame=0,
+            chunk_num_frames=4,
+            frame_stride=1,
+            chunk_type="dense_video_chunk",
+        ),
+        conditioning=ConditioningState(
+            supported=True,
+            text_context=torch.ones(1, 2, 8),
+            negative_text_context=torch.ones(1, 2, 8),
+            metadata={},
+        ),
+    )
+    batch = PolicyTrainBatch(
+        actions=torch.zeros(1, 0, 7),
+        action_mask=torch.zeros(1, 0, 7),
+        state=torch.zeros(1, 0, 8),
+        extra={
+            "task_text": ("move object",),
+            "condition_latents": condition,
+            "metadata": (
+                {
+                    "sampled_chunk_size": 2,
+                    "sampled_window_size": 4,
+                    "frame_shift": 9,
+                },
+            ),
+        },
+    )
+    tower = _CaptureChunkedVideoTower()
+
+    output = variant.forward_train(
+        tower,  # type: ignore[arg-type]
+        VisualStageOutputs(frontend=frontend),
+        PolicyPreparedInputs(batch=batch),
+    )
+
+    assert tower.kwargs is not None
+    assert tower.kwargs["chunk_size"] == 2
+    assert tower.kwargs["window_size"] == 4
+    assert tower.kwargs["frame_start"] == 8
+    assert tower.kwargs["prefix_condition_frames"] == 1
+    assert tower.kwargs["use_activation_checkpointing"] is True
+    artifacts = output.decoder_artifacts.require(
+        contract=VIDEO_FLOW_DECODER_ARTIFACT_CONTRACT,
+        payload_type=VideoFlowTrainArtifacts,
+    )
+    assert artifacts.target_latents.shape[2] == 5
+    torch.testing.assert_close(artifacts.target_latents[:, :, :1], condition[:, :, :1])
+    torch.testing.assert_close(artifacts.target_latents[:, :, 1:], target)
+    assert not torch.any(artifacts.future_loss_mask[:, :, :1])
+    assert torch.all(artifacts.future_loss_mask[:, :, 1:])
+    torch.testing.assert_close(
+        tower.kwargs["noisy_latents"][:, :, :1],
+        condition[:, :, :1],
+    )
+
+
 def test_causal_video_prediction_masks_padded_tokens_during_train_rollout() -> None:
     variant = CausalVideoPredictionPolicyVariant(
-        config=CausalVideoPredictionPolicyConfig(),
+        config=CausalVideoPredictionPolicyConfig(program=CausalVideoProgram.PREFIX_SUFFIX),
         training_config=TrainingConfig(video_num_train_timesteps=8),
         inference_config=InferenceConfig(),
     )
@@ -315,6 +420,169 @@ def _tiny_causal_video_pipeline(
     pipeline = build_variant_pipeline_from_config(config)
     report = apply_training_component_controls(pipeline, config.training)
     return config, pipeline, report
+
+
+def _tiny_chunked_conditioned_video_pipeline():
+    config = load_experiment_config(
+        REPO_ROOT
+        / "configs/experiments/causal_video_prediction_libero_chunked_conditioned.yaml"
+    )
+    config = replace(
+        config,
+        backbone=replace(
+            config.backbone,
+            pretrained_model_name_or_path=None,
+            load_reference_core_weights=False,
+            hidden_size=16,
+            num_layers=1,
+            num_heads=2,
+            attention_head_dim=8,
+            ffn_dim=32,
+            text_dim=8,
+            max_text_tokens=3,
+            freq_dim=8,
+        ),
+        policy_variant=replace(config.policy_variant, hidden_size=16),
+        action_decoder=replace(config.action_decoder, hidden_size=16),
+        training=replace(
+            config.training,
+            video_num_train_timesteps=8,
+            text_condition_dropout_prob=0.0,
+        ),
+        inference=replace(
+            config.inference,
+            video_num_inference_steps=2,
+            guidance_scale=1.0,
+            frame_chunk_size=2,
+        ),
+        trainer=replace(
+            config.trainer,
+            strategy="single_device",
+            accelerator="cpu",
+            precision="32-true",
+        ),
+    )
+    torch.manual_seed(1337)
+    pipeline = build_variant_pipeline_from_config(config)
+    apply_training_component_controls(pipeline, config.training)
+    return config, pipeline
+
+
+def test_chunked_conditioned_video_pipeline_trains_and_evaluates_without_actions() -> None:
+    config, pipeline = _tiny_chunked_conditioned_video_pipeline()
+    target = torch.randn(1, 48, 4, 2, 4)
+    condition = torch.randn_like(target)
+    text = torch.randn(1, 3, 8)
+    negative_text = torch.randn_like(text)
+    policy_batch = PolicyTrainBatch(
+        actions=torch.zeros(1, 0, 7),
+        action_mask=torch.zeros(1, 0, 7),
+        state=torch.zeros(1, 0, 8),
+        extra={
+            "task_text": ("move object",),
+            "condition_latents": condition,
+            "metadata": (
+                {
+                    "sampled_chunk_size": 2,
+                    "sampled_window_size": 4,
+                    "frame_shift": 0,
+                },
+            ),
+        },
+    )
+
+    torch.manual_seed(4242)
+    output = pipeline.forward_train_from_latents(
+        target,
+        policy_batch,
+        text_context=text,
+        negative_text_context=negative_text,
+    )
+    assert torch.isfinite(output.decoder_output.loss)
+    output.decoder_output.loss.backward()
+    runtime = pipeline.visual_tower.core
+    assert runtime.patch_embedding_mlp.weight.grad is not None
+    assert runtime.action_embedder.weight.grad is None
+    assert runtime.action_proj_out.weight.grad is None
+
+    latent_batch = LatentWAMBatch(
+        video_latents=target,
+        actions=torch.zeros(1, 0, 7),
+        action_mask=torch.zeros(1, 0, 7),
+        state=torch.zeros(1, 0, 8),
+        task_text=("move object",),
+        text_context=text,
+        negative_text_context=negative_text,
+        condition_latents=condition,
+        metadata=({"frame_shift": 0},),
+    )
+    torch.manual_seed(101)
+    rollout = rollout_causal_video_prediction(
+        pipeline,
+        latent_batch,
+        num_chunks=2,
+    )
+    assert rollout.observed_latent_frames == 1
+    assert rollout.future_latent_frames == 2
+    assert rollout.context_latent_frames == (1, 3, 5)
+    assert rollout.predicted_latents.shape[2] == 5
+    assert torch.isfinite(torch.tensor(rollout.first_chunk_future_mse))
+    assert config.policy_variant.program == CausalVideoProgram.CHUNKED_CONDITIONED_VIDEO
+    assert config.policy_variant.use_activation_checkpointing is True
+
+
+def test_chunked_conditioned_video_generation_commits_each_chunk_to_history(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, pipeline = _tiny_chunked_conditioned_video_pipeline()
+    calls: list[dict[str, object]] = []
+
+    def capture_prediction(**kwargs):
+        calls.append(
+            {
+                key: value.clone() if isinstance(value, torch.Tensor) else value
+                for key, value in kwargs.items()
+            }
+        )
+        return torch.zeros_like(kwargs["noisy_latents"])
+
+    monkeypatch.setattr(
+        pipeline.visual_tower,
+        "predict_chunked_conditioned_video_flow",
+        capture_prediction,
+    )
+    prefix = torch.randn(1, 48, 1, 2, 4)
+    future = torch.zeros(1, 48, 4, 2, 4)
+
+    generated = pipeline.visual_tower.generate_chunked_conditioned_video_latents(
+        observed_prefix=prefix,
+        future_template=future,
+        text_context=torch.randn(1, 3, 8),
+        negative_text_context=None,
+        frame_start=0,
+        chunk_size=2,
+        window_size=4,
+        chunk_origin_frame=3,
+        num_inference_steps=1,
+        num_train_timesteps=8,
+        sigma_shift=5.0,
+        guidance_scale=1.0,
+        sample_seed=17,
+    )
+
+    assert generated.shape == future.shape
+    assert [call["noisy_latents"].shape[2] for call in calls] == [3, 5]
+    assert [call["chunk_origin_frame"] for call in calls] == [3, 3]
+    second_noisy = calls[1]["noisy_latents"]
+    second_condition = calls[1]["condition_latents"]
+    assert isinstance(second_noisy, torch.Tensor)
+    assert isinstance(second_condition, torch.Tensor)
+    torch.testing.assert_close(second_noisy[:, :, :3], second_condition[:, :, :3])
+    assert not torch.any(second_condition[:, :, 3:])
+    second_timesteps = calls[1]["timesteps"]
+    assert isinstance(second_timesteps, torch.Tensor)
+    assert not torch.any(second_timesteps[:, :3])
+    assert torch.all(second_timesteps[:, 3:] > 0)
 
 
 def _causal_video_inputs() -> tuple[torch.Tensor, torch.Tensor, PolicyTrainBatch]:

@@ -39,6 +39,7 @@ from .runtime_programs import (
     RuntimeStepOutput,
     build_chunked_dual_stream_exact_inference_program,
     build_chunked_dual_stream_exact_train_program,
+    build_chunked_conditioned_video_runtime_program,
     build_dense_runtime_program,
     build_single_stream_exact_runtime_program,
 )
@@ -75,6 +76,7 @@ __all__ = [
     "apply_rotary_emb",
     "build_chunked_dual_stream_exact_inference_program",
     "build_chunked_dual_stream_exact_train_program",
+    "build_chunked_conditioned_video_runtime_program",
     "build_dense_runtime_program",
     "build_reference_mesh_id",
     "build_reference_transformer",

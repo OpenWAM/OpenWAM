@@ -14,6 +14,7 @@ from .attention_contracts import (
     normalize_chunked_temporal_exact_coupling,
 )
 from .chunked_attention import (
+    build_chunked_conditioned_video_attention_profile,
     build_chunked_temporal_exact_attention_profile,
     build_lingbot_chunked_exact_attention_profile,
 )
@@ -78,6 +79,7 @@ from .packed_token_layout import (
     PackedTokenKind,
     PackedTokenLayout,
     PackedTokenStream,
+    build_exact_conditioned_video_token_layout,
     build_exact_video_action_token_layout,
     flatten_action_token_mask,
 )
@@ -140,6 +142,7 @@ __all__ = [
     "build_joint_video_timestep_grid",
     "apply_attention_backend",
     "build_chunked_temporal_exact_attention_profile",
+    "build_chunked_conditioned_video_attention_profile",
     "chunked_temporal_exact_coupling_from_profile_name",
     "chunked_temporal_exact_profile_name_for_coupling",
     "build_action_flow_match_inference_scheduler",
@@ -148,6 +151,7 @@ __all__ = [
     "build_joint_runtime_schedulers",
     "build_lingbot_chunked_exact_attention_profile",
     "build_exact_video_action_token_layout",
+    "build_exact_conditioned_video_token_layout",
     "build_frame_aligned_action_flow_match_train_artifacts",
     "build_flow_unipc_inference_scheduler",
     "build_unconditional_conditioning",
