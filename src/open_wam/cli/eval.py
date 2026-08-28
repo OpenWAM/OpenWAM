@@ -55,3 +55,7 @@ def main(argv: list[str] | None = None) -> None:
 
 
 __all__ = ["build_arg_parser", "main"]
+
+
+if __name__ == "__main__":
+    main()
