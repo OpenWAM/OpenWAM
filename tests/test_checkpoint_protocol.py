@@ -5,6 +5,9 @@ from pathlib import Path
 
 import pytest
 import torch
+from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
+    checkpoint_wrapper,
+)
 
 import open_wam.training.checkpoints as checkpoints_module
 from open_wam.configs import load_experiment_config
@@ -293,3 +296,41 @@ def test_distributed_non_strict_load_filters_retired_checkpoint_keys(
         manager.load(path=checkpoint_path, model=model)
 
     assert loaded_keys == ["weight", "bias"]
+
+
+def test_distributed_load_preserves_activation_checkpoint_canonical_keys(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = _manager(tmp_path)
+    checkpoint_path = tmp_path / "model_state.pt"
+    checkpoint_path.touch()
+    model = torch.nn.Sequential(
+        checkpoint_wrapper(torch.nn.Linear(2, 2), preserve_rng_state=False)
+    )
+    canonical_state = {
+        key: value.detach().clone() for key, value in model.state_dict().items()
+    }
+    loaded_keys: list[str] = []
+
+    monkeypatch.setattr(checkpoints_module, "_is_rank_zero", lambda: True)
+    monkeypatch.setattr(checkpoints_module.dist, "is_initialized", lambda: True)
+    monkeypatch.setattr(
+        checkpoints_module.dist,
+        "broadcast_object_list",
+        lambda values, src: None,
+    )
+    monkeypatch.setattr(
+        checkpoints_module,
+        "_load_tensor_artifact",
+        lambda path, map_location: {"model_state_dict": canonical_state},
+    )
+    monkeypatch.setattr(
+        checkpoints_module,
+        "set_model_state_dict",
+        lambda model, state_dict, options: loaded_keys.extend(state_dict),
+    )
+
+    manager.load(path=checkpoint_path, model=model)
+
+    assert loaded_keys == list(canonical_state)

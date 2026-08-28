@@ -240,7 +240,7 @@ def _set_model_state_dict(
 
 
 def _filter_unexpected_distributed_model_state(
-    model: nn.Module,
+    expected_keys: frozenset[str],
     model_state_dict: dict[str, Any],
 ) -> dict[str, Any]:
     """Apply non-strict load semantics before rank-zero state broadcast.
@@ -253,10 +253,6 @@ def _filter_unexpected_distributed_model_state(
     shape-mismatched current keys to the state-dict loader.
     """
 
-    expected_keys = {name for name, _ in model.named_parameters(remove_duplicate=False)}
-    expected_keys.update(
-        name for name, _ in model.named_buffers(remove_duplicate=False)
-    )
     unexpected_keys = sorted(set(model_state_dict) - expected_keys)
     if not unexpected_keys:
         return model_state_dict
@@ -457,6 +453,11 @@ class CheckpointManager:
         checkpoint_path = self.resolve_checkpoint_path(path)
         distributed = dist.is_initialized()
         is_rank_zero = _is_rank_zero()
+        expected_model_state_keys = None
+        if distributed:
+            current_model_state = model.state_dict()
+            expected_model_state_keys = frozenset(current_model_state)
+            del current_model_state
         load_options = _load_state_dict_options(
             broadcast_from_rank0=distributed,
         )
@@ -473,8 +474,9 @@ class CheckpointManager:
 
         model_state = payload.get("model_state_dict", {})
         if distributed and is_rank_zero and isinstance(model_state, dict):
+            assert expected_model_state_keys is not None
             model_state = _filter_unexpected_distributed_model_state(
-                model,
+                expected_model_state_keys,
                 model_state,
             )
         optimizer_state = payload.get("optimizer_state_dict")
