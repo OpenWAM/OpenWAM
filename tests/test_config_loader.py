@@ -17,8 +17,8 @@ from open_wam.configs import (
     AuxiliaryValidationSource,
     BatchAdapterName,
     CausalPrefixSuffixBucketConfig,
-    CausalVideoProgram,
     CausalVideoPredictionPolicyConfig,
+    CausalVideoProgram,
     ContextConditionLatentSource,
     CurrentBlockCoupling,
     DeprecatedPolicyConfigFieldWarning,
@@ -191,6 +191,28 @@ def test_checkpoint_loader_migrates_boolean_timestep_coupling(
         config = load_experiment_config(config_path, checkpoint_runtime_compat=True)
 
     assert config.policy_variant.joint_timestep_coupling is expected
+
+
+def test_checkpoint_loader_requires_explicit_causal_program(
+    tmp_path: Path,
+) -> None:
+    source_path = (
+        REPO_ROOT
+        / "configs/experiments/causal_video_prediction_libero_latent_local.yaml"
+    )
+    raw = yaml.safe_load(source_path.read_text(encoding="utf-8"))
+    raw["policy_variant"].pop("program")
+    config_path = tmp_path / "resolved_config.yaml"
+    config_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+
+    with pytest.raises(
+        ValueError,
+        match=r"explicit `policy_variant\.program`",
+    ):
+        load_experiment_config(
+            config_path,
+            checkpoint_runtime_compat=True,
+        )
 
 
 def test_current_checkpoint_schema_bypasses_historical_migration(

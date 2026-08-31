@@ -12,10 +12,14 @@ from open_wam.models.action_decoders import (
 )
 from open_wam.models.policy_variants import (
     PolicyInferContext,
+    PolicyInferenceCapabilities,
+    PolicyInferenceOutputRequest,
     PolicyInferState,
     PolicyObservedHistory,
     PolicyObservedHistoryOutput,
+    PolicyOutputModality,
 )
+from open_wam.models.policy_variants.base import PolicyVariant
 from open_wam.pipelines import VariantPipeline, VariantRolloutRunner
 
 
@@ -54,6 +58,7 @@ class _ObservedHistoryTarget:
         return PolicyObservedHistoryOutput(
             next_state=PolicyInferState(step_index=9),
             debug={"committed": True},
+            applied=True,
         )
 
 
@@ -93,9 +98,10 @@ def test_prepared_rollout_step_forwards_state_and_updates_conditioning() -> None
     )
     state = torch.arange(4, dtype=torch.float32).view(1, 4)
 
+    output_request = PolicyInferenceOutputRequest.video_only()
     result = runner.infer_prepared_step(
         session=session,
-        context=PolicyInferContext(state=state),
+        context=PolicyInferContext(state=state, output_request=output_request),
         visual_outputs=visual_outputs,  # type: ignore[arg-type]
     )
 
@@ -106,11 +112,30 @@ def test_prepared_rollout_step_forwards_state_and_updates_conditioning() -> None
     resolved_context = call["context"]
     assert isinstance(resolved_context, PolicyInferContext)
     assert resolved_context.state is state
+    assert resolved_context.output_request is output_request
     assert resolved_context.extra["task_text"] == ("pick up the mug",)
     assert result.session.policy_state.step_index == 7
     assert result.session.task_text == ("pick up the mug",)
     assert result.session.text_context is next_text
     assert result.session.negative_text_context is previous_negative
+
+
+def test_policy_variant_rejects_unimplemented_selective_outputs() -> None:
+    policy = SimpleNamespace(
+        inference_capabilities=PolicyInferenceCapabilities(
+            native_modalities=frozenset({PolicyOutputModality.ACTION})
+        )
+    )
+
+    PolicyVariant.validate_inference_output_request(
+        policy,  # type: ignore[arg-type]
+        PolicyInferenceOutputRequest.action_only(),
+    )
+    with pytest.raises(ValueError, match="does not support the requested"):
+        PolicyVariant.validate_inference_output_request(
+            policy,  # type: ignore[arg-type]
+            PolicyInferenceOutputRequest.video_only(),
+        )
 
 
 def test_observed_history_reconciliation_updates_policy_and_conditioning() -> None:
@@ -163,6 +188,7 @@ def test_observed_history_reconciliation_updates_policy_and_conditioning() -> No
     assert result.session.text_context is previous_text
     assert result.session.negative_text_context is next_negative
     assert result.debug == {"committed": True}
+    assert result.applied is True
 
 
 def test_pipeline_delegates_observed_history_to_policy_owner() -> None:

@@ -42,8 +42,12 @@ from open_wam.models.common.proprio_conditioning import (
 from open_wam.models.common.rollout_startup import build_strict_action_context_mask
 from open_wam.models.policy_variants import (
     PolicyInferContext,
+    PolicyInferenceOutputRequest,
     PolicyInferState,
+    PolicyOutputModality,
+    PolicyRecurrentHistoryPolicy,
     PolicyTrainBatch,
+    PolicyVideoGenerationRequest,
     RolloutCursor,
 )
 from open_wam.models.policy_variants.dual_expert import runtime as dual_expert_runtime
@@ -2111,6 +2115,10 @@ def test_dual_expert_generalist_packed_infer_supports_explicit_sigma_coupling(
         ),
     )
     pipeline = build_variant_pipeline_from_config(config)
+    assert (
+        pipeline.policy_variant.inference_capabilities.recurrent_history_policy
+        is PolicyRecurrentHistoryPolicy.EXPLICIT_RECONCILIATION
+    )
     captured_action_timesteps: list[torch.Tensor] = []
     original_pre_dit = pipeline.policy_variant.action_expert.pre_dit
 
@@ -2318,6 +2326,7 @@ def test_dual_expert_packed_infer_chunk0_uses_one_frame_startup_bootstrap() -> N
 
     assert first.policy_output.aux["dual_expert_first_step_bootstrap"] is True
     assert first.policy_output.aux["generation_frame_start"] == 1
+    assert first.policy_output.generation_frame_start == 1
     assert first.policy_output.aux["dual_expert_action_cond_tokens"] == 0
     assert first.policy_output.aux["dual_expert_invalid_startup_action_tokens"] == 2
     assert first.policy_output.aux["dual_expert_action_context_invalid_tokens"] == 2
@@ -2571,6 +2580,193 @@ def test_dual_expert_action_only_rollout_rejects_video_then_action() -> None:
             context=PolicyInferContext(extra={"dual_expert_action_only_rollout": True}),
             text_context=torch.randn(1, 5, 16),
         )
+
+
+@pytest.mark.parametrize(
+    "program",
+    (
+        VideoActionProgram.VIDEO_THEN_ACTION,
+        VideoActionProgram.DECOUPLED_SAME_STEP,
+    ),
+)
+def test_dual_expert_video_producer_mode_skips_action_expert(
+    monkeypatch,
+    program: VideoActionProgram,
+) -> None:
+    config = ExperimentConfig(
+        data=RobotWinDataConfig(
+            num_frames=4,
+            action_schema=ActionSchemaConfig(
+                action_dim=4,
+                action_horizon=4,
+                state_dim=4,
+                state_horizon=1,
+            ),
+        ),
+        backbone=SharedVideoTransformerConfig(
+            implementation="shared_transformer",
+            hidden_size=32,
+            num_layers=1,
+            num_heads=4,
+            attention_head_dim=8,
+            ffn_dim=64,
+            text_dim=16,
+            freq_dim=8,
+            load_reference_core_weights=False,
+            load_text_conditioning=False,
+            load_wan_vae_frontend=False,
+        ),
+        policy_variant=DualExpertPolicyConfig(
+            hidden_size=32,
+            program=program,
+            video_prefix_frames=1,
+            num_action_layers=1,
+        ),
+        action_decoder=DualExpertActionDecoderConfig(
+            hidden_size=32,
+            action_dim=4,
+            action_horizon=4,
+        ),
+        training=TrainingConfig(
+            chunk_size=2,
+            window_size=8,
+            action_loss_weight=1.0,
+            latent_loss_weight=1.0,
+        ),
+        inference=InferenceConfig(
+            frame_chunk_size=2,
+            video_num_inference_steps=2,
+            action_num_inference_steps=2,
+        ),
+    )
+    pipeline = build_variant_pipeline_from_config(config)
+    assert (
+        pipeline.policy_variant.inference_capabilities.recurrent_history_policy
+        is PolicyRecurrentHistoryPolicy.NEXT_OBSERVATION
+    )
+
+    def fail_action_stage(*args, **kwargs):
+        del args, kwargs
+        raise AssertionError("video-only inference entered the action expert")
+
+    monkeypatch.setattr(
+        pipeline.policy_variant.action_expert,
+        "pre_dit",
+        fail_action_stage,
+    )
+    request = PolicyInferenceOutputRequest.video_only()
+    first = pipeline.forward_infer_step_from_latents(
+        torch.randn(1, 48, 1, 8, 8),
+        context=PolicyInferContext(output_request=request),
+        text_context=torch.randn(1, 5, 16),
+    )
+
+    assert first.decoder_output.action_pred.shape == (1, 0, 4)
+    assert first.policy_output.aux["dual_expert_video_only_rollout"] is True
+    assert first.policy_output.aux["action_pred_executable"] is False
+    assert first.policy_output.aux["predicted_latents"].shape[2] == 2
+    state = first.policy_output.next_state.variant_state
+    assert isinstance(state, DualExpertRuntimeState)
+    assert state.action_cache is None
+    assert state.split_cache_output_request == request
+    assert first.policy_output.generated_video is not None
+    assert first.policy_output.generated_video.latents.shape[2] == 2
+
+    second = pipeline.forward_infer_step_from_latents(
+        torch.randn(1, 48, 2, 8, 8),
+        context=PolicyInferContext(output_request=request),
+        infer_state=first.policy_output.next_state,
+        text_context=torch.randn(1, 5, 16),
+    )
+    assert second.decoder_output.action_pred.shape == (1, 0, 4)
+    assert second.policy_output.aux["generation_frame_start"] == 3
+    assert second.policy_output.generation_frame_start == 3
+
+    with pytest.raises(ValueError, match="cannot switch from video-only"):
+        pipeline.forward_infer_step_from_latents(
+            torch.randn(1, 48, 2, 8, 8),
+            context=PolicyInferContext(),
+            infer_state=second.policy_output.next_state,
+            text_context=torch.randn(1, 5, 16),
+        )
+
+
+def test_dual_expert_video_producer_honors_typed_chunk_geometry() -> None:
+    from open_wam.models.policy_variants.dual_expert.rollout_geometry import (
+        resolve_dual_expert_rollout_frame_chunk_size,
+    )
+
+    context = PolicyInferContext(
+        video_generation=PolicyVideoGenerationRequest(frame_count=2)
+    )
+
+    assert resolve_dual_expert_rollout_frame_chunk_size(
+        context,
+        default_frame_chunk_size=4,
+        base_action_horizon=16,
+    ) == (2, 8, 4)
+
+
+def test_dual_expert_video_producer_rejects_conflicting_chunk_geometry() -> None:
+    from open_wam.models.policy_variants.dual_expert.rollout_geometry import (
+        resolve_dual_expert_rollout_frame_chunk_size,
+    )
+
+    context = PolicyInferContext(
+        video_generation=PolicyVideoGenerationRequest(frame_count=2),
+        extra={"dual_expert_rollout_frame_chunk_size": 3},
+    )
+
+    with pytest.raises(ValueError, match="conflicts with the typed video generation"):
+        resolve_dual_expert_rollout_frame_chunk_size(
+            context,
+            default_frame_chunk_size=4,
+            base_action_horizon=16,
+        )
+
+
+def test_dual_expert_video_only_rejects_joint_coupling() -> None:
+    from open_wam.models.policy_variants.dual_expert.rollout_geometry import (
+        resolve_dual_expert_inference_output_request,
+    )
+
+    with pytest.raises(ValueError, match="requires a video-independent coupling"):
+        resolve_dual_expert_inference_output_request(
+            PolicyInferContext(
+                output_request=PolicyInferenceOutputRequest.video_only()
+            ),
+            current_block_coupling=CurrentBlockCoupling.JOINT,
+        )
+
+
+@pytest.mark.parametrize(
+    ("output_request", "native_modality"),
+    (
+        (
+            PolicyInferenceOutputRequest.video_only(),
+            PolicyOutputModality.VIDEO,
+        ),
+        (
+            PolicyInferenceOutputRequest.action_only(),
+            PolicyOutputModality.ACTION,
+        ),
+    ),
+)
+def test_dual_expert_native_single_output_does_not_selectively_skip_denoising(
+    output_request: PolicyInferenceOutputRequest,
+    native_modality: PolicyOutputModality,
+) -> None:
+    from open_wam.models.policy_variants.dual_expert.rollout_geometry import (
+        resolve_dual_expert_inference_output_request,
+    )
+
+    resolved = resolve_dual_expert_inference_output_request(
+        PolicyInferContext(output_request=output_request),
+        current_block_coupling=CurrentBlockCoupling.JOINT,
+        native_modalities=frozenset({native_modality}),
+    )
+
+    assert resolved == output_request
 
 
 def test_dual_expert_decoupled_action_only_rollout_skips_split_cache_video_denoise() -> (

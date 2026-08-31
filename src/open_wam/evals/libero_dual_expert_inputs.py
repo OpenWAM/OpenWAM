@@ -6,7 +6,11 @@ import numpy as np
 import torch
 
 from open_wam.integrations import build_libero_state_history
-from open_wam.models.policy_variants import PolicyInferContext
+from open_wam.models.policy_variants import (
+    PolicyInferContext,
+    PolicyInferenceOutputRequest,
+    PolicyVideoGenerationRequest,
+)
 
 
 def _build_infer_context(
@@ -19,6 +23,8 @@ def _build_infer_context(
     dual_expert_inference_window_size: int | None,
     dual_expert_action_only_rollout: bool,
     dual_expert_rollout_frame_chunk_size: int | None = None,
+    output_request: PolicyInferenceOutputRequest | None = None,
+    video_generation: PolicyVideoGenerationRequest | None = None,
 ):
     extra: dict[str, object] = {
         "task_text": (prompt,),
@@ -30,14 +36,22 @@ def _build_infer_context(
         extra["dual_expert_rollout_frame_chunk_size"] = int(dual_expert_rollout_frame_chunk_size)
     if dual_expert_action_only_rollout:
         extra["dual_expert_action_only_rollout"] = True
-    return PolicyInferContext(
-        state=build_libero_state_history(
-            model_obs_window,
-            state_horizon=int(config.data.action_schema.state_horizon),
-            state_encoding=config.data.action_target.state_encoding,
+    state_horizon = int(config.data.action_schema.state_horizon)
+    state = None
+    if state_horizon > 0:
+        state = (
+            build_libero_state_history(
+                model_obs_window,
+                state_horizon=state_horizon,
+                state_encoding=config.data.action_target.state_encoding,
+            )
+            .unsqueeze(0)
+            .to(device=runtime_device)
         )
-        .unsqueeze(0)
-        .to(device=runtime_device),
+    return PolicyInferContext(
+        state=state,
+        output_request=output_request,
+        video_generation=video_generation,
         extra=extra,
     )
 

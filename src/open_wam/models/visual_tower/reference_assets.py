@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import importlib.metadata
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -10,7 +11,11 @@ from diffusers import AutoencoderKLWan
 
 from open_wam.configs import ReferenceAssetsDevicePolicy
 from open_wam.configs.backbone import LingbotCompatibleVideoBackboneConfig
-from open_wam.contracts import ViewPlacement
+from open_wam.contracts import (
+    VideoLatentSpaceIdentity,
+    ViewPlacement,
+    identify_video_latent_space,
+)
 from open_wam.models.common.video_geometry import (
     WAN_TEMPORAL_CHUNK_SIZE,
     wan_safe_temporal_frame_count,
@@ -20,6 +25,7 @@ from .reference_loader import resolve_pretrained_component_dir
 from .reference_transformer import preferred_reference_dtype
 
 _PLACEHOLDER_PATH_PREFIXES = ("/path/to/", "/path/to", "path/to/")
+_WAN_LATENT_ENCODING_CONTRACT = "open_wam.wan_vae_latents.v1"
 
 
 def _validate_pretrained_root(
@@ -212,6 +218,7 @@ class LingbotReferenceAssets:
     text_embedding_cache: dict[tuple[tuple[str, ...], str, str, int], torch.Tensor] = (
         field(default_factory=dict)
     )
+    latent_space_identity: VideoLatentSpaceIdentity | None = None
 
     @classmethod
     def maybe_load(
@@ -241,6 +248,14 @@ class LingbotReferenceAssets:
                     f"latentizer producing N(0,1) noise, which makes downstream rollouts "
                     f"appear to 'run' but with wildly wrong actions."
                 )
+            assets.latent_space_identity = identify_video_latent_space(
+                vae_dir,
+                encoder_family=(
+                    f"{AutoencoderKLWan.__module__}.{AutoencoderKLWan.__qualname__}"
+                    f"@{importlib.metadata.version('diffusers')}"
+                ),
+                encoding_contract=_WAN_LATENT_ENCODING_CONTRACT,
+            )
             assets.vae = AutoencoderKLWan.from_pretrained(
                 str(vae_dir),
                 torch_dtype=reference_dtype,

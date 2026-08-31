@@ -1,5 +1,10 @@
 """Dependency-free contracts shared across Open-WAM subsystems."""
 
+from .latent_space import (
+    VIDEO_LATENT_SPACE_SCHEMA_V1,
+    VideoLatentSpaceIdentity,
+    identify_video_latent_space,
+)
 from .paths import REPO_ROOT, find_repo_root, resolve_repo_path
 from .sample_metadata import (
     DYNAMICS_CONDITIONAL_CHUNK_LAYOUT_METADATA_KEY,
@@ -44,6 +49,7 @@ __all__ = [
     "DYNAMICS_ROUTING_MODE_METADATA_KEY",
     "DYNAMICS_ROUTING_SOURCE_METADATA_KEY",
     "REPO_ROOT",
+    "VIDEO_LATENT_SPACE_SCHEMA_V1",
     "WAN_TEMPORAL_CHUNK_SIZE",
     "CanonicalViewLayout",
     "ConditionalDynamicsSequenceLayout",
@@ -53,8 +59,10 @@ __all__ = [
     "ResolvedVideoClip",
     "SampleConstructionMetadata",
     "VideoFrameMapping",
+    "VideoLatentSpaceIdentity",
     "ViewPlacement",
     "find_repo_root",
+    "identify_video_latent_space",
     "normalized_video_frame_count",
     "resolve_repo_path",
     "resolve_video_source_fps",

@@ -958,6 +958,7 @@ def test_dual_expert_gjd_fdm_inference_matches_conditional_training_contract(
         output.policy_output.aux["action_conditioning_mode"]
         == "action_conditioned_video"
     )
+    assert output.policy_output.generated_video is not None
     assert output.policy_output.aux["cache_action_source"] == "commit_action_override"
     torch.testing.assert_close(
         output.policy_output.next_state.variant_state.past_clean_actions[:, -2:],
@@ -1074,6 +1075,7 @@ def test_dual_expert_gjd_idm_inference_matches_conditional_training_contract(
         output.policy_output.aux["action_conditioning_mode"]
         == "video_conditioned_action"
     )
+    assert output.policy_output.generated_video is None
     assert output.policy_output.aux["cache_action_source"] == "commit_action_override"
     torch.testing.assert_close(
         output.policy_output.next_state.variant_state.past_clean_actions[:, -2:],

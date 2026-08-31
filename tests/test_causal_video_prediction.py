@@ -4,6 +4,7 @@ import hashlib
 from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -11,8 +12,8 @@ from safetensors import safe_open
 from safetensors.torch import load_file
 
 from open_wam.configs import (
-    CausalVideoProgram,
     CausalVideoPredictionPolicyConfig,
+    CausalVideoProgram,
     InferenceConfig,
     TextConditioningMode,
     TrainingConfig,
@@ -22,8 +23,12 @@ from open_wam.data import LatentWAMBatch
 from open_wam.evals.video_prediction import rollout_causal_video_prediction
 from open_wam.models.policy_variants import (
     PolicyInferContext,
+    PolicyInferenceOutputRequest,
+    PolicyInferState,
+    PolicyOutputModality,
     PolicyPreparedInputs,
     PolicyTrainBatch,
+    PolicyVideoGenerationRequest,
 )
 from open_wam.models.policy_variants.causal_video_prediction import (
     CausalVideoPredictionPolicyVariant,
@@ -194,6 +199,209 @@ def test_causal_video_prediction_keeps_latent_layouts_in_identity_mapping() -> N
     assert layouts[0].observed_frames == 2
     assert layouts[0].future_frames == 6
     assert layouts[0].total_frames == 8
+
+
+def test_causal_video_inference_publishes_only_future_frames_for_composition() -> None:
+    variant = CausalVideoPredictionPolicyVariant(
+        config=CausalVideoPredictionPolicyConfig(
+            program=CausalVideoProgram.PREFIX_SUFFIX
+        ),
+        training_config=TrainingConfig(),
+        inference_config=InferenceConfig(),
+    )
+    latents = torch.arange(5, dtype=torch.float32).view(1, 1, 5, 1, 1)
+    generated_future = torch.full((1, 1, 3, 1, 1), 17.0)
+
+    class _Tower:
+        def generate_conditioned_future_latents(self, **kwargs):
+            assert kwargs["observed_prefix"].shape[2] == 2
+            assert kwargs["future_template"].shape[2] == 3
+            return generated_future
+
+    conditioning = SimpleNamespace(
+        text_context=torch.ones(1, 2, 3),
+        negative_text_context=None,
+        metadata={
+            "video_frame_mapping": {
+                "kind": "identity",
+                "raw_frames": 5,
+                "latent_frames": 5,
+            }
+        },
+    )
+    visual_outputs = SimpleNamespace(
+        frontend=SimpleNamespace(
+            video_latents=latents,
+            conditioning=conditioning,
+            latent_space_identity=None,
+        )
+    )
+    context = PolicyInferContext(
+        output_request=PolicyInferenceOutputRequest.video_only(),
+        extra={
+            "task_text": ("move the object",),
+            "metadata": (
+                {
+                    "observed_prefix_frames": 2,
+                    "future_suffix_frames": 3,
+                    "valid_video_frames": 5,
+                },
+            ),
+        },
+    )
+
+    output = variant.forward_infer_step(
+        _Tower(),  # type: ignore[arg-type]
+        visual_outputs,  # type: ignore[arg-type]
+        context,
+        PolicyInferState(),
+    )
+
+    assert variant.inference_capabilities.native_modalities == frozenset(
+        {PolicyOutputModality.VIDEO}
+    )
+    assert output.generated_video is not None
+    torch.testing.assert_close(output.generated_video.latents, generated_future)
+    artifacts = output.decoder_artifacts.payload
+    assert artifacts.predicted_latents.shape[2] == 5
+    torch.testing.assert_close(artifacts.predicted_latents[:, :, :2], latents[:, :, :2])
+
+
+def test_causal_video_composition_synthesizes_future_template_from_one_observation() -> None:
+    variant = CausalVideoPredictionPolicyVariant(
+        config=CausalVideoPredictionPolicyConfig(
+            program=CausalVideoProgram.CHUNKED_CONDITIONED_VIDEO,
+            noisy_video_condition_prob=0.0,
+        ),
+        training_config=TrainingConfig(window_size=8),
+        inference_config=InferenceConfig(frame_chunk_size=4),
+    )
+    observed = torch.randn(1, 3, 1, 2, 2)
+    generated = torch.randn(1, 3, 4, 2, 2)
+
+    class _Tower:
+        def generate_chunked_conditioned_video_latents(self, **kwargs):
+            torch.testing.assert_close(kwargs["observed_prefix"], observed)
+            assert kwargs["future_template"].shape == generated.shape
+            assert bool((kwargs["future_template"] == 0).all())
+            assert kwargs["frame_start"] == 1
+            return generated
+
+    visual_outputs = SimpleNamespace(
+        frontend=SimpleNamespace(
+            video_latents=observed,
+            conditioning=SimpleNamespace(
+                text_context=torch.ones(1, 2, 3),
+                negative_text_context=None,
+                metadata={},
+            ),
+            latent_space_identity=None,
+        )
+    )
+    output = variant.forward_infer_step(
+        _Tower(),  # type: ignore[arg-type]
+        visual_outputs,  # type: ignore[arg-type]
+        PolicyInferContext(
+            extra={"task_text": ("move the object",)},
+            video_generation=PolicyVideoGenerationRequest(frame_count=4),
+        ),
+        PolicyInferState(),
+    )
+
+    assert output.generated_video is not None
+    assert output.generated_video.frame_start == 1
+    assert output.generation_frame_start == 1
+    torch.testing.assert_close(output.generated_video.latents, generated)
+    assert output.decoder_artifacts.payload.predicted_latents.shape[2] == 5
+
+    next_observed = torch.randn(1, 3, 4, 2, 2)
+
+    class _NextTower:
+        def generate_chunked_conditioned_video_latents(self, **kwargs):
+            torch.testing.assert_close(
+                kwargs["observed_prefix"], next_observed[:, :, -1:]
+            )
+            assert kwargs["frame_start"] == 5
+            return generated
+
+    next_visual_outputs = SimpleNamespace(
+        frontend=SimpleNamespace(
+            video_latents=next_observed,
+            conditioning=visual_outputs.frontend.conditioning,
+            latent_space_identity=None,
+        )
+    )
+    next_output = variant.forward_infer_step(
+        _NextTower(),  # type: ignore[arg-type]
+        next_visual_outputs,  # type: ignore[arg-type]
+        PolicyInferContext(
+            extra={"task_text": ("move the object",)},
+            video_generation=PolicyVideoGenerationRequest(frame_count=4),
+        ),
+        output.next_state,
+    )
+
+    assert next_output.generated_video is not None
+    assert next_output.generated_video.frame_start == 5
+    assert next_output.generation_frame_start == 5
+    assert next_output.next_state.cursor.current_start_frame == 5
+
+
+def test_prefix_suffix_composition_advances_from_each_real_observation_chunk() -> None:
+    variant = CausalVideoPredictionPolicyVariant(
+        config=CausalVideoPredictionPolicyConfig(
+            program=CausalVideoProgram.PREFIX_SUFFIX
+        ),
+        training_config=TrainingConfig(),
+        inference_config=InferenceConfig(),
+    )
+    generated = torch.randn(1, 3, 4, 2, 2)
+    observed_chunks = (
+        torch.randn(1, 3, 1, 2, 2),
+        torch.randn(1, 3, 4, 2, 2),
+    )
+    expected_frame_starts = (0, 1)
+
+    class _Tower:
+        def __init__(self, expected_frame_start: int) -> None:
+            self.expected_frame_start = expected_frame_start
+
+        def generate_conditioned_future_latents(self, **kwargs):
+            assert kwargs["frame_start"] == self.expected_frame_start
+            assert kwargs["future_template"].shape == generated.shape
+            return generated
+
+    state = PolicyInferState()
+    generated_frame_starts = []
+    for observed, expected_frame_start in zip(
+        observed_chunks, expected_frame_starts, strict=True
+    ):
+        visual_outputs = SimpleNamespace(
+            frontend=SimpleNamespace(
+                video_latents=observed,
+                conditioning=SimpleNamespace(
+                    text_context=torch.ones(1, 2, 3),
+                    negative_text_context=None,
+                    metadata={},
+                ),
+                latent_space_identity=None,
+            )
+        )
+        output = variant.forward_infer_step(
+            _Tower(expected_frame_start),  # type: ignore[arg-type]
+            visual_outputs,  # type: ignore[arg-type]
+            PolicyInferContext(
+                extra={"task_text": ("move the object",)},
+                video_generation=PolicyVideoGenerationRequest(frame_count=4),
+            ),
+            state,
+        )
+        assert output.generated_video is not None
+        generated_frame_starts.append(output.generated_video.frame_start)
+        state = output.next_state
+
+    assert generated_frame_starts == [1, 5]
+    assert state.cursor.current_start_frame == 5
 
 
 class _CaptureVideoFlowTower:

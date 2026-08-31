@@ -8,6 +8,7 @@ from ..contracts import (
     PolicyInferState,
     PolicyObservedHistory,
     PolicyObservedHistoryOutput,
+    PolicyTemporalSpan,
 )
 from .contracts import DualExpertRuntimeState
 from .rollout_geometry import (
@@ -74,6 +75,23 @@ def reconcile_dual_expert_observed_history(
             frame_chunk_size=frame_chunk_size,
         ),
     )
+    action_tokens_per_frame = resolve_dual_expert_sequence_actions_per_frame(
+        action_horizon=int(action_horizon),
+        frame_chunk_size=int(default_frame_chunk_size),
+    )
+    committed_span = _validate_temporal_commit(
+        policy_state=policy_state,
+        runtime_state=runtime_state,
+        history=history,
+        real_latent_frames=int(real_latents.shape[2]),
+        action_tokens_per_frame=action_tokens_per_frame,
+    )
+    speculative_action_tokens = (
+        int(action_horizon)
+        if history.execution_commit is None
+        else int(history.execution_commit.speculative_span.frame_count)
+        * action_tokens_per_frame
+    )
 
     past_latents = runtime_state.past_clean_latents
     past_hidden_proprio = runtime_state.past_hidden_proprio_states
@@ -133,17 +151,20 @@ def reconcile_dual_expert_observed_history(
             action_horizon=int(action_horizon),
             action_dim=int(action_dim),
             default_frame_chunk_size=int(default_frame_chunk_size),
+            speculative_action_tokens=speculative_action_tokens,
             history_window_frames=history_window_frames,
             runtime_device=runtime_device,
             runtime_dtype=runtime_dtype,
         )
     )
-    action_tokens_per_frame = resolve_dual_expert_sequence_actions_per_frame(
-        action_horizon=int(action_horizon),
-        frame_chunk_size=int(default_frame_chunk_size),
+    _apply_temporal_commit(
+        policy_state=policy_state,
+        runtime_state=runtime_state,
+        committed_span=committed_span,
     )
     return PolicyObservedHistoryOutput(
         next_state=policy_state,
+        applied=True,
         debug={
             "warmup_skipped": False,
             "real_obs_frames": int(history.observation_frame_count),
@@ -172,10 +193,84 @@ def reconcile_dual_expert_observed_history(
             "dropped_pred_action_tokens": int(
                 dropped_pred_action_tokens
             ),
+            "speculative_action_tokens": int(speculative_action_tokens),
             "inference_window_size": int(inference_window_size),
             "history_window_frames": int(history_window_frames),
+            "committed_frame_start": (
+                None if committed_span is None else int(committed_span.start_frame)
+            ),
+            "committed_frame_count": (
+                None if committed_span is None else int(committed_span.frame_count)
+            ),
+            "committed_frame_end": (
+                None if committed_span is None else int(committed_span.end_frame)
+            ),
         },
     )
+
+
+def _validate_temporal_commit(
+    *,
+    policy_state: PolicyInferState,
+    runtime_state: DualExpertRuntimeState,
+    history: PolicyObservedHistory,
+    real_latent_frames: int,
+    action_tokens_per_frame: int,
+) -> PolicyTemporalSpan | None:
+    """Validate one observed interval before mutating recurrent state."""
+
+    commit = history.execution_commit
+    if commit is None:
+        return None
+    speculative_span = commit.speculative_span
+    executed_span = commit.executed_span
+    if int(policy_state.cursor.current_start_frame) != int(speculative_span.end_frame):
+        raise ValueError(
+            "Observed-history execution does not match the policy's speculative "
+            "cursor: "
+            f"cursor={policy_state.cursor.current_start_frame}, "
+            f"speculative_end={speculative_span.end_frame}."
+        )
+    if int(runtime_state.chunk_advance_frames) != int(
+        speculative_span.frame_count
+    ):
+        raise ValueError(
+            "Observed-history execution does not match the policy's pending "
+            "chunk geometry: "
+            f"pending={runtime_state.chunk_advance_frames}, "
+            f"speculative={speculative_span.frame_count}."
+        )
+    if int(real_latent_frames) != int(executed_span.frame_count):
+        raise ValueError(
+            "Observed-history video must contain exactly the committed model "
+            "frames: "
+            f"observed={real_latent_frames}, committed={executed_span.frame_count}."
+        )
+    if history.action_history is not None and history.action_history.ndim == 3:
+        expected_action_tokens = int(executed_span.frame_count) * int(
+            action_tokens_per_frame
+        )
+        if int(history.action_history.shape[1]) != expected_action_tokens:
+            raise ValueError(
+                "Observed-history actions must contain exactly the committed "
+                "model-frame groups: "
+                f"observed={history.action_history.shape[1]}, "
+                f"expected={expected_action_tokens}."
+            )
+    return executed_span
+
+
+def _apply_temporal_commit(
+    *,
+    policy_state: PolicyInferState,
+    runtime_state: DualExpertRuntimeState,
+    committed_span: PolicyTemporalSpan | None,
+) -> None:
+    if committed_span is None:
+        return
+    policy_state.cursor.current_start_frame = int(committed_span.end_frame)
+    runtime_state.next_condition_frame_start = int(committed_span.end_frame)
+    runtime_state.chunk_advance_frames = 0
 
 
 def _reconcile_hidden_proprio_history(
@@ -241,6 +336,7 @@ def _reconcile_action_history(
     action_horizon: int,
     action_dim: int,
     default_frame_chunk_size: int,
+    speculative_action_tokens: int,
     history_window_frames: int,
     runtime_device: torch.device,
     runtime_dtype: torch.dtype,
@@ -274,7 +370,7 @@ def _reconcile_action_history(
             dtype=runtime_dtype,
         )
         dropped_pred_action_tokens = min(
-            action_horizon,
+            speculative_action_tokens,
             int(past_actions.shape[1]),
         )
         base_actions = (

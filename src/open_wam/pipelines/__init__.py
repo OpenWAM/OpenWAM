@@ -29,12 +29,17 @@ _EXPORTS: dict[str, str] = {
     "VariantRolloutHistoryOutput": "open_wam.pipelines.rollout",
     "VariantRolloutSession": "open_wam.pipelines.rollout",
     "VariantRolloutStepOutput": "open_wam.pipelines.rollout",
+    "PolicyVideoProducerPlan": "open_wam.pipelines.video_action_composition",
+    "build_video_conditioned_action_request": "open_wam.pipelines.video_action_composition",
     "build_action_decoder": "open_wam.pipelines.factory",
     "build_exact_runtime_runner_from_config": "open_wam.pipelines.factory",
     "build_lingbot_exact_runner_from_config": "open_wam.pipelines.factory",
     "build_policy_variant": "open_wam.pipelines.factory",
     "build_variant_pipeline_from_config": "open_wam.pipelines.factory",
     "load_lingbot_exact_artifact_bundle": "open_wam.pipelines.lingbot_exact",
+    "require_generated_video": "open_wam.pipelines.video_action_composition",
+    "require_compatible_video_latent_spaces": "open_wam.pipelines.video_action_composition",
+    "resolve_policy_video_producer_plan": "open_wam.pipelines.video_action_composition",
     "save_lingbot_exact_artifact_bundle": "open_wam.pipelines.lingbot_exact",
 }
 

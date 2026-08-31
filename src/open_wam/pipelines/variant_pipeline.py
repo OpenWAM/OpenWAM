@@ -383,6 +383,7 @@ class VariantPipeline(nn.Module):
         :class:`VisualStageOutputs` contract.
         """
 
+        self.policy_variant.validate_inference_output_request(context.output_request)
         resolved_state = self.policy_variant.prepare_infer_state(
             visual_tower=self.visual_tower,
             visual_outputs=visual_outputs,

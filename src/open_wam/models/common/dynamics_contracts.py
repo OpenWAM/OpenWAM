@@ -69,6 +69,7 @@ class DynamicsRolloutRequest:
     clean_action: torch.Tensor | None = None
     clean_video: torch.Tensor | None = None
     history_action: torch.Tensor | None = None
+    frame_chunk_size: int | None = None
 
     def __post_init__(self) -> None:
         if self.objective is not None and not isinstance(
@@ -99,6 +100,11 @@ class DynamicsRolloutRequest:
             name="history_action",
             expected_ndim=3,
         )
+        if self.frame_chunk_size is not None and int(self.frame_chunk_size) <= 0:
+            raise ValueError(
+                "Dynamics rollout `frame_chunk_size` must be positive when set, "
+                f"got {self.frame_chunk_size!r}."
+            )
 
 
 def _validate_rollout_tensor(

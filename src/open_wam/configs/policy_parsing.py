@@ -190,7 +190,7 @@ def parse_policy_variant_config(
                     "attach_site", config_enums.AttachSite.POST_VISUAL_CORE
                 ),
             ),
-            program=_coerce_enum(
+            program=_coerce_optional_enum(
                 config_enums.CausalVideoProgram,
                 resolved_raw.get("program"),
             ),

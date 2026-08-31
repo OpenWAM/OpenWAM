@@ -10,6 +10,7 @@ from open_wam.models.action_decoders import (
     ActionDecoderRolloutPlan,
 )
 from open_wam.models.policy_variants import (
+    PolicyExecutionCommit,
     PolicyInferContext,
     PolicyInferState,
     PolicyObservedHistory,
@@ -43,6 +44,7 @@ class VariantRolloutHistoryOutput:
 
     session: VariantRolloutSession
     debug: dict[str, object]
+    applied: bool = False
 
 
 class VariantRolloutRunner:
@@ -151,6 +153,7 @@ class VariantRolloutRunner:
         proprio_history: torch.Tensor | None = None,
         inference_window_size: int | None = None,
         rollout_frame_chunk_size: int | None = None,
+        execution_commit: PolicyExecutionCommit | None = None,
     ) -> VariantRolloutHistoryOutput:
         """Replace speculative policy history with newly observed execution."""
 
@@ -162,6 +165,7 @@ class VariantRolloutRunner:
                 proprio_history=proprio_history,
                 inference_window_size=inference_window_size,
                 rollout_frame_chunk_size=rollout_frame_chunk_size,
+                execution_commit=execution_commit,
             ),
             session.policy_state,
         )
@@ -183,6 +187,7 @@ class VariantRolloutRunner:
         return VariantRolloutHistoryOutput(
             session=next_session,
             debug=dict(update.debug),
+            applied=bool(update.applied),
         )
 
     @staticmethod
@@ -194,6 +199,8 @@ class VariantRolloutRunner:
             state=context.state,
             previous_action=context.previous_action,
             dynamics=context.dynamics,
+            output_request=context.output_request,
+            video_generation=context.video_generation,
             extra={
                 **context.extra,
                 "task_text": context.extra.get("task_text", session.task_text),

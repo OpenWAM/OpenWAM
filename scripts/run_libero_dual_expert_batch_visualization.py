@@ -13,6 +13,12 @@ if str(SRC_ROOT) not in sys.path:
 
 import open_wam.evals.libero_dual_expert_rollout as dual_expert_viz
 import open_wam.evals.libero_dual_expert_runtime as dual_expert_runtime
+from open_wam.evals.libero_dual_expert_composition import (
+    add_external_idm_arguments,
+    external_idm_options_from_args,
+    load_external_idm_composition,
+    validate_external_idm_arguments,
+)
 from open_wam.runtime.checkpoints import CheckpointCompatibilityPolicy
 from open_wam.utils import seed_everywhere
 
@@ -20,8 +26,8 @@ from open_wam.utils import seed_everywhere
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
-            "Run many LIBERO DualExpert rollouts while loading the config/checkpoint/pipeline once. "
-            "This preserves the single-rollout semantics from run_libero_dual_expert_visualization.py."
+            "Run many LIBERO policy rollouts while loading each configured pipeline "
+            "once, including policy-video to action composition."
         )
     )
     parser.add_argument(
@@ -124,17 +130,23 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--action-route",
+        "--dual-expert-action-route",
         "--dual-expert-gjd-action-route",
         "--mot-gjd-action-route",
         dest="dual_expert_gjd_action_route",
-        choices=sorted(dual_expert_runtime.DUAL_EXPERT_GJD_ACTION_ROUTES),
+        choices=sorted(dual_expert_runtime.DUAL_EXPERT_ACTION_ROUTES),
         default="joint",
         help=(
             "Diagnostic dual-expert GJD live-sim action route. `joint` is the normal rollout; "
             "`joint_video_then_idm` generates video with joint denoising and executes "
-            "IDM actions conditioned on that generated video."
+            "IDM actions conditioned on that generated video; "
+            "`generated_video_then_action` composes a policy that declares video "
+            "output and safe recurrent history with a separately loaded "
+            "video-conditioned action checkpoint."
         ),
     )
+    add_external_idm_arguments(parser)
     parser.add_argument(
         "--frontend-encode-mode",
         choices=(
@@ -193,6 +205,7 @@ def main() -> None:
     parser.add_argument("--allow-deprecated-libero-config", action="store_true")
     parser.add_argument("--allow-deprecated-frontend-encode-mode", action="store_true")
     args = parser.parse_args()
+    validate_external_idm_arguments(args, parser=parser)
     if args.seeds is not None and (args.seed is not None or args.seed_by_episode):
         parser.error("--seeds is mutually exclusive with --seed and --seed-by-episode.")
 
@@ -245,51 +258,63 @@ def main() -> None:
 
 
 def _load_batch_resources(args: argparse.Namespace) -> SimpleNamespace:
-    runtime = dual_expert_runtime.load_dual_expert_libero_runtime(
-        dual_expert_runtime.DualExpertLiberoLoadOptions(
-            config=args.config,
-            checkpoint=args.checkpoint,
-            merge_checkpoint_runtime_config=bool(
-                args.merge_checkpoint_runtime_config
-            ),
-            set_overrides=tuple(args.set_overrides),
-            source="run_libero_dual_expert_batch_visualization.py",
-            checkpoint_error="DualExpert batch visualization requires --checkpoint.",
-            raw_window_frames=args.raw_window_frames,
-            startup_model_obs_frames=args.startup_model_obs_frames,
-            startup_env_init_steps=args.startup_env_init_steps,
-            dual_expert_inference_window_size=args.dual_expert_inference_window_size,
-            dual_expert_rollout_frame_chunk_size=args.dual_expert_rollout_frame_chunk_size,
-            dual_expert_action_only_rollout=bool(args.dual_expert_action_only_rollout),
-            dual_expert_gjd_action_route=args.dual_expert_gjd_action_route,
-            execute_action_steps=args.execute_action_steps,
-            execute_frame_chunk_size=args.execute_frame_chunk_size,
-            frontend_encode_mode=args.frontend_encode_mode,
-            reset_policy_state_each_chunk=bool(
-                args.reset_policy_state_each_chunk
-            ),
-            runtime_device=args.runtime_device,
-            action_device=args.action_device,
-            frontend_device=args.frontend_device,
-            decode_device=args.decode_device,
-            allow_deprecated_libero_config=bool(
-                args.allow_deprecated_libero_config
-            ),
-            allow_deprecated_frontend_encode_mode=bool(
-                args.allow_deprecated_frontend_encode_mode
-            ),
-            checkpoint_load_policy=(
-                CheckpointCompatibilityPolicy.ALLOW_PARTIAL
-                if args.allow_partial_checkpoint
-                else CheckpointCompatibilityPolicy.ALLOW_CHECKPOINT_SUPERSET
-            ),
-            component_report_extra={
-                "batch_driver": "run_libero_dual_expert_batch_visualization.py"
-            },
-        )
+    load_options = dual_expert_runtime.DualExpertLiberoLoadOptions(
+        config=args.config,
+        checkpoint=args.checkpoint,
+        merge_checkpoint_runtime_config=bool(
+            args.merge_checkpoint_runtime_config
+        ),
+        set_overrides=tuple(args.set_overrides),
+        source="run_libero_dual_expert_batch_visualization.py",
+        checkpoint_error="DualExpert batch visualization requires --checkpoint.",
+        raw_window_frames=args.raw_window_frames,
+        startup_model_obs_frames=args.startup_model_obs_frames,
+        startup_env_init_steps=args.startup_env_init_steps,
+        dual_expert_inference_window_size=args.dual_expert_inference_window_size,
+        dual_expert_rollout_frame_chunk_size=args.dual_expert_rollout_frame_chunk_size,
+        dual_expert_action_only_rollout=bool(args.dual_expert_action_only_rollout),
+        dual_expert_gjd_action_route=args.dual_expert_gjd_action_route,
+        execute_action_steps=args.execute_action_steps,
+        execute_frame_chunk_size=args.execute_frame_chunk_size,
+        frontend_encode_mode=args.frontend_encode_mode,
+        reset_policy_state_each_chunk=bool(
+            args.reset_policy_state_each_chunk
+        ),
+        runtime_device=args.runtime_device,
+        action_device=args.action_device,
+        frontend_device=args.frontend_device,
+        decode_device=args.decode_device,
+        allow_deprecated_libero_config=bool(
+            args.allow_deprecated_libero_config
+        ),
+        allow_deprecated_frontend_encode_mode=bool(
+            args.allow_deprecated_frontend_encode_mode
+        ),
+        checkpoint_load_policy=(
+            CheckpointCompatibilityPolicy.ALLOW_PARTIAL
+            if args.allow_partial_checkpoint
+            else CheckpointCompatibilityPolicy.ALLOW_CHECKPOINT_SUPERSET
+        ),
+        runtime_role=(
+            dual_expert_runtime.LiberoPolicyRuntimeRole.VIDEO_PRODUCER
+            if dual_expert_runtime.uses_video_action_composition(
+                args.dual_expert_gjd_action_route
+            )
+            else dual_expert_runtime.LiberoPolicyRuntimeRole.NATIVE_POLICY
+        ),
+        component_report_extra={
+            "batch_driver": "run_libero_dual_expert_batch_visualization.py"
+        },
+    )
+    runtime = dual_expert_runtime.load_dual_expert_libero_runtime(load_options)
+    external_idm = load_external_idm_composition(
+        primary_runtime=runtime,
+        primary_options=load_options,
+        external_options=external_idm_options_from_args(args),
     )
     return SimpleNamespace(
         runtime=runtime,
+        external_idm=external_idm,
         task_cache={},
         reused_env=None,
         reused_env_task_id=None,
@@ -346,6 +371,7 @@ def _run_one_loaded_rollout(
         env,
         include_episode_coordinates=True,
         close_env_after_rollout=close_env_after_rollout,
+        external_idm=getattr(resources, "external_idm", None),
     )
 
 

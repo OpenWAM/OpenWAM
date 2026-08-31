@@ -4,8 +4,11 @@ import pytest
 import torch
 
 from open_wam.models.policy_variants import (
+    PolicyExecutionCommit,
     PolicyInferState,
     PolicyObservedHistory,
+    PolicyTemporalSpan,
+    RolloutCursor,
 )
 from open_wam.models.policy_variants.dual_expert.contracts import DualExpertRuntimeState
 from open_wam.models.policy_variants.dual_expert.observed_history import (
@@ -27,9 +30,12 @@ def _reconcile(
     observation_frame_count: int = 16,
     inference_window_size: int = 30,
     rollout_frame_chunk_size: int | None = None,
+    execution_commit: PolicyExecutionCommit | None = None,
+    current_start_frame: int = 0,
 ):
     policy_state = PolicyInferState(
         step_index=step_index,
+        cursor=RolloutCursor(current_start_frame=current_start_frame),
         variant_state=runtime_state,
     )
     return reconcile_dual_expert_observed_history(
@@ -41,6 +47,7 @@ def _reconcile(
             proprio_history=proprio_history,
             inference_window_size=inference_window_size,
             rollout_frame_chunk_size=rollout_frame_chunk_size,
+            execution_commit=execution_commit,
         ),
         default_inference_window_size=64,
         default_frame_chunk_size=4,
@@ -120,6 +127,227 @@ def test_later_chunk_replaces_exact_speculative_video_and_action_horizons() -> N
     )
     assert output.debug["dropped_pred_latent_frames"] == 4
     assert output.debug["dropped_pred_action_tokens"] == 16
+
+
+def test_partial_execution_rewinds_cursor_to_observed_prefix_end() -> None:
+    runtime_state = DualExpertRuntimeState(
+        past_clean_latents=_video([0.0, 1.0, 2.0, 3.0, 4.0]),
+        past_clean_actions=torch.zeros(1, 16, 7),
+        pending_predicted_video_frames=4,
+        next_condition_frame_start=5,
+        chunk_advance_frames=4,
+    )
+    commit = PolicyExecutionCommit(
+        speculative_span=PolicyTemporalSpan(start_frame=1, frame_count=4),
+        executed_frame_count=3,
+    )
+
+    output = _reconcile(
+        runtime_state,
+        real_latents=_video([10.0, 11.0, 12.0]),
+        step_index=1,
+        action_history=torch.ones(1, 12, 7),
+        execution_commit=commit,
+        current_start_frame=5,
+    )
+
+    assert output.next_state is not None
+    assert output.next_state.cursor.current_start_frame == 4
+    assert runtime_state.next_condition_frame_start == 4
+    assert runtime_state.chunk_advance_frames == 0
+    torch.testing.assert_close(
+        runtime_state.past_clean_latents,
+        _video([0.0, 10.0, 11.0, 12.0]),
+    )
+    assert output.debug["committed_frame_start"] == 1
+    assert output.debug["committed_frame_count"] == 3
+    assert output.debug["committed_frame_end"] == 4
+    assert output.debug["speculative_action_tokens"] == 16
+    assert output.debug["dropped_pred_action_tokens"] == 16
+
+
+def test_short_speculative_chunk_drops_only_its_actual_action_tail() -> None:
+    real_history = torch.arange(8 * 7, dtype=torch.float32).view(1, 8, 7)
+    speculative_actions = torch.full((1, 12, 7), -100.0)
+    executed_actions = torch.full((1, 12, 7), 200.0)
+    runtime_state = DualExpertRuntimeState(
+        past_clean_latents=_video([0.0, 1.0, 2.0, 3.0, 4.0]),
+        past_clean_actions=torch.cat([real_history, speculative_actions], dim=1),
+        pending_predicted_video_frames=3,
+        next_condition_frame_start=5,
+        chunk_advance_frames=3,
+    )
+
+    output = _reconcile(
+        runtime_state,
+        real_latents=_video([10.0, 11.0, 12.0]),
+        action_history=executed_actions,
+        execution_commit=PolicyExecutionCommit(
+            speculative_span=PolicyTemporalSpan(start_frame=2, frame_count=3),
+            executed_frame_count=3,
+        ),
+        current_start_frame=5,
+    )
+
+    torch.testing.assert_close(
+        runtime_state.past_clean_actions,
+        torch.cat([real_history, executed_actions], dim=1),
+    )
+    assert output.debug["speculative_action_tokens"] == 12
+    assert output.debug["dropped_pred_action_tokens"] == 12
+    assert output.debug["appended_action_tokens"] == 12
+
+
+def test_full_execution_commit_preserves_speculative_chunk_end() -> None:
+    runtime_state = DualExpertRuntimeState(
+        past_clean_latents=_video([0.0, 1.0, 2.0, 3.0, 4.0]),
+        past_clean_actions=torch.zeros(1, 16, 7),
+        pending_predicted_video_frames=4,
+        next_condition_frame_start=5,
+        chunk_advance_frames=4,
+    )
+
+    output = _reconcile(
+        runtime_state,
+        real_latents=_video([10.0, 11.0, 12.0, 13.0]),
+        step_index=1,
+        action_history=torch.ones(1, 16, 7),
+        execution_commit=PolicyExecutionCommit(
+            speculative_span=PolicyTemporalSpan(1, 4),
+            executed_frame_count=4,
+        ),
+        current_start_frame=5,
+    )
+
+    assert output.next_state is not None
+    assert output.next_state.cursor.current_start_frame == 5
+    assert runtime_state.next_condition_frame_start == 5
+    assert runtime_state.chunk_advance_frames == 0
+
+
+def test_fc1_fc2_fc3_execution_keeps_consecutive_chunks_aligned() -> None:
+    runtime_state = DualExpertRuntimeState(
+        past_clean_latents=_video([0.0]),
+        past_clean_actions=torch.empty(1, 0, 7),
+    )
+    next_start = 1
+    expected_action_history = torch.empty(1, 0, 7)
+
+    for chunk_index, executed_frames in enumerate((1, 2, 3), start=1):
+        speculative_end = next_start + 4
+        predicted_video = _video(
+            [100.0 * chunk_index + offset for offset in range(4)]
+        )
+        runtime_state.past_clean_latents = torch.cat(
+            [runtime_state.past_clean_latents, predicted_video], dim=2
+        )
+        runtime_state.past_clean_actions = torch.cat(
+            [
+                runtime_state.past_clean_actions,
+                torch.full((1, 16, 7), -100.0 * chunk_index),
+            ],
+            dim=1,
+        )
+        runtime_state.pending_predicted_video_frames = 4
+        runtime_state.next_condition_frame_start = speculative_end
+        runtime_state.chunk_advance_frames = 4
+        commit = PolicyExecutionCommit(
+            speculative_span=PolicyTemporalSpan(next_start, 4),
+            executed_frame_count=executed_frames,
+        )
+
+        executed_actions = torch.full(
+            (1, executed_frames * 4, 7),
+            100.0 * chunk_index,
+        )
+        output = _reconcile(
+            runtime_state,
+            real_latents=_video(
+                [10.0 * chunk_index + offset for offset in range(executed_frames)]
+            ),
+            action_history=executed_actions,
+            execution_commit=commit,
+            current_start_frame=speculative_end,
+        )
+
+        next_start += executed_frames
+        expected_action_history = torch.cat(
+            [expected_action_history, executed_actions], dim=1
+        )
+        assert output.next_state is not None
+        assert output.next_state.cursor.current_start_frame == next_start
+        assert runtime_state.next_condition_frame_start == next_start
+        assert runtime_state.chunk_advance_frames == 0
+        assert output.debug["speculative_action_tokens"] == 16
+        assert output.debug["dropped_pred_action_tokens"] == 16
+        torch.testing.assert_close(
+            runtime_state.past_clean_actions,
+            expected_action_history,
+        )
+
+
+def test_one_execution_commit_aligns_independent_packed_sessions() -> None:
+    commit = PolicyExecutionCommit(
+        speculative_span=PolicyTemporalSpan(start_frame=1, frame_count=4),
+        executed_frame_count=3,
+    )
+    runtime_states = [
+        DualExpertRuntimeState(
+            past_clean_latents=_video([0.0, 1.0, 2.0, 3.0, 4.0]),
+            past_clean_actions=torch.zeros(1, 16, 7),
+            pending_predicted_video_frames=4,
+            next_condition_frame_start=5,
+            chunk_advance_frames=4,
+        )
+        for _ in range(2)
+    ]
+
+    outputs = [
+        _reconcile(
+            runtime_state,
+            real_latents=_video([10.0, 11.0, 12.0]),
+            action_history=torch.ones(1, 12, 7),
+            execution_commit=commit,
+            current_start_frame=5,
+        )
+        for runtime_state in runtime_states
+    ]
+
+    assert [output.next_state.cursor.current_start_frame for output in outputs] == [
+        4,
+        4,
+    ]
+    assert [state.next_condition_frame_start for state in runtime_states] == [4, 4]
+    for runtime_state in runtime_states:
+        torch.testing.assert_close(
+            runtime_state.past_clean_latents,
+            _video([0.0, 10.0, 11.0, 12.0]),
+        )
+
+
+def test_execution_commit_rejects_cursor_or_observation_drift_before_mutation() -> None:
+    original_latents = _video([0.0, 1.0, 2.0, 3.0, 4.0])
+    runtime_state = DualExpertRuntimeState(
+        past_clean_latents=original_latents.clone(),
+        pending_predicted_video_frames=4,
+        next_condition_frame_start=5,
+        chunk_advance_frames=4,
+    )
+    commit = PolicyExecutionCommit(
+        speculative_span=PolicyTemporalSpan(1, 4),
+        executed_frame_count=3,
+    )
+
+    with pytest.raises(ValueError, match="exactly the committed model frames"):
+        _reconcile(
+            runtime_state,
+            real_latents=_video([10.0, 11.0]),
+            execution_commit=commit,
+            current_start_frame=5,
+        )
+
+    torch.testing.assert_close(runtime_state.past_clean_latents, original_latents)
+    assert runtime_state.pending_predicted_video_frames == 4
 
 
 def test_history_window_trims_video_proprio_and_action_to_shared_frame_capacity() -> None:

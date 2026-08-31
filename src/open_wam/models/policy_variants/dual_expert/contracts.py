@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 import torch
 
+from ..contracts import PolicyInferenceOutputRequest
 from .decoder_artifacts import (
     DualExpertActionTrainArtifacts,
     DualExpertInferArtifacts,
@@ -80,6 +81,9 @@ class DualExpertRuntimeState:
     chunk_origin_frame: int = 0
     # Number of learned GJD mode-context tokens appended to `text_context`.
     generalist_mode_text_token_count: int = 0
+    # Split-cache video-only and full inference retain different action state.
+    # Once initialized, a recurrent session must keep one output contract.
+    split_cache_output_request: PolicyInferenceOutputRequest | None = None
 
 
 _DECODER_ARTIFACT_COMPATIBILITY_EXPORTS = (

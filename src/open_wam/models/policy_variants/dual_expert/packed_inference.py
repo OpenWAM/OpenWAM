@@ -42,10 +42,13 @@ from open_wam.models.visual_tower import VisualStageOutputs, VisualTower
 
 from ..contracts import (
     DecoderArtifactEnvelope,
+    PolicyGeneratedVideo,
     PolicyInferContext,
     PolicyInferOutput,
     PolicyInferState,
+    PolicyOutputModality,
 )
+from ..output_semantics import video_action_program_output_modalities
 from .attention_packed import build_dual_expert_packed_coupling_attention_profile
 from .conditioning import DualExpertConditioning
 from .contracts import DualExpertRuntimeState
@@ -63,7 +66,7 @@ from .inference_layout import DualExpertPackedHistory, DualExpertPackedInference
 from .modules import DualExpertActionExpert
 from .packed_block import DualExpertPackedBlockStack
 from .rollout_geometry import (
-    resolve_dual_expert_action_only_rollout,
+    resolve_dual_expert_inference_output_request,
     resolve_dual_expert_inference_window_size,
     resolve_dual_expert_rollout_cache_window_frames,
     resolve_dual_expert_rollout_frame_chunk_size,
@@ -93,10 +96,29 @@ class DualExpertPackedInferenceProgram:
         runtime_state: DualExpertRuntimeState,
     ) -> PolicyInferOutput:
         current_block_coupling = resolve_dual_expert_current_block_coupling(self.config)
-        action_only_rollout = resolve_dual_expert_action_only_rollout(
+        native_modalities = video_action_program_output_modalities(
+            self.config.program
+        )
+        output_request = resolve_dual_expert_inference_output_request(
             context,
             current_block_coupling=current_block_coupling,
+            native_modalities=native_modalities,
         )
+        action_only_rollout = (
+            output_request.modalities != native_modalities
+            and output_request.modalities
+            == frozenset({PolicyOutputModality.ACTION})
+        )
+        if (
+            output_request.modalities != native_modalities
+            and output_request.modalities
+            == frozenset({PolicyOutputModality.VIDEO})
+        ):
+            raise ValueError(
+                "DualExpert video-only inference is only available to staged "
+                "`video_then_action` split-cache execution. Packed joint coupling "
+                "must denoise both modalities."
+            )
         if (
             action_only_rollout
             and current_block_coupling != CurrentBlockCoupling.ACTION_THEN_VIDEO
@@ -891,6 +913,21 @@ class DualExpertPackedInferenceProgram:
                 contract=DUAL_EXPERT_DECODER_ARTIFACT_CONTRACT,
                 payload=decoder_payload,
             ),
+            generated_video=(
+                PolicyGeneratedVideo(
+                    latents=predicted_chunk_latents.detach(),
+                    frame_start=int(generation_frame_start),
+                    latent_space_identity=(
+                        visual_outputs.frontend.latent_space_identity
+                    ),
+                )
+                if (
+                    dynamics_rollout_plan.semantics.video_loss_active
+                    and int(predicted_chunk_latents.shape[2]) > 0
+                )
+                else None
+            ),
+            generation_frame_start=int(generation_frame_start),
             aux={
                 "variant": self.config.name,
                 "architecture": "dual_expert",

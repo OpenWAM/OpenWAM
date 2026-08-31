@@ -7,7 +7,7 @@ from torch import nn
 
 from open_wam.configs.backbone import SharedVideoTransformerConfig
 from open_wam.configs.enums import TextConditioningMode, serialize_enum_values
-from open_wam.contracts import ViewPlacement
+from open_wam.contracts import VideoLatentSpaceIdentity, ViewPlacement
 from open_wam.models.common.video_geometry import video_token_grid_from_latent_shape
 from open_wam.models.video_backbone.contracts import (
     ChunkMetadata,
@@ -45,6 +45,12 @@ class SharedVideoFrontend(nn.Module):
             * self.config.patch_size_w
         )
         self.token_embed = nn.Linear(patch_dim, self.config.hidden_size)
+
+    @property
+    def latent_space_identity(self) -> VideoLatentSpaceIdentity | None:
+        """Return the path-independent identity of the active video encoder."""
+
+        return self.reference_assets.latent_space_identity
 
     def forward(
         self,
@@ -221,6 +227,7 @@ class SharedVideoFrontend(nn.Module):
                 first_frame_context=video_latents[:, :, :1],
                 metadata=metadata,
             ),
+            latent_space_identity=self.reference_assets.latent_space_identity,
         )
 
     def _video_frame_mapping(

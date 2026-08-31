@@ -29,6 +29,8 @@ class _VideoActionProgramSemantics:
     supports_dynamics_routing: bool = False
     fixed_conditioning_mode: DynamicsObjective | None = None
     has_joint_noise_clock: bool = True
+    emits_video: bool = True
+    emits_action: bool = True
 
 
 _PROGRAM_SEMANTICS = {
@@ -62,12 +64,14 @@ _PROGRAM_SEMANTICS = {
         supports_dynamics_routing=True,
         fixed_conditioning_mode=DynamicsObjective.ACTION_CONDITIONED_VIDEO,
         has_joint_noise_clock=False,
+        emits_action=False,
     ),
     VideoActionProgram.INVERSE_DYNAMICS: _VideoActionProgramSemantics(
         CurrentBlockCoupling.JOINT,
         supports_dynamics_routing=True,
         fixed_conditioning_mode=DynamicsObjective.VIDEO_CONDITIONED_ACTION,
         has_joint_noise_clock=False,
+        emits_video=False,
     ),
 }
 _DEFAULT_JOINT_TIMESTEP_COUPLING = JointTimestepCoupling.INDEPENDENT
@@ -126,6 +130,15 @@ def current_block_coupling_for_program(
     """Return the low-level same-chunk coupling owned by one public program."""
 
     return _program_semantics(program).current_block_coupling
+
+
+def output_flags_for_program(
+    program: VideoActionProgram | str,
+) -> tuple[bool, bool]:
+    """Return whether normal inference emits video and action, respectively."""
+
+    semantics = _program_semantics(program)
+    return semantics.emits_video, semantics.emits_action
 
 
 @dataclass(frozen=True)

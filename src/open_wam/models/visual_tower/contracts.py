@@ -5,6 +5,7 @@ from typing import Any
 
 import torch
 
+from open_wam.contracts import VideoLatentSpaceIdentity
 from open_wam.models.common import PreparedAttentionProfile
 from open_wam.models.video_backbone.contracts import (
     CacheState,
@@ -47,6 +48,7 @@ class VisualFrontendOutput:
     token_grid: TokenGridMetadata
     chunk: ChunkMetadata
     conditioning: ConditioningState
+    latent_space_identity: VideoLatentSpaceIdentity | None = None
 
 
 @dataclass

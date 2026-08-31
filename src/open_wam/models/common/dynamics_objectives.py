@@ -156,6 +156,7 @@ class DynamicsRolloutPlan:
     clean_action: torch.Tensor | None = None
     clean_video: torch.Tensor | None = None
     history_action: torch.Tensor | None = None
+    frame_chunk_size: int | None = None
 
     @property
     def objective(self) -> DynamicsObjective:
@@ -191,11 +192,19 @@ class DynamicsRolloutPlan:
     ) -> DynamicsRolloutGeometry:
         """Resolve the geometry every policy backend must implement identically."""
 
-        return resolve_dynamics_rollout_geometry(
+        geometry = resolve_dynamics_rollout_geometry(
             self.semantics,
             fallback_frame_chunk_size=fallback_frame_chunk_size,
             fallback_attention_window_size=fallback_attention_window_size,
             fallback_history_stream_visibility=fallback_history_stream_visibility,
+        )
+        if self.frame_chunk_size is None:
+            return geometry
+        return DynamicsRolloutGeometry(
+            frame_chunk_size=int(self.frame_chunk_size),
+            attention_window_size=geometry.attention_window_size,
+            history_stream_visibility=geometry.history_stream_visibility,
+            conditional_history_policy=geometry.conditional_history_policy,
         )
 
 
@@ -548,6 +557,18 @@ def resolve_dynamics_rollout_plan(
             "`clean_video` is only valid for a video-conditioned-action "
             "inverse-dynamics rollout."
         )
+    if (
+        objective == DynamicsObjective.VIDEO_CONDITIONED_ACTION
+        and request.clean_video is not None
+        and request.frame_chunk_size is not None
+        and int(request.clean_video.shape[2]) != int(request.frame_chunk_size)
+    ):
+        raise ValueError(
+            "Inverse-dynamics `clean_video` temporal length must equal the "
+            "explicit rollout frame chunk size; got "
+            f"video_frames={int(request.clean_video.shape[2])}, "
+            f"frame_chunk_size={int(request.frame_chunk_size)}."
+        )
     history_action = request.history_action
     if (
         history_action is None
@@ -559,6 +580,7 @@ def resolve_dynamics_rollout_plan(
         clean_action=request.clean_action,
         clean_video=request.clean_video,
         history_action=history_action,
+        frame_chunk_size=request.frame_chunk_size,
     )
 
 

@@ -7,6 +7,11 @@ from typing import Any, Protocol
 
 from open_wam.configs import CurrentBlockCoupling
 from open_wam.configs.enums import RolloutContextPolicy, SampleTargetAlignment
+from open_wam.models.policy_variants.contracts import (
+    PolicyInferenceOutputRequest,
+    PolicyOutputModality,
+    PolicyVideoGenerationRequest,
+)
 
 from .runtime_routes import _enum_value, resolve_dual_expert_runtime_route
 
@@ -16,9 +21,17 @@ DUAL_EXPERT_ACTION_ONLY_ROLLOUT_COUPLINGS = frozenset(
         CurrentBlockCoupling.DECOUPLED_SAME_STEP,
     }
 )
+DUAL_EXPERT_VIDEO_ONLY_ROLLOUT_COUPLINGS = frozenset(
+    {
+        CurrentBlockCoupling.VIDEO_THEN_ACTION,
+        CurrentBlockCoupling.DECOUPLED_SAME_STEP,
+    }
+)
 
 
 class _InferenceContextLike(Protocol):
+    output_request: PolicyInferenceOutputRequest | None
+    video_generation: PolicyVideoGenerationRequest | None
     extra: Mapping[str, Any]
 
 
@@ -84,10 +97,28 @@ def resolve_dual_expert_rollout_frame_chunk_size(
         )
     action_tokens_per_frame = base_action_horizon // base_frame_chunk_size
     raw_override = context.extra.get("dual_expert_rollout_frame_chunk_size")
-    if raw_override is None:
-        frame_chunk_size = base_frame_chunk_size
-    else:
+    requested_video_frames = (
+        None
+        if getattr(context, "video_generation", None) is None
+        else int(context.video_generation.frame_count)
+    )
+    if (
+        raw_override is not None
+        and requested_video_frames is not None
+        and int(raw_override) != requested_video_frames
+    ):
+        raise ValueError(
+            "DualExpert rollout frame geometry conflicts with the typed video "
+            "generation request: "
+            f"legacy_override={int(raw_override)}, "
+            f"requested_video_frames={requested_video_frames}."
+        )
+    if requested_video_frames is not None:
+        frame_chunk_size = requested_video_frames
+    elif raw_override is not None:
         frame_chunk_size = int(raw_override)
+    else:
+        frame_chunk_size = base_frame_chunk_size
     if frame_chunk_size <= 0:
         raise ValueError(
             f"DualExpert rollout frame chunk size must be positive, got {frame_chunk_size}."
@@ -101,15 +132,55 @@ def resolve_dual_expert_rollout_frame_chunk_size(
     return frame_chunk_size, action_horizon, action_tokens_per_frame
 
 
-def resolve_dual_expert_action_only_rollout(
+def resolve_dual_expert_inference_output_request(
     context: _InferenceContextLike,
     *,
     current_block_coupling: CurrentBlockCoupling,
-) -> bool:
-    """Validate and resolve the optional action-only rollout route."""
+    native_modalities: frozenset[PolicyOutputModality] = frozenset(
+        PolicyOutputModality
+    ),
+) -> PolicyInferenceOutputRequest:
+    """Resolve output selection without conflating native and selective routes."""
 
-    requested = bool(context.extra.get("dual_expert_action_only_rollout", False))
-    if requested and current_block_coupling not in DUAL_EXPERT_ACTION_ONLY_ROLLOUT_COUPLINGS:
+    native = frozenset(
+        PolicyOutputModality(modality) for modality in native_modalities
+    )
+    if not native:
+        raise ValueError("DualExpert inference must declare a native output modality.")
+    legacy_action_only = bool(
+        context.extra.get("dual_expert_action_only_rollout", False)
+    )
+    request = getattr(context, "output_request", None)
+    if request is None:
+        request = (
+            PolicyInferenceOutputRequest.action_only()
+            if legacy_action_only
+            else PolicyInferenceOutputRequest(native)
+        )
+    elif legacy_action_only and request != PolicyInferenceOutputRequest.action_only():
+        raise ValueError(
+            "The legacy `dual_expert_action_only_rollout` flag conflicts with "
+            f"the typed output request {sorted(item.value for item in request.modalities)}."
+        )
+
+    if not request.modalities.issubset(native):
+        raise ValueError(
+            "DualExpert inference requested outputs outside the program's native "
+            "contract: "
+            f"native={sorted(item.value for item in native)}, "
+            f"requested={sorted(item.value for item in request.modalities)}."
+        )
+    is_selective = request.modalities != native
+    action_only = is_selective and request.modalities == frozenset(
+        {PolicyOutputModality.ACTION}
+    )
+    video_only = is_selective and request.modalities == frozenset(
+        {PolicyOutputModality.VIDEO}
+    )
+    if (
+        action_only
+        and current_block_coupling not in DUAL_EXPERT_ACTION_ONLY_ROLLOUT_COUPLINGS
+    ):
         supported = ", ".join(
             (
                 CurrentBlockCoupling.ACTION_THEN_VIDEO.value,
@@ -120,7 +191,41 @@ def resolve_dual_expert_action_only_rollout(
             "`dual_expert_action_only_rollout` is only supported for dual-expert action-only-safe "
             f"couplings ({supported}); got current_block_coupling={current_block_coupling.value!r}."
         )
-    return requested
+    if (
+        video_only
+        and current_block_coupling not in DUAL_EXPERT_VIDEO_ONLY_ROLLOUT_COUPLINGS
+    ):
+        raise ValueError(
+            "DualExpert video-only inference requires a video-independent coupling "
+            "(`video_then_action` or `decoupled_same_step`) so video denoising is "
+            "complete without the omitted action stage; "
+            f"got current_block_coupling={current_block_coupling.value!r}."
+        )
+    return request
+
+
+def resolve_dual_expert_action_only_rollout(
+    context: _InferenceContextLike,
+    *,
+    current_block_coupling: CurrentBlockCoupling,
+    native_modalities: frozenset[PolicyOutputModality] = frozenset(
+        PolicyOutputModality
+    ),
+) -> bool:
+    """Compatibility resolver for the historical action-only boolean."""
+
+    native = frozenset(
+        PolicyOutputModality(modality) for modality in native_modalities
+    )
+    request = resolve_dual_expert_inference_output_request(
+        context,
+        current_block_coupling=current_block_coupling,
+        native_modalities=native,
+    )
+    return (
+        request.modalities != native
+        and request.modalities == frozenset({PolicyOutputModality.ACTION})
+    )
 
 
 def resolve_dual_expert_sequence_execution_action_offset(
@@ -202,6 +307,7 @@ __all__ = [
     "DUAL_EXPERT_ACTION_ONLY_ROLLOUT_COUPLINGS",
     "dual_expert_config_uses_strict_rollout_parity",
     "resolve_dual_expert_action_only_rollout",
+    "resolve_dual_expert_inference_output_request",
     "resolve_dual_expert_inference_window_size",
     "resolve_dual_expert_rollout_cache_window_frames",
     "resolve_dual_expert_rollout_frame_chunk_size",

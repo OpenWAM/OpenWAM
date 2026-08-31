@@ -6,17 +6,20 @@ import hashlib
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from enum import Enum
 from pathlib import Path
 
 import torch
 
 from open_wam.configs import (
+    DynamicsObjective,
     ExperimentConfig,
+    PolicyVariantName,
     ReferenceCoreInitMode,
     load_experiment_config,
     read_yaml_with_local_paths,
 )
-from open_wam.configs.policy_dual_expert import DualExpertPolicyConfig
+from open_wam.configs.policy_contracts import PolicyVariantConfig
 from open_wam.configs.policy_video_action import resolve_fixed_conditioning_mode
 from open_wam.data.latent_temporal import raw_window_frames_for_latents
 from open_wam.evals.libero_visualization import resolve_device as _resolve_device
@@ -52,21 +55,59 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 
 CURRENT_FRONTEND_ENCODE_MODE = "lingbot_streaming_vae"
 DEPRECATED_FRONTEND_ENCODE_MODE = "rolling_offline"
+
+
+class DualExpertActionRoute(str, Enum):
+    """Action source selected by the maintained DualExpert LIBERO runner."""
+
+    JOINT = "joint"
+    JOINT_VIDEO_THEN_IDM = "joint_video_then_idm"
+    GENERATED_VIDEO_THEN_ACTION = "generated_video_then_action"
+
+
+class LiberoPolicyRuntimeRole(str, Enum):
+    """Integration role used to validate one loaded LIBERO policy runtime."""
+
+    NATIVE_POLICY = "native_policy"
+    VIDEO_PRODUCER = "video_producer"
+    VIDEO_CONDITIONED_ACTION_CONSUMER = "video_conditioned_action_consumer"
+
+
 DUAL_EXPERT_GJD_ACTION_ROUTES = frozenset(
     {
-        "joint",
-        "joint_video_then_idm",
+        DualExpertActionRoute.JOINT.value,
+        DualExpertActionRoute.JOINT_VIDEO_THEN_IDM.value,
     }
 )
+DUAL_EXPERT_ACTION_ROUTES = frozenset(
+    {
+        *DUAL_EXPERT_GJD_ACTION_ROUTES,
+        DualExpertActionRoute.GENERATED_VIDEO_THEN_ACTION.value,
+    }
+)
+VIDEO_ACTION_COMPOSITION_ROUTES = frozenset(
+    {DualExpertActionRoute.GENERATED_VIDEO_THEN_ACTION}
+)
+
+
+def uses_video_action_composition(route: DualExpertActionRoute | str) -> bool:
+    """Return whether a rollout composes policy video with another action model."""
+
+    return DualExpertActionRoute(route) in VIDEO_ACTION_COMPOSITION_ROUTES
 
 __all__ = [
     "CURRENT_FRONTEND_ENCODE_MODE",
     "DEPRECATED_FRONTEND_ENCODE_MODE",
+    "DUAL_EXPERT_ACTION_ROUTES",
     "DUAL_EXPERT_GJD_ACTION_ROUTES",
+    "VIDEO_ACTION_COMPOSITION_ROUTES",
+    "DualExpertActionRoute",
     "DualExpertLiberoLoadOptions",
     "DualExpertLiberoRuntime",
+    "LiberoPolicyRuntimeRole",
     "load_dual_expert_libero_runtime",
     "print_rollout_event",
+    "uses_video_action_composition",
 ]
 
 
@@ -123,12 +164,20 @@ class DualExpertLiberoLoadOptions:
     checkpoint_load_policy: CheckpointCompatibilityPolicy = (
         CheckpointCompatibilityPolicy.ALLOW_CHECKPOINT_SUPERSET
     )
+    runtime_role: LiberoPolicyRuntimeRole = LiberoPolicyRuntimeRole.NATIVE_POLICY
+    provided_dynamics_objectives: tuple[DynamicsObjective, ...] = ()
     component_report_extra: Mapping[str, object] = field(default_factory=dict)
 
 
 def load_dual_expert_libero_runtime(options: DualExpertLiberoLoadOptions) -> DualExpertLiberoRuntime:
     """Load one validated runtime shared by single and batch rollout drivers."""
 
+    runtime_role = LiberoPolicyRuntimeRole(options.runtime_role)
+    _validate_runtime_role_inputs(
+        runtime_role,
+        action_route=options.dual_expert_gjd_action_route,
+        provided_objectives=options.provided_dynamics_objectives,
+    )
     config_path = Path(options.config)
     if not config_path.is_absolute():
         config_path = (REPO_ROOT / config_path).resolve()
@@ -136,7 +185,10 @@ def load_dual_expert_libero_runtime(options: DualExpertLiberoLoadOptions) -> Dua
         config_path,
         checkpoint_runtime_compat=options.allow_deprecated_libero_config,
     )
-    _validate_dual_expert_config(config)
+    _validate_libero_policy_runtime_config(
+        config,
+        runtime_role=runtime_role,
+    )
     checkpoint_path = _resolve_dual_expert_checkpoint_path(
         config_path=config_path,
         checkpoint_arg=(
@@ -156,8 +208,15 @@ def load_dual_expert_libero_runtime(options: DualExpertLiberoLoadOptions) -> Dua
             config,
             parse_override_assignments(options.set_overrides),
         )
-    _validate_dual_expert_config(config)
-    _validate_live_sim_dynamics_program(config.policy_variant)
+    _validate_libero_policy_runtime_config(
+        config,
+        runtime_role=runtime_role,
+    )
+    is_dual_expert = config.policy_variant.name is PolicyVariantName.DUAL_EXPERT
+    _validate_live_sim_dynamics_program(
+        config.policy_variant,
+        provided_objectives=options.provided_dynamics_objectives,
+    )
     require_current_libero_policy_paradigm(
         config,
         config_path=config_path,
@@ -221,7 +280,10 @@ def load_dual_expert_libero_runtime(options: DualExpertLiberoLoadOptions) -> Dua
             "Expected --dual-expert-inference-window-size to be positive when provided, "
             f"got {options.dual_expert_inference_window_size}."
         )
-    if options.dual_expert_rollout_frame_chunk_size is not None:
+    if (
+        is_dual_expert
+        and options.dual_expert_rollout_frame_chunk_size is not None
+    ):
         rollout_frame_chunk_size = int(options.dual_expert_rollout_frame_chunk_size)
         configured_frame_chunk_size = _frame_chunk_size(config)
         if rollout_frame_chunk_size <= 0:
@@ -237,8 +299,12 @@ def load_dual_expert_libero_runtime(options: DualExpertLiberoLoadOptions) -> Dua
                 f"configured={configured_frame_chunk_size}."
             )
     if (
-        options.execute_action_steps is not None
-        or options.execute_frame_chunk_size is not None
+        is_dual_expert
+        and runtime_role is not LiberoPolicyRuntimeRole.VIDEO_PRODUCER
+        and (
+            options.execute_action_steps is not None
+            or options.execute_frame_chunk_size is not None
+        )
     ):
         _resolve_execute_action_steps(
             options.execute_action_steps,
@@ -282,8 +348,16 @@ def load_dual_expert_libero_runtime(options: DualExpertLiberoLoadOptions) -> Dua
     pipeline.to(device=runtime_device)
     if hasattr(pipeline.policy_variant, "_maybe_initialize_action_expert"):
         pipeline.policy_variant._maybe_initialize_action_expert(pipeline.visual_tower)
-    dual_expert_inference_backend = ensure_dual_expert_inference_backend(
-        pipeline, config
+    dual_expert_inference_backend = (
+        ensure_dual_expert_inference_backend(pipeline, config)
+        if is_dual_expert
+        else {
+            "policy_variant": str(config.policy_variant.name),
+            "backend": "native",
+            "block_restore_required": False,
+            "block_restore_ready": False,
+            "block_restore_performed": False,
+        }
     )
     if dual_expert_inference_backend["block_restore_performed"]:
         _print_log(
@@ -309,7 +383,12 @@ def load_dual_expert_libero_runtime(options: DualExpertLiberoLoadOptions) -> Dua
     )
     component_report.update(
         {
-            "dual_expert_inference_backend": dual_expert_inference_backend,
+            **dict(options.component_report_extra),
+            (
+                "dual_expert_inference_backend"
+                if is_dual_expert
+                else "policy_inference_backend"
+            ): dual_expert_inference_backend,
             "checkpoint_file": str(checkpoint_path.resolve()),
             "checkpoint_runtime_config_path": (
                 None
@@ -320,6 +399,7 @@ def load_dual_expert_libero_runtime(options: DualExpertLiberoLoadOptions) -> Dua
                 checkpoint_runtime_config_path is not None
             ),
             "pipeline_training_mode": bool(pipeline.training),
+            "runtime_role": runtime_role.value,
             "frontend_encode_mode": str(options.frontend_encode_mode),
             "dual_expert_rollout_frame_chunk_size": (
                 None
@@ -336,9 +416,13 @@ def load_dual_expert_libero_runtime(options: DualExpertLiberoLoadOptions) -> Dua
                 if options.execute_frame_chunk_size is None
                 else int(options.execute_frame_chunk_size)
             ),
-            **dict(options.component_report_extra),
         }
     )
+    if options.provided_dynamics_objectives:
+        component_report["provided_dynamics_objectives"] = [
+            DynamicsObjective(objective).value
+            for objective in options.provided_dynamics_objectives
+        ]
     _print_log("load_report", component_report)
     return DualExpertLiberoRuntime(
         config=config,
@@ -357,11 +441,60 @@ def load_dual_expert_libero_runtime(options: DualExpertLiberoLoadOptions) -> Dua
     )
 
 
-def _validate_dual_expert_config(config) -> None:
-    if str(config.policy_variant.name) != "dual_expert":
+def _validate_libero_policy_runtime_config(
+    config,
+    *,
+    runtime_role: LiberoPolicyRuntimeRole,
+) -> None:
+    """Keep native/consumer routes strict while admitting generic producers."""
+
+    role = LiberoPolicyRuntimeRole(runtime_role)
+    if (
+        role is not LiberoPolicyRuntimeRole.VIDEO_PRODUCER
+        and config.policy_variant.name is not PolicyVariantName.DUAL_EXPERT
+    ):
         raise ValueError(
-            "run_libero_dual_expert_visualization.py requires a `dual_expert` policy variant, "
-            f"got policy_variant.name={config.policy_variant.name!r}."
+            f"LIBERO runtime role {role.value!r} requires a `dual_expert` "
+            "policy variant; got "
+            f"policy_variant.name={config.policy_variant.name!r}."
+        )
+
+
+def _validate_runtime_role_inputs(
+    runtime_role: LiberoPolicyRuntimeRole,
+    *,
+    action_route: DualExpertActionRoute | str,
+    provided_objectives: tuple[DynamicsObjective, ...],
+) -> None:
+    """Require explicit clean inputs for conditional consumer runtimes."""
+
+    role = LiberoPolicyRuntimeRole(runtime_role)
+    composed_route = uses_video_action_composition(action_route)
+    if composed_route and role is LiberoPolicyRuntimeRole.NATIVE_POLICY:
+        raise ValueError(
+            "The generated-video action route requires an explicit video-producer "
+            "or video-conditioned-action-consumer runtime role."
+        )
+    if not composed_route and role is not LiberoPolicyRuntimeRole.NATIVE_POLICY:
+        raise ValueError(
+            f"LIBERO runtime role {role.value!r} requires the "
+            "generated-video action composition route."
+        )
+    available = frozenset(
+        DynamicsObjective(objective) for objective in provided_objectives
+    )
+    expected = (
+        frozenset({DynamicsObjective.VIDEO_CONDITIONED_ACTION})
+        if role is LiberoPolicyRuntimeRole.VIDEO_CONDITIONED_ACTION_CONSUMER
+        else frozenset()
+    )
+    if available != expected:
+        raise ValueError(
+            f"LIBERO runtime role {role.value!r} requires provided dynamics "
+            f"objectives {sorted(item.value for item in expected)!r}; got "
+            f"{sorted(item.value for item in available)!r}. Only the "
+            "video-conditioned action consumer receives a clean future tensor "
+            "from this composition route."
         )
 
 
@@ -383,12 +516,19 @@ def _require_current_frontend_encode_mode(
 
 
 def _validate_live_sim_dynamics_program(
-    policy_config: DualExpertPolicyConfig,
+    policy_config: PolicyVariantConfig,
+    *,
+    provided_objectives: tuple[DynamicsObjective, ...] = (),
 ) -> None:
     """Reject programs that require clean future tensors unavailable in sim."""
 
     fixed_mode = resolve_fixed_conditioning_mode(policy_config)
     if fixed_mode is None:
+        return
+    available = frozenset(
+        DynamicsObjective(objective) for objective in provided_objectives
+    )
+    if fixed_mode in available:
         return
     raise ValueError(
         f"The configured {fixed_mode.value!r} dynamics objective is an offline "
@@ -464,10 +604,16 @@ def _build_component_report(
 ) -> dict[str, object]:
     backbone = config.backbone
     policy_variant = pipeline.policy_variant
+    policy_config = policy_variant.config
     action_expert = getattr(policy_variant, "action_expert", None)
     runtime_backbone_dir = resolve_runtime_backbone_dir(backbone)
+    program = getattr(policy_config, "program", None)
     return {
-        "pipeline": "open_wam_dual_expert",
+        "pipeline": (
+            "open_wam_dual_expert"
+            if config.policy_variant.name is PolicyVariantName.DUAL_EXPERT
+            else "open_wam_variant_video_producer"
+        ),
         "runtime_device": str(runtime_device),
         "action_device": str(action_device),
         "frontend_device": str(frontend_device),
@@ -483,16 +629,36 @@ def _build_component_report(
         "dual_expert_gjd_action_route": str(dual_expert_gjd_action_route),
         "config_name": config.name,
         "policy_variant_class": policy_variant.__class__.__name__,
-        "program": policy_variant.config.program.value,
-        "condition_mode": str(policy_variant.config.condition_mode),
-        "video_prefix_frames": int(policy_variant.config.video_prefix_frames),
-        "current_block_coupling": policy_variant.config.current_block_coupling.value,
+        "program": None if program is None else getattr(program, "value", str(program)),
+        "condition_mode": (
+            None
+            if not hasattr(policy_config, "condition_mode")
+            else str(policy_config.condition_mode)
+        ),
+        "video_prefix_frames": (
+            None
+            if not hasattr(policy_config, "video_prefix_frames")
+            else int(policy_config.video_prefix_frames)
+        ),
+        "current_block_coupling": (
+            None
+            if not hasattr(policy_config, "current_block_coupling")
+            else getattr(
+                policy_config.current_block_coupling,
+                "value",
+                str(policy_config.current_block_coupling),
+            )
+        ),
         "backbone_hidden_size": int(backbone.hidden_size),
         "backbone_num_layers": int(backbone.num_layers),
         "action_hidden_size": (
             None if action_expert is None else int(getattr(action_expert, "hidden_size", 0))
         ),
-        "action_num_layers": int(policy_variant.config.num_action_layers),
+        "action_num_layers": (
+            None
+            if not hasattr(policy_config, "num_action_layers")
+            else int(policy_config.num_action_layers)
+        ),
         "action_horizon": int(config.data.action_schema.action_horizon),
         "action_dim": int(config.data.action_schema.action_dim),
         "trainable_parameters": _count_trainable_parameters(pipeline),

@@ -3870,6 +3870,7 @@ def test_dual_expert_runtime_control_roles_have_one_owner() -> None:
             "_InferenceContextLike",
             "dual_expert_config_uses_strict_rollout_parity",
             "resolve_dual_expert_action_only_rollout",
+            "resolve_dual_expert_inference_output_request",
             "resolve_dual_expert_inference_window_size",
             "resolve_dual_expert_rollout_cache_window_frames",
             "resolve_dual_expert_rollout_frame_chunk_size",
@@ -7576,6 +7577,67 @@ def test_libero_dual_expert_drivers_delegate_to_the_package_episode_runner() -> 
         assert policy_state_field in observed_history_source
 
 
+def test_libero_external_idm_composition_has_one_package_owner() -> None:
+    composition_path = PACKAGE_ROOT / "evals" / "libero_dual_expert_composition.py"
+    rollout_path = PACKAGE_ROOT / "evals" / "libero_dual_expert_rollout.py"
+    driver_paths = (
+        REPO_ROOT / "scripts" / "run_libero_dual_expert_visualization.py",
+        REPO_ROOT / "scripts" / "run_libero_dual_expert_batch_visualization.py",
+    )
+    composition_contract = {
+        "ExternalIdmComposition",
+        "ExternalIdmLoadOptions",
+        "add_external_idm_arguments",
+        "infer_external_idm_action",
+        "load_external_idm_composition",
+        "validate_external_idm_arguments",
+        "validate_external_idm_contract",
+    }
+
+    assert composition_contract <= _top_level_definitions(composition_path)
+    assert composition_contract.isdisjoint(_top_level_definitions(rollout_path))
+    composition_source = composition_path.read_text(encoding="utf-8")
+    rollout_source = rollout_path.read_text(encoding="utf-8")
+    assert "runner.infer_prepared_step(" in composition_source
+    assert "._forward_infer_with_visual_outputs(" not in composition_source
+    assert "infer_external_idm_action(" in rollout_source
+    for driver_path in driver_paths:
+        driver_source = driver_path.read_text(encoding="utf-8")
+        assert (
+            "open_wam.evals.libero_dual_expert_composition"
+            in _absolute_imports_for_file(driver_path)
+        )
+        for implementation in (
+            "def infer_external_idm_action(",
+            "def validate_external_idm_contract(",
+        ):
+            assert implementation not in driver_source
+
+
+def test_video_action_composition_core_is_policy_and_benchmark_independent() -> None:
+    core_path = PACKAGE_ROOT / "pipelines" / "video_action_composition.py"
+    adapter_path = PACKAGE_ROOT / "evals" / "libero_dual_expert_composition.py"
+    rollout_path = PACKAGE_ROOT / "evals" / "libero_dual_expert_rollout.py"
+    core_contract = {
+        "PolicyVideoProducerPlan",
+        "build_video_conditioned_action_request",
+        "require_generated_video",
+        "resolve_policy_video_producer_plan",
+    }
+
+    assert core_contract <= _top_level_definitions(core_path)
+    core_source = core_path.read_text(encoding="utf-8")
+    adapter_source = adapter_path.read_text(encoding="utf-8") + rollout_path.read_text(
+        encoding="utf-8"
+    )
+    assert "open_wam.evals" not in core_source
+    assert "DualExpert" not in core_source
+    assert "libero" not in core_source.lower()
+    for symbol in core_contract - {"PolicyVideoProducerPlan"}:
+        assert f"def {symbol}(" not in adapter_source
+        assert symbol in adapter_source
+
+
 def test_libero_realtime_artifacts_have_one_package_owner() -> None:
     runner_path = REPO_ROOT / "scripts" / "run_libero_realtime_sandbox.py"
     artifact_path = PACKAGE_ROOT / "evals" / "libero_rollout_artifacts.py"
@@ -7746,8 +7808,9 @@ def test_libero_dual_expert_runtime_loading_has_one_owner() -> None:
         "_maybe_merge_checkpoint_runtime_config",
         "_require_current_frontend_encode_mode",
         "_resolve_dual_expert_checkpoint_path",
+        "_validate_libero_policy_runtime_config",
         "_validate_live_sim_dynamics_program",
-        "_validate_dual_expert_config",
+        "_validate_runtime_role_inputs",
         "load_dual_expert_libero_runtime",
         "print_rollout_event",
     }

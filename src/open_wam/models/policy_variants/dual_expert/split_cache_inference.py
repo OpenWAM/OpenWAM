@@ -36,10 +36,13 @@ from open_wam.models.visual_tower.exact_runtime import (
 
 from ..contracts import (
     DecoderArtifactEnvelope,
+    PolicyGeneratedVideo,
     PolicyInferContext,
     PolicyInferOutput,
     PolicyInferState,
+    PolicyOutputModality,
 )
+from ..output_semantics import video_action_program_output_modalities
 from .attention_cached import build_dual_expert_inference_action_attention_mask
 from .cache_execution import forward_action_with_video_and_action_cache
 from .cache_state import (
@@ -64,7 +67,7 @@ from .decoder_artifacts import (
 )
 from .modules import DualExpertActionExpert
 from .rollout_geometry import (
-    resolve_dual_expert_action_only_rollout,
+    resolve_dual_expert_inference_output_request,
     resolve_dual_expert_inference_window_size,
     resolve_dual_expert_rollout_frame_chunk_size,
 )
@@ -129,10 +132,43 @@ class DualExpertSplitCacheInferenceProgram:
         )
         runtime_state.chunk_advance_frames = int(chunk_frames)
         current_block_coupling = resolve_dual_expert_current_block_coupling(self.config)
-        action_only_rollout = resolve_dual_expert_action_only_rollout(
+        native_modalities = video_action_program_output_modalities(
+            self.config.program
+        )
+        output_request = resolve_dual_expert_inference_output_request(
             context,
             current_block_coupling=current_block_coupling,
+            native_modalities=native_modalities,
         )
+        action_only_rollout = (
+            output_request.modalities != native_modalities
+            and output_request.modalities
+            == frozenset({PolicyOutputModality.ACTION})
+        )
+        video_only_rollout = (
+            output_request.modalities != native_modalities
+            and output_request.modalities
+            == frozenset({PolicyOutputModality.VIDEO})
+        )
+        prior_output_request = runtime_state.split_cache_output_request
+        if video_only_rollout:
+            if runtime_state.action_cache is not None:
+                raise ValueError(
+                    "DualExpert video-only inference cannot reuse a session that already "
+                    "contains split-cache action history. Reset the policy session first."
+                )
+            if prior_output_request is None:
+                runtime_state.split_cache_output_request = output_request
+            elif prior_output_request != output_request:
+                raise ValueError(
+                    "DualExpert split-cache inference cannot switch away from video-only "
+                    "execution inside one recurrent policy session."
+                )
+        elif prior_output_request is not None:
+            raise ValueError(
+                "DualExpert split-cache inference cannot switch from video-only execution "
+                "to an action-producing route inside one recurrent policy session."
+            )
         if current_block_coupling not in DUAL_EXPERT_SPLIT_CACHE_INFERENCE_COUPLINGS:
             raise NotImplementedError(
                 "Dual Expert split-cache inference only supports video_then_action "
@@ -366,7 +402,7 @@ class DualExpertSplitCacheInferenceProgram:
                     update_cache=1
                     if (
                         last_step
-                        and video_commit_before_action
+                        and (video_commit_before_action or video_only_rollout)
                         and self.inference_config.use_cache
                     )
                     else 0,
@@ -387,6 +423,82 @@ class DualExpertSplitCacheInferenceProgram:
                     ).to(dtype=video_dtype)
                     latents = video_scheduler.step(video_noise_pred, timestep, latents)
             predicted_latents = latents
+
+        if video_only_rollout:
+            next_state = infer_state
+            next_state.step_index += 1
+            next_state.cursor.current_start_frame = int(
+                infer_state.cursor.current_start_frame
+                + max(1, runtime_state.chunk_advance_frames)
+            )
+            next_state.variant_state = runtime_state
+            empty_actions = torch.empty(
+                batch_size,
+                0,
+                self.action_dim,
+                device=device,
+                dtype=dtype,
+            )
+            return PolicyInferOutput(
+                policy_features=empty_actions.new_zeros(
+                    batch_size,
+                    0,
+                    self.action_expert.hidden_size,
+                ),
+                next_state=next_state,
+                decoder_artifacts=DecoderArtifactEnvelope(
+                    contract=DUAL_EXPERT_DECODER_ARTIFACT_CONTRACT,
+                    payload=DualExpertInferArtifacts(
+                        action_pred=empty_actions,
+                        predicted_latents=predicted_latents.detach(),
+                        condition_mode=str(self.config.condition_mode),
+                        program=self.config.program.value,
+                    ),
+                ),
+                generated_video=PolicyGeneratedVideo(
+                    latents=predicted_latents.detach(),
+                    frame_start=int(generation_frame_start),
+                    latent_space_identity=(
+                        visual_outputs.frontend.latent_space_identity
+                    ),
+                ),
+                generation_frame_start=int(generation_frame_start),
+                aux={
+                    "variant": self.config.name,
+                    "architecture": "dual_expert",
+                    "condition_mode": str(self.config.condition_mode),
+                    "current_block_coupling": current_block_coupling.value,
+                    "generation_frame_start": int(generation_frame_start),
+                    "dual_expert_action_only_rollout": False,
+                    "dual_expert_video_only_rollout": True,
+                    "action_pred_executable": False,
+                    "dual_expert_output_modalities": sorted(
+                        modality.value for modality in output_request.modalities
+                    ),
+                    "predicted_latents": predicted_latents.detach(),
+                    "predicted_video_latents": predicted_latents.detach(),
+                    "dual_expert_cache_debug": {
+                        "action_cache_seq_len": 0,
+                        "current_action_frame_start": int(generation_frame_start),
+                        "current_start_frame": int(
+                            next_state.cursor.current_start_frame
+                        ),
+                        "next_condition_frame_start": int(
+                            runtime_state.next_condition_frame_start
+                        ),
+                        "chunk_advance_frames": int(runtime_state.chunk_advance_frames),
+                        "chunk_origin_frame": int(runtime_state.chunk_origin_frame),
+                        "skip_observation_update": bool(skip_observation_update),
+                        "current_block_coupling": current_block_coupling.value,
+                        "dual_expert_action_only_rollout": False,
+                        "dual_expert_video_only_rollout": True,
+                        "video_commit_before_action": bool(video_commit_before_action),
+                        "inference_window_size": int(inference_window_size),
+                        "rollout_frame_chunk_size": int(chunk_frames),
+                        "rollout_action_horizon": int(action_horizon),
+                    },
+                },
+            )
 
         # Don't advance `next_condition_frame_start` past the observation
         # write position. parallel-stream with `advance_frame_start=False` keeps
@@ -771,6 +883,19 @@ class DualExpertSplitCacheInferenceProgram:
                 contract=DUAL_EXPERT_DECODER_ARTIFACT_CONTRACT,
                 payload=decoder_payload,
             ),
+            generated_video=(
+                PolicyGeneratedVideo(
+                    latents=predicted_latents.detach(),
+                    frame_start=int(current_action_frame_start),
+                    latent_space_identity=(
+                        visual_outputs.frontend.latent_space_identity
+                    ),
+                )
+                if isinstance(predicted_latents, torch.Tensor)
+                and int(predicted_latents.shape[2]) > 0
+                else None
+            ),
+            generation_frame_start=int(current_action_frame_start),
             aux={
                 "variant": self.config.name,
                 "architecture": "dual_expert",

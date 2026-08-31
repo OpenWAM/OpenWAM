@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import torch
 
-from open_wam.configs import InferenceConfig, TrainingConfig
+from open_wam.configs import CurrentBlockCoupling, InferenceConfig, TrainingConfig
 from open_wam.configs.backbone import SharedVideoTransformerConfig
 from open_wam.configs.policy_dual_expert import DualExpertPolicyConfig
 from open_wam.contracts import SampleConstructionMetadata
@@ -16,20 +16,26 @@ from ..base import VideoActionPolicyVariant
 from ..contracts import (
     PolicyGenerationActionOrigin,
     PolicyInferContext,
+    PolicyInferenceCapabilities,
+    PolicyInferenceOutputRequest,
     PolicyInferOutput,
     PolicyInferState,
     PolicyModuleTopology,
     PolicyObservationWindowSessionPolicy,
     PolicyObservedHistory,
     PolicyObservedHistoryOutput,
+    PolicyOutputModality,
     PolicyPreparedInputs,
+    PolicyRecurrentHistoryPolicy,
     PolicyRolloutContract,
     PolicyTrainBatch,
     PolicyTrainOutput,
     PolicyVisualStage,
 )
+from ..output_semantics import video_action_program_output_modalities
 from .conditioning import DualExpertConditioning
 from .contracts import DualExpertRuntimeState
+from .coupling_semantics import resolve_dual_expert_current_block_coupling
 from .decoder_artifacts import DUAL_EXPERT_DECODER_ARTIFACT_CONTRACT
 from .inference_backend import ensure_dual_expert_policy_variant_inference_backend
 from .module_topology import build_dual_expert_module_topology
@@ -107,6 +113,44 @@ class DualExpertPolicyVariant(VideoActionPolicyVariant):
             observation_window_session_policy=(
                 PolicyObservationWindowSessionPolicy.REBUILD_FROM_OBSERVATION_WINDOW
             ),
+        )
+
+    @property
+    def inference_capabilities(self) -> PolicyInferenceCapabilities:
+        native = video_action_program_output_modalities(self.config.program)
+        coupling = resolve_dual_expert_current_block_coupling(self.config)
+        selective: list[PolicyInferenceOutputRequest] = []
+        if (
+            PolicyOutputModality.VIDEO in native
+            and coupling
+            in {
+                CurrentBlockCoupling.VIDEO_THEN_ACTION,
+                CurrentBlockCoupling.DECOUPLED_SAME_STEP,
+            }
+        ):
+            selective.append(PolicyInferenceOutputRequest.video_only())
+        if (
+            PolicyOutputModality.ACTION in native
+            and coupling
+            in {
+                CurrentBlockCoupling.ACTION_THEN_VIDEO,
+                CurrentBlockCoupling.DECOUPLED_SAME_STEP,
+            }
+        ):
+            selective.append(PolicyInferenceOutputRequest.action_only())
+        recurrent_history_policy = (
+            PolicyRecurrentHistoryPolicy.NEXT_OBSERVATION
+            if coupling
+            in {
+                CurrentBlockCoupling.VIDEO_THEN_ACTION,
+                CurrentBlockCoupling.DECOUPLED_SAME_STEP,
+            }
+            else PolicyRecurrentHistoryPolicy.EXPLICIT_RECONCILIATION
+        )
+        return PolicyInferenceCapabilities(
+            native_modalities=native,
+            selective_requests=tuple(selective),
+            recurrent_history_policy=recurrent_history_policy,
         )
 
     def build_rollout_infer_extra(

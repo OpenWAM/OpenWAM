@@ -22,6 +22,7 @@ from open_wam.models.policy_variants.contracts import (
     DecoderArtifactEnvelope,
     PolicyInferOutput,
     PolicyInferState,
+    PolicyInferenceOutputRequest,
 )
 from open_wam.models.policy_variants.dual_expert.decoder_artifacts import (
     DUAL_EXPERT_DECODER_ARTIFACT_CONTRACT,
@@ -296,6 +297,54 @@ def test_build_executed_action_history_returns_none_when_nothing_executed() -> N
     ) is None
 
 
+def test_build_execution_commit_converts_partial_actions_to_model_frames() -> None:
+    commit = dual_expert_viz._build_execution_commit(
+        generation_frame_start=1,
+        speculative_frame_count=4,
+        executed_action_count=12,
+        action_per_frame=4,
+        start_frame_group=0,
+        terminal=False,
+    )
+
+    assert commit is not None
+    assert commit.speculative_span.start_frame == 1
+    assert commit.speculative_span.end_frame == 5
+    assert commit.executed_span.start_frame == 1
+    assert commit.executed_span.end_frame == 4
+
+
+def test_build_execution_commit_rejects_partial_action_frame() -> None:
+    with pytest.raises(ValueError, match="complete model-frame action groups"):
+        dual_expert_viz._build_execution_commit(
+            generation_frame_start=1,
+            speculative_frame_count=4,
+            executed_action_count=11,
+            action_per_frame=4,
+            start_frame_group=0,
+            terminal=False,
+        )
+
+
+@pytest.mark.parametrize(
+    ("executed_action_count", "start_frame_group", "terminal"),
+    [(0, 0, False), (12, 1, False), (12, 0, True)],
+)
+def test_build_execution_commit_skips_non_reconcilable_execution(
+    executed_action_count: int,
+    start_frame_group: int,
+    terminal: bool,
+) -> None:
+    assert dual_expert_viz._build_execution_commit(
+        generation_frame_start=1,
+        speculative_frame_count=4,
+        executed_action_count=executed_action_count,
+        action_per_frame=4,
+        start_frame_group=start_frame_group,
+        terminal=terminal,
+    ) is None
+
+
 @pytest.mark.parametrize(
     ("program", "expected"),
     [
@@ -349,6 +398,7 @@ def test_build_infer_context_uses_joint_dynamics_by_default() -> None:
         )
     )
 
+    output_request = PolicyInferenceOutputRequest.video_only()
     context = dual_expert_viz._build_infer_context(
         "task",
         action_device=torch.device("cpu"),
@@ -357,12 +407,14 @@ def test_build_infer_context_uses_joint_dynamics_by_default() -> None:
         runtime_device=torch.device("cpu"),
         dual_expert_inference_window_size=30,
         dual_expert_action_only_rollout=False,
+        output_request=output_request,
     )
 
     assert context.extra["task_text"] == ("task",)
     assert context.extra["dual_expert_inference_window_size"] == 30
     assert "action_conditioning_mode" not in context.extra
     assert "dual_expert_action_only_rollout" not in context.extra
+    assert context.output_request is output_request
     assert context.state.shape == (1, 1, 8)
 
 

@@ -684,6 +684,41 @@ def test_gjd_rollout_request_uses_the_same_fixed_dynamics_plan() -> None:
 
 
 @pytest.mark.unit
+def test_conditional_rollout_request_can_explicitly_preserve_chunk_geometry() -> None:
+    request = DynamicsRolloutRequest(
+        objective=DynamicsObjective.VIDEO_CONDITIONED_ACTION,
+        clean_video=torch.zeros(1, 48, 4, 4, 4),
+        frame_chunk_size=4,
+    )
+
+    plan = resolve_dynamics_rollout_plan(
+        program=VideoActionProgram.GENERALIST_JOINT_DENOISING,
+        request=request,
+    )
+    geometry = plan.resolve_geometry(
+        fallback_frame_chunk_size=4,
+        fallback_attention_window_size=64,
+        fallback_history_stream_visibility="full_history",
+    )
+
+    assert geometry.frame_chunk_size == 4
+    assert geometry.attention_window_size == 3
+
+
+@pytest.mark.unit
+def test_idm_rollout_request_rejects_mismatched_explicit_chunk_geometry() -> None:
+    with pytest.raises(ValueError, match="temporal length.*frame chunk size"):
+        resolve_dynamics_rollout_plan(
+            program=VideoActionProgram.GENERALIST_JOINT_DENOISING,
+            request=DynamicsRolloutRequest(
+                objective=DynamicsObjective.VIDEO_CONDITIONED_ACTION,
+                clean_video=torch.zeros(1, 48, 1, 4, 4),
+                frame_chunk_size=4,
+            ),
+        )
+
+
+@pytest.mark.unit
 def test_dynamics_rollout_request_rejects_backend_shaped_or_wrong_modality_inputs() -> (
     None
 ):

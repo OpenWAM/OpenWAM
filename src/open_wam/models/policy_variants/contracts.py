@@ -7,6 +7,7 @@ from typing import Any, TypeVar
 
 import torch
 
+from open_wam.contracts import VideoLatentSpaceIdentity
 from open_wam.configs.enums import (
     DynamicsObjective,
     ProprioContextMode,
@@ -39,6 +40,240 @@ class PolicyVisualStage(str, Enum):
 
     FRONTEND = "frontend"
     CORE = "core"
+
+
+class PolicyOutputModality(str, Enum):
+    """Model products requested from one policy inference step."""
+
+    VIDEO = "video"
+    ACTION = "action"
+
+
+class PolicyRecurrentHistoryPolicy(str, Enum):
+    """How a recurrent policy replaces speculative history after execution.
+
+    Online composition executes actions inferred from a generated video and then
+    receives real observations. A producer must explicitly declare whether its
+    next inference call replaces the speculative video itself, or whether the
+    rollout driver must reconcile the executed observations into policy state.
+    ``UNSUPPORTED`` keeps ordinary inference available without claiming that a
+    policy is safe to use as either stage of recurrent composition.
+    """
+
+    UNSUPPORTED = "unsupported"
+    NEXT_OBSERVATION = "next_observation"
+    EXPLICIT_RECONCILIATION = "explicit_reconciliation"
+
+
+@dataclass(frozen=True)
+class PolicyInferenceOutputRequest:
+    """Architecture-independent selection of inference products.
+
+    Policies may reject a selection when their coupling semantics require an
+    omitted modality to produce the requested one. A missing request on
+    ``PolicyInferContext`` preserves each policy's normal output contract.
+    """
+
+    modalities: frozenset[PolicyOutputModality]
+
+    def __post_init__(self) -> None:
+        modalities = frozenset(
+            PolicyOutputModality(modality) for modality in self.modalities
+        )
+        if not modalities:
+            raise ValueError(
+                "Policy inference must request at least one output modality."
+            )
+        object.__setattr__(self, "modalities", modalities)
+
+    @classmethod
+    def full(cls) -> PolicyInferenceOutputRequest:
+        return cls(frozenset(PolicyOutputModality))
+
+    @classmethod
+    def video_only(cls) -> PolicyInferenceOutputRequest:
+        return cls(frozenset({PolicyOutputModality.VIDEO}))
+
+    @classmethod
+    def action_only(cls) -> PolicyInferenceOutputRequest:
+        return cls(frozenset({PolicyOutputModality.ACTION}))
+
+    def requests(self, modality: PolicyOutputModality) -> bool:
+        return PolicyOutputModality(modality) in self.modalities
+
+
+@dataclass(frozen=True)
+class PolicyInferenceCapabilities:
+    """Outputs a policy produces natively and can select independently.
+
+    ``native_modalities`` describes a normal inference call with no selective
+    request. ``selective_requests`` lists exact subsets that the policy can
+    produce without running the omitted output stages. A composition may still
+    consume a subset of the native output when no selective route exists.
+    """
+
+    native_modalities: frozenset[PolicyOutputModality]
+    selective_requests: tuple[PolicyInferenceOutputRequest, ...] = ()
+    recurrent_history_policy: PolicyRecurrentHistoryPolicy = (
+        PolicyRecurrentHistoryPolicy.UNSUPPORTED
+    )
+
+    def __post_init__(self) -> None:
+        native = frozenset(
+            PolicyOutputModality(modality) for modality in self.native_modalities
+        )
+        if not native:
+            raise ValueError("A policy must declare at least one native output modality.")
+        selective = tuple(self.selective_requests)
+        seen_selective: set[frozenset[PolicyOutputModality]] = set()
+        for request in selective:
+            if not request.modalities.issubset(native):
+                raise ValueError(
+                    "Selective policy outputs must be a subset of native outputs; "
+                    f"native={sorted(item.value for item in native)}, "
+                    f"requested={sorted(item.value for item in request.modalities)}."
+                )
+            if request.modalities == native:
+                raise ValueError(
+                    "Selective policy outputs must be a strict subset of native "
+                    "outputs; omit a request when normal inference already emits "
+                    f"{sorted(item.value for item in native)}."
+                )
+            if request.modalities in seen_selective:
+                raise ValueError(
+                    "Selective policy output requests must be unique; duplicate="
+                    f"{sorted(item.value for item in request.modalities)}."
+                )
+            seen_selective.add(request.modalities)
+        object.__setattr__(self, "native_modalities", native)
+        object.__setattr__(self, "selective_requests", selective)
+        history_policy = PolicyRecurrentHistoryPolicy(
+            self.recurrent_history_policy
+        )
+        object.__setattr__(
+            self,
+            "recurrent_history_policy",
+            history_policy,
+        )
+
+    def request_for(
+        self,
+        required_modalities: frozenset[PolicyOutputModality],
+    ) -> PolicyInferenceOutputRequest | None:
+        """Resolve an efficient request while permitting native supersets.
+
+        ``None`` means the normal policy output already contains every required
+        modality. This is important for coupled policies whose video is valid
+        but cannot be generated independently from their action stream.
+        """
+
+        required = frozenset(
+            PolicyOutputModality(modality) for modality in required_modalities
+        )
+        if not required:
+            raise ValueError("A composition must require at least one output modality.")
+        if not required.issubset(self.native_modalities):
+            raise ValueError(
+                "Policy does not produce every required modality; "
+                f"native={sorted(item.value for item in self.native_modalities)}, "
+                f"required={sorted(item.value for item in required)}."
+            )
+        for request in self.selective_requests:
+            if request.modalities == required:
+                return request
+        return None
+
+
+@dataclass(frozen=True)
+class PolicyTemporalSpan:
+    """Half-open model-frame interval owned by one inference transaction."""
+
+    start_frame: int
+    frame_count: int
+
+    def __post_init__(self) -> None:
+        if int(self.start_frame) < 0:
+            raise ValueError(
+                "Policy temporal spans require a non-negative start frame, "
+                f"got {self.start_frame}."
+            )
+        if int(self.frame_count) <= 0:
+            raise ValueError(
+                "Policy temporal spans require a positive frame count, "
+                f"got {self.frame_count}."
+            )
+
+    @property
+    def end_frame(self) -> int:
+        return int(self.start_frame) + int(self.frame_count)
+
+    def prefix(self, frame_count: int) -> PolicyTemporalSpan:
+        """Return an executed prefix while preserving this span's origin."""
+
+        resolved_count = int(frame_count)
+        if resolved_count <= 0 or resolved_count > int(self.frame_count):
+            raise ValueError(
+                "Executed temporal prefixes must contain between one and the "
+                "full speculative frame count; "
+                f"executed={resolved_count}, speculative={self.frame_count}."
+            )
+        return PolicyTemporalSpan(
+            start_frame=int(self.start_frame),
+            frame_count=resolved_count,
+        )
+
+
+@dataclass(frozen=True)
+class PolicyExecutionCommit:
+    """Observed prefix committed after executing a speculative model span."""
+
+    speculative_span: PolicyTemporalSpan
+    executed_frame_count: int
+
+    def __post_init__(self) -> None:
+        self.speculative_span.prefix(int(self.executed_frame_count))
+
+    @property
+    def executed_span(self) -> PolicyTemporalSpan:
+        return self.speculative_span.prefix(int(self.executed_frame_count))
+
+
+@dataclass(frozen=True)
+class PolicyGeneratedVideo:
+    """Future-only latent video emitted for downstream composition.
+
+    Conditioning or observed-prefix frames are deliberately excluded. This
+    makes a causal video-only model, a staged VTA policy, and a jointly decoded
+    policy expose the same downstream handoff semantics.
+    """
+
+    latents: torch.Tensor
+    frame_start: int | None = None
+    latent_space_identity: VideoLatentSpaceIdentity | None = None
+
+    def __post_init__(self) -> None:
+        if self.latents.ndim != 5 or int(self.latents.shape[2]) <= 0:
+            raise ValueError(
+                "Generated video must be a non-empty [B, C, T, H, W] tensor, "
+                f"got {tuple(self.latents.shape)}."
+            )
+        if self.frame_start is not None and int(self.frame_start) < 0:
+            raise ValueError(
+                f"Generated-video frame_start must be non-negative, got {self.frame_start}."
+            )
+
+
+@dataclass(frozen=True)
+class PolicyVideoGenerationRequest:
+    """Geometry requested from a video-producing inference stage."""
+
+    frame_count: int
+
+    def __post_init__(self) -> None:
+        if int(self.frame_count) <= 0:
+            raise ValueError(
+                f"Video generation frame_count must be positive, got {self.frame_count}."
+            )
 
 
 @dataclass(frozen=True)
@@ -349,6 +584,7 @@ class PolicyObservedHistory:
     proprio_history: torch.Tensor | None = None
     inference_window_size: int | None = None
     rollout_frame_chunk_size: int | None = None
+    execution_commit: PolicyExecutionCommit | None = None
 
 
 @dataclass(frozen=True)
@@ -357,6 +593,7 @@ class PolicyObservedHistoryOutput:
 
     next_state: PolicyInferState | None
     debug: dict[str, Any] = field(default_factory=dict)
+    applied: bool = False
 
 
 @dataclass
@@ -367,6 +604,10 @@ class PolicyInferContext:
     previous_action: torch.Tensor | None = None
     dynamics: DynamicsRolloutRequest | None = None
     extra: dict[str, Any] = field(default_factory=dict)
+    # Keep extensions after `extra` so historical positional construction keeps
+    # binding its fourth argument to the same field.
+    output_request: PolicyInferenceOutputRequest | None = None
+    video_generation: PolicyVideoGenerationRequest | None = None
 
 
 @dataclass
@@ -377,3 +618,26 @@ class PolicyInferOutput:
     next_state: PolicyInferState
     decoder_artifacts: DecoderArtifactEnvelope | None = None
     aux: dict[str, Any] = field(default_factory=dict)
+    generated_video: PolicyGeneratedVideo | None = None
+    generation_frame_start: int | None = None
+
+    def __post_init__(self) -> None:
+        if self.generation_frame_start is not None and int(
+            self.generation_frame_start
+        ) < 0:
+            raise ValueError(
+                "Policy inference generation_frame_start must be non-negative, "
+                f"got {self.generation_frame_start}."
+            )
+        video_start = (
+            None if self.generated_video is None else self.generated_video.frame_start
+        )
+        if (
+            video_start is not None
+            and self.generation_frame_start is not None
+            and int(video_start) != int(self.generation_frame_start)
+        ):
+            raise ValueError(
+                "Policy inference and generated-video temporal origins differ: "
+                f"output={self.generation_frame_start}, video={video_start}."
+            )

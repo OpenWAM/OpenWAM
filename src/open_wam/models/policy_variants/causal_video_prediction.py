@@ -13,7 +13,11 @@ from open_wam.configs import (
     TrainingConfig,
 )
 from open_wam.configs.policy_contracts import CausalVideoPredictionPolicyConfig
-from open_wam.contracts import SampleConstructionMetadata, VideoFrameMapping
+from open_wam.contracts import (
+    SampleConstructionMetadata,
+    VideoFrameMapping,
+    VideoLatentSpaceIdentity,
+)
 from open_wam.models.common.flow_schedule import (
     FlowMatchScheduler,
     sample_timestep_id,
@@ -30,11 +34,15 @@ from open_wam.models.visual_tower import VisualStageOutputs, VisualTower
 from .base import PolicyVariant
 from .contracts import (
     DecoderArtifactEnvelope,
+    PolicyGeneratedVideo,
     PolicyInferContext,
+    PolicyInferenceCapabilities,
     PolicyInferOutput,
     PolicyInferState,
+    PolicyOutputModality,
     PolicyPipelineRequirements,
     PolicyPreparedInputs,
+    PolicyRecurrentHistoryPolicy,
     PolicyTrainBatch,
     PolicyTrainOutput,
     PolicyVisualStage,
@@ -80,6 +88,15 @@ class CausalVideoPredictionPolicyVariant(PolicyVariant):
     @property
     def decoder_artifact_contract(self) -> str:
         return VIDEO_FLOW_DECODER_ARTIFACT_CONTRACT
+
+    @property
+    def inference_capabilities(self) -> PolicyInferenceCapabilities:
+        return PolicyInferenceCapabilities(
+            native_modalities=frozenset({PolicyOutputModality.VIDEO}),
+            recurrent_history_policy=(
+                PolicyRecurrentHistoryPolicy.NEXT_OBSERVATION
+            ),
+        )
 
     def pipeline_requirements(
         self,
@@ -657,6 +674,45 @@ class CausalVideoPredictionPolicyVariant(PolicyVariant):
         )
         return PolicyInferState(step_index=0, cursor=cursor)
 
+    def _build_video_infer_output(
+        self,
+        *,
+        video_latents: torch.Tensor,
+        observed_prefix: torch.Tensor,
+        predicted_future: torch.Tensor,
+        next_state: PolicyInferState,
+        generated_frame_start: int | None = None,
+        latent_space_identity: VideoLatentSpaceIdentity | None = None,
+        aux_extra: Mapping[str, Any] | None = None,
+    ) -> PolicyInferOutput:
+        """Publish one future-video result through the shared policy contract."""
+
+        predicted_latents = torch.cat([observed_prefix, predicted_future], dim=2)
+        return PolicyInferOutput(
+            policy_features=video_latents.new_zeros(
+                video_latents.shape[0], 0, self.config.hidden_size
+            ),
+            next_state=next_state,
+            decoder_artifacts=DecoderArtifactEnvelope(
+                contract=VIDEO_FLOW_DECODER_ARTIFACT_CONTRACT,
+                payload=VideoFlowInferArtifacts(
+                    predicted_latents=predicted_latents,
+                ),
+            ),
+            generated_video=PolicyGeneratedVideo(
+                latents=predicted_future.detach(),
+                frame_start=generated_frame_start,
+                latent_space_identity=latent_space_identity,
+            ),
+            generation_frame_start=generated_frame_start,
+            aux={
+                "variant": self.config.name,
+                "architecture": "causal_video_prediction",
+                "program": self.config.program.value,
+                **dict(aux_extra or {}),
+            },
+        )
+
     def _forward_chunked_conditioned_infer_step(
         self,
         *,
@@ -712,28 +768,15 @@ class CausalVideoPredictionPolicyVariant(PolicyVariant):
                 else int(context.extra["sample_seed"])
             ),
         )
-        predicted_latents = torch.cat(
-            [observed_prefix, predicted_future], dim=2
-        )
-        return PolicyInferOutput(
-            policy_features=video_latents.new_zeros(
-                video_latents.shape[0], 0, self.config.hidden_size
-            ),
+        return self._build_video_infer_output(
+            video_latents=video_latents,
+            observed_prefix=observed_prefix,
+            predicted_future=predicted_future,
             next_state=PolicyInferState(
                 step_index=infer_state.step_index + 1,
                 cursor=infer_state.cursor,
             ),
-            decoder_artifacts=DecoderArtifactEnvelope(
-                contract=VIDEO_FLOW_DECODER_ARTIFACT_CONTRACT,
-                payload=VideoFlowInferArtifacts(
-                    predicted_latents=predicted_latents,
-                ),
-            ),
-            aux={
-                "variant": self.config.name,
-                "architecture": "causal_video_prediction",
-                "program": self.config.program.value,
-            },
+            latent_space_identity=visual_outputs.frontend.latent_space_identity,
         )
 
     def forward_infer_step(
@@ -757,6 +800,13 @@ class CausalVideoPredictionPolicyVariant(PolicyVariant):
             batch_size=batch_size,
             require_negative_text=self.inference_config.guidance_scale > 1.0,
         )
+        if context.video_generation is not None:
+            return self._forward_requested_video_generation(
+                visual_tower=visual_tower,
+                visual_outputs=visual_outputs,
+                context=context,
+                infer_state=infer_state,
+            )
         metadata = self._metadata_tuple(
             context.extra.get("metadata"),
             expected_batch_size=batch_size,
@@ -792,25 +842,117 @@ class CausalVideoPredictionPolicyVariant(PolicyVariant):
             sigma_shift=self.training_config.video_sigma_shift,
             guidance_scale=self.inference_config.guidance_scale,
         )
-        predicted_latents = torch.cat([observed_prefix, predicted_future], dim=2)
-        policy_features = video_latents.new_zeros(
-            video_latents.shape[0], 0, self.config.hidden_size
-        )
-        return PolicyInferOutput(
-            policy_features=policy_features,
+        return self._build_video_infer_output(
+            video_latents=video_latents,
+            observed_prefix=observed_prefix,
+            predicted_future=predicted_future,
             next_state=PolicyInferState(
                 step_index=infer_state.step_index + 1,
                 cursor=infer_state.cursor,
             ),
-            decoder_artifacts=DecoderArtifactEnvelope(
-                contract=VIDEO_FLOW_DECODER_ARTIFACT_CONTRACT,
-                payload=VideoFlowInferArtifacts(
-                    predicted_latents=predicted_latents,
+            latent_space_identity=visual_outputs.frontend.latent_space_identity,
+        )
+
+    def _forward_requested_video_generation(
+        self,
+        *,
+        visual_tower: VisualTower,
+        visual_outputs: VisualStageOutputs,
+        context: PolicyInferContext,
+        infer_state: PolicyInferState,
+    ) -> PolicyInferOutput:
+        """Generate a future-only chunk from observed history for composition."""
+
+        request = context.video_generation
+        if request is None:
+            raise RuntimeError("Requested video generation requires typed geometry.")
+        video_latents = visual_outputs.frontend.video_latents
+        frame_count = int(request.frame_count)
+        future_template = video_latents.new_zeros(
+            video_latents.shape[0],
+            video_latents.shape[1],
+            frame_count,
+            video_latents.shape[3],
+            video_latents.shape[4],
+        )
+        if self.config.program is CausalVideoProgram.CHUNKED_CONDITIONED_VIDEO:
+            observed_prefix = video_latents[:, :, -1:]
+            condition_frame_start = int(infer_state.cursor.current_start_frame) + int(
+                video_latents.shape[2]
+            ) - 1
+            generated_frame_start = condition_frame_start + int(
+                observed_prefix.shape[2]
+            )
+            predicted_future = visual_tower.generate_chunked_conditioned_video_latents(
+                observed_prefix=observed_prefix,
+                future_template=future_template,
+                text_context=visual_outputs.frontend.conditioning.text_context,
+                negative_text_context=(
+                    visual_outputs.frontend.conditioning.negative_text_context
+                ),
+                # The visual-tower contract takes the first target frame. It
+                # prepends the one-frame condition internally when assigning
+                # rotary positions, matching training's `frame_shift`.
+                frame_start=generated_frame_start,
+                chunk_size=int(self.inference_config.frame_chunk_size),
+                window_size=int(self.training_config.window_size),
+                chunk_origin_frame=(
+                    (condition_frame_start + 1)
+                    % int(self.inference_config.frame_chunk_size)
+                ),
+                num_inference_steps=int(
+                    self.inference_config.video_num_inference_steps
+                ),
+                num_train_timesteps=int(
+                    self.training_config.video_num_train_timesteps
+                ),
+                sigma_shift=float(self.training_config.video_sigma_shift),
+                guidance_scale=float(self.inference_config.guidance_scale),
+                sample_seed=(
+                    None
+                    if context.extra.get("sample_seed") is None
+                    else int(context.extra["sample_seed"])
+                ),
+            )
+        else:
+            observed_prefix = video_latents
+            condition_frame_start = int(infer_state.cursor.current_start_frame)
+            generated_frame_start = condition_frame_start + int(
+                observed_prefix.shape[2]
+            )
+            predicted_future = visual_tower.generate_conditioned_future_latents(
+                observed_prefix=observed_prefix,
+                future_template=future_template,
+                text_context=visual_outputs.frontend.conditioning.text_context,
+                negative_text_context=(
+                    visual_outputs.frontend.conditioning.negative_text_context
+                ),
+                frame_start=condition_frame_start,
+                num_inference_steps=self.inference_config.video_num_inference_steps,
+                num_train_timesteps=self.training_config.video_num_train_timesteps,
+                sigma_shift=self.training_config.video_sigma_shift,
+                guidance_scale=self.inference_config.guidance_scale,
+            )
+        return self._build_video_infer_output(
+            video_latents=video_latents,
+            observed_prefix=observed_prefix,
+            predicted_future=predicted_future,
+            next_state=PolicyInferState(
+                step_index=infer_state.step_index + 1,
+                cursor=RolloutCursor(
+                    # The next real observation chunk starts where this
+                    # speculative chunk starts. Its length determines the next
+                    # generated frame on the following call.
+                    current_start_frame=generated_frame_start,
+                    block_index=infer_state.cursor.block_index + 1,
+                    chunk_size=frame_count,
                 ),
             ),
-            aux={
-                "variant": self.config.name,
-                "architecture": "causal_video_prediction",
-                "program": self.config.program.value,
+            generated_frame_start=generated_frame_start,
+            latent_space_identity=visual_outputs.frontend.latent_space_identity,
+            aux_extra={
+                "composition_video_generation": True,
+                "generated_video_frame_start": generated_frame_start,
+                "generated_video_frame_count": frame_count,
             },
         )

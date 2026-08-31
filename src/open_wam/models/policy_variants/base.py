@@ -10,11 +10,14 @@ from open_wam.models.visual_tower import VisualStageOutputs, VisualTower
 
 from .contracts import (
     PolicyInferContext,
+    PolicyInferenceCapabilities,
+    PolicyInferenceOutputRequest,
     PolicyInferOutput,
     PolicyInferState,
     PolicyModuleTopology,
     PolicyObservedHistory,
     PolicyObservedHistoryOutput,
+    PolicyOutputModality,
     PolicyPipelineRequirements,
     PolicyPreparedInputs,
     PolicyRolloutContract,
@@ -39,6 +42,19 @@ class PolicyVariant(nn.Module, ABC):
 
         return PolicyRolloutContract()
 
+    @property
+    def inference_capabilities(self) -> PolicyInferenceCapabilities:
+        """Declare products emitted by the policy's normal inference path.
+
+        Action-only is the conservative default. Policies that emit video must
+        opt in so generic composition cannot infer support from architecture or
+        config names.
+        """
+
+        return PolicyInferenceCapabilities(
+            native_modalities=frozenset({PolicyOutputModality.ACTION})
+        )
+
     def build_rollout_infer_extra(
         self,
         *,
@@ -48,6 +64,26 @@ class PolicyVariant(nn.Module, ABC):
 
         del runtime_device
         return {}
+
+    def validate_inference_output_request(
+        self,
+        request: PolicyInferenceOutputRequest | None,
+    ) -> None:
+        """Require requested products to match declared policy capabilities."""
+
+        if request is None:
+            return
+        capabilities = self.inference_capabilities
+        if request.modalities == capabilities.native_modalities:
+            return
+        if request in capabilities.selective_requests:
+            return
+        modalities = ", ".join(sorted(item.value for item in request.modalities))
+        raise ValueError(
+            f"{type(self).__name__} does not support the requested inference "
+            f"outputs ({modalities}); native outputs are "
+            f"{sorted(item.value for item in capabilities.native_modalities)}."
+        )
 
     def pipeline_requirements(
         self,
