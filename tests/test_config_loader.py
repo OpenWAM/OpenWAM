@@ -130,11 +130,59 @@ def test_legacy_parallel_decoder_python_config_normalizes_to_canonical() -> None
         "couple_action_to_video_timesteps",
         "parallel_sequence_contract",
         "preserve_video_pretrain_history",
+        "use_state_conditioning",
+        "use_text_conditioning",
     ],
 )
-def test_authored_policy_semantic_aliases_are_rejected(field_name: str) -> None:
+def test_authored_retired_policy_fields_are_rejected(field_name: str) -> None:
     with pytest.raises(ValueError, match=f"policy_variant.{field_name}.*retired"):
         normalize_video_action_policy_fields({field_name: None}, warn=False)
+
+
+@pytest.mark.parametrize(
+    "legacy_values",
+    (
+        {"use_state_conditioning": False, "use_text_conditioning": True},
+        {"use_state_conditioning": True, "use_text_conditioning": False},
+    ),
+)
+def test_checkpoint_loader_ignores_retired_noop_conditioning_fields(
+    tmp_path: Path,
+    legacy_values: dict[str, bool],
+) -> None:
+    source_path = REPO_ROOT / "configs/experiments/dual_expert_libero_joint.yaml"
+    canonical_raw = yaml.safe_load(source_path.read_text(encoding="utf-8"))
+    legacy_raw = yaml.safe_load(source_path.read_text(encoding="utf-8"))
+    legacy_raw["policy_variant"].update(legacy_values)
+    canonical_path = tmp_path / "canonical.yaml"
+    legacy_path = tmp_path / "legacy_checkpoint.yaml"
+    canonical_path.write_text(
+        yaml.safe_dump(canonical_raw, sort_keys=False), encoding="utf-8"
+    )
+    legacy_path.write_text(
+        yaml.safe_dump(legacy_raw, sort_keys=False), encoding="utf-8"
+    )
+
+    canonical = load_experiment_config(canonical_path)
+    with pytest.warns(
+        DeprecatedPolicyConfigFieldWarning,
+        match="had no runtime effect",
+    ) as caught:
+        migrated = load_experiment_config(
+            legacy_path,
+            checkpoint_runtime_compat=True,
+        )
+
+    assert len(caught) == len(legacy_values)
+    assert migrated == canonical
+    assert (
+        migrated.policy_variant.proprio_context_mode
+        == ProprioContextMode.PER_CHUNK_ADDITIVE
+    )
+    assert (
+        migrated.policy_variant.conditioning_requirements.text_conditioning_mode
+        == TextConditioningMode.TASK_PROMPT
+    )
 
 
 @pytest.mark.parametrize(
@@ -1329,7 +1377,6 @@ def test_dual_expert_policy_yaml_config_loads(tmp_path: Path) -> None:
     raw["policy_variant"]["num_action_layers"] = 4
     raw["policy_variant"]["action_hidden_size"] = 768
     raw["policy_variant"]["action_ffn_dim"] = 1024
-    raw["policy_variant"]["use_state_conditioning"] = True
     raw["policy_variant"]["proprio_context_mode"] = "per_chunk_additive"
 
     config_path = tmp_path / "dual_expert_robotwin.yaml"
@@ -1345,8 +1392,9 @@ def test_dual_expert_policy_yaml_config_loads(tmp_path: Path) -> None:
     assert config.policy_variant.num_action_layers == 4
     assert config.policy_variant.action_hidden_size == 768
     assert config.policy_variant.action_ffn_dim == 1024
-    assert config.policy_variant.use_state_conditioning is True
     assert config.policy_variant.proprio_context_mode == ProprioContextMode.PER_CHUNK_ADDITIVE
+    assert not hasattr(config.policy_variant, "use_state_conditioning")
+    assert not hasattr(config.policy_variant, "use_text_conditioning")
     assert config.action_decoder.name == ActionDecoderName.DUAL_EXPERT
 
 

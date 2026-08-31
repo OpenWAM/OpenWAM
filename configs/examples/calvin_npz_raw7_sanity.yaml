@@ -42,8 +42,6 @@ policy_variant:
   action_expert_init_mode: random
   num_action_layers: 1
   action_hidden_size: 256
-  use_text_conditioning: false
-  use_state_conditioning: false
 
 action_decoder:
   name: dual_expert_decoder

@@ -39,8 +39,6 @@ class DualExpertPolicyConfig(VideoActionPolicyConfig):
     num_action_layers: int = 30
     action_hidden_size: int | None = None
     action_ffn_dim: int | None = None
-    use_text_conditioning: bool = True
-    use_state_conditioning: bool = False
     # Trade forward compute for activation memory by recomputing each
     # (video, action) block pair during backward instead of storing its
     # activations. Only affects two-stream train paths that run through

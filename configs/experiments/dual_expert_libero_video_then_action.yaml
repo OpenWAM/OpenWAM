@@ -107,8 +107,6 @@ policy_variant:
   action_hidden_size: 2048
   action_ffn_dim: 8192
   noisy_video_condition_prob: 0.5
-  use_text_conditioning: true
-  use_state_conditioning: false
   use_activation_checkpointing: true
 
 action_decoder:

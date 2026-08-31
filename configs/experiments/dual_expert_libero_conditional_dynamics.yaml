@@ -128,8 +128,6 @@ policy_variant:
   num_action_layers: 30
   action_hidden_size: 2048
   action_ffn_dim: 8192
-  use_text_conditioning: true
-  use_state_conditioning: false
   use_activation_checkpointing: true
   noisy_video_condition_prob: 0.5
   joint_timestep_coupling: independent

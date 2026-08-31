@@ -303,8 +303,6 @@ def parse_policy_variant_config(
             ),
             action_hidden_size=resolved_raw.get("action_hidden_size"),
             action_ffn_dim=resolved_raw.get("action_ffn_dim"),
-            use_text_conditioning=resolved_raw.get("use_text_conditioning", True),
-            use_state_conditioning=resolved_raw.get("use_state_conditioning", False),
             use_activation_checkpointing=resolved_raw.get(
                 "use_activation_checkpointing", False
             ),

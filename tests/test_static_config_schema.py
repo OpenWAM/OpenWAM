@@ -403,22 +403,32 @@ trainer:
 
 
 @pytest.mark.unit
-def test_static_validator_rejects_retired_history_visibility_alias(
+@pytest.mark.parametrize(
+    ("field_name", "value"),
+    (
+        ("preserve_video_pretrain_history", True),
+        ("use_state_conditioning", False),
+        ("use_text_conditioning", True),
+    ),
+)
+def test_static_validator_rejects_retired_policy_fields(
     tmp_path: Path,
+    field_name: str,
+    value: object,
 ) -> None:
     source = (
         REPO_ROOT / "configs/experiments/parallel_stream_libero_joint.yaml"
     )
     raw = yaml.safe_load(source.read_text(encoding="utf-8"))
-    raw["policy_variant"]["preserve_video_pretrain_history"] = True
-    config_path = tmp_path / "retired_history_alias.yaml"
+    raw["policy_variant"][field_name] = value
+    config_path = tmp_path / f"retired_{field_name}.yaml"
     config_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
 
     report = validate_config_file(config_path, repo_root=REPO_ROOT)
 
     assert not report.ok
     assert any(
-        "preserve_video_pretrain_history" in issue.message
+        field_name in issue.message
         and "retired" in issue.message
         for issue in report.errors
     )

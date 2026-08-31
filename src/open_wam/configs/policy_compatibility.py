@@ -23,9 +23,18 @@ from .enums import (
 LEGACY_VIDEO_ACTION_POLICY_FIELD_ALIASES = {
     "parallel_sequence_contract": "sequence_contract",
 }
+_RETIRED_NOOP_VIDEO_ACTION_POLICY_FIELDS = {
+    "use_state_conditioning": (
+        "use `proprio_context_mode` or a `sequence_contract` that owns it"
+    ),
+    "use_text_conditioning": (
+        "use the policy program/objective text-conditioning semantics"
+    ),
+}
 LEGACY_VIDEO_ACTION_POLICY_FIELDS = frozenset(
     {
         *LEGACY_VIDEO_ACTION_POLICY_FIELD_ALIASES,
+        *_RETIRED_NOOP_VIDEO_ACTION_POLICY_FIELDS,
         "couple_action_to_video_timesteps",
         "preserve_video_pretrain_history",
     }
@@ -54,6 +63,18 @@ def _warn_legacy_field(*, legacy_name: str, canonical_name: str, stacklevel: int
     )
 
 
+def _warn_ignored_noop_field(
+    *, legacy_name: str, replacement: str, stacklevel: int
+) -> None:
+    warnings.warn(
+        f"Policy config field `{legacy_name}` is deprecated and had no runtime "
+        f"effect; ignoring its checkpoint value to preserve historical behavior. "
+        f"For authored configs, {replacement}.",
+        DeprecatedPolicyConfigFieldWarning,
+        stacklevel=stacklevel,
+    )
+
+
 def _normalize_video_action_policy_name(
     raw_policy: Mapping[str, Any],
     *,
@@ -74,7 +95,10 @@ def _normalize_video_action_policy_name(
 
 
 def _retired_semantic_fields(raw_policy: Mapping[str, Any]) -> tuple[str, ...]:
-    return tuple(sorted(LEGACY_VIDEO_ACTION_POLICY_FIELDS.intersection(raw_policy)))
+    semantic_fields = LEGACY_VIDEO_ACTION_POLICY_FIELDS.difference(
+        _RETIRED_NOOP_VIDEO_ACTION_POLICY_FIELDS
+    )
+    return tuple(sorted(semantic_fields.intersection(raw_policy)))
 
 
 def normalize_video_action_policy_fields(
@@ -84,6 +108,28 @@ def normalize_video_action_policy_fields(
 ) -> dict[str, Any]:
     """Canonicalize names and reject retired authored semantic fields."""
 
+    noop_fields = tuple(
+        sorted(_RETIRED_NOOP_VIDEO_ACTION_POLICY_FIELDS.keys() & raw_policy.keys())
+    )
+    if noop_fields:
+        fields = ", ".join(f"policy_variant.{name}" for name in noop_fields)
+        replacements = "; ".join(
+            _RETIRED_NOOP_VIDEO_ACTION_POLICY_FIELDS[name] for name in noop_fields
+        )
+        status = (
+            "is a retired no-op field"
+            if len(noop_fields) == 1
+            else "are retired no-op fields"
+        )
+        subject_pronoun = "it" if len(noop_fields) == 1 else "they"
+        pronoun = "it" if len(noop_fields) == 1 else "them"
+        raise ValueError(
+            f"{fields} {status} in authored configs because "
+            f"{subject_pronoun} never controlled runtime behavior. "
+            f"Remove {pronoun} and {replacements}. "
+            "Historical checkpoint metadata is accepted only with "
+            "`checkpoint_runtime_compat=True`."
+        )
     retired_fields = _retired_semantic_fields(raw_policy)
     if retired_fields:
         fields = ", ".join(f"policy_variant.{name}" for name in retired_fields)
@@ -105,6 +151,16 @@ def _migrate_checkpoint_video_action_policy_fields(
     """Translate retired semantic fields in immutable checkpoint metadata."""
 
     normalized = _normalize_video_action_policy_name(raw_policy, warn=warn)
+    for legacy_name, replacement in _RETIRED_NOOP_VIDEO_ACTION_POLICY_FIELDS.items():
+        if legacy_name not in normalized:
+            continue
+        normalized.pop(legacy_name)
+        if warn:
+            _warn_ignored_noop_field(
+                legacy_name=legacy_name,
+                replacement=replacement,
+                stacklevel=3,
+            )
     for legacy_name, canonical_name in LEGACY_VIDEO_ACTION_POLICY_FIELD_ALIASES.items():
         if legacy_name not in normalized:
             continue

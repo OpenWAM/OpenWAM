@@ -427,10 +427,12 @@ def test_cli_legacy_prefix_contract_allows_match_sigma_joint_coupling_override()
     (
         "policy_variant.parallel_sequence_contract=legacy_prefix_single_frame_perchunk_proprio",
         "policy_variant.couple_action_to_video_timesteps=false",
+        "policy_variant.use_state_conditioning=false",
+        "policy_variant.use_text_conditioning=true",
     ),
 )
 def test_cli_rejects_retired_policy_semantic_aliases(override: str) -> None:
-    with pytest.raises(ValueError, match="retired in authored configs"):
+    with pytest.raises(ValueError, match="retired.*authored configs"):
         load_training_cli_config(
             TrainCliOverrides(
                 config_name="dual_expert_libero_joint",
