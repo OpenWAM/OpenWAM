@@ -30,6 +30,16 @@ from open_wam.configs.enums import serialize_enum_values
 from open_wam.configs.runtime_backbone_components import (
     is_complete_runtime_backbone_selection as _is_complete_runtime_backbone_selection,
 )
+from open_wam.runtime.checkpoint_artifacts import (
+    CheckpointOperation as _CheckpointOperation,
+    checkpoint_step as _checkpoint_step,
+    sorted_checkpoint_dirs as _sorted_checkpoint_dirs,
+)
+from open_wam.runtime.checkpoints import (
+    normalize_checkpoint_state_dict as _normalize_checkpoint_state_dict,
+    notify_checkpoint_loaded as _notify_checkpoint_loaded,
+    resolve_checkpoint_file as _resolve_checkpoint_file,
+)
 from open_wam.runtime.runtime_backbone_manifest import (
     RuntimeBackboneManifest as _RuntimeBackboneManifest,
 )
@@ -43,7 +53,6 @@ from .checkpoint_export import (
 from .checkpoint_storage import (
     _atomic_torch_save,
     _is_rank_zero,
-    _load_sibling_train_state,
     _serialize_config,
     _serialize_runtime_backbone_config,
     _wait_for_file,
@@ -56,6 +65,25 @@ _CHECKPOINT_COMPATIBILITY_EXPORTS = (
     os,
     serialize_enum_values,
     time,
+)
+
+_FULL_TRAINING_STATE_KEYS = frozenset(
+    {
+        "model_state_dict",
+        "optimizer_state_dict",
+        "scheduler_state_dict",
+        "strategy_state_dict",
+        "train_state",
+    }
+)
+_TRAIN_STATE_CURSOR_KEYS = frozenset(
+    {
+        "global_step",
+        "optimizer_step",
+        "epoch_index",
+        "next_batch_index",
+        "seen_batches",
+    }
 )
 
 
@@ -239,7 +267,7 @@ def _set_model_state_dict(
     set_model_state_dict(model, model_state_dict, options=options)
 
 
-def _filter_unexpected_distributed_model_state(
+def _filter_unexpected_model_state(
     expected_keys: frozenset[str],
     model_state_dict: dict[str, Any],
 ) -> dict[str, Any]:
@@ -261,13 +289,58 @@ def _filter_unexpected_distributed_model_state(
     warnings.warn(
         "Ignoring "
         f"{len(unexpected_keys)} checkpoint key(s) absent from the current model "
-        f"during non-strict distributed load: {preview}{suffix}",
+        f"during non-strict model-state load: {preview}{suffix}",
         RuntimeWarning,
         stacklevel=2,
     )
     return {
         key: value for key, value in model_state_dict.items() if key in expected_keys
     }
+
+
+def _validate_full_training_state_payload(
+    payload: dict[str, Any],
+    checkpoint_path: Path,
+) -> None:
+    missing_keys = sorted(_FULL_TRAINING_STATE_KEYS.difference(payload))
+    if missing_keys:
+        raise ValueError(
+            f"Checkpoint {checkpoint_path} is not a full training-state checkpoint; "
+            f"missing: {', '.join(missing_keys)}."
+        )
+    if not isinstance(payload["model_state_dict"], dict):
+        raise TypeError("`model_state_dict` must be a mapping.")
+    if not isinstance(payload["train_state"], dict):
+        raise TypeError("`train_state` must be a mapping.")
+    missing_cursor_keys = sorted(
+        _TRAIN_STATE_CURSOR_KEYS.difference(payload["train_state"])
+    )
+    if missing_cursor_keys:
+        raise ValueError(
+            f"Checkpoint {checkpoint_path} has incomplete `train_state`; "
+            f"missing cursor fields: {', '.join(missing_cursor_keys)}."
+        )
+
+
+def _raise_checkpoint_validation_error(error: Exception | None) -> None:
+    if not dist.is_initialized():
+        if error is not None:
+            raise error
+        return
+    serialized_error: list[tuple[str, str] | None] = [
+        (type(error).__name__, str(error)) if error is not None else None
+    ]
+    dist.broadcast_object_list(serialized_error, src=0)
+    if serialized_error[0] is None:
+        return
+    error_type, message = serialized_error[0]
+    if error_type == torch.OutOfMemoryError.__name__:
+        raise torch.OutOfMemoryError(message)
+    if error_type == TypeError.__name__:
+        raise TypeError(message)
+    if error_type == ValueError.__name__:
+        raise ValueError(message)
+    raise RuntimeError(message)
 
 
 class CheckpointManager:
@@ -330,6 +403,17 @@ class CheckpointManager:
         train_state: TrainState,
         strategy_state: dict[str, object] | None = None,
     ) -> Path:
+        resolved_mode = CheckpointMode(self.checkpoint_mode)
+        if (
+            resolved_mode == CheckpointMode.FULL_TRAINING_STATE
+            and not train_state.is_optimizer_boundary(
+                self.config.training.gradient_accumulation_steps
+            )
+        ):
+            raise ValueError(
+                "Full training-state checkpoints require an optimizer boundary; "
+                "partially accumulated gradients are not serialized."
+            )
         checkpoint_dir = self.checkpoint_dir_for_step(step)
         payload_marker = checkpoint_dir / ".checkpoint_payload_complete"
         completion_marker = checkpoint_dir / ".checkpoint_complete"
@@ -348,7 +432,6 @@ class CheckpointManager:
 
         save_options = _save_state_dict_options()
         model_state_dict = get_model_state_dict(model, options=save_options)
-        resolved_mode = CheckpointMode(self.checkpoint_mode)
         payload: dict[str, Any] = {
             "model_state_dict": model_state_dict,
             "train_state": train_state.state_dict(),
@@ -450,32 +533,72 @@ class CheckpointManager:
         scheduler: torch.optim.lr_scheduler.LRScheduler | None = None,
         map_location: str | torch.device = "cpu",
     ) -> tuple[TrainState, dict[str, object]]:
-        checkpoint_path = self.resolve_checkpoint_path(path)
+        checkpoint_path = self.resolve_checkpoint_path(
+            path,
+            operation=_CheckpointOperation.RESUME_TRAINING,
+        )
         distributed = dist.is_initialized()
         is_rank_zero = _is_rank_zero()
-        expected_model_state_keys = None
-        if distributed:
-            current_model_state = model.state_dict()
-            expected_model_state_keys = frozenset(current_model_state)
-            del current_model_state
+        current_model_state = model.state_dict()
+        expected_model_state_keys = frozenset(current_model_state)
+        del current_model_state
         load_options = _load_state_dict_options(
             broadcast_from_rank0=distributed,
         )
-        payload = (
-            _load_tensor_artifact(checkpoint_path, map_location=map_location)
-            if is_rank_zero or not distributed
-            else {}
-        )
-        if not isinstance(payload, dict):
-            raise TypeError(
-                f"Expected checkpoint mapping at {checkpoint_path}, "
-                f"got {type(payload).__name__}."
-            )
+        payload: dict[str, Any] = {}
+        validation_error: Exception | None = None
+        if is_rank_zero:
+            try:
+                loaded_payload = _load_tensor_artifact(
+                    checkpoint_path, map_location=map_location
+                )
+                if not isinstance(loaded_payload, dict):
+                    raise TypeError(
+                        f"Expected checkpoint mapping at {checkpoint_path}, "
+                        f"got {type(loaded_payload).__name__}."
+                    )
+                payload = loaded_payload
+                _validate_full_training_state_payload(payload, checkpoint_path)
+                checkpoint_train_state = TrainState.from_state_dict(
+                    payload["train_state"]
+                )
+                if not checkpoint_train_state.is_optimizer_boundary(
+                    self.config.training.gradient_accumulation_steps
+                ):
+                    raise ValueError(
+                        f"Checkpoint {checkpoint_path} contains partially accumulated "
+                        "gradient state, which cannot be resumed exactly."
+                    )
+                missing_model_keys = sorted(
+                    expected_model_state_keys.difference(payload["model_state_dict"])
+                )
+                if missing_model_keys:
+                    preview = ", ".join(missing_model_keys[:8])
+                    suffix = "" if len(missing_model_keys) <= 8 else ", ..."
+                    raise ValueError(
+                        f"Checkpoint {checkpoint_path} is missing "
+                        f"{len(missing_model_keys)} current model key(s): "
+                        f"{preview}{suffix}."
+                    )
+                if optimizer is not None and not isinstance(
+                    payload["optimizer_state_dict"], dict
+                ):
+                    raise ValueError(
+                        f"Checkpoint {checkpoint_path} has no optimizer state to resume."
+                    )
+                if scheduler is not None and not isinstance(
+                    payload["scheduler_state_dict"], dict
+                ):
+                    raise ValueError(
+                        f"Checkpoint {checkpoint_path} has no scheduler state to resume."
+                    )
+            except Exception as error:
+                validation_error = error
+        _raise_checkpoint_validation_error(validation_error)
 
         model_state = payload.get("model_state_dict", {})
         if distributed and is_rank_zero and isinstance(model_state, dict):
-            assert expected_model_state_keys is not None
-            model_state = _filter_unexpected_distributed_model_state(
+            model_state = _filter_unexpected_model_state(
                 expected_model_state_keys,
                 model_state,
             )
@@ -490,10 +613,6 @@ class CheckpointManager:
             for key, value in payload.items()
             if key not in {"model_state_dict", "optimizer_state_dict"}
         }
-        if metadata_payload.get("train_state") is None and is_rank_zero:
-            sibling_train_state = _load_sibling_train_state(checkpoint_path)
-            if sibling_train_state is not None:
-                metadata_payload["train_state"] = sibling_train_state
         if distributed:
             metadata_object: list[dict[str, object] | None] = [
                 metadata_payload if is_rank_zero else None
@@ -507,6 +626,11 @@ class CheckpointManager:
             optimizer_state_contract = optimizer_contract_object[0]
 
         _set_model_state_dict(model, model_state, options=load_options)
+        _notify_checkpoint_loaded(
+            model,
+            loaded_state_keys=expected_model_state_keys,
+            missing_state_keys=frozenset(),
+        )
         if optimizer is not None and optimizer_state_contract is not None:
             optimizer_state_for_load = (
                 optimizer_state if isinstance(optimizer_state, dict) else {}
@@ -549,37 +673,79 @@ class CheckpointManager:
         train_state.resume_source = str(checkpoint_path)
         return train_state, payload if not distributed else metadata_payload
 
-    def resolve_checkpoint_path(self, path: str | Path) -> Path:
-        candidate = Path(path)
-        if candidate.is_file():
-            if (
-                CheckpointMode(self.checkpoint_mode)
-                == CheckpointMode.FULL_TRAINING_STATE
-                and candidate.name == "model_state.pt"
-            ):
-                full_state = candidate.parent / "full_training_state.pt"
-                if full_state.is_file():
-                    warnings.warn(
-                        "Promoting model_state.pt resume path to sibling full_training_state.pt "
-                        "because trainer.checkpoint_mode=full_training_state. Pass a checkpoint "
-                        "directory or full_training_state.pt for full-state training resumes.",
-                        RuntimeWarning,
-                        stacklevel=2,
-                    )
-                    return full_state
-            return candidate
-        if (candidate / "full_training_state.pt").exists():
-            return candidate / "full_training_state.pt"
-        if (candidate / "model_state.pt").exists():
-            return candidate / "model_state.pt"
-        latest = self.find_latest_checkpoint(candidate)
-        if latest is not None:
-            if (latest / "full_training_state.pt").exists():
-                return latest / "full_training_state.pt"
-            return latest / "model_state.pt"
-        raise FileNotFoundError(
-            f"Unable to resolve a checkpoint file from {candidate}."
+    def initialize_weights(
+        self,
+        *,
+        path: str | Path,
+        model: nn.Module,
+        map_location: str | torch.device = "cpu",
+    ) -> Path:
+        """Initialize model tensors without restoring training progress."""
+
+        checkpoint_path = self.resolve_checkpoint_path(
+            path,
+            operation=_CheckpointOperation.INITIALIZE_WEIGHTS,
         )
+        distributed = dist.is_initialized()
+        is_rank_zero = _is_rank_zero()
+        expected_state_keys = frozenset(model.state_dict())
+        payload: dict[str, Any] = {}
+        model_state: dict[str, torch.Tensor] = {}
+        validation_error: Exception | None = None
+        if is_rank_zero:
+            try:
+                loaded_payload = _load_tensor_artifact(
+                    checkpoint_path, map_location=map_location
+                )
+                if not isinstance(loaded_payload, dict):
+                    raise TypeError(
+                        f"Expected checkpoint mapping at {checkpoint_path}, "
+                        f"got {type(loaded_payload).__name__}."
+                    )
+                payload = loaded_payload
+                model_state = _normalize_checkpoint_state_dict(payload)
+                if not frozenset(model_state).intersection(expected_state_keys):
+                    raise ValueError(
+                        f"Checkpoint {checkpoint_path} has no parameters matching "
+                        "the current model."
+                    )
+            except Exception as error:
+                validation_error = error
+        _raise_checkpoint_validation_error(validation_error)
+        loaded_state_keys = frozenset(model_state).intersection(expected_state_keys)
+        missing_state_keys = expected_state_keys.difference(loaded_state_keys)
+        if distributed:
+            lifecycle_keys: list[tuple[frozenset[str], frozenset[str]] | None] = [
+                (loaded_state_keys, missing_state_keys) if is_rank_zero else None
+            ]
+            dist.broadcast_object_list(lifecycle_keys, src=0)
+            loaded_state_keys, missing_state_keys = lifecycle_keys[0] or (
+                frozenset(),
+                expected_state_keys,
+            )
+        model_state = _filter_unexpected_model_state(
+            expected_state_keys,
+            model_state,
+        )
+        _set_model_state_dict(
+            model,
+            model_state,
+            options=_load_state_dict_options(broadcast_from_rank0=distributed),
+        )
+        _notify_checkpoint_loaded(
+            model,
+            loaded_state_keys=loaded_state_keys,
+            missing_state_keys=missing_state_keys,
+        )
+        return checkpoint_path
+
+    @staticmethod
+    def resolve_checkpoint_path(
+        path: str | Path,
+        *,
+        operation: _CheckpointOperation | str = _CheckpointOperation.RESUME_TRAINING,
+    ) -> Path:
+        return _resolve_checkpoint_file(path, operation=operation)
 
     def find_latest_checkpoint(self, root: str | Path) -> Path | None:
         checkpoint_dirs = self._complete_checkpoint_dirs(Path(root))
@@ -587,35 +753,18 @@ class CheckpointManager:
 
     def _complete_checkpoint_dirs(self, root: Path | None = None) -> list[Path]:
         root_path = self.root_dir if root is None else Path(root)
-        candidate_dirs: list[Path] = []
-        for path in root_path.glob("checkpoint_step_*"):
-            if not path.is_dir():
-                continue
-            try:
-                int(path.name.split("_")[-1])
-            except ValueError:
-                continue
-            candidate_dirs.append(path)
-        # New checkpoints write a completion marker after payload, optional
-        # exports, and pruning finish. Once a run root has marker-aware
-        # checkpoints, ignore later unmarked dirs without touching their
-        # payload files because interrupted full-state writes on network
-        # filesystems can make those stat calls block. Older tests/checkpoints
-        # did not have markers, so preserve the legacy behavior when no markers
-        # are present under the queried root.
-        marked_checkpoint_dirs = [
+        scan_dirs = [
             checkpoint_dir
-            for checkpoint_dir in candidate_dirs
-            if (checkpoint_dir / ".checkpoint_complete").exists()
+            for checkpoint_dir in _sorted_checkpoint_dirs(root_path)
+            if _checkpoint_step(checkpoint_dir) >= 0
         ]
-        scan_dirs = marked_checkpoint_dirs if marked_checkpoint_dirs else candidate_dirs
         checkpoint_dirs = [
             checkpoint_dir
             for checkpoint_dir in scan_dirs
             if (checkpoint_dir / "full_training_state.pt").exists()
             or (checkpoint_dir / "model_state.pt").exists()
         ]
-        return sorted(checkpoint_dirs, key=lambda path: int(path.name.split("_")[-1]))
+        return checkpoint_dirs
 
     def _prune_old_checkpoints(self, *, keep: int | None, preserve: Path) -> list[Path]:
         if keep is None:

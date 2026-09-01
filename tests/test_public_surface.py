@@ -362,15 +362,35 @@ def test_public_train_parser_advertises_resume_and_step_controls() -> None:
         [
             "--cfg",
             "experiment.yaml",
-            "--checkpoint-root",
+            "--initialize-weights-from",
             "runs/example/checkpoints/checkpoint_step_100",
             "--num-steps",
             "200",
         ]
     )
 
-    assert args.checkpoint_root.endswith("checkpoint_step_100")
+    assert args.initialize_weights_from.endswith("checkpoint_step_100")
     assert args.num_steps == 200
+
+    resume_args = train_parser().parse_args(
+        [
+            "--cfg",
+            "experiment.yaml",
+            "--resume-from",
+            "runs/example/checkpoints/checkpoint_step_100",
+        ]
+    )
+    assert resume_args.resume_from.endswith("checkpoint_step_100")
+
+
+@pytest.mark.unit
+def test_cpu_smoke_uses_explicit_resume_operation() -> None:
+    workflow = (REPO_ROOT / ".github/workflows/cpu-smoke.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "--resume-from" in workflow
+    assert "--checkpoint-root" not in workflow
 
 
 @pytest.mark.unit

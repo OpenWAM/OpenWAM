@@ -4307,21 +4307,22 @@ def test_checkpoint_persistence_roles_have_one_owner() -> None:
             "CheckpointManager",
             "_cpu_align_non_dtensor_state_for_full_load",
             "_densify_optimizer_state_dict",
-            "_filter_unexpected_distributed_model_state",
+            "_filter_unexpected_model_state",
             "_is_dtensor",
             "_iter_model_state_tensors",
             "_load_state_dict_options",
             "_non_scalar_model_state_devices",
             "_optimizer_state_presence_contract",
             "_prune_synthetic_optimizer_state",
+            "_raise_checkpoint_validation_error",
             "_release_unused_device_memory",
             "_save_state_dict_options",
             "_set_model_state_dict",
+            "_validate_full_training_state_payload",
         },
         "storage": {
             "_atomic_torch_save",
             "_is_rank_zero",
-            "_load_sibling_train_state",
             "_serialize_config",
             "_serialize_runtime_backbone_config",
             "_wait_for_file",
@@ -4329,7 +4330,7 @@ def test_checkpoint_persistence_roles_have_one_owner() -> None:
     }
     all_names = set().union(*owner_names.values())
 
-    assert len(all_names) == 21
+    assert len(all_names) == 22
     assert all(
         sum(
             name in _top_level_definitions(path)

@@ -23,6 +23,14 @@ from open_wam.contracts.paths import (
 CHECKPOINT_FILENAMES = ("model_state.pt", "full_training_state.pt")
 
 
+class CheckpointOperation(StrEnum):
+    """Intent governing checkpoint-state selection."""
+
+    INITIALIZE_WEIGHTS = "initialize_weights"
+    RESUME_TRAINING = "resume_training"
+    EVALUATE = "evaluate"
+
+
 class CheckpointSearchLayout(StrEnum):
     """Filesystem layouts accepted while locating checkpoint state."""
 
@@ -118,14 +126,18 @@ def find_checkpoint_state_file(
     path: str | Path,
     *,
     layout: CheckpointSearchLayout | str = CheckpointSearchLayout.RUN_OR_STEP,
+    operation: CheckpointOperation | str = CheckpointOperation.EVALUATE,
 ) -> Path | None:
     """Find preferred state in a file, step directory, or supported run root."""
 
     layout = CheckpointSearchLayout(layout)
+    operation = CheckpointOperation(operation)
     candidate = Path(path).expanduser().resolve()
     if candidate.is_file():
+        if operation is CheckpointOperation.RESUME_TRAINING:
+            return candidate if candidate.name == "full_training_state.pt" else None
         return candidate
-    direct = state_file_in_dir(candidate)
+    direct = state_file_in_dir(candidate, operation=operation)
     if direct is not None:
         return direct
 
@@ -141,26 +153,48 @@ def find_checkpoint_state_file(
         for checkpoint_dir in reversed(
             sorted_checkpoint_dirs(root, strict_steps=strict_steps)
         ):
-            checkpoint_file = state_file_in_dir(checkpoint_dir)
+            checkpoint_file = state_file_in_dir(
+                checkpoint_dir,
+                operation=operation,
+            )
             if checkpoint_file is not None:
                 return checkpoint_file
     return None
 
 
-def state_file_in_dir(path: Path) -> Path | None:
+def state_file_in_dir(
+    path: Path,
+    *,
+    operation: CheckpointOperation | str = CheckpointOperation.EVALUATE,
+) -> Path | None:
     """Return the preferred state file directly inside ``path``."""
 
-    for filename in CHECKPOINT_FILENAMES:
+    for filename in _checkpoint_filenames_for_operation(
+        CheckpointOperation(operation)
+    ):
         checkpoint_file = path / filename
         if checkpoint_file.is_file():
             return checkpoint_file.resolve()
     return None
 
 
+def _checkpoint_filenames_for_operation(
+    operation: CheckpointOperation,
+) -> tuple[str, ...]:
+    if operation is CheckpointOperation.RESUME_TRAINING:
+        return ("full_training_state.pt",)
+    return CHECKPOINT_FILENAMES
+
+
 def sorted_checkpoint_dirs(root: Path, *, strict_steps: bool = False) -> list[Path]:
     """Return ``checkpoint_step_*`` children ordered by numeric step."""
 
     checkpoint_dirs = [path for path in root.glob("checkpoint_step_*") if path.is_dir()]
+    completed_dirs = [
+        path for path in checkpoint_dirs if (path / ".checkpoint_complete").is_file()
+    ]
+    if completed_dirs:
+        checkpoint_dirs = completed_dirs
     return sorted(
         checkpoint_dirs,
         key=lambda path: checkpoint_step(path, strict=strict_steps),

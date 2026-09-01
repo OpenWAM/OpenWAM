@@ -56,6 +56,7 @@ class TrainerConfig:
     runtime_backbone_export_components: tuple[TrainingComponentSelector, ...] = (
         TrainingComponentSelector.VISUAL_TOWER_RUNTIME_BACKBONE,
     )
+    initialize_weights_from: str | None = None
     resume_from: str | None = None
 
     # Logging/tracking knobs
@@ -99,6 +100,11 @@ class TrainerConfig:
                 scope="`trainer.runtime_backbone_export_components`",
             ),
         )
+        if self.initialize_weights_from is not None and self.resume_from is not None:
+            raise ValueError(
+                "Choose either `trainer.initialize_weights_from` or "
+                "`trainer.resume_from`, not both."
+            )
         if isinstance(self.devices, bool) or int(self.devices) <= 0:
             raise ValueError("`trainer.devices` must be a positive integer.")
         object.__setattr__(self, "devices", int(self.devices))
@@ -175,6 +181,7 @@ def parse_trainer_config(raw_value: Mapping[str, Any] | None) -> TrainerConfig:
             "runtime_backbone_export_components",
             (TrainingComponentSelector.VISUAL_TOWER_RUNTIME_BACKBONE,),
         ),
+        initialize_weights_from=raw.get("initialize_weights_from"),
         resume_from=raw.get("resume_from"),
         enable_jsonl_logging=raw.get("enable_jsonl_logging", False),
         metrics_filename=raw.get("metrics_filename", "metrics.jsonl"),

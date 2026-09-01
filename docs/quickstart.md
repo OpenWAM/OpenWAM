@@ -38,13 +38,13 @@ uv run --extra train open-wam-train \
   --disable-wandb
 ```
 
-Resume exactly from step 1 and train step 2:
+Resume full training state from step 1 and train through step 2:
 
 ```bash
 uv run --extra train open-wam-train \
   --cfg configs/examples/public_tiny_synthetic_contract.yaml \
   --save-root "$RUN_ROOT" \
-  --checkpoint-root "$RUN_ROOT/checkpoints/checkpoint_step_1" \
+  --resume-from "$RUN_ROOT/checkpoints/checkpoint_step_1" \
   --num-steps 2 \
   --expected-world-size 1 \
   --disable-wandb

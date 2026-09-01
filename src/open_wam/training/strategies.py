@@ -277,10 +277,17 @@ class SingleDeviceStrategy:
     def load_state_dict(self, raw: dict[str, object] | None) -> None:
         if not self.grad_scaler.is_enabled():
             return
-        payload = raw or {}
-        scaler_state = payload.get("grad_scaler")
-        if isinstance(scaler_state, dict):
-            self.grad_scaler.load_state_dict(scaler_state)
+        if raw is not None and not isinstance(raw, dict):
+            raise TypeError("Training strategy state must be a mapping.")
+        scaler_state = raw.get("grad_scaler") if raw is not None else None
+        if scaler_state is None:
+            raise ValueError(
+                "Enabled FP16 gradient scaling requires `grad_scaler` state "
+                "for exact training resume."
+            )
+        if not isinstance(scaler_state, dict):
+            raise TypeError("`grad_scaler` state must be a mapping.")
+        self.grad_scaler.load_state_dict(scaler_state)
 
     def unwrap_model(self, model: nn.Module) -> nn.Module:
         return model

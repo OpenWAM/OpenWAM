@@ -15,17 +15,29 @@ def build_train_arg_parser() -> argparse.ArgumentParser:
         type=str,
         help="Full run output directory. This mirrors LingBot's `save_root` semantics.",
     )
-    parser.add_argument("--checkpoint-dir", type=str)
     parser.add_argument(
+        "--checkpoint-dir",
+        type=str,
+        help="Directory for checkpoints written by this training run.",
+    )
+    checkpoint_group = parser.add_mutually_exclusive_group()
+    checkpoint_group.add_argument(
         "--checkpoint-root",
         type=str,
         help=(
-            "Warm-start checkpoint_step_* directory; infers full_training_state.pt "
-            "when available, falling back to model_state.pt only when no full state "
-            "exists."
+            "Deprecated ambiguous option; always errors. Use "
+            "--initialize-weights-from or --resume-from."
         ),
     )
-    parser.add_argument("--resume-from", type=str)
+    checkpoint_group.add_argument("--initialize-weights-from", type=str)
+    checkpoint_group.add_argument(
+        "--resume-from",
+        type=str,
+        help=(
+            "Full training-state checkpoint used to resume model, optimizer, "
+            "scheduler, strategy, and step state."
+        ),
+    )
     parser.add_argument("--run-name", type=str)
     parser.add_argument("--dataset-root", type=str)
     parser.add_argument("--latent-root", type=str)

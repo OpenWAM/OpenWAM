@@ -139,23 +139,28 @@ uv run --extra train torchrun --standalone --nproc-per-node=4 \
   --expected-world-size 4
 ```
 
-Resume from a checkpoint directory with the same command and
-`--checkpoint-root`:
+Resume from a full training-state checkpoint with the same command and
+`--resume-from`:
 
 ```bash
 uv run --extra train torchrun --standalone --nproc-per-node=4 \
   -m open_wam.cli.train \
   --cfg configs/experiments/dual_expert_libero_joint.yaml \
   --save-root runs/dual-expert-joint \
-  --checkpoint-root runs/dual-expert-joint/checkpoints/checkpoint_step_N \
+  --resume-from runs/dual-expert-joint/checkpoints/checkpoint_step_N \
   --expected-world-size 4
 ```
 
-`full_training_state.pt` restores optimizer, scheduler, strategy/scaler, and
-step state for stateful continuation. Process and dataloader RNG streams are
-not checkpointed, so a restarted run is not bitwise identical.
-`model_state.pt` is an inference artifact or warm start. Every checkpoint
-stores its resolved config.
+`--resume-from` requires `full_training_state.pt` and restores model, optimizer,
+scheduler, strategy/scaler, step state, and the next sampler epoch/batch cursor.
+Resumable checkpoints are written only at optimizer boundaries because partial
+gradients are not serialized. Exact loader-cursor continuation also requires a
+sized training dataloader. Process and stochastic dataset/worker RNG streams are
+not checkpointed, so a restarted run is not bitwise identical. Use
+`--initialize-weights-from` for a fresh run initialized from model weights. The
+removed ambiguous `--checkpoint-root` operation always errors. Every checkpoint
+stores its resolved config as an audit record; it is not merged into the
+invocation config.
 
 Conditional FDM/IDM uses the dynamics-routing data adapter. The maintained
 config mixes real demonstrations with encoded counterfactual train and

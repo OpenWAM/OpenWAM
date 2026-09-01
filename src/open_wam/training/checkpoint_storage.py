@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import os
 import time
 from dataclasses import asdict, is_dataclass
@@ -73,25 +72,3 @@ def _atomic_torch_save(payload: object, path: Path) -> None:
     finally:
         if tmp_path.exists():
             tmp_path.unlink()
-
-
-def _load_sibling_train_state(checkpoint_path: Path) -> dict[str, Any] | None:
-    """Recover step metadata for lightweight model-only warm starts when available."""
-
-    if checkpoint_path.name != "model_state.pt":
-        return None
-    train_state_path = checkpoint_path.parent / "train_state.json"
-    if not train_state_path.is_file():
-        return None
-    with train_state_path.open("r", encoding="utf-8") as handle:
-        raw = json.load(handle)
-    if not isinstance(raw, dict):
-        raise ValueError(
-            f"Expected object in {train_state_path}, got {type(raw).__name__}."
-        )
-    # A model-only checkpoint has no optimizer/scheduler/sampler state. Preserve
-    # the step counters for logging and max-step continuation, but do not skip
-    # batches as if this were an exact full-training-state resume.
-    raw["epoch_index"] = 0
-    raw["seen_batches"] = 0
-    return raw

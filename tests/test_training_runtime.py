@@ -55,7 +55,7 @@ from open_wam.training.data_loading import (
     build_runtime_dataloaders,
     preflight_runtime_dataset_artifacts,
 )
-from open_wam.training.loop_policies import StepLoopPolicy
+from open_wam.training.loop_policies import EpochLoopPolicy, StepLoopPolicy
 from open_wam.training.optim import _normalize_optimizer_state_dtypes
 from open_wam.training.state import TrainState
 from open_wam.training.step_executor import (
@@ -292,7 +292,14 @@ def test_step_loop_reshuffles_distributed_sampler_each_loader_pass(
     runtime = TrainingRuntime.__new__(TrainingRuntime)
     runtime.train_loader = loader
     runtime.train_state = TrainState(run_name="step-loop-sampler-test")
-    runtime._run_validation = lambda *, limit_batches: None
+    runtime.config = SimpleNamespace(
+        trainer=SimpleNamespace(
+            limit_train_batches=None,
+            save_interval=None,
+            validation_interval=None,
+        )
+    )
+    runtime._run_all_validation = lambda *, limit_batches: None
     runtime._save_checkpoint = lambda *, final: None
 
     def train_one_batch(batch) -> None:
@@ -307,25 +314,129 @@ def test_step_loop_reshuffles_distributed_sampler_each_loader_pass(
 
     assert seen_epochs == [0, 1, 2]
     assert runtime.train_state.epoch_index == 3
+    assert runtime.train_state.next_batch_index == 0
+
+
+def test_step_loop_loader_boundary_checkpoint_resumes_next_sampler_epoch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dataset = TensorDataset(torch.arange(2))
+    sampler = DistributedSampler(dataset, num_replicas=1, rank=0, shuffle=True)
+    loader = DataLoader(dataset, batch_size=1, sampler=sampler)
+    seen_epochs: list[int] = []
+    original_set_epoch = sampler.set_epoch
+
+    def record_set_epoch(epoch: int) -> None:
+        seen_epochs.append(epoch)
+        original_set_epoch(epoch)
+
+    monkeypatch.setattr(sampler, "set_epoch", record_set_epoch)
+
+    def make_runtime(train_state: TrainState) -> TrainingRuntime:
+        runtime = TrainingRuntime.__new__(TrainingRuntime)
+        runtime.train_loader = loader
+        runtime.train_state = train_state
+        runtime.config = SimpleNamespace(
+            trainer=SimpleNamespace(
+                limit_train_batches=None,
+                save_interval=2,
+                validation_interval=None,
+            )
+        )
+        runtime.strategy = SimpleNamespace(is_main_process=True)
+        runtime._run_all_validation = lambda *, limit_batches: None
+        runtime.log_sink = SimpleNamespace(log_event=lambda **kwargs: None)
+        return runtime
+
+    source = make_runtime(TrainState(run_name="loader-boundary-source"))
+    saved_states: list[TrainState] = []
+
+    def train_one_batch(batch) -> None:
+        del batch
+        source.train_state.global_step += 1
+        source.train_state.seen_batches += 1
+        source.train_state.optimizer_step += 1
+
+    source._train_micro_step = train_one_batch
+    source._save_checkpoint = lambda *, final: (
+        saved_states.append(TrainState.from_state_dict(source.train_state.state_dict()))
+        if not final
+        else None
+    )
+
+    TrainingRuntime._run_step_loop(source, StepLoopPolicy(max_steps=2))
+
+    assert seen_epochs == [0]
+    assert len(saved_states) == 1
+    assert saved_states[0].epoch_index == 1
+    assert saved_states[0].next_batch_index == 0
+
+    resumed_state = saved_states[0]
+    resumed_state.resume_source = "/tmp/checkpoint_step_2/full_training_state.pt"
+    resumed = make_runtime(resumed_state)
+
+    def train_resumed_batch(batch) -> None:
+        del batch
+        resumed.train_state.global_step += 1
+        resumed.train_state.seen_batches += 1
+        resumed.train_state.optimizer_step += 1
+
+    resumed._train_micro_step = train_resumed_batch
+    resumed._save_checkpoint = lambda *, final: None
+    seen_epochs.clear()
+
+    TrainingRuntime._run_step_loop(resumed, StepLoopPolicy(max_steps=3))
+
+    assert seen_epochs == [1]
+    assert resumed.train_state.epoch_index == 1
+    assert resumed.train_state.next_batch_index == 1
+
+
+def test_full_state_checkpointing_rejects_unsized_train_loader() -> None:
+    runtime = TrainingRuntime.__new__(TrainingRuntime)
+    runtime.train_loader = iter((0, 1))
+    runtime.config = SimpleNamespace(
+        trainer=SimpleNamespace(
+            checkpoint_mode=CheckpointMode.FULL_TRAINING_STATE,
+            enable_checkpointing=True,
+            save_interval=None,
+        )
+    )
+
+    with pytest.raises(ValueError, match="requires a sized train dataloader"):
+        runtime.run()
+
+
+def test_full_state_resume_rejects_unsized_train_loader_before_loading() -> None:
+    runtime = TrainingRuntime.__new__(TrainingRuntime)
+    runtime.train_loader = iter((0, 1))
+    runtime.checkpoint_manager = SimpleNamespace(
+        load=lambda **kwargs: pytest.fail("unsupported resume must fail before loading")
+    )
+
+    with pytest.raises(ValueError, match="requires a sized train dataloader"):
+        runtime.resume("full_training_state.pt")
 
 
 def test_epoch_loop_resume_cursor_skips_seen_batches_within_current_epoch() -> None:
     runtime = TrainingRuntime.__new__(TrainingRuntime)
     runtime.train_loader = range(10)
     runtime.train_state = TrainState(
-        seen_batches=23, resume_source="/tmp/checkpoint_step_2/full_training_state.pt"
+        seen_batches=23,
+        next_batch_index=3,
+        resume_source="/tmp/checkpoint_step_2/full_training_state.pt",
     )
     runtime.config = SimpleNamespace(trainer=SimpleNamespace(limit_train_batches=None))
 
-    assert runtime._current_epoch_resume_batch_index() == 3
+    assert runtime._next_train_batch_index(loader_pass_batches=10) == 3
 
     runtime.config = SimpleNamespace(trainer=SimpleNamespace(limit_train_batches=7))
 
-    assert runtime._current_epoch_resume_batch_index() == 2
+    assert runtime._next_train_batch_index(loader_pass_batches=7) == 3
 
     runtime.train_state.resume_source = None
 
-    assert runtime._current_epoch_resume_batch_index() == 0
+    assert runtime._next_train_batch_index(loader_pass_batches=7) == 3
 
 
 def test_step_loop_resume_cursor_skips_seen_batches_within_current_loader_pass() -> (
@@ -335,6 +446,7 @@ def test_step_loop_resume_cursor_skips_seen_batches_within_current_loader_pass()
     runtime.train_loader = range(5)
     runtime.train_state = TrainState(
         seen_batches=2,
+        next_batch_index=2,
         resume_source="/tmp/checkpoint_step_2/full_training_state.pt",
     )
     runtime.config = SimpleNamespace(trainer=SimpleNamespace(limit_train_batches=None))
@@ -1226,6 +1338,47 @@ def test_full_state_resume_preserves_sparse_adamw_state(tmp_path: Path) -> None:
             )
 
 
+def test_full_state_resume_notifies_checkpoint_lifecycle(tmp_path: Path) -> None:
+    class LifecycleLinear(torch.nn.Linear):
+        loaded_keys: frozenset[str] | None = None
+        missing_keys: frozenset[str] | None = None
+
+        def on_checkpoint_loaded(
+            self,
+            *,
+            loaded_state_keys: frozenset[str],
+            missing_state_keys: frozenset[str],
+        ) -> None:
+            self.loaded_keys = loaded_state_keys
+            self.missing_keys = missing_state_keys
+
+    config = load_experiment_config(
+        REPO_ROOT / "configs/examples/public_tiny_synthetic_contract.yaml"
+    )
+    manager = CheckpointManager(
+        root_dir=tmp_path / "checkpoints",
+        config=config,
+        checkpoint_mode=CheckpointMode.FULL_TRAINING_STATE,
+    )
+    model = LifecycleLinear(2, 2)
+    checkpoint_path = tmp_path / "full_training_state.pt"
+    torch.save(
+        {
+            "model_state_dict": model.state_dict(),
+            "optimizer_state_dict": None,
+            "scheduler_state_dict": None,
+            "strategy_state_dict": None,
+            "train_state": TrainState().state_dict(),
+        },
+        checkpoint_path,
+    )
+
+    manager.load(path=checkpoint_path, model=model)
+
+    assert model.loaded_keys == frozenset({"weight", "bias"})
+    assert model.missing_keys == frozenset()
+
+
 def test_checkpoint_manager_prunes_old_checkpoints_after_successful_save(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1268,7 +1421,7 @@ def test_checkpoint_manager_prunes_old_checkpoints_after_successful_save(
     ]
 
 
-def test_model_only_checkpoint_loads_sibling_train_state(
+def test_model_only_checkpoint_initializes_weights_without_train_state(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     config = load_experiment_config(
@@ -1302,19 +1455,168 @@ def test_model_only_checkpoint_loads_sibling_train_state(
         "open_wam.training.checkpoints.set_model_state_dict", fake_set_model_state_dict
     )
 
-    train_state, payload = manager.load(
+    resolved = manager.initialize_weights(
         path=checkpoint_dir / "model_state.pt", model=torch.nn.Linear(1, 1)
     )
 
     assert loaded_keys == ["weight"]
-    assert "optimizer_state_dict" not in payload
-    assert train_state.global_step == 10000
-    assert train_state.optimizer_step == 500
-    assert train_state.seen_batches == 0
-    assert train_state.resume_source == str(checkpoint_dir / "model_state.pt")
+    assert resolved == (checkpoint_dir / "model_state.pt").resolve()
 
 
-def test_full_state_checkpoint_resume_prefers_sibling_full_state(
+def test_weight_initialization_normalizes_pipeline_prefix_and_notifies_lifecycle(
+    tmp_path: Path,
+) -> None:
+    class LifecycleLinear(torch.nn.Linear):
+        loaded_keys: frozenset[str] | None = None
+        missing_keys: frozenset[str] | None = None
+
+        def on_checkpoint_loaded(
+            self,
+            *,
+            loaded_state_keys: frozenset[str],
+            missing_state_keys: frozenset[str],
+        ) -> None:
+            self.loaded_keys = loaded_state_keys
+            self.missing_keys = missing_state_keys
+
+    config = load_experiment_config(
+        REPO_ROOT / "configs/examples/public_tiny_synthetic_contract.yaml"
+    )
+    manager = CheckpointManager(
+        root_dir=tmp_path / "checkpoints",
+        config=config,
+        checkpoint_mode=CheckpointMode.MODEL_ONLY,
+    )
+    source = torch.nn.Linear(2, 2)
+    checkpoint_path = tmp_path / "prefixed_state.pt"
+    torch.save(
+        {
+            "state_dict": {
+                f"pipeline.{key}": value.detach().clone()
+                for key, value in source.state_dict().items()
+            }
+        },
+        checkpoint_path,
+    )
+    target = LifecycleLinear(2, 2)
+
+    manager.initialize_weights(path=checkpoint_path, model=target)
+
+    for key, expected in source.state_dict().items():
+        torch.testing.assert_close(target.state_dict()[key], expected)
+    assert target.loaded_keys == frozenset({"weight", "bias"})
+    assert target.missing_keys == frozenset()
+
+
+def test_weight_initialization_rejects_checkpoint_without_matching_parameters(
+    tmp_path: Path,
+) -> None:
+    config = load_experiment_config(
+        REPO_ROOT / "configs/examples/public_tiny_synthetic_contract.yaml"
+    )
+    manager = CheckpointManager(
+        root_dir=tmp_path / "checkpoints",
+        config=config,
+        checkpoint_mode=CheckpointMode.MODEL_ONLY,
+    )
+    checkpoint_path = tmp_path / "model_state.pt"
+    torch.save(
+        {"model_state_dict": {"unrelated.weight": torch.ones(1)}},
+        checkpoint_path,
+    )
+
+    with pytest.raises(ValueError, match="no parameters matching"):
+        manager.initialize_weights(
+            path=checkpoint_path,
+            model=torch.nn.Linear(1, 1),
+        )
+
+
+def test_distributed_weight_initialization_uses_rank_zero_broadcast(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = load_experiment_config(
+        REPO_ROOT / "configs/examples/public_tiny_synthetic_contract.yaml"
+    )
+    manager = CheckpointManager(
+        root_dir=tmp_path / "checkpoints",
+        config=config,
+        checkpoint_mode=CheckpointMode.MODEL_ONLY,
+    )
+    checkpoint_path = tmp_path / "model_state.pt"
+    torch.save({"model_state_dict": {"weight": torch.ones(1)}}, checkpoint_path)
+    observed_broadcast_flags: list[bool] = []
+
+    def fake_set_model_state_dict(model, state_dict, options):
+        del model, state_dict
+        observed_broadcast_flags.append(options.broadcast_from_rank0)
+
+    monkeypatch.setattr(checkpoints_module.dist, "is_initialized", lambda: True)
+    monkeypatch.setattr(checkpoints_module, "_is_rank_zero", lambda: True)
+    monkeypatch.setattr(
+        checkpoints_module.dist,
+        "broadcast_object_list",
+        lambda objects, src: None,
+    )
+    monkeypatch.setattr(
+        checkpoints_module,
+        "set_model_state_dict",
+        fake_set_model_state_dict,
+    )
+
+    manager.initialize_weights(path=checkpoint_path, model=torch.nn.Linear(1, 1))
+
+    assert observed_broadcast_flags == [True]
+
+
+def test_distributed_weight_initialization_reads_only_on_rank_zero(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = load_experiment_config(
+        REPO_ROOT / "configs/examples/public_tiny_synthetic_contract.yaml"
+    )
+    manager = CheckpointManager(
+        root_dir=tmp_path / "checkpoints",
+        config=config,
+        checkpoint_mode=CheckpointMode.MODEL_ONLY,
+    )
+    checkpoint_path = tmp_path / "model_state.pt"
+    checkpoint_path.touch()
+
+    monkeypatch.setattr(checkpoints_module.dist, "is_initialized", lambda: True)
+    monkeypatch.setattr(checkpoints_module, "_is_rank_zero", lambda: False)
+    monkeypatch.setattr(
+        checkpoints_module,
+        "_load_tensor_artifact",
+        lambda *args, **kwargs: pytest.fail("nonzero rank read the checkpoint"),
+    )
+
+    broadcast_count = 0
+
+    def fake_broadcast(objects, src):
+        nonlocal broadcast_count
+        del src
+        broadcast_count += 1
+        if broadcast_count == 2:
+            objects[0] = (frozenset({"weight"}), frozenset({"bias"}))
+
+    monkeypatch.setattr(
+        checkpoints_module.dist,
+        "broadcast_object_list",
+        fake_broadcast,
+    )
+    monkeypatch.setattr(
+        checkpoints_module,
+        "set_model_state_dict",
+        lambda model, state_dict, options: None,
+    )
+
+    manager.initialize_weights(path=checkpoint_path, model=torch.nn.Linear(1, 1))
+
+
+def test_full_state_resume_rejects_explicit_model_only_file(
     tmp_path: Path,
 ) -> None:
     config = load_experiment_config(
@@ -1342,10 +1644,270 @@ def test_full_state_checkpoint_resume_prefers_sibling_full_state(
         checkpoint_dir / "full_training_state.pt",
     )
 
-    with pytest.warns(RuntimeWarning, match="Promoting model_state.pt resume path"):
-        resolved = manager.resolve_checkpoint_path(checkpoint_dir / "model_state.pt")
+    with pytest.raises(FileNotFoundError, match="full_training_state.pt"):
+        manager.resolve_checkpoint_path(checkpoint_dir / "model_state.pt")
 
-    assert resolved == checkpoint_dir / "full_training_state.pt"
+    assert manager.resolve_checkpoint_path(checkpoint_dir) == (
+        checkpoint_dir / "full_training_state.pt"
+    ).resolve()
+
+
+def test_full_state_resume_rejects_model_only_payload_with_full_state_filename(
+    tmp_path: Path,
+) -> None:
+    config = load_experiment_config(
+        REPO_ROOT / "configs/examples/public_tiny_synthetic_contract.yaml"
+    )
+    manager = CheckpointManager(
+        root_dir=tmp_path / "checkpoints",
+        config=config,
+        checkpoint_mode=CheckpointMode.FULL_TRAINING_STATE,
+    )
+    checkpoint_path = tmp_path / "full_training_state.pt"
+    model = torch.nn.Linear(1, 1)
+    torch.save({"model_state_dict": model.state_dict()}, checkpoint_path)
+
+    with pytest.raises(ValueError, match="not a full training-state checkpoint"):
+        manager.load(path=checkpoint_path, model=model)
+
+
+@pytest.mark.parametrize(
+    "missing_cursor_key",
+    [
+        "global_step",
+        "optimizer_step",
+        "epoch_index",
+        "next_batch_index",
+        "seen_batches",
+    ],
+)
+def test_full_state_resume_requires_complete_train_cursor(
+    tmp_path: Path,
+    missing_cursor_key: str,
+) -> None:
+    config = load_experiment_config(
+        REPO_ROOT / "configs/examples/public_tiny_synthetic_contract.yaml"
+    )
+    manager = CheckpointManager(
+        root_dir=tmp_path / "checkpoints",
+        config=config,
+        checkpoint_mode=CheckpointMode.FULL_TRAINING_STATE,
+    )
+    checkpoint_path = tmp_path / "full_training_state.pt"
+    model = torch.nn.Linear(1, 1)
+    train_state = TrainState().state_dict()
+    del train_state[missing_cursor_key]
+    torch.save(
+        {
+            "model_state_dict": model.state_dict(),
+            "optimizer_state_dict": None,
+            "scheduler_state_dict": None,
+            "strategy_state_dict": None,
+            "train_state": train_state,
+        },
+        checkpoint_path,
+    )
+
+    with pytest.raises(ValueError, match=missing_cursor_key):
+        manager.load(path=checkpoint_path, model=model)
+
+
+def test_full_state_save_rejects_partial_gradient_accumulation(
+    tmp_path: Path,
+) -> None:
+    config = load_experiment_config(
+        REPO_ROOT / "configs/examples/public_tiny_synthetic_contract.yaml"
+    )
+    config = replace(
+        config,
+        training=replace(config.training, gradient_accumulation_steps=4),
+    )
+    manager = CheckpointManager(
+        root_dir=tmp_path / "checkpoints",
+        config=config,
+        checkpoint_mode=CheckpointMode.FULL_TRAINING_STATE,
+    )
+
+    with pytest.raises(ValueError, match="optimizer boundary"):
+        manager.save(
+            step=0,
+            model=torch.nn.Linear(1, 1),
+            optimizer=None,
+            scheduler=None,
+            train_state=TrainState(global_step=3),
+        )
+
+    assert not (tmp_path / "checkpoints" / "checkpoint_step_0").exists()
+
+
+def test_full_state_resume_rejects_partial_gradient_accumulation(
+    tmp_path: Path,
+) -> None:
+    config = load_experiment_config(
+        REPO_ROOT / "configs/examples/public_tiny_synthetic_contract.yaml"
+    )
+    config = replace(
+        config,
+        training=replace(config.training, gradient_accumulation_steps=4),
+    )
+    manager = CheckpointManager(
+        root_dir=tmp_path / "checkpoints",
+        config=config,
+        checkpoint_mode=CheckpointMode.FULL_TRAINING_STATE,
+    )
+    checkpoint_path = tmp_path / "full_training_state.pt"
+    model = torch.nn.Linear(1, 1)
+    torch.save(
+        {
+            "model_state_dict": model.state_dict(),
+            "optimizer_state_dict": None,
+            "scheduler_state_dict": None,
+            "strategy_state_dict": None,
+            "train_state": TrainState(global_step=3).state_dict(),
+        },
+        checkpoint_path,
+    )
+
+    with pytest.raises(ValueError, match="partially accumulated"):
+        manager.load(path=checkpoint_path, model=model)
+
+
+def test_full_state_resume_requires_optimizer_state_when_optimizer_is_present(
+    tmp_path: Path,
+) -> None:
+    config = load_experiment_config(
+        REPO_ROOT / "configs/examples/public_tiny_synthetic_contract.yaml"
+    )
+    manager = CheckpointManager(
+        root_dir=tmp_path / "checkpoints",
+        config=config,
+        checkpoint_mode=CheckpointMode.FULL_TRAINING_STATE,
+    )
+    checkpoint_path = tmp_path / "full_training_state.pt"
+    model = torch.nn.Linear(1, 1)
+    torch.save(
+        {
+            "model_state_dict": model.state_dict(),
+            "optimizer_state_dict": None,
+            "scheduler_state_dict": None,
+            "strategy_state_dict": None,
+            "train_state": TrainState().state_dict(),
+        },
+        checkpoint_path,
+    )
+
+    with pytest.raises(ValueError, match="no optimizer state"):
+        manager.load(
+            path=checkpoint_path,
+            model=model,
+            optimizer=torch.optim.AdamW(model.parameters()),
+        )
+
+
+def test_full_state_resume_requires_all_current_model_keys(tmp_path: Path) -> None:
+    config = load_experiment_config(
+        REPO_ROOT / "configs/examples/public_tiny_synthetic_contract.yaml"
+    )
+    manager = CheckpointManager(
+        root_dir=tmp_path / "checkpoints",
+        config=config,
+        checkpoint_mode=CheckpointMode.FULL_TRAINING_STATE,
+    )
+    checkpoint_path = tmp_path / "full_training_state.pt"
+    torch.save(
+        {
+            "model_state_dict": {"weight": torch.ones(1, 1)},
+            "optimizer_state_dict": None,
+            "scheduler_state_dict": None,
+            "strategy_state_dict": None,
+            "train_state": TrainState().state_dict(),
+        },
+        checkpoint_path,
+    )
+
+    with pytest.raises(ValueError, match="missing 1 current model key"):
+        manager.load(path=checkpoint_path, model=torch.nn.Linear(1, 1))
+
+
+def test_full_state_resume_requires_scheduler_state_when_scheduler_is_present(
+    tmp_path: Path,
+) -> None:
+    config = load_experiment_config(
+        REPO_ROOT / "configs/examples/public_tiny_synthetic_contract.yaml"
+    )
+    manager = CheckpointManager(
+        root_dir=tmp_path / "checkpoints",
+        config=config,
+        checkpoint_mode=CheckpointMode.FULL_TRAINING_STATE,
+    )
+    checkpoint_path = tmp_path / "full_training_state.pt"
+    model = torch.nn.Linear(1, 1)
+    optimizer = torch.optim.AdamW(model.parameters())
+    torch.save(
+        {
+            "model_state_dict": model.state_dict(),
+            "optimizer_state_dict": optimizer.state_dict(),
+            "scheduler_state_dict": None,
+            "strategy_state_dict": None,
+            "train_state": TrainState().state_dict(),
+        },
+        checkpoint_path,
+    )
+
+    with pytest.raises(ValueError, match="no scheduler state"):
+        manager.load(
+            path=checkpoint_path,
+            model=model,
+            optimizer=optimizer,
+            scheduler=torch.optim.lr_scheduler.LambdaLR(
+                optimizer,
+                lr_lambda=lambda step: 1.0,
+            ),
+        )
+
+
+@pytest.mark.parametrize(
+    ("load_error", "expected_error_type"),
+    [
+        (OSError("corrupt checkpoint"), RuntimeError),
+        (torch.OutOfMemoryError("checkpoint load OOM"), torch.OutOfMemoryError),
+    ],
+)
+def test_distributed_initialization_broadcasts_deserialization_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    load_error: Exception,
+    expected_error_type: type[Exception],
+) -> None:
+    config = load_experiment_config(
+        REPO_ROOT / "configs/examples/public_tiny_synthetic_contract.yaml"
+    )
+    manager = CheckpointManager(
+        root_dir=tmp_path / "checkpoints",
+        config=config,
+        checkpoint_mode=CheckpointMode.MODEL_ONLY,
+    )
+    checkpoint_path = tmp_path / "model_state.pt"
+    checkpoint_path.touch()
+    broadcasts: list[object] = []
+
+    monkeypatch.setattr(checkpoints_module.dist, "is_initialized", lambda: True)
+    monkeypatch.setattr(checkpoints_module, "_is_rank_zero", lambda: True)
+    monkeypatch.setattr(
+        checkpoints_module,
+        "_load_tensor_artifact",
+        lambda *args, **kwargs: (_ for _ in ()).throw(load_error),
+    )
+    monkeypatch.setattr(
+        checkpoints_module.dist,
+        "broadcast_object_list",
+        lambda objects, src: broadcasts.append(objects[0]),
+    )
+
+    with pytest.raises(expected_error_type, match=str(load_error)):
+        manager.initialize_weights(path=checkpoint_path, model=torch.nn.Linear(1, 1))
+
+    assert broadcasts == [(type(load_error).__name__, str(load_error))]
 
 
 def test_checkpoint_latest_ignores_unmarked_partial_when_markers_exist(
@@ -1427,6 +1989,80 @@ def test_final_checkpoint_skips_when_interval_checkpoint_already_saved(
     )
 
     TrainingRuntime._save_checkpoint(runtime, final=True)
+
+
+def test_final_checkpoint_rejects_partial_accumulation_before_deduplication(
+    tmp_path: Path,
+) -> None:
+    config = load_experiment_config(
+        REPO_ROOT / "configs/examples/public_tiny_synthetic_contract.yaml"
+    )
+    config = replace(
+        config,
+        training=replace(config.training, gradient_accumulation_steps=4),
+        trainer=replace(
+            config.trainer,
+            checkpoint_mode=CheckpointMode.FULL_TRAINING_STATE,
+            enable_checkpointing=True,
+        ),
+    )
+    checkpoint_dir = tmp_path / "checkpoints" / "checkpoint_step_5"
+    runtime = SimpleNamespace(
+        config=config,
+        train_state=TrainState(
+            global_step=3,
+            optimizer_step=5,
+            last_checkpoint_path=str(checkpoint_dir),
+        ),
+        checkpoint_manager=SimpleNamespace(
+            checkpoint_dir_for_step=lambda step: checkpoint_dir,
+        ),
+    )
+
+    with pytest.raises(ValueError, match="optimizer boundary"):
+        TrainingRuntime._save_checkpoint(runtime, final=True)
+
+
+def test_epoch_loop_final_save_rejects_partial_gradient_accumulation(
+    tmp_path: Path,
+) -> None:
+    config = load_experiment_config(
+        REPO_ROOT / "configs/examples/public_tiny_synthetic_contract.yaml"
+    )
+    config = replace(
+        config,
+        training=replace(config.training, gradient_accumulation_steps=4),
+        trainer=replace(
+            config.trainer,
+            checkpoint_mode=CheckpointMode.FULL_TRAINING_STATE,
+            enable_checkpointing=True,
+            save_interval=None,
+        ),
+    )
+    runtime = TrainingRuntime.__new__(TrainingRuntime)
+    runtime.config = config
+    runtime.train_loader = range(3)
+    runtime.train_state = TrainState(run_name="partial-epoch-final-save")
+    runtime.strategy = SimpleNamespace(is_main_process=True)
+    runtime._run_all_validation = lambda *, limit_batches: None
+    runtime.checkpoint_manager = SimpleNamespace(
+        checkpoint_dir_for_step=lambda step: (
+            tmp_path / "checkpoints" / f"checkpoint_step_{step}"
+        )
+    )
+
+    def train_one_batch(batch) -> None:
+        del batch
+        runtime.train_state.global_step += 1
+        runtime.train_state.seen_batches += 1
+
+    runtime._train_micro_step = train_one_batch
+
+    with pytest.raises(ValueError, match="optimizer boundary"):
+        TrainingRuntime._run_epoch_loop(runtime, EpochLoopPolicy(max_epochs=1))
+
+    assert runtime.train_state.epoch_index == 1
+    assert runtime.train_state.next_batch_index == 0
 
 
 def test_save_interval_zero_disables_final_checkpoint(tmp_path: Path) -> None:

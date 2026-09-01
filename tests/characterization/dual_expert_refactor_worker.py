@@ -146,7 +146,9 @@ def build_training_characterization_config(
             "trainer.validation_interval": None,
             "trainer.default_root_dir": str(output_root),
             "trainer.run_name": f"characterize_{method.asset_id}",
-            "trainer.resume_from": str(assets.checkpoint_for(method.asset_id)),
+            "trainer.initialize_weights_from": str(
+                assets.checkpoint_for(method.asset_id)
+            ),
         },
     )
 
@@ -348,7 +350,7 @@ def run_full_state_resume_characterization(
             "trainer.run_name": "characterize_full_state_resume",
             # This characterization starts from frozen model weights, then proves
             # that the checkpoint it writes preserves the complete runtime state.
-            "trainer.resume_from": str(source_model_checkpoint),
+            "trainer.initialize_weights_from": str(source_model_checkpoint),
         },
     )
     fixture_path = fixture_root / "gjd_real_joint.json"
@@ -424,6 +426,7 @@ def run_full_state_resume_characterization(
         resumed_config = apply_config_overrides(
             base_config,
             {
+                "trainer.initialize_weights_from": None,
                 "trainer.resume_from": str(checkpoint_dir),
                 "trainer.checkpoint_dir": str(runtime_root / "resumed_checkpoints"),
                 "trainer.default_root_dir": str(runtime_root / "resumed"),

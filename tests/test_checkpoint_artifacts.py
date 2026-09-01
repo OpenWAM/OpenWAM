@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from open_wam.runtime.checkpoint_artifacts import (
+    CheckpointOperation,
     CheckpointSearchLayout,
     checkpoint_step,
     find_checkpoint_state_file,
@@ -160,6 +161,23 @@ def test_checkpoint_state_preference_and_search_layout_are_explicit(
         )
         is None
     )
+
+
+def test_run_root_selection_ignores_unmarked_steps_when_completed_steps_exist(
+    tmp_path: Path,
+) -> None:
+    complete = tmp_path / "checkpoint_step_10"
+    incomplete = tmp_path / "checkpoint_step_20"
+    complete.mkdir()
+    incomplete.mkdir()
+    (complete / "full_training_state.pt").touch()
+    (complete / ".checkpoint_complete").touch()
+    (incomplete / "full_training_state.pt").touch()
+
+    assert find_checkpoint_state_file(
+        tmp_path,
+        operation=CheckpointOperation.RESUME_TRAINING,
+    ) == (complete / "full_training_state.pt").resolve()
 
 
 def test_checkpoint_step_malformed_name_policy_preserves_runtime_compatibility(

@@ -13,6 +13,7 @@ from open_wam.configs.enums import (
     SampleTargetAlignment,
     WindowSamplingMode,
 )
+from open_wam.runtime.checkpoint_artifacts import CheckpointOperation
 from open_wam.runtime.checkpoints import (
     CheckpointCompatibilityError,
     CheckpointCompatibilityPolicy,
@@ -36,6 +37,25 @@ def test_resolve_checkpoint_file_accepts_checkpoint_step_dir(tmp_path: Path) -> 
     model_state.write_bytes(b"test")
 
     assert resolve_checkpoint_file(checkpoint_dir) == model_state
+
+
+def test_resolve_checkpoint_file_accepts_standard_run_root(tmp_path: Path) -> None:
+    checkpoint_dir = tmp_path / "run" / "checkpoints" / "checkpoint_step_12"
+    checkpoint_dir.mkdir(parents=True)
+    model_state = checkpoint_dir / "model_state.pt"
+    model_state.write_bytes(b"test")
+    full_state = checkpoint_dir / "full_training_state.pt"
+    full_state.write_bytes(b"full")
+    (checkpoint_dir / ".checkpoint_complete").touch()
+
+    assert resolve_checkpoint_file(tmp_path / "run") == model_state
+    assert (
+        resolve_checkpoint_file(
+            tmp_path / "run",
+            operation=CheckpointOperation.RESUME_TRAINING,
+        )
+        == full_state
+    )
 
 
 def test_normalize_checkpoint_state_dict_accepts_pipeline_prefix() -> None:

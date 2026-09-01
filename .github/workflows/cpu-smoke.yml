@@ -35,7 +35,7 @@ jobs:
           uv run open-wam-train \
             --cfg configs/examples/public_tiny_synthetic_contract.yaml \
             --save-root "${RUN_ROOT}" \
-            --checkpoint-root "${RUN_ROOT}/checkpoints/checkpoint_step_1" \
+            --resume-from "${RUN_ROOT}" \
             --num-steps 2 \
             --expected-world-size 1 \
             --disable-wandb

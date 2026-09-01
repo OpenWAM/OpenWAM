@@ -281,10 +281,11 @@ video-transformer export. `backbone.transformer_subdir` normally names a
 relative component inside `pretrained_model_name_or_path`; absolute values
 remain supported for authored and historical configs. The explicit
 `runtime_backbone_artifact_path` takes precedence and is preferred for new
-detached-artifact configs. Use `--checkpoint-root` for a `checkpoint_step_*`
-directory: it selects
-`full_training_state.pt` when available and falls back to model-only state only
-when no full state exists.
+detached-artifact configs. Use `--initialize-weights-from` for a checkpoint file
+or `checkpoint_step_*` directory when starting a fresh optimizer and step
+counter. The former `--checkpoint-root` option is intentionally rejected
+because historical commands used it for full-state resume; choose the operation
+explicitly instead.
 
 When a checkpoint is also intended to supply a standalone runtime backbone,
 retain its checkpoint-local `transformer/` export. Do not rely on a
@@ -300,14 +301,24 @@ files described below.
 uv run --extra train open-wam-train \
   --cfg configs/experiments/<experiment>.yaml \
   --save-root runs/<run-name> \
-  --checkpoint-root runs/<run-name>/checkpoints/checkpoint_step_N
+  --initialize-weights-from runs/<parent-run>/checkpoints/checkpoint_step_N
 ```
 
-For stateful continuation, confirm the source checkpoint contains
-`full_training_state.pt`. This restores optimizer, scheduler, strategy/scaler,
-and step state. `--resume-from` can select that file explicitly. Process and
-dataloader RNG streams are not checkpointed, so a restarted run is not a
-bitwise continuation. A `model_state.pt` checkpoint is a warm start.
+For stateful continuation, use `--resume-from` with a checkpoint directory or
+`full_training_state.pt`. Resume never falls back to `model_state.pt` and never
+promotes a differently named file. It restores model, optimizer, scheduler,
+strategy/scaler, step state, and the next sampler epoch/batch cursor. Full-state
+checkpoints are accepted only at optimizer boundaries because partially
+accumulated gradients are not serialized. Full-state checkpointing and resume
+also require a sized training dataloader; custom iterable adapters must
+implement `__len__` or use model-only checkpoints. Process and stochastic
+dataset/worker RNG streams are not checkpointed, so a restarted run is not a
+bitwise continuation. Both operations use the invocation config unchanged;
+`resolved_config.yaml` is an audit record. An explicitly named
+`checkpoint_step_*` directory is treated as an operator assertion; pass the run
+root to select the latest completion-marked checkpoint under `checkpoints/`.
+Full-state checkpoints that predate the explicit `next_batch_index` cursor are
+not exact-resumable; use them with `--initialize-weights-from` instead.
 
 Distributed runs use `trainer.distributed_timeout_seconds: 1800` by default.
 The timeout includes rank-0 reads and writes of full-state checkpoints before
@@ -396,7 +407,7 @@ overrides (the checkpoint-local resolved config remains the audit record):
 open-wam-train \
   --config-name dual_expert_libero_generalist_joint_denoising \
   --save-root runs/dual-expert-gjd-mode-token \
-  --checkpoint-root runs/dual-expert-gjd-mode-token/checkpoints/checkpoint_step_N \
+  --resume-from runs/dual-expert-gjd-mode-token/checkpoints/checkpoint_step_N \
   --set policy_variant.generalist_mode_text_token=true
 ```
 

@@ -25,6 +25,9 @@ result schemas, artifact manifests, and checkpoint layout expectations.
 
 ### Changed
 
+- Training checkpoint operations are explicit: the historically ambiguous
+  `--checkpoint-root` option now fails with migration guidance to
+  `--initialize-weights-from` or `--resume-from`.
 - lerobot_v2_latent_local dataset preflight now discovers every LeRobot
   bundle under the configured local_root before model construction; it
   raises DatasetArtifactPreflightError when no bundle can be found rather
@@ -67,8 +70,11 @@ result schemas, artifact manifests, and checkpoint layout expectations.
 
 ### Fixed
 
-- Empty `--checkpoint-root` inputs fail before model and CUDA initialization;
-  distributed checkpoint publication reports rank-zero filesystem failures to
+- Full-state checkpoints preserve an explicit next sampler/batch cursor, reject
+  partially accumulated gradients, and resolve standard run roots through
+  their `checkpoints/` directory. Older full-state files without the explicit
+  cursor remain usable for weight initialization but are rejected for resume.
+- Distributed checkpoint publication reports rank-zero filesystem failures to
   peers and uses the configured distributed timeout.
 - Result envelopes protect reserved schema keys from legacy metadata
   collisions.

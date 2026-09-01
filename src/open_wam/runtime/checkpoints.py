@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, fields, replace
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, Mapping, Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 import torch
 from torch import nn
@@ -12,6 +13,7 @@ from open_wam.artifacts import load_tensor_artifact
 from open_wam.configs import ExperimentConfig, load_experiment_config
 from open_wam.runtime.checkpoint_artifacts import (
     CHECKPOINT_FILENAMES,
+    CheckpointOperation,
     CheckpointSearchLayout,
     find_checkpoint_state_file,
     is_usable_transformer_dir,
@@ -96,7 +98,26 @@ class _CheckpointLoadLifecycle(Protocol):
     ) -> None: ...
 
 
-def resolve_checkpoint_file(path: str | Path) -> Path:
+def notify_checkpoint_loaded(
+    model: nn.Module,
+    *,
+    loaded_state_keys: frozenset[str],
+    missing_state_keys: frozenset[str],
+) -> None:
+    """Notify models that maintain state derived from checkpoint coverage."""
+
+    if isinstance(model, _CheckpointLoadLifecycle):
+        model.on_checkpoint_loaded(
+            loaded_state_keys=loaded_state_keys,
+            missing_state_keys=missing_state_keys,
+        )
+
+
+def resolve_checkpoint_file(
+    path: str | Path,
+    *,
+    operation: CheckpointOperation | str = CheckpointOperation.EVALUATE,
+) -> Path:
     """Resolve a checkpoint file, step directory, or run directory.
 
     Model-only weights are preferred when both model-only and full training
@@ -106,11 +127,16 @@ def resolve_checkpoint_file(path: str | Path) -> Path:
 
     checkpoint_file = find_checkpoint_state_file(
         path,
-        layout=CheckpointSearchLayout.STEP_OR_CHILD_STEPS,
+        layout=CheckpointSearchLayout.RUN_OR_STEP,
+        operation=operation,
     )
     if checkpoint_file is not None:
         return checkpoint_file
-    expected = " or ".join(CHECKPOINT_FILENAMES)
+    expected = (
+        "full_training_state.pt"
+        if CheckpointOperation(operation) is CheckpointOperation.RESUME_TRAINING
+        else " or ".join(CHECKPOINT_FILENAMES)
+    )
     raise FileNotFoundError(f"Could not resolve {expected} from {path}.")
 
 
@@ -214,11 +240,11 @@ def load_pipeline_checkpoint(
         strict=resolved_compatibility
         is not CheckpointCompatibilityPolicy.ALLOW_PARTIAL,
     )
-    if isinstance(pipeline, _CheckpointLoadLifecycle):
-        pipeline.on_checkpoint_loaded(
-            loaded_state_keys=frozenset(loadable_state),
-            missing_state_keys=frozenset(missing_keys),
-        )
+    notify_checkpoint_loaded(
+        pipeline,
+        loaded_state_keys=frozenset(loadable_state),
+        missing_state_keys=frozenset(missing_keys),
+    )
     return report
 
 

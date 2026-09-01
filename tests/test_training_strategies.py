@@ -7,9 +7,15 @@ import pytest
 import torch
 import torch.distributed as dist
 
-from open_wam.configs import StrategyName, TrainerAccelerator, TrainerConfig
+from open_wam.configs import (
+    StrategyName,
+    TrainerAccelerator,
+    TrainerConfig,
+    TrainerPrecision,
+)
 from open_wam.models.policy_variants import PolicyModuleTopology
 from open_wam.training.strategies import (
+    SingleDeviceStrategy,
     _apply_composable_fsdp_sharding,
     build_training_strategy,
 )
@@ -139,6 +145,37 @@ def test_single_device_strategy_rejects_preinitialized_multi_rank_group(
 
     with pytest.raises(ValueError, match="SingleDeviceStrategy"):
         build_training_strategy(TrainerConfig())
+
+
+@pytest.mark.parametrize("strategy_state", [None, {}, {"grad_scaler": None}])
+def test_single_device_strategy_requires_enabled_gradient_scaler_state(
+    strategy_state: dict[str, object] | None,
+) -> None:
+    strategy = SingleDeviceStrategy(
+        accelerator=TrainerAccelerator.CPU,
+        precision=TrainerPrecision.FP32,
+    )
+    strategy.grad_scaler = SimpleNamespace(is_enabled=lambda: True)
+
+    with pytest.raises(ValueError, match="requires `grad_scaler` state"):
+        strategy.load_state_dict(strategy_state)
+
+
+def test_single_device_strategy_restores_enabled_gradient_scaler_state() -> None:
+    strategy = SingleDeviceStrategy(
+        accelerator=TrainerAccelerator.CPU,
+        precision=TrainerPrecision.FP32,
+    )
+    restored: list[dict[str, object]] = []
+    strategy.grad_scaler = SimpleNamespace(
+        is_enabled=lambda: True,
+        load_state_dict=restored.append,
+    )
+    scaler_state = {"scale": 65536.0}
+
+    strategy.load_state_dict({"grad_scaler": scaler_state})
+
+    assert restored == [scaler_state]
 
 
 @pytest.mark.parametrize("value", [True, 0, -1])

@@ -3,6 +3,7 @@
 from .checkpoint_artifacts import (
     CHECKPOINT_FILENAMES,
     CheckpointArtifactResolution,
+    CheckpointOperation,
     CheckpointSearchLayout,
     find_checkpoint_state_file,
     resolve_checkpoint_artifacts,
@@ -14,6 +15,7 @@ from .results import OPEN_WAM_RESULT_SCHEMA_V1, RESERVED_RESULT_KEYS, build_resu
 __all__ = [
     "CHECKPOINT_FILENAMES",
     "CheckpointArtifactResolution",
+    "CheckpointOperation",
     "CheckpointSearchLayout",
     "OPEN_WAM_RESULT_SCHEMA_V1",
     "REPO_ROOT",

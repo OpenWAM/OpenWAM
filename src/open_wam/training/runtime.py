@@ -9,6 +9,7 @@ from torch.utils.data import DataLoader
 
 from open_wam.configs import (
     AuxiliaryValidationTaskConfig,
+    CheckpointMode,
     ExperimentConfig,
     LoopPolicyName,
     resolve_experiment_config,
@@ -78,6 +79,17 @@ def _local_tensor_view(tensor: torch.Tensor) -> torch.Tensor:
     if DTensor is not None and isinstance(tensor, DTensor):
         return tensor.to_local()
     return tensor
+
+
+def _checkpointing_requested(config: ExperimentConfig) -> bool:
+    trainer_config = config.trainer
+    return bool(
+        trainer_config.enable_checkpointing
+        or (
+            trainer_config.save_interval is not None
+            and trainer_config.save_interval > 0
+        )
+    )
 
 
 class TrainingRuntime:
@@ -214,11 +226,25 @@ class TrainingRuntime:
             dataset_artifacts=dataset_artifacts,
             auxiliary_validation_runs=auxiliary_validation_runs,
         )
+        if config.trainer.initialize_weights_from is not None:
+            runtime.initialize_weights(config.trainer.initialize_weights_from)
         if config.trainer.resume_from is not None:
             runtime.resume(config.trainer.resume_from)
         return runtime
 
+    def initialize_weights(self, checkpoint_path: str) -> None:
+        resolved_path = self.checkpoint_manager.initialize_weights(
+            path=checkpoint_path,
+            model=self.strategy.unwrap_model(self.model),
+            map_location="cpu",
+        )
+        self.log_sink.log_event(
+            name="initialize_weights",
+            payload={"resolved_checkpoint_path": str(resolved_path)},
+        )
+
     def resume(self, checkpoint_path: str) -> None:
+        self._require_sized_train_loader(operation="Full-state resume")
         current_run_name = self.train_state.run_name
         train_state, payload = self.checkpoint_manager.load(
             path=checkpoint_path,
@@ -244,6 +270,12 @@ class TrainingRuntime:
         )
 
     def run(self) -> TrainState:
+        if (
+            _checkpointing_requested(self.config)
+            and self.config.trainer.checkpoint_mode
+            == CheckpointMode.FULL_TRAINING_STATE
+        ):
+            self._require_sized_train_loader(operation="Full-state checkpointing")
         self.log_sink.log_event(
             name="run_start",
             payload={
@@ -312,7 +344,13 @@ class TrainingRuntime:
     def _run_epoch_loop(self, policy: EpochLoopPolicy) -> None:
         while policy.should_continue(self.train_state):
             _set_sampler_epoch(self.train_loader, self.train_state.epoch_index)
-            resume_batch_idx = self._current_epoch_resume_batch_index()
+            loader_pass_batches = self._train_loader_pass_batches(
+                limit_train_batches=policy.limit_train_batches
+            )
+            resume_batch_idx = self._next_train_batch_index(
+                loader_pass_batches=loader_pass_batches
+            )
+            loader_pass_complete = False
             if resume_batch_idx > 0 and self.strategy.is_main_process:
                 self.log_sink.log_event(
                     name="resume_epoch_cursor",
@@ -332,6 +370,13 @@ class TrainingRuntime:
                     break
                 previous_optimizer_step = self.train_state.optimizer_step
                 self._train_micro_step(batch)
+                loader_pass_complete = (
+                    self._record_next_batch_cursor(
+                        batch_idx=batch_idx,
+                        loader_pass_batches=loader_pass_batches,
+                    )
+                    or loader_pass_complete
+                )
                 if self._should_run_validation_interval(
                     previous_optimizer_step=previous_optimizer_step
                 ):
@@ -342,13 +387,21 @@ class TrainingRuntime:
                 ):
                     self._save_checkpoint(final=False)
             self._run_all_validation(limit_batches=policy.limit_val_batches)
-            self.train_state.epoch_index += 1
+            if not loader_pass_complete:
+                self._complete_loader_pass()
         self._save_checkpoint(final=True)
 
     def _run_step_loop(self, policy: StepLoopPolicy) -> None:
         while policy.should_continue(self.train_state):
             _set_sampler_epoch(self.train_loader, self.train_state.epoch_index)
-            resume_batch_idx = self._current_epoch_resume_batch_index()
+            loader_pass_batches = self._train_loader_pass_batches(
+                limit_train_batches=policy.limit_train_batches
+            )
+            resume_batch_idx = self._next_train_batch_index(
+                loader_pass_batches=loader_pass_batches
+            )
+            loader_pass_complete = False
+            stopped_for_policy = False
             if resume_batch_idx > 0 and self.strategy.is_main_process:
                 self.log_sink.log_event(
                     name="resume_step_loop_cursor",
@@ -370,6 +423,13 @@ class TrainingRuntime:
                 saw_batch = True
                 previous_optimizer_step = self.train_state.optimizer_step
                 self._train_micro_step(batch)
+                loader_pass_complete = (
+                    self._record_next_batch_cursor(
+                        batch_idx=batch_idx,
+                        loader_pass_batches=loader_pass_batches,
+                    )
+                    or loader_pass_complete
+                )
                 if self._should_run_validation_interval(
                     previous_optimizer_step=previous_optimizer_step
                 ):
@@ -380,31 +440,79 @@ class TrainingRuntime:
                 ):
                     self._save_checkpoint(final=False)
                 if not policy.should_continue(self.train_state):
+                    stopped_for_policy = True
                     break
             if not saw_batch:
                 raise ValueError(
                     "Step-loop training received no batches from the train dataloader."
                 )
-            self.train_state.epoch_index += 1
+            if not loader_pass_complete and not stopped_for_policy:
+                self._complete_loader_pass()
         self._run_all_validation(limit_batches=policy.limit_val_batches)
         self._save_checkpoint(final=True)
 
-    def _current_epoch_resume_batch_index(self) -> int:
-        if self.train_state.resume_source is None or self.train_state.seen_batches <= 0:
-            return 0
+    def _next_train_batch_index(
+        self,
+        *,
+        loader_pass_batches: int | None,
+    ) -> int:
+        next_batch_index = int(self.train_state.next_batch_index)
+        if next_batch_index < 0:
+            raise ValueError("Training cursor `next_batch_index` cannot be negative.")
+        if (
+            loader_pass_batches is not None
+            and next_batch_index >= loader_pass_batches
+            and next_batch_index != 0
+        ):
+            raise ValueError(
+                "Training cursor `next_batch_index` must be smaller than the "
+                "effective train-loader pass size."
+            )
+        return next_batch_index
+
+    def _train_loader_pass_batches(
+        self,
+        *,
+        limit_train_batches: int | None,
+    ) -> int | None:
         try:
             epoch_batches = len(self.train_loader)
         except TypeError:
-            return 0
-        if epoch_batches <= 0:
-            return 0
-        if self.config.trainer.limit_train_batches is not None:
-            epoch_batches = min(
-                epoch_batches, int(self.config.trainer.limit_train_batches)
+            epoch_batches = None
+        limit = limit_train_batches
+        if limit is not None:
+            limit = max(0, int(limit))
+            epoch_batches = (
+                limit if epoch_batches is None else min(epoch_batches, limit)
             )
-        if epoch_batches <= 0:
-            return 0
-        return int(self.train_state.seen_batches % epoch_batches)
+        return None if epoch_batches is None else max(0, int(epoch_batches))
+
+    def _require_sized_train_loader(self, *, operation: str) -> None:
+        try:
+            len(self.train_loader)
+        except TypeError as error:
+            raise ValueError(
+                f"{operation} requires a sized train dataloader. Unsized iterable "
+                "loaders cannot provide an exact loader-boundary continuation "
+                "cursor; implement `__len__` or use model-only checkpoints."
+            ) from error
+
+    def _record_next_batch_cursor(
+        self,
+        *,
+        batch_idx: int,
+        loader_pass_batches: int | None,
+    ) -> bool:
+        next_batch_index = int(batch_idx) + 1
+        if loader_pass_batches is not None and next_batch_index >= loader_pass_batches:
+            self._complete_loader_pass()
+            return True
+        self.train_state.next_batch_index = next_batch_index
+        return False
+
+    def _complete_loader_pass(self) -> None:
+        self.train_state.epoch_index += 1
+        self.train_state.next_batch_index = 0
 
     def _train_micro_step(self, batch) -> None:
         device_batch = self.step_executor.batch_adapter.move_to_device(
@@ -599,12 +707,18 @@ class TrainingRuntime:
         )
 
     def _save_checkpoint(self, *, final: bool) -> None:
-        should_write = self.config.trainer.enable_checkpointing or (
-            self.config.trainer.save_interval is not None
-            and self.config.trainer.save_interval > 0
-        )
-        if not should_write:
+        if not _checkpointing_requested(self.config):
             return
+        if (
+            self.config.trainer.checkpoint_mode == CheckpointMode.FULL_TRAINING_STATE
+            and not self.train_state.is_optimizer_boundary(
+                self.config.training.gradient_accumulation_steps
+            )
+        ):
+            raise ValueError(
+                "Full training-state checkpoints require an optimizer boundary; "
+                "partially accumulated gradients are not serialized."
+            )
         checkpoint_dir = self.checkpoint_manager.checkpoint_dir_for_step(
             self.train_state.optimizer_step
         )

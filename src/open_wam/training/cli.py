@@ -15,31 +15,12 @@ from open_wam.configs import (
 )
 from open_wam.configs.config_paths import EXPERIMENT_CONFIG_ROOT
 from open_wam.extensions import load_extension_modules
+from open_wam.runtime.checkpoint_artifacts import CheckpointOperation
+from open_wam.runtime.checkpoints import resolve_checkpoint_file
 from open_wam.utils.config_overrides import (
     apply_config_overrides,
     parse_override_assignments,
 )
-
-
-def _default_resume_path(checkpoint_root: Path) -> Path:
-    """Prefer full training-state resumes, with model-only as a fallback.
-
-    Raises FileNotFoundError when neither candidate exists so operators see
-    the misconfiguration before the training pipeline builds a model and
-    initializes CUDA, rather than deep inside CheckpointManager.load.
-    """
-
-    full_state = checkpoint_root / "full_training_state.pt"
-    if full_state.is_file():
-        return full_state
-    model_state = checkpoint_root / "model_state.pt"
-    if model_state.is_file():
-        return model_state
-    raise FileNotFoundError(
-        "No resumable checkpoint found under "
-        f"--checkpoint-root={checkpoint_root!s}. Looked for "
-        f"{full_state.name!r} and {model_state.name!r}."
-    )
 
 
 @dataclass(frozen=True)
@@ -51,6 +32,7 @@ class TrainCliOverrides:
     save_root: str | None = None
     checkpoint_dir: str | None = None
     checkpoint_root: str | None = None
+    initialize_weights_from: str | None = None
     resume_from: str | None = None
     run_name: str | None = None
     dataset_root: str | None = None
@@ -91,6 +73,7 @@ def parse_train_cli(argv: list[str] | None = None) -> TrainCliOverrides:
         save_root=args.save_root,
         checkpoint_dir=args.checkpoint_dir,
         checkpoint_root=args.checkpoint_root,
+        initialize_weights_from=args.initialize_weights_from,
         resume_from=args.resume_from,
         run_name=args.run_name,
         dataset_root=args.dataset_root,
@@ -160,15 +143,26 @@ def apply_train_cli_overrides(
     if overrides.checkpoint_dir is not None:
         update_map["trainer.checkpoint_dir"] = overrides.checkpoint_dir
     if overrides.checkpoint_root is not None:
-        checkpoint_root = Path(overrides.checkpoint_root).expanduser()
-        if overrides.resume_from is None:
-            update_map["trainer.resume_from"] = str(_default_resume_path(checkpoint_root))
-        if overrides.runtime_backbone_artifact_path is None:
-            update_map["backbone.runtime_backbone_artifact_path"] = str(
-                checkpoint_root / "transformer"
+        raise ValueError(
+            "`--checkpoint-root` is no longer supported because its training "
+            "operation was ambiguous. Use `--initialize-weights-from` to start "
+            "fresh from model weights or `--resume-from` to continue full state."
+        )
+    initialization_source = overrides.initialize_weights_from
+    if initialization_source is not None:
+        update_map["trainer.initialize_weights_from"] = str(
+            resolve_checkpoint_file(
+                initialization_source,
+                operation=CheckpointOperation.INITIALIZE_WEIGHTS,
             )
+        )
     if overrides.resume_from is not None:
-        update_map["trainer.resume_from"] = overrides.resume_from
+        update_map["trainer.resume_from"] = str(
+            resolve_checkpoint_file(
+                overrides.resume_from,
+                operation=CheckpointOperation.RESUME_TRAINING,
+            )
+        )
     if overrides.dataset_root is not None:
         update_map["data.local_root"] = overrides.dataset_root
     if overrides.latent_root is not None:

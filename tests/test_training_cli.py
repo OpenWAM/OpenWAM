@@ -66,6 +66,31 @@ def test_train_cli_accepts_runtime_backbone_path() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    ("first", "second"),
+    (
+        ("--checkpoint-root", "--initialize-weights-from"),
+        ("--checkpoint-root", "--resume-from"),
+        ("--initialize-weights-from", "--resume-from"),
+    ),
+)
+def test_train_cli_rejects_conflicting_checkpoint_operations(
+    first: str,
+    second: str,
+) -> None:
+    with pytest.raises(SystemExit):
+        parse_train_cli(
+            [
+                "--config-name",
+                "parallel_stream_robotwin_smoke",
+                first,
+                "/tmp/first",
+                second,
+                "/tmp/second",
+            ]
+        )
+
+
 def test_train_cli_rejects_removed_transformer_subdir_alias() -> None:
     with pytest.raises(ValueError, match="section.field=value"):
         parse_train_cli(
@@ -181,9 +206,10 @@ def test_cli_overrides_map_save_root_and_env_defaults(tmp_path: Path) -> None:
     overrides = TrainCliOverrides(
         config_name="parallel_stream_robotwin_smoke",
         save_root=str(tmp_path / "reference_style_run"),
-        checkpoint_root=str(checkpoint_root),
+        initialize_weights_from=str(checkpoint_root),
         dataset_root="/datasets/local_libero",
         latent_root="/datasets/local_libero/latents",
+        runtime_backbone_artifact_path=str(checkpoint_root / "transformer"),
         devices=6,
         expected_world_size=6,
         num_steps=4,
@@ -213,7 +239,10 @@ def test_cli_overrides_map_save_root_and_env_defaults(tmp_path: Path) -> None:
     assert config.trainer.checkpoint_dir == str(tmp_path / "reference_style_run" / "checkpoints")
     assert config.data.local_root == "/datasets/local_libero"
     assert config.data.latent_root == "/datasets/local_libero/latents"
-    assert config.trainer.resume_from == str(checkpoint_root / "full_training_state.pt")
+    assert config.trainer.initialize_weights_from == str(
+        checkpoint_root / "full_training_state.pt"
+    )
+    assert config.trainer.resume_from is None
     assert config.backbone.runtime_backbone_artifact_path == str(
         checkpoint_root / "transformer"
     )
@@ -250,37 +279,43 @@ def test_cli_overrides_support_nested_adapter_options() -> None:
     }
 
 
-def test_checkpoint_root_prefers_full_training_state(tmp_path: Path) -> None:
+def test_checkpoint_root_requires_explicit_operation(tmp_path: Path) -> None:
     checkpoint_root = tmp_path / "checkpoint_step_400"
     checkpoint_root.mkdir()
     (checkpoint_root / "model_state.pt").write_bytes(b"model")
     (checkpoint_root / "full_training_state.pt").write_bytes(b"full")
 
-    config = load_training_cli_config(
-        TrainCliOverrides(
-            config_name="parallel_stream_robotwin_smoke",
-            checkpoint_root=str(checkpoint_root),
-        ),
-        env={},
-    )
+    with pytest.raises(ValueError, match="--initialize-weights-from.*--resume-from"):
+        load_training_cli_config(
+            TrainCliOverrides(
+                config_name="parallel_stream_robotwin_smoke",
+                checkpoint_root=str(checkpoint_root),
+            ),
+            env={},
+        )
 
-    assert config.trainer.resume_from == str(checkpoint_root / "full_training_state.pt")
 
-
-def test_checkpoint_root_falls_back_to_model_state_for_legacy_checkpoint(tmp_path: Path) -> None:
+def test_resume_from_requires_full_training_state(tmp_path: Path) -> None:
     checkpoint_root = tmp_path / "checkpoint_step_400"
     checkpoint_root.mkdir()
     (checkpoint_root / "model_state.pt").write_bytes(b"model")
 
-    config = load_training_cli_config(
-        TrainCliOverrides(
-            config_name="parallel_stream_robotwin_smoke",
-            checkpoint_root=str(checkpoint_root),
-        ),
-        env={},
-    )
+    with pytest.raises(FileNotFoundError, match="full_training_state.pt"):
+        load_training_cli_config(
+            TrainCliOverrides(
+                config_name="parallel_stream_robotwin_smoke",
+                resume_from=str(checkpoint_root),
+            ),
+            env={},
+        )
 
-    assert config.trainer.resume_from == str(checkpoint_root / "model_state.pt")
+
+def test_trainer_rejects_initialize_and_resume_sources_together() -> None:
+    with pytest.raises(ValueError, match="Choose either"):
+        TrainerConfig(
+            initialize_weights_from="model_state.pt",
+            resume_from="full_training_state.pt",
+        )
 
 
 def test_cli_overrides_apply_dependent_sample_construction_fields_together() -> None:
@@ -500,11 +535,14 @@ def test_package_train_cli_expresses_documented_pure_fdm_gjd_preset() -> None:
     assert [route.weight for route in mixture.active_routes] == [3.0, 1.0]
 
 
-def test_default_resume_path_raises_when_checkpoint_root_is_empty(tmp_path: Path) -> None:
-    """--checkpoint-root pointing at a directory without a resumable file
-    should fail loudly at CLI resolution rather than deep inside
-    CheckpointManager after CUDA initialization."""
-    from open_wam.training.cli import _default_resume_path
-
-    with pytest.raises(FileNotFoundError, match="No resumable checkpoint"):
-        _default_resume_path(tmp_path)
+def test_checkpoint_root_rejects_ambiguous_operation_before_path_resolution(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(ValueError, match="no longer supported"):
+        load_training_cli_config(
+            TrainCliOverrides(
+                config_name="parallel_stream_robotwin_smoke",
+                checkpoint_root=str(tmp_path),
+            ),
+            env={},
+        )

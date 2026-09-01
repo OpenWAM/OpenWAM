@@ -6,11 +6,17 @@ from typing import Any
 
 @dataclass
 class TrainState:
-    """Mutable runtime state shared across training components."""
+    """Mutable runtime state shared across training components.
+
+    ``epoch_index`` and ``next_batch_index`` identify the next training batch
+    to consume. Checkpoints therefore store a continuation cursor rather than
+    the location of the batch that was just processed.
+    """
 
     global_step: int = 0
     optimizer_step: int = 0
     epoch_index: int = 0
+    next_batch_index: int = 0
     seen_batches: int = 0
     run_name: str | None = None
     resume_source: str | None = None
@@ -22,6 +28,7 @@ class TrainState:
             "global_step": self.global_step,
             "optimizer_step": self.optimizer_step,
             "epoch_index": self.epoch_index,
+            "next_batch_index": self.next_batch_index,
             "seen_batches": self.seen_batches,
             "run_name": self.run_name,
             "resume_source": self.resume_source,
@@ -36,9 +43,19 @@ class TrainState:
             global_step=int(payload.get("global_step", 0)),
             optimizer_step=int(payload.get("optimizer_step", 0)),
             epoch_index=int(payload.get("epoch_index", 0)),
+            next_batch_index=int(payload.get("next_batch_index", 0)),
             seen_batches=int(payload.get("seen_batches", 0)),
             run_name=payload.get("run_name"),
             resume_source=payload.get("resume_source"),
             last_checkpoint_path=payload.get("last_checkpoint_path"),
-            best_metrics={str(key): float(value) for key, value in dict(payload.get("best_metrics", {})).items()},
+            best_metrics={
+                str(key): float(value)
+                for key, value in dict(payload.get("best_metrics", {})).items()
+            },
         )
+
+    def is_optimizer_boundary(self, gradient_accumulation_steps: int) -> bool:
+        """Return whether no unsaved accumulated gradients can be present."""
+
+        accumulation_steps = max(1, int(gradient_accumulation_steps))
+        return self.global_step % accumulation_steps == 0

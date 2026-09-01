@@ -20,6 +20,16 @@ from open_wam.training.state import TrainState
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
+def _full_training_state(model_state: dict[str, torch.Tensor]) -> dict[str, object]:
+    return {
+        "model_state_dict": model_state,
+        "optimizer_state_dict": None,
+        "scheduler_state_dict": None,
+        "strategy_state_dict": None,
+        "train_state": TrainState().state_dict(),
+    }
+
+
 def _manager(
     tmp_path: Path,
     *,
@@ -263,7 +273,7 @@ def test_distributed_non_strict_load_filters_retired_checkpoint_keys(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     manager = _manager(tmp_path)
-    checkpoint_path = tmp_path / "model_state.pt"
+    checkpoint_path = tmp_path / "full_training_state.pt"
     checkpoint_path.touch()
     model = torch.nn.Linear(2, 2)
     loaded_keys: list[str] = []
@@ -278,13 +288,13 @@ def test_distributed_non_strict_load_filters_retired_checkpoint_keys(
     monkeypatch.setattr(
         checkpoints_module,
         "_load_tensor_artifact",
-        lambda path, map_location: {
-            "model_state_dict": {
+        lambda path, map_location: _full_training_state(
+            {
                 "weight": torch.ones_like(model.weight),
                 "bias": torch.ones_like(model.bias),
                 "retired_component.proj.weight": torch.ones(1),
             }
-        },
+        ),
     )
     monkeypatch.setattr(
         checkpoints_module,
@@ -303,7 +313,7 @@ def test_distributed_load_preserves_activation_checkpoint_canonical_keys(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     manager = _manager(tmp_path)
-    checkpoint_path = tmp_path / "model_state.pt"
+    checkpoint_path = tmp_path / "full_training_state.pt"
     checkpoint_path.touch()
     model = torch.nn.Sequential(
         checkpoint_wrapper(torch.nn.Linear(2, 2), preserve_rng_state=False)
@@ -323,7 +333,7 @@ def test_distributed_load_preserves_activation_checkpoint_canonical_keys(
     monkeypatch.setattr(
         checkpoints_module,
         "_load_tensor_artifact",
-        lambda path, map_location: {"model_state_dict": canonical_state},
+        lambda path, map_location: _full_training_state(canonical_state),
     )
     monkeypatch.setattr(
         checkpoints_module,
