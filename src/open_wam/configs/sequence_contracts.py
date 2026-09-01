@@ -19,11 +19,16 @@ from .policy_video_action import (
     fixed_conditioning_mode_for_program,
     supports_dynamics_routing,
 )
+from .sequence_contract_specs import (
+    get_video_action_sequence_contract_spec,
+    video_action_sequence_contract_managed_override_keys,
+)
 from .training import TrainingConfig
 
 __all__ = [
     "apply_video_action_sequence_contract",
     "expand_video_action_sequence_contract",
+    "materialize_video_action_sequence_contract",
     "validate_experiment_config_runtime_contract",
     "validate_policy_data_sequence_contract",
     "validate_video_action_sequence_contract_override_keys",
@@ -64,30 +69,11 @@ def expand_video_action_sequence_contract(raw: dict[str, Any]) -> dict[str, Any]
             enums.VideoActionSequenceContract.DEFAULT,
         ),
     )
-    if contract == enums.VideoActionSequenceContract.DEFAULT:
+    spec = get_video_action_sequence_contract_spec(contract)
+    if spec is None:
         return normalized
 
-    if contract not in {
-        enums.VideoActionSequenceContract.ROLLOUT_PARITY_SINGLE_FRAME_PERCHUNK_PROPRIO,
-        enums.VideoActionSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO,
-    }:
-        raise ValueError(
-            f"Unsupported `policy_variant.sequence_contract={contract.value}`."
-        )
-
-    for key, value in (
-        ("proprio_context_mode", enums.ProprioContextMode.PER_CHUNK_ADDITIVE),
-        (
-            "context_condition_latent_source",
-            enums.ContextConditionLatentSource.SINGLE_FRAME_CONDITION_LATENT,
-        ),
-        (
-            "history_stream_visibility",
-            enums.HistoryStreamVisibility.VIDEO_ONLY,
-        ),
-        ("use_condition_latents", True),
-        ("require_condition_latents", True),
-    ):
+    for key, value in spec.policy_variant_updates().items():
         _set_contract_default(
             policy_variant_raw,
             key=key,
@@ -109,25 +95,7 @@ def expand_video_action_sequence_contract(raw: dict[str, Any]) -> dict[str, Any]
         sample_construction_raw = dict(sample_construction_raw)
     data_raw["sample_construction"] = sample_construction_raw
 
-    common_sample_defaults = {
-        "condition_source_frame_offset": -1,
-        "start_padding_frames": 0,
-    }
-    if (
-        contract
-        == enums.VideoActionSequenceContract.ROLLOUT_PARITY_SINGLE_FRAME_PERCHUNK_PROPRIO
-    ):
-        sample_defaults = {
-            **common_sample_defaults,
-            "target_alignment": enums.SampleTargetAlignment.NEXT_AFTER_CONTEXT,
-            "rollout_context_policy": enums.RolloutContextPolicy.ONE_FRAME,
-        }
-    else:
-        sample_defaults = {
-            **common_sample_defaults,
-            "target_alignment": enums.SampleTargetAlignment.LEGACY,
-        }
-    for key, value in sample_defaults.items():
+    for key, value in spec.sample_construction_updates().items():
         _set_contract_default(
             sample_construction_raw,
             key=key,
@@ -472,7 +440,7 @@ def validate_experiment_config_runtime_contract(
     return config
 
 
-def _materialize_video_action_sequence_contract(
+def materialize_video_action_sequence_contract(
     config: ExperimentConfig,
 ) -> ExperimentConfig:
     """Materialize fields owned by a typed sequence contract."""
@@ -485,53 +453,17 @@ def _materialize_video_action_sequence_contract(
         enums.VideoActionSequenceContract,
         policy_variant.sequence_contract,
     )
-    if contract == enums.VideoActionSequenceContract.DEFAULT:
+    spec = get_video_action_sequence_contract_spec(contract)
+    if spec is None:
         return config
 
-    if contract not in {
-        enums.VideoActionSequenceContract.ROLLOUT_PARITY_SINGLE_FRAME_PERCHUNK_PROPRIO,
-        enums.VideoActionSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO,
-    }:
-        raise ValueError(
-            f"Unsupported `policy_variant.sequence_contract={contract.value}`."
-        )
-
-    policy_updates: dict[str, Any] = {
-        "proprio_context_mode": enums.ProprioContextMode.PER_CHUNK_ADDITIVE,
-        "context_condition_latent_source": (
-            enums.ContextConditionLatentSource.SINGLE_FRAME_CONDITION_LATENT
-        ),
-        "history_stream_visibility": (
-            enums.HistoryStreamVisibility.VIDEO_ONLY
-        ),
-    }
-    policy_updates["use_condition_latents"] = True
-    policy_updates["require_condition_latents"] = True
-    updated_policy_variant = replace(policy_variant, **policy_updates)
-
-    sample_updates: dict[str, Any] = {
-        "condition_source_frame_offset": -1,
-        "start_padding_frames": 0,
-    }
-    if (
-        contract
-        == enums.VideoActionSequenceContract.ROLLOUT_PARITY_SINGLE_FRAME_PERCHUNK_PROPRIO
-    ):
-        sample_updates.update(
-            {
-                "target_alignment": enums.SampleTargetAlignment.NEXT_AFTER_CONTEXT,
-                "rollout_context_policy": enums.RolloutContextPolicy.ONE_FRAME,
-            }
-        )
-    else:
-        sample_updates.update(
-            {
-                "target_alignment": enums.SampleTargetAlignment.LEGACY,
-            }
-        )
+    updated_policy_variant = replace(
+        policy_variant,
+        **spec.policy_variant_updates(),
+    )
     updated_sample_construction = replace(
         config.data.sample_construction,
-        **sample_updates,
+        **spec.sample_construction_updates(),
     )
     updated_data = replace(
         config.data,
@@ -548,23 +480,8 @@ def apply_video_action_sequence_contract(config: ExperimentConfig) -> Experiment
     """Materialize sequence defaults and validate the resulting runtime config."""
 
     return validate_experiment_config_runtime_contract(
-        _materialize_video_action_sequence_contract(config)
+        materialize_video_action_sequence_contract(config)
     )
-
-
-_VIDEO_ACTION_SEQUENCE_CONTRACT_MANAGED_OVERRIDE_KEYS = frozenset(
-    {
-        "policy_variant.proprio_context_mode",
-        "policy_variant.context_condition_latent_source",
-        "policy_variant.history_stream_visibility",
-        "policy_variant.use_condition_latents",
-        "policy_variant.require_condition_latents",
-        "data.sample_construction.target_alignment",
-        "data.sample_construction.rollout_context_policy",
-        "data.sample_construction.condition_source_frame_offset",
-        "data.sample_construction.start_padding_frames",
-    }
-)
 
 
 def validate_video_action_sequence_contract_override_keys(
@@ -589,7 +506,7 @@ def validate_video_action_sequence_contract_override_keys(
     conflicting_keys = sorted(
         key
         for key in overrides
-        if key in _VIDEO_ACTION_SEQUENCE_CONTRACT_MANAGED_OVERRIDE_KEYS
+        if key in video_action_sequence_contract_managed_override_keys(contract)
     )
     if conflicting_keys:
         joined = ", ".join(f"`{key}`" for key in conflicting_keys)

@@ -5,15 +5,13 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+from .coercion import raw_enum_value
 from .enums import (
     ActionDecoderName,
     ContextConditionLatentSource,
-    HistoryStreamVisibility,
     JointTimestepCoupling,
     PolicyVariantName,
     ProprioContextMode,
-    RolloutContextPolicy,
-    SampleTargetAlignment,
     VideoActionProgram,
     VideoActionSequenceContract,
 )
@@ -22,6 +20,7 @@ from .policy_video_action import (
     requires_independent_timestep_clocks,
     supports_dynamics_routing,
 )
+from .sequence_contract_specs import get_video_action_sequence_contract_spec
 from .static_validation_contracts import _IssueBuilder
 from .static_validation_primitives import _optional_int
 
@@ -148,21 +147,16 @@ def _validate_video_action_sequence_contract_static(
         contract = VideoActionSequenceContract(str(raw_contract))
     except ValueError:
         return
-    if contract not in {
-        VideoActionSequenceContract.ROLLOUT_PARITY_SINGLE_FRAME_PERCHUNK_PROPRIO,
-        VideoActionSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO,
-    }:
+    spec = get_video_action_sequence_contract_spec(contract)
+    if spec is None:
         return
 
-    expected_policy = {
-        "proprio_context_mode": ProprioContextMode.PER_CHUNK_ADDITIVE.value,
-        "context_condition_latent_source": ContextConditionLatentSource.SINGLE_FRAME_CONDITION_LATENT.value,
-        "history_stream_visibility": HistoryStreamVisibility.VIDEO_ONLY.value,
-        "use_condition_latents": True,
-        "require_condition_latents": True,
-    }
-    for key, expected_value in expected_policy.items():
-        if key in policy_variant and policy_variant[key] != expected_value:
+    for key, expected_value in spec.policy_variant_updates().items():
+        expected_value = raw_enum_value(expected_value)
+        if (
+            key in policy_variant
+            and raw_enum_value(policy_variant[key]) != expected_value
+        ):
             issues.error(
                 f"policy_variant.{key}",
                 f"`sequence_contract={contract.value}` owns `{key}`; expected {expected_value!r}.",
@@ -170,27 +164,12 @@ def _validate_video_action_sequence_contract_static(
 
     if sample_construction is None:
         return
-    expected_sample: dict[str, Any] = {
-        "condition_source_frame_offset": -1,
-        "start_padding_frames": 0,
-    }
-    if (
-        contract
-        == VideoActionSequenceContract.ROLLOUT_PARITY_SINGLE_FRAME_PERCHUNK_PROPRIO
-    ):
-        expected_sample.update(
-            {
-                "target_alignment": SampleTargetAlignment.NEXT_AFTER_CONTEXT.value,
-                "rollout_context_policy": RolloutContextPolicy.ONE_FRAME.value,
-            }
-        )
-    else:
-        expected_sample["target_alignment"] = SampleTargetAlignment.LEGACY.value
-    for key, expected_value in expected_sample.items():
+    for key, expected_value in spec.sample_construction_updates().items():
         if key not in sample_construction:
             continue
-        actual_value = sample_construction[key]
-        if key in {"condition_source_frame_offset", "start_padding_frames"}:
+        expected_value = raw_enum_value(expected_value)
+        actual_value = raw_enum_value(sample_construction[key])
+        if isinstance(expected_value, int) and not isinstance(expected_value, bool):
             actual_value = _optional_int(actual_value)
         if actual_value != expected_value:
             issues.error(

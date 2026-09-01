@@ -19,6 +19,7 @@ from .enums import (
     coerce_fields,
 )
 from .policy_contracts import PolicyConditioningRequirements, PolicyVariantConfig
+from .sequence_contract_specs import get_video_action_sequence_contract_spec
 
 
 @dataclass(frozen=True, slots=True)
@@ -196,10 +197,8 @@ class VideoActionPolicyConfig(PolicyVariantConfig):
     def requires_frame_aligned_proprio_context(self) -> bool:
         """Whether sequence assembly needs state for every model-visible frame."""
 
-        return self.sequence_contract in {
-            VideoActionSequenceContract.ROLLOUT_PARITY_SINGLE_FRAME_PERCHUNK_PROPRIO,
-            VideoActionSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO,
-        }
+        spec = get_video_action_sequence_contract_spec(self.sequence_contract)
+        return bool(spec and spec.requires_frame_aligned_proprio_context)
 
     def normalize_config_override_values(
         self,

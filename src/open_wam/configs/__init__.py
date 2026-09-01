@@ -205,6 +205,7 @@ from .resolution import resolve_experiment_config
 from .sequence_contracts import (
     apply_video_action_sequence_contract,
     expand_video_action_sequence_contract,
+    materialize_video_action_sequence_contract,
     validate_experiment_config_runtime_contract,
     validate_policy_data_sequence_contract,
     validate_video_action_sequence_contract_override_keys,
@@ -402,6 +403,7 @@ __all__ = [
     "expand_video_action_sequence_contract",
     "load_experiment_config",
     "load_local_path_registry",
+    "materialize_video_action_sequence_contract",
     "normalize_backbone_implementation",
     "normalize_video_action_config_fields",
     "normalize_video_action_decoder_fields",

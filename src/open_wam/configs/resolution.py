@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from .experiment import ExperimentConfig
-from .sequence_contracts import _materialize_video_action_sequence_contract
+from .sequence_contracts import materialize_video_action_sequence_contract
 
 
 def resolve_experiment_config(config: ExperimentConfig) -> ExperimentConfig:
@@ -13,7 +13,7 @@ def resolve_experiment_config(config: ExperimentConfig) -> ExperimentConfig:
         raise TypeError(
             f"Expected ExperimentConfig, got {type(config).__name__}."
         )
-    return _materialize_video_action_sequence_contract(config)
+    return materialize_video_action_sequence_contract(config)
 
 
 __all__ = ["resolve_experiment_config"]
