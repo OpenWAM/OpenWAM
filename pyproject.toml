@@ -144,12 +144,6 @@ sim = [
     "torch>=2.4",
     "transformers>=5.5.0",
 ]
-deployment = [
-    "numpy>=1.26",
-    "opencv-python>=4.10.0",
-    "pyarrow>=18.0",
-    "scipy>=1.11",
-]
 docs = [
     "mkdocs==1.6.1",
 ]

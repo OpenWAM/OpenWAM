@@ -50,7 +50,6 @@ def main() -> None:
     _check_no_merge_conflict_markers()
     _check_static_source_contracts()
     _check_workflow_is_no_torch()
-    _check_hardware_workflow()
     _check_pages_workflow()
 
     summary = {
@@ -366,37 +365,6 @@ def _check_workflow_is_no_torch() -> None:
     if missing:
         raise SystemExit(
             f"CI semantic pathway is missing required gates: {missing!r}"
-        )
-
-
-def _check_hardware_workflow() -> None:
-    workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(
-        encoding="utf-8"
-    )
-    job = _workflow_job(workflow, "hardware-workspace-sanity")
-    required = (
-        "python -m compileall -q deployment",
-        "python -m pyflakes deployment",
-        'find_spec("torch") is None',
-        'find_spec("rclpy") is None',
-        "pytest deployment/tests -q",
-    )
-    missing = [token for token in required if token not in job]
-    if missing:
-        raise SystemExit(
-            f"Hardware workspace CI is missing expected gates: {missing!r}"
-        )
-    forbidden = (
-        "uv sync",
-        "pip install .",
-        "open-wam[",
-        "pip install torch",
-        "--with torch",
-    )
-    present = [token for token in forbidden if token in job.lower()]
-    if present:
-        raise SystemExit(
-            f"Hardware workspace CI contains heavy package installs: {present!r}"
         )
 
 

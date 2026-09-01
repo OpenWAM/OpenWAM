@@ -288,7 +288,6 @@ scripts/       thin benchmark adapters and checkout-only research tools
 src/open_wam/  installable library and role-scoped SDK
 tests/         unit, integration, simulator, and numerical parity gates
 notes/         current engineering contracts and operational references
-deployment/    separately tested hardware operations workspace
 ```
 
 ## Documentation

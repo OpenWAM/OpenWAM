@@ -26,7 +26,6 @@ PUBLIC_MARKDOWN_PATHS = (
     Path("cookbooks/new_policy_architecture.md"),
     Path("cookbooks/new_simulator_adapter.md"),
     Path("cookbooks/reproduce_result.md"),
-    Path("deployment_namespace.md"),
     Path("experiment_cards.md"),
     Path("extension_sdk.md"),
     Path("github_pages.md"),

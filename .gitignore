@@ -234,12 +234,3 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
-
-# ROS 2 workspace under deployment/ — track only Open-WAM-authored
-# source packages (e.g. gello_direct_gripper). The franka_ros2 fork is
-# its own nested git repo and should NOT be vendored here, and colcon
-# artifacts are noisy and machine-specific.
-deployment/ros2_ws/build/
-deployment/ros2_ws/install/
-deployment/ros2_ws/log/
-deployment/ros2_ws/src/franka_ros2/

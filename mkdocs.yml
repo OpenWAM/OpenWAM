@@ -38,7 +38,6 @@ nav:
   - Operations:
       - Testing: testing.md
       - Dual-Expert Refactor Characterization: dual_expert_refactor_characterization.md
-      - Deployment Namespace: deployment_namespace.md
       - GitHub Pages: github_pages.md
       - Release Process: release.md
 markdown_extensions:

@@ -159,27 +159,3 @@ jobs:
           PY
       - name: Build docs site
         run: mkdocs build --clean
-
-  hardware-workspace-sanity:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-      - name: Install no-hardware test dependencies
-        run: python -m pip install "numpy>=1.26" "pyyaml>=6.0" "pytest>=8.3" "pyflakes==3.4.0"
-      - name: Assert model and ROS stacks remain absent
-        run: |
-          python - <<'PY'
-          import importlib.util
-          assert importlib.util.find_spec("torch") is None
-          assert importlib.util.find_spec("rclpy") is None
-          PY
-      - name: Compile hardware workspace
-        run: python -m compileall -q deployment
-      - name: Lint hardware workspace
-        run: python -m pyflakes deployment
-      - name: Run no-hardware tests
-        run: pytest deployment/tests -q

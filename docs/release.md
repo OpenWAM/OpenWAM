@@ -52,8 +52,8 @@ public artifact, not a repository snapshot. Its allowlist contains:
 - required project metadata;
 - project and third-party license/notice files.
 
-Checkout-only deployment, research scripts, tests, baselines, engineering
-notes, caches, and machine-local config are intentionally excluded. The four
+Checkout-only research scripts, tests, baselines, engineering notes, caches,
+and machine-local config are intentionally excluded. The four
 files under `notes/index/` are the sole exception because the consortium data
 adapter consumes that bounded metadata contract at runtime. Both basic CI and
 `scripts/check_release_metadata.py` enforce the allowlist and reject private
