@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 import torch
@@ -23,6 +23,7 @@ from open_wam.models.common.flow_schedule import (
     sample_timestep_id,
 )
 from open_wam.models.common.flow_supervision import (
+    build_video_frame_loss_mask,
     denoised_video_latents_from_flow,
 )
 from open_wam.models.common.flow_training import (
@@ -39,15 +40,19 @@ from .contracts import (
     PolicyInferenceCapabilities,
     PolicyInferOutput,
     PolicyInferState,
+    PolicyObservedHistory,
+    PolicyObservedHistoryOutput,
     PolicyOutputModality,
     PolicyPipelineRequirements,
     PolicyPreparedInputs,
     PolicyRecurrentHistoryPolicy,
+    PolicyTemporalSpan,
     PolicyTrainBatch,
     PolicyTrainOutput,
     PolicyVisualStage,
     RolloutCursor,
 )
+from .observed_video_history import ObservedVideoHistoryState
 from .video_flow_artifacts import (
     VIDEO_FLOW_DECODER_ARTIFACT_CONTRACT,
     VideoFlowInferArtifacts,
@@ -94,7 +99,10 @@ class CausalVideoPredictionPolicyVariant(PolicyVariant):
         return PolicyInferenceCapabilities(
             native_modalities=frozenset({PolicyOutputModality.VIDEO}),
             recurrent_history_policy=(
-                PolicyRecurrentHistoryPolicy.NEXT_OBSERVATION
+                PolicyRecurrentHistoryPolicy.EXPLICIT_RECONCILIATION
+                if self.config.program
+                is CausalVideoProgram.CHUNKED_CONDITIONED_VIDEO
+                else PolicyRecurrentHistoryPolicy.NEXT_OBSERVATION
             ),
         )
 
@@ -498,7 +506,7 @@ class CausalVideoPredictionPolicyVariant(PolicyVariant):
         text_context: torch.Tensor | None,
     ) -> dict[str, Any]:
         target_latents = visual_outputs.frontend.video_latents
-        batch_size, _, target_frames, _, _ = target_latents.shape
+        _, _, target_frames, _, _ = target_latents.shape
         condition_latents = batch.extra.get("condition_latents")
         if not isinstance(condition_latents, torch.Tensor):
             raise ValueError(
@@ -534,16 +542,13 @@ class CausalVideoPredictionPolicyVariant(PolicyVariant):
             noisy_condition_prob=float(self.config.noisy_video_condition_prob or 0.0),
             clean_prefix_frames=1,
         )
-        loss_mask = torch.ones(
-            batch_size,
-            1,
-            target_frames + 1,
-            1,
-            1,
-            device=target_latents.device,
-            dtype=target_latents.dtype,
+        loss_mask = build_video_frame_loss_mask(
+            model_latents,
+            sample_metadata=metadata,
+            prefix_frame_count=1,
+            target_frame_count=target_frames,
+            error_label="Causal-video train loss-frame metadata",
         )
-        loss_mask[:, :, :1] = 0
         flow_pred = visual_tower.predict_chunked_conditioned_video_flow(
             noisy_latents=artifacts.noisy_latents,
             condition_latents=artifacts.condition_latents,
@@ -625,10 +630,9 @@ class CausalVideoPredictionPolicyVariant(PolicyVariant):
                 metadata=metadata,
                 text_context=conditioning.text_context,
             )
-            supervised_frame_count = torch.tensor(
-                float(visual_outputs.frontend.video_latents.shape[2]),
-                device=visual_outputs.frontend.video_latents.device,
-            )
+            supervised_frame_count = rollout["future_loss_mask"].float().sum(
+                dim=(1, 2, 3, 4)
+            ).mean()
         policy_features = visual_outputs.frontend.video_latents.new_zeros(
             batch_size, 0, self.config.hidden_size
         )
@@ -674,11 +678,55 @@ class CausalVideoPredictionPolicyVariant(PolicyVariant):
         )
         return PolicyInferState(step_index=0, cursor=cursor)
 
+    def reconcile_observed_history(
+        self,
+        history: PolicyObservedHistory,
+        infer_state: PolicyInferState | None,
+    ) -> PolicyObservedHistoryOutput:
+        if self.config.program is not CausalVideoProgram.CHUNKED_CONDITIONED_VIDEO:
+            return super().reconcile_observed_history(history, infer_state)
+        if infer_state is None or not isinstance(
+            infer_state.variant_state,
+            ObservedVideoHistoryState,
+        ):
+            raise RuntimeError(
+                "Chunked causal-video reconciliation requires initialized recurrent "
+                "video history."
+            )
+        next_history = infer_state.variant_state.commit_observations(history)
+        next_state = replace(
+            infer_state,
+            cursor=RolloutCursor(
+                current_start_frame=int(next_history.observed_span.end_frame),
+                block_index=int(infer_state.cursor.block_index),
+                chunk_size=int(infer_state.cursor.chunk_size),
+            ),
+            variant_state=next_history,
+        )
+        return PolicyObservedHistoryOutput(
+            next_state=next_state,
+            applied=True,
+            debug={
+                "observed_video_history_frames": int(
+                    next_history.observed_span.frame_count
+                ),
+                "observed_video_frame_start": int(
+                    next_history.observed_span.start_frame
+                ),
+                "observed_video_frame_end": int(next_history.observed_span.end_frame),
+                "committed_video_frames": int(
+                    history.execution_commit.executed_frame_count
+                )
+                if history.execution_commit is not None
+                else 0,
+            },
+        )
+
     def _build_video_infer_output(
         self,
         *,
         video_latents: torch.Tensor,
-        observed_prefix: torch.Tensor,
+        observed_history: torch.Tensor,
         predicted_future: torch.Tensor,
         next_state: PolicyInferState,
         generated_frame_start: int | None = None,
@@ -687,7 +735,7 @@ class CausalVideoPredictionPolicyVariant(PolicyVariant):
     ) -> PolicyInferOutput:
         """Publish one future-video result through the shared policy contract."""
 
-        predicted_latents = torch.cat([observed_prefix, predicted_future], dim=2)
+        predicted_latents = torch.cat([observed_history, predicted_future], dim=2)
         return PolicyInferOutput(
             policy_features=video_latents.new_zeros(
                 video_latents.shape[0], 0, self.config.hidden_size
@@ -711,6 +759,72 @@ class CausalVideoPredictionPolicyVariant(PolicyVariant):
                 "program": self.config.program.value,
                 **dict(aux_extra or {}),
             },
+        )
+
+    def _begin_chunked_video_generation(
+        self,
+        *,
+        infer_state: PolicyInferState,
+        initial_observed_latents: torch.Tensor,
+        initial_start_frame: int,
+        initial_model_frame_start: int,
+        initial_chunk_origin_frame: int,
+        frame_count: int,
+        attention_window_size: int,
+    ) -> tuple[
+        ObservedVideoHistoryState,
+        ObservedVideoHistoryState,
+        PolicyTemporalSpan,
+    ]:
+        """Initialize or advance the shared recurrent causal-video contract."""
+
+        history_state = infer_state.variant_state
+        if history_state is None:
+            history_state = ObservedVideoHistoryState.initialize(
+                initial_observed_latents,
+                start_frame=int(initial_start_frame),
+                model_frame_start=int(initial_model_frame_start),
+                model_frame_chunk_size=int(self.inference_config.frame_chunk_size),
+                chunk_origin_frame=int(initial_chunk_origin_frame),
+                prefix_frame_count=1,
+                attention_window_size=int(attention_window_size),
+            )
+        elif not isinstance(history_state, ObservedVideoHistoryState):
+            raise TypeError(
+                "Chunked causal-video inference received incompatible recurrent "
+                f"state {type(history_state).__name__}."
+            )
+        if int(history_state.model_frame_chunk_size) != int(
+            self.inference_config.frame_chunk_size
+        ):
+            raise ValueError(
+                "Chunked causal-video recurrent state does not match inference "
+                f"geometry: state={history_state.model_frame_chunk_size}, "
+                f"configured={self.inference_config.frame_chunk_size}."
+            )
+        pending_state, generated_span = history_state.begin_generation(
+            frame_count=int(frame_count),
+            attention_window_size=int(attention_window_size),
+        )
+        return history_state, pending_state, generated_span
+
+    @staticmethod
+    def _chunked_generation_next_state(
+        infer_state: PolicyInferState,
+        *,
+        pending_state: ObservedVideoHistoryState,
+        generated_span: PolicyTemporalSpan,
+    ) -> PolicyInferState:
+        return replace(
+            infer_state,
+            step_index=infer_state.step_index + 1,
+            cursor=RolloutCursor(
+                # Reconciliation advances this cursor by the executed prefix.
+                current_start_frame=int(generated_span.start_frame),
+                block_index=int(infer_state.cursor.block_index) + 1,
+                chunk_size=int(generated_span.frame_count),
+            ),
+            variant_state=pending_state,
         )
 
     def _forward_chunked_conditioned_infer_step(
@@ -745,17 +859,36 @@ class CausalVideoPredictionPolicyVariant(PolicyVariant):
             )
         observed_prefix = video_latents[:, :, :1]
         future_template = video_latents[:, :, 1 : 1 + future_frames]
+        attention_window_size = int(self.training_config.window_size)
+        history_state, pending_state, generated_span = (
+            self._begin_chunked_video_generation(
+                infer_state=infer_state,
+                initial_observed_latents=observed_prefix,
+                initial_start_frame=int(infer_state.cursor.current_start_frame),
+                # Dataset frame shifts can be negative at the external prefix;
+                # policy execution spans remain session-relative and non-negative.
+                initial_model_frame_start=(
+                    int(sample_metadata.get("frame_shift", 0)) - 1
+                ),
+                initial_chunk_origin_frame=int(
+                    sample_metadata.get("chunk_origin_frame", 0)
+                ),
+                frame_count=future_frames,
+                attention_window_size=attention_window_size,
+            )
+        )
         predicted_future = visual_tower.generate_chunked_conditioned_video_latents(
-            observed_prefix=observed_prefix,
+            observed_history=history_state.video_latents,
             future_template=future_template,
             text_context=visual_outputs.frontend.conditioning.text_context,
             negative_text_context=(
                 visual_outputs.frontend.conditioning.negative_text_context
             ),
-            frame_start=int(sample_metadata.get("frame_shift", 0)),
+            history_frame_start=int(history_state.model_frame_start),
             chunk_size=int(self.inference_config.frame_chunk_size),
-            window_size=int(self.training_config.window_size),
-            chunk_origin_frame=int(sample_metadata.get("chunk_origin_frame", 0)),
+            window_size=attention_window_size,
+            chunk_origin_frame=int(history_state.chunk_origin_frame),
+            prefix_condition_frames=int(history_state.prefix_frame_count),
             num_inference_steps=int(
                 self.inference_config.video_num_inference_steps
             ),
@@ -770,13 +903,19 @@ class CausalVideoPredictionPolicyVariant(PolicyVariant):
         )
         return self._build_video_infer_output(
             video_latents=video_latents,
-            observed_prefix=observed_prefix,
+            observed_history=history_state.video_latents,
             predicted_future=predicted_future,
-            next_state=PolicyInferState(
-                step_index=infer_state.step_index + 1,
-                cursor=infer_state.cursor,
+            next_state=self._chunked_generation_next_state(
+                infer_state,
+                pending_state=pending_state,
+                generated_span=generated_span,
             ),
+            generated_frame_start=int(generated_span.start_frame),
             latent_space_identity=visual_outputs.frontend.latent_space_identity,
+            aux_extra={
+                "generated_video_frame_start": int(generated_span.start_frame),
+                "generated_video_frame_count": int(generated_span.frame_count),
+            },
         )
 
     def forward_infer_step(
@@ -844,7 +983,7 @@ class CausalVideoPredictionPolicyVariant(PolicyVariant):
         )
         return self._build_video_infer_output(
             video_latents=video_latents,
-            observed_prefix=observed_prefix,
+            observed_history=observed_prefix,
             predicted_future=predicted_future,
             next_state=PolicyInferState(
                 step_index=infer_state.step_index + 1,
@@ -875,31 +1014,40 @@ class CausalVideoPredictionPolicyVariant(PolicyVariant):
             video_latents.shape[3],
             video_latents.shape[4],
         )
+        next_history_state = infer_state.variant_state
         if self.config.program is CausalVideoProgram.CHUNKED_CONDITIONED_VIDEO:
-            observed_prefix = video_latents[:, :, -1:]
-            condition_frame_start = int(infer_state.cursor.current_start_frame) + int(
-                video_latents.shape[2]
-            ) - 1
-            generated_frame_start = condition_frame_start + int(
-                observed_prefix.shape[2]
+            attention_window_size = (
+                int(self.training_config.window_size)
+                if request.attention_window_size is None
+                else int(request.attention_window_size)
             )
+            history_state, next_history_state, generated_span = (
+                self._begin_chunked_video_generation(
+                    infer_state=infer_state,
+                    initial_observed_latents=video_latents,
+                    initial_start_frame=int(infer_state.cursor.current_start_frame),
+                    initial_model_frame_start=int(
+                        infer_state.cursor.current_start_frame
+                    ),
+                    initial_chunk_origin_frame=0,
+                    frame_count=frame_count,
+                    attention_window_size=attention_window_size,
+                )
+            )
+            observed_prefix = history_state.video_latents
+            generated_frame_start = int(generated_span.start_frame)
             predicted_future = visual_tower.generate_chunked_conditioned_video_latents(
-                observed_prefix=observed_prefix,
+                observed_history=observed_prefix,
                 future_template=future_template,
                 text_context=visual_outputs.frontend.conditioning.text_context,
                 negative_text_context=(
                     visual_outputs.frontend.conditioning.negative_text_context
                 ),
-                # The visual-tower contract takes the first target frame. It
-                # prepends the one-frame condition internally when assigning
-                # rotary positions, matching training's `frame_shift`.
-                frame_start=generated_frame_start,
+                history_frame_start=int(history_state.model_frame_start),
                 chunk_size=int(self.inference_config.frame_chunk_size),
-                window_size=int(self.training_config.window_size),
-                chunk_origin_frame=(
-                    (condition_frame_start + 1)
-                    % int(self.inference_config.frame_chunk_size)
-                ),
+                window_size=attention_window_size,
+                chunk_origin_frame=int(history_state.chunk_origin_frame),
+                prefix_condition_frames=int(history_state.prefix_frame_count),
                 num_inference_steps=int(
                     self.inference_config.video_num_inference_steps
                 ),
@@ -933,21 +1081,30 @@ class CausalVideoPredictionPolicyVariant(PolicyVariant):
                 sigma_shift=self.training_config.video_sigma_shift,
                 guidance_scale=self.inference_config.guidance_scale,
             )
+        next_cursor = RolloutCursor(
+            # The next real observation chunk starts where this speculative
+            # chunk starts. Reconciliation advances it by the executed prefix.
+            current_start_frame=generated_frame_start,
+            block_index=infer_state.cursor.block_index + 1,
+            chunk_size=frame_count,
+        )
+        if self.config.program is CausalVideoProgram.CHUNKED_CONDITIONED_VIDEO:
+            next_infer_state = self._chunked_generation_next_state(
+                infer_state,
+                pending_state=next_history_state,
+                generated_span=generated_span,
+            )
+        else:
+            # Preserve the established stateless prefix/suffix session contract.
+            next_infer_state = PolicyInferState(
+                step_index=infer_state.step_index + 1,
+                cursor=next_cursor,
+            )
         return self._build_video_infer_output(
             video_latents=video_latents,
-            observed_prefix=observed_prefix,
+            observed_history=observed_prefix,
             predicted_future=predicted_future,
-            next_state=PolicyInferState(
-                step_index=infer_state.step_index + 1,
-                cursor=RolloutCursor(
-                    # The next real observation chunk starts where this
-                    # speculative chunk starts. Its length determines the next
-                    # generated frame on the following call.
-                    current_start_frame=generated_frame_start,
-                    block_index=infer_state.cursor.block_index + 1,
-                    chunk_size=frame_count,
-                ),
-            ),
+            next_state=next_infer_state,
             generated_frame_start=generated_frame_start,
             latent_space_identity=visual_outputs.frontend.latent_space_identity,
             aux_extra={

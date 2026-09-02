@@ -284,22 +284,9 @@ class DualExpertPackedTrainingProgram:
             video_latents=video_latents,
             batch=prepared_inputs.batch,
             default_history_frames=history_frames,
+            prefix_condition_frames=prefix_condition_frames,
+            target_num_video_frames=target_num_video_frames,
         )
-        if prefix_condition_frames > 0:
-            future_loss_mask.zero_()
-            explicit_video_loss_range = self.training_layout.resolve_loss_frame_range(
-                batch=prepared_inputs.batch,
-                observed_num_frames=target_num_video_frames,
-                start_key="latent_loss_frame_start",
-                end_key="latent_loss_frame_end",
-            )
-            if explicit_video_loss_range is None:
-                future_loss_mask[:, :, prefix_condition_frames:] = 1.0
-            else:
-                loss_frame_start, loss_frame_end = explicit_video_loss_range
-                shifted_start = int(prefix_condition_frames) + int(loss_frame_start)
-                shifted_end = int(prefix_condition_frames) + int(loss_frame_end)
-                future_loss_mask[:, :, shifted_start:shifted_end] = 1.0
         action_artifacts = build_frame_aligned_action_flow_match_train_artifacts(
             prepared_inputs.batch.actions,
             effective_action_mask,

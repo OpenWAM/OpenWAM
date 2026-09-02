@@ -157,6 +157,39 @@ def test_conditioned_video_layout_is_exact_vta_video_marginal() -> None:
     )
 
 
+def test_bounded_conditioned_video_window_preserves_current_chunk_visibility() -> None:
+    common = {
+        "padded_length": 0,
+        "chunk_size": 4,
+        "window_size": 30,
+        "patch_size": (1, 1, 1),
+        "text_token_count": 2,
+        "chunk_origin_frame": 0,
+        "device": torch.device("cpu"),
+        "build_dense_masks": True,
+        "prefix_condition_frames": 1,
+    }
+    full = build_chunked_conditioned_video_attention_profile(
+        **common,
+        latent_shape=(1, 1, 105, 1, 1),
+    )
+    bounded = build_chunked_conditioned_video_attention_profile(
+        **common,
+        latent_shape=(1, 1, 65, 1, 1),
+    )
+    assert full.self_attention_mask is not None
+    assert bounded.self_attention_mask is not None
+
+    # The bounded sequence maps to full frames 40..104 in each packed copy.
+    full_kv = torch.cat([torch.arange(40, 105), torch.arange(145, 210)])
+    full_queries = torch.cat([torch.arange(101, 105), torch.arange(206, 210)])
+    bounded_queries = torch.cat([torch.arange(61, 65), torch.arange(126, 130)])
+    torch.testing.assert_close(
+        bounded.self_attention_mask[bounded_queries],
+        full.self_attention_mask[full_queries][:, full_kv],
+    )
+
+
 def _build_chunked_attention_oracle_profile(
     *,
     coupling: str,

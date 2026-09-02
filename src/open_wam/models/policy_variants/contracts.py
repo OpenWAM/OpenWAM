@@ -268,11 +268,19 @@ class PolicyVideoGenerationRequest:
     """Geometry requested from a video-producing inference stage."""
 
     frame_count: int
+    attention_window_size: int | None = None
 
     def __post_init__(self) -> None:
         if int(self.frame_count) <= 0:
             raise ValueError(
                 f"Video generation frame_count must be positive, got {self.frame_count}."
+            )
+        if self.attention_window_size is not None and int(
+            self.attention_window_size
+        ) <= 0:
+            raise ValueError(
+                "Video generation attention_window_size must be positive when "
+                f"provided, got {self.attention_window_size}."
             )
 
 
@@ -576,6 +584,8 @@ class PolicyObservedHistory:
     the actions actually executed for this commit; a policy decides how much
     speculative action history they replace. ``observation_frame_count`` is
     the raw environment-frame count and can differ from latent time.
+    ``rollout_frame_chunk_size`` identifies the speculative request being
+    reconciled; it is independent of a model's fixed internal block geometry.
     """
 
     video_latents: torch.Tensor

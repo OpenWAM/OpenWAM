@@ -23,6 +23,7 @@ from .flow_schedule import (
     zero_terminal_next_sigma as zero_terminal_next_sigma,
 )
 from .flow_supervision import (
+    build_video_frame_loss_mask as build_video_frame_loss_mask,
     denoised_actions_from_flow as denoised_actions_from_flow,
     denoised_video_latents_from_flow as denoised_video_latents_from_flow,
     reduce_frame_aligned_action_flow_match_loss as reduce_frame_aligned_action_flow_match_loss,
@@ -61,6 +62,7 @@ __all__ = [
     "build_flow_unipc_inference_scheduler",
     "build_frame_aligned_action_flow_match_train_artifacts",
     "build_video_flow_match_inference_scheduler",
+    "build_video_frame_loss_mask",
     "build_video_flow_match_train_artifacts",
     "dataclass",
     "denoised_actions_from_flow",

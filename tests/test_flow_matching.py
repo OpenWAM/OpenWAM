@@ -10,6 +10,31 @@ from open_wam.models.common import (
     build_video_flow_match_train_artifacts,
     FlowMatchScheduler,
 )
+from open_wam.models.common.flow_supervision import build_video_frame_loss_mask
+
+
+def test_video_frame_loss_mask_uses_target_local_ranges_after_prefix() -> None:
+    latents = torch.ones(2, 4, 6, 1, 1)
+
+    mask = build_video_frame_loss_mask(
+        latents,
+        sample_metadata=(
+            {"latent_loss_frame_start": 1, "latent_loss_frame_end": 3},
+            {"latent_loss_frame_start": 0, "latent_loss_frame_end": 4},
+        ),
+        prefix_frame_count=1,
+        target_frame_count=5,
+    )
+
+    assert torch.equal(
+        mask[:, 0, :, 0, 0],
+        torch.tensor(
+            [
+                [0.0, 0.0, 1.0, 1.0, 0.0, 0.0],
+                [0.0, 1.0, 1.0, 1.0, 1.0, 0.0],
+            ]
+        ),
+    )
 
 
 def test_action_flow_match_artifacts_stay_on_input_device() -> None:

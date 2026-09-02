@@ -7,6 +7,10 @@ from typing import Any, Protocol
 
 from open_wam.configs import CurrentBlockCoupling
 from open_wam.configs.enums import RolloutContextPolicy, SampleTargetAlignment
+from open_wam.models.common.temporal_windows import (
+    resolve_interleaved_cache_frames,
+    resolve_interleaved_history_frames,
+)
 from open_wam.models.policy_variants.contracts import (
     PolicyInferenceOutputRequest,
     PolicyOutputModality,
@@ -283,9 +287,10 @@ def resolve_dual_expert_rollout_history_frames(
     retention and dual-expert's packed rollout-history contract.
     """
 
-    chunk = max(1, int(frame_chunk_size))
-    window = max(1, int(window_size))
-    return max(chunk, (window // 2) * chunk)
+    return resolve_interleaved_history_frames(
+        window_size=window_size,
+        frame_chunk_size=frame_chunk_size,
+    )
 
 
 def resolve_dual_expert_rollout_cache_window_frames(
@@ -293,13 +298,9 @@ def resolve_dual_expert_rollout_cache_window_frames(
 ) -> int:
     """Total cached clean frames to retain: visible history plus the current chunk."""
 
-    chunk = max(1, int(frame_chunk_size))
-    return (
-        resolve_dual_expert_rollout_history_frames(
-            window_size=window_size,
-            frame_chunk_size=chunk,
-        )
-        + chunk
+    return resolve_interleaved_cache_frames(
+        window_size=window_size,
+        frame_chunk_size=frame_chunk_size,
     )
 
 

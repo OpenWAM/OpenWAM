@@ -83,6 +83,16 @@ def test_native_video_only_producer_uses_its_normal_output() -> None:
     assert plan.to_report()["native_modalities"] == ["video"]
 
 
+def test_video_generation_request_validates_optional_attention_window() -> None:
+    request = PolicyVideoGenerationRequest(
+        frame_count=4,
+        attention_window_size=30,
+    )
+    assert request.attention_window_size == 30
+    with pytest.raises(ValueError, match="attention_window_size"):
+        PolicyVideoGenerationRequest(frame_count=4, attention_window_size=0)
+
+
 def test_multimodal_producer_prefers_selective_video_when_supported() -> None:
     video_only = PolicyInferenceOutputRequest.video_only()
     plan = resolve_policy_video_producer_plan(

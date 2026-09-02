@@ -22,16 +22,23 @@ from open_wam.configs import (
 from open_wam.data import LatentWAMBatch
 from open_wam.evals.video_prediction import rollout_causal_video_prediction
 from open_wam.models.policy_variants import (
+    PolicyExecutionCommit,
     PolicyInferContext,
     PolicyInferenceOutputRequest,
     PolicyInferState,
+    PolicyObservedHistory,
     PolicyOutputModality,
     PolicyPreparedInputs,
+    PolicyRecurrentHistoryPolicy,
+    PolicyTemporalSpan,
     PolicyTrainBatch,
     PolicyVideoGenerationRequest,
 )
 from open_wam.models.policy_variants.causal_video_prediction import (
     CausalVideoPredictionPolicyVariant,
+)
+from open_wam.models.policy_variants.observed_video_history import (
+    ObservedVideoHistoryState,
 )
 from open_wam.models.policy_variants.video_flow_artifacts import (
     VIDEO_FLOW_DECODER_ARTIFACT_CONTRACT,
@@ -281,10 +288,12 @@ def test_causal_video_composition_synthesizes_future_template_from_one_observati
 
     class _Tower:
         def generate_chunked_conditioned_video_latents(self, **kwargs):
-            torch.testing.assert_close(kwargs["observed_prefix"], observed)
+            torch.testing.assert_close(kwargs["observed_history"], observed)
             assert kwargs["future_template"].shape == generated.shape
             assert bool((kwargs["future_template"] == 0).all())
-            assert kwargs["frame_start"] == 1
+            assert kwargs["history_frame_start"] == 0
+            assert kwargs["chunk_origin_frame"] == 0
+            assert kwargs["window_size"] == 30
             return generated
 
     visual_outputs = SimpleNamespace(
@@ -303,7 +312,10 @@ def test_causal_video_composition_synthesizes_future_template_from_one_observati
         visual_outputs,  # type: ignore[arg-type]
         PolicyInferContext(
             extra={"task_text": ("move the object",)},
-            video_generation=PolicyVideoGenerationRequest(frame_count=4),
+            video_generation=PolicyVideoGenerationRequest(
+                frame_count=4,
+                attention_window_size=30,
+            ),
         ),
         PolicyInferState(),
     )
@@ -313,15 +325,52 @@ def test_causal_video_composition_synthesizes_future_template_from_one_observati
     assert output.generation_frame_start == 1
     torch.testing.assert_close(output.generated_video.latents, generated)
     assert output.decoder_artifacts.payload.predicted_latents.shape[2] == 5
+    assert (
+        variant.inference_capabilities.recurrent_history_policy
+        is PolicyRecurrentHistoryPolicy.EXPLICIT_RECONCILIATION
+    )
 
     next_observed = torch.randn(1, 3, 4, 2, 2)
+
+    with pytest.raises(RuntimeError, match="reconciled"):
+        variant.forward_infer_step(
+            _Tower(),  # type: ignore[arg-type]
+            visual_outputs,  # type: ignore[arg-type]
+            PolicyInferContext(
+                extra={"task_text": ("move the object",)},
+                video_generation=PolicyVideoGenerationRequest(
+                    frame_count=4,
+                    attention_window_size=30,
+                ),
+            ),
+            output.next_state,
+        )
+
+    history_output = variant.reconcile_observed_history(
+        PolicyObservedHistory(
+            video_latents=next_observed,
+            observation_frame_count=16,
+            inference_window_size=30,
+            rollout_frame_chunk_size=4,
+            execution_commit=PolicyExecutionCommit(
+                speculative_span=PolicyTemporalSpan(start_frame=1, frame_count=4),
+                executed_frame_count=4,
+            ),
+        ),
+        output.next_state,
+    )
+    assert history_output.applied is True
+    assert history_output.next_state is not None
 
     class _NextTower:
         def generate_chunked_conditioned_video_latents(self, **kwargs):
             torch.testing.assert_close(
-                kwargs["observed_prefix"], next_observed[:, :, -1:]
+                kwargs["observed_history"],
+                torch.cat([observed, next_observed], dim=2),
             )
-            assert kwargs["frame_start"] == 5
+            assert kwargs["history_frame_start"] == 0
+            assert kwargs["chunk_origin_frame"] == 0
+            assert kwargs["window_size"] == 30
             return generated
 
     next_visual_outputs = SimpleNamespace(
@@ -336,15 +385,201 @@ def test_causal_video_composition_synthesizes_future_template_from_one_observati
         next_visual_outputs,  # type: ignore[arg-type]
         PolicyInferContext(
             extra={"task_text": ("move the object",)},
-            video_generation=PolicyVideoGenerationRequest(frame_count=4),
+            video_generation=PolicyVideoGenerationRequest(
+                frame_count=4,
+                attention_window_size=30,
+            ),
         ),
-        output.next_state,
+        history_output.next_state,
     )
 
     assert next_output.generated_video is not None
     assert next_output.generated_video.frame_start == 5
     assert next_output.generation_frame_start == 5
     assert next_output.next_state.cursor.current_start_frame == 5
+
+
+def test_causal_video_composition_reconciles_repeated_short_requests() -> None:
+    variant = CausalVideoPredictionPolicyVariant(
+        config=CausalVideoPredictionPolicyConfig(
+            program=CausalVideoProgram.CHUNKED_CONDITIONED_VIDEO,
+            noisy_video_condition_prob=0.0,
+        ),
+        training_config=TrainingConfig(window_size=30),
+        inference_config=InferenceConfig(frame_chunk_size=4),
+    )
+    initial_observed = torch.randn(1, 3, 1, 2, 2)
+    next_observed = torch.randn(1, 3, 2, 2, 2)
+    generated = torch.randn(1, 3, 2, 2, 2)
+    tower_calls: list[dict[str, object]] = []
+
+    class _Tower:
+        def generate_chunked_conditioned_video_latents(self, **kwargs):
+            tower_calls.append(kwargs)
+            assert kwargs["future_template"].shape[2] == 2
+            assert kwargs["chunk_size"] == 4
+            return generated
+
+    conditioning = SimpleNamespace(
+        text_context=torch.ones(1, 2, 3),
+        negative_text_context=None,
+        metadata={},
+    )
+
+    def visual_outputs(video_latents: torch.Tensor):
+        return SimpleNamespace(
+            frontend=SimpleNamespace(
+                video_latents=video_latents,
+                conditioning=conditioning,
+                latent_space_identity=None,
+            )
+        )
+
+    context = PolicyInferContext(
+        extra={"task_text": ("move the object",)},
+        video_generation=PolicyVideoGenerationRequest(
+            frame_count=2,
+            attention_window_size=30,
+        ),
+    )
+    first_output = variant.forward_infer_step(
+        _Tower(),  # type: ignore[arg-type]
+        visual_outputs(initial_observed),  # type: ignore[arg-type]
+        context,
+        PolicyInferState(),
+    )
+    assert first_output.generated_video is not None
+    assert first_output.generated_video.frame_start == 1
+    assert first_output.next_state.cursor.chunk_size == 2
+    assert isinstance(
+        first_output.next_state.variant_state,
+        ObservedVideoHistoryState,
+    )
+    assert first_output.next_state.variant_state.model_frame_chunk_size == 4
+
+    reconciled = variant.reconcile_observed_history(
+        PolicyObservedHistory(
+            video_latents=next_observed,
+            observation_frame_count=8,
+            inference_window_size=30,
+            rollout_frame_chunk_size=2,
+            execution_commit=PolicyExecutionCommit(
+                speculative_span=PolicyTemporalSpan(start_frame=1, frame_count=2),
+                executed_frame_count=2,
+            ),
+        ),
+        first_output.next_state,
+    )
+    assert reconciled.applied is True
+    assert reconciled.next_state is not None
+
+    second_output = variant.forward_infer_step(
+        _Tower(),  # type: ignore[arg-type]
+        visual_outputs(next_observed),  # type: ignore[arg-type]
+        context,
+        reconciled.next_state,
+    )
+    assert second_output.generated_video is not None
+    assert second_output.generated_video.frame_start == 3
+    assert second_output.next_state.cursor.chunk_size == 2
+    torch.testing.assert_close(
+        tower_calls[1]["observed_history"],
+        torch.cat([initial_observed, next_observed], dim=2),
+    )
+
+
+def test_native_chunked_causal_inference_honors_reconciliation_capability() -> None:
+    variant = CausalVideoPredictionPolicyVariant(
+        config=CausalVideoPredictionPolicyConfig(
+            program=CausalVideoProgram.CHUNKED_CONDITIONED_VIDEO,
+            noisy_video_condition_prob=0.0,
+        ),
+        training_config=TrainingConfig(window_size=30),
+        inference_config=InferenceConfig(frame_chunk_size=4),
+    )
+    first_prefix = torch.randn(1, 3, 1, 2, 2)
+    next_observed = torch.randn(1, 3, 4, 2, 2)
+    generated = torch.randn(1, 3, 4, 2, 2)
+    calls: list[dict[str, object]] = []
+
+    class _Tower:
+        def generate_chunked_conditioned_video_latents(self, **kwargs):
+            calls.append(kwargs)
+            return generated
+
+    def visual_outputs(video_latents: torch.Tensor):
+        return SimpleNamespace(
+            frontend=SimpleNamespace(
+                video_latents=video_latents,
+                conditioning=SimpleNamespace(
+                    text_context=torch.ones(1, 2, 3),
+                    negative_text_context=None,
+                    metadata={},
+                ),
+                latent_space_identity=None,
+            )
+        )
+
+    context = PolicyInferContext(
+        extra={
+            "task_text": ("move the object",),
+            "metadata": (
+                {
+                    "observed_prefix_frames": 1,
+                    "future_suffix_frames": 4,
+                    "frame_shift": 0,
+                    "chunk_origin_frame": 0,
+                },
+            ),
+        }
+    )
+    first_output = variant.forward_infer_step(
+        _Tower(),  # type: ignore[arg-type]
+        visual_outputs(
+            torch.cat([first_prefix, torch.zeros_like(generated)], dim=2)
+        ),  # type: ignore[arg-type]
+        context,
+        PolicyInferState(),
+    )
+
+    assert first_output.generation_frame_start == 1
+    assert isinstance(
+        first_output.next_state.variant_state,
+        ObservedVideoHistoryState,
+    )
+    assert calls[0]["history_frame_start"] == -1
+    torch.testing.assert_close(calls[0]["observed_history"], first_prefix)
+
+    reconciled = variant.reconcile_observed_history(
+        PolicyObservedHistory(
+            video_latents=next_observed,
+            observation_frame_count=16,
+            inference_window_size=30,
+            rollout_frame_chunk_size=4,
+            execution_commit=PolicyExecutionCommit(
+                speculative_span=PolicyTemporalSpan(start_frame=1, frame_count=4),
+                executed_frame_count=4,
+            ),
+        ),
+        first_output.next_state,
+    )
+    assert reconciled.next_state is not None
+
+    second_output = variant.forward_infer_step(
+        _Tower(),  # type: ignore[arg-type]
+        visual_outputs(
+            torch.cat([next_observed[:, :, -1:], torch.zeros_like(generated)], dim=2)
+        ),  # type: ignore[arg-type]
+        context,
+        reconciled.next_state,
+    )
+
+    assert second_output.generation_frame_start == 5
+    assert calls[1]["history_frame_start"] == -1
+    torch.testing.assert_close(
+        calls[1]["observed_history"],
+        torch.cat([first_prefix, next_observed], dim=2),
+    )
 
 
 def test_prefix_suffix_composition_advances_from_each_real_observation_chunk() -> None:
@@ -478,6 +713,8 @@ def test_chunked_conditioned_video_training_uses_external_prefix_and_full_target
                     "sampled_chunk_size": 2,
                     "sampled_window_size": 4,
                     "frame_shift": 9,
+                    "latent_loss_frame_start": 1,
+                    "latent_loss_frame_end": 3,
                 },
             ),
         },
@@ -503,8 +740,15 @@ def test_chunked_conditioned_video_training_uses_external_prefix_and_full_target
     assert artifacts.target_latents.shape[2] == 5
     torch.testing.assert_close(artifacts.target_latents[:, :, :1], condition[:, :, :1])
     torch.testing.assert_close(artifacts.target_latents[:, :, 1:], target)
-    assert not torch.any(artifacts.future_loss_mask[:, :, :1])
-    assert torch.all(artifacts.future_loss_mask[:, :, 1:])
+    expected_loss_mask = torch.tensor([0, 0, 1, 1, 0], dtype=target.dtype)
+    torch.testing.assert_close(
+        artifacts.future_loss_mask.flatten(),
+        expected_loss_mask,
+    )
+    torch.testing.assert_close(
+        output.metrics["future_frame_count"],
+        torch.tensor(2.0),
+    )
     torch.testing.assert_close(
         tower.kwargs["noisy_latents"][:, :, :1],
         condition[:, :, :1],
@@ -763,14 +1007,14 @@ def test_chunked_conditioned_video_generation_commits_each_chunk_to_history(
     future = torch.zeros(1, 48, 4, 2, 4)
 
     generated = pipeline.visual_tower.generate_chunked_conditioned_video_latents(
-        observed_prefix=prefix,
+        observed_history=prefix,
         future_template=future,
         text_context=torch.randn(1, 3, 8),
         negative_text_context=None,
-        frame_start=0,
+        history_frame_start=0,
         chunk_size=2,
         window_size=4,
-        chunk_origin_frame=3,
+        chunk_origin_frame=0,
         num_inference_steps=1,
         num_train_timesteps=8,
         sigma_shift=5.0,
@@ -780,7 +1024,7 @@ def test_chunked_conditioned_video_generation_commits_each_chunk_to_history(
 
     assert generated.shape == future.shape
     assert [call["noisy_latents"].shape[2] for call in calls] == [3, 5]
-    assert [call["chunk_origin_frame"] for call in calls] == [3, 3]
+    assert [call["chunk_origin_frame"] for call in calls] == [0, 0]
     second_noisy = calls[1]["noisy_latents"]
     second_condition = calls[1]["condition_latents"]
     assert isinstance(second_noisy, torch.Tensor)
@@ -791,6 +1035,176 @@ def test_chunked_conditioned_video_generation_commits_each_chunk_to_history(
     assert isinstance(second_timesteps, torch.Tensor)
     assert not torch.any(second_timesteps[:, :3])
     assert torch.all(second_timesteps[:, 3:] > 0)
+
+
+def test_chunked_conditioned_video_generation_respects_partial_chunk_boundaries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, pipeline = _tiny_chunked_conditioned_video_pipeline()
+    calls: list[dict[str, object]] = []
+
+    def capture_prediction(**kwargs):
+        calls.append(
+            {
+                key: value.clone() if isinstance(value, torch.Tensor) else value
+                for key, value in kwargs.items()
+            }
+        )
+        return torch.zeros_like(kwargs["noisy_latents"])
+
+    monkeypatch.setattr(
+        pipeline.visual_tower,
+        "predict_chunked_conditioned_video_flow",
+        capture_prediction,
+    )
+    # One external condition plus three real target frames means the next target
+    # completes the current four-frame chunk before a new chunk can begin.
+    observed_history = torch.randn(1, 48, 4, 2, 4)
+    future = torch.zeros(1, 48, 4, 2, 4)
+
+    generated = pipeline.visual_tower.generate_chunked_conditioned_video_latents(
+        observed_history=observed_history,
+        future_template=future,
+        text_context=torch.randn(1, 3, 8),
+        negative_text_context=None,
+        history_frame_start=0,
+        chunk_size=4,
+        window_size=30,
+        chunk_origin_frame=0,
+        num_inference_steps=1,
+        num_train_timesteps=8,
+        sigma_shift=5.0,
+        guidance_scale=1.0,
+        sample_seed=17,
+    )
+
+    assert generated.shape == future.shape
+    # The interrupted first block is reconstructed from its pre-block history;
+    # its already-executed prefix is not exposed as clean same-block context.
+    first_condition = calls[0]["condition_latents"]
+    assert isinstance(first_condition, torch.Tensor)
+    torch.testing.assert_close(
+        first_condition[:, :, :1],
+        observed_history[:, :, :1],
+    )
+    assert not torch.any(first_condition[:, :, 1:])
+    # The second pass over-generates the complete next model block and returns
+    # only its requested three-frame prefix.
+    assert [int(call["noisy_latents"].shape[2]) for call in calls] == [5, 9]
+    first_noisy = calls[0]["noisy_latents"]
+    second_noisy = calls[1]["noisy_latents"]
+    assert isinstance(first_noisy, torch.Tensor)
+    assert isinstance(second_noisy, torch.Tensor)
+    torch.testing.assert_close(generated[:, :, :1], first_noisy[:, :, 4:5])
+    torch.testing.assert_close(generated[:, :, 1:], second_noisy[:, :, 5:8])
+    assert [call["window_size"] for call in calls] == [30, 30]
+    assert [call["frame_start"] for call in calls] == [0, 0]
+
+
+def test_chunked_conditioned_video_generation_overgenerates_short_final_chunk(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, pipeline = _tiny_chunked_conditioned_video_pipeline()
+    calls: list[torch.Tensor] = []
+
+    def capture_prediction(**kwargs):
+        calls.append(kwargs["noisy_latents"].clone())
+        return torch.zeros_like(kwargs["noisy_latents"])
+
+    monkeypatch.setattr(
+        pipeline.visual_tower,
+        "predict_chunked_conditioned_video_flow",
+        capture_prediction,
+    )
+    observed = torch.randn(1, 48, 1, 2, 4)
+    requested = torch.zeros(1, 48, 3, 2, 4)
+
+    generated = pipeline.visual_tower.generate_chunked_conditioned_video_latents(
+        observed_history=observed,
+        future_template=requested,
+        text_context=torch.randn(1, 3, 8),
+        negative_text_context=None,
+        history_frame_start=0,
+        chunk_size=4,
+        window_size=30,
+        chunk_origin_frame=0,
+        num_inference_steps=1,
+        num_train_timesteps=8,
+        sigma_shift=5.0,
+        guidance_scale=1.0,
+        sample_seed=17,
+    )
+
+    assert generated.shape == requested.shape
+    assert [int(call.shape[2]) for call in calls] == [5]
+
+
+def test_chunked_conditioned_video_generation_physically_bounds_w30_history(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, pipeline = _tiny_chunked_conditioned_video_pipeline()
+    calls: list[dict[str, object]] = []
+
+    def capture_prediction(**kwargs):
+        calls.append(
+            {
+                key: value.clone() if isinstance(value, torch.Tensor) else value
+                for key, value in kwargs.items()
+            }
+        )
+        return torch.zeros_like(kwargs["noisy_latents"])
+
+    monkeypatch.setattr(
+        pipeline.visual_tower,
+        "predict_chunked_conditioned_video_flow",
+        capture_prediction,
+    )
+    observed = torch.randn(1, 48, 101, 2, 4)
+    requested = torch.zeros(1, 48, 8, 2, 4)
+
+    generated = pipeline.visual_tower.generate_chunked_conditioned_video_latents(
+        observed_history=observed,
+        future_template=requested,
+        text_context=torch.randn(1, 3, 8),
+        negative_text_context=None,
+        history_frame_start=0,
+        chunk_size=4,
+        window_size=30,
+        chunk_origin_frame=0,
+        num_inference_steps=1,
+        num_train_timesteps=8,
+        sigma_shift=5.0,
+        guidance_scale=1.0,
+        sample_seed=17,
+    )
+
+    assert generated.shape == requested.shape
+    # 60 visible target-history frames + one external condition + four current.
+    assert [int(call["noisy_latents"].shape[2]) for call in calls] == [65, 65]
+    assert [call["frame_start"] for call in calls] == [40, 44]
+    assert [call["chunk_origin_frame"] for call in calls] == [0, 0]
+
+    calls.clear()
+    generated = pipeline.visual_tower.generate_chunked_conditioned_video_latents(
+        # The final three target frames are an interrupted current block. They
+        # are retained in state but removed before the full block is regenerated.
+        observed_history=torch.randn(1, 48, 104, 2, 4),
+        future_template=torch.zeros(1, 48, 1, 2, 4),
+        text_context=torch.randn(1, 3, 8),
+        negative_text_context=None,
+        history_frame_start=0,
+        chunk_size=4,
+        window_size=30,
+        chunk_origin_frame=0,
+        num_inference_steps=1,
+        num_train_timesteps=8,
+        sigma_shift=5.0,
+        guidance_scale=1.0,
+        sample_seed=17,
+    )
+    assert generated.shape[2] == 1
+    assert [int(call["noisy_latents"].shape[2]) for call in calls] == [65]
+    assert calls[0]["frame_start"] == 40
 
 
 def _causal_video_inputs() -> tuple[torch.Tensor, torch.Tensor, PolicyTrainBatch]:

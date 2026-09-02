@@ -4030,6 +4030,7 @@ def test_flow_matching_roles_have_one_owner() -> None:
             "zero_terminal_next_sigma",
         },
         "supervision": {
+            "build_video_frame_loss_mask",
             "denoised_actions_from_flow",
             "denoised_video_latents_from_flow",
             "reduce_frame_aligned_action_flow_match_loss",
@@ -4057,7 +4058,7 @@ def test_flow_matching_roles_have_one_owner() -> None:
     assert not _top_level_definitions(FLOW_MATCHING_FACADE_PATH)
     all_owner_paths = tuple(FLOW_MATCHING_ROLE_PATHS.values())
     all_owned_names = set().union(*owner_names.values())
-    assert len(all_owned_names) == 22
+    assert len(all_owned_names) == 23
     assert all(
         sum(name in _top_level_definitions(path) for path in all_owner_paths) == 1
         for name in all_owned_names
@@ -4091,6 +4092,7 @@ def test_flow_matching_roles_have_one_owner() -> None:
         "build_flow_unipc_inference_scheduler",
         "build_frame_aligned_action_flow_match_train_artifacts",
         "build_video_flow_match_inference_scheduler",
+        "build_video_frame_loss_mask",
         "build_video_flow_match_train_artifacts",
         "dataclass",
         "denoised_actions_from_flow",

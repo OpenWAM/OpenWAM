@@ -998,6 +998,18 @@ def test_dual_expert_train_loss_masks_use_objective_specific_metadata() -> None:
     )
     assert torch.equal(video_mask.flatten(), torch.tensor([0.0, 0.0, 1.0, 1.0]))
 
+    prefixed_video_mask = variant.training_layout.build_effective_video_loss_mask(
+        video_latents=torch.ones(1, 2, 5, 1, 1),
+        batch=batch,
+        default_history_frames=1,
+        prefix_condition_frames=1,
+        target_num_video_frames=4,
+    )
+    assert torch.equal(
+        prefixed_video_mask.flatten(),
+        torch.tensor([0.0, 0.0, 0.0, 1.0, 1.0]),
+    )
+
 
 def test_dual_expert_role_contracts_do_not_register_model_state() -> None:
     variant = DualExpertPolicyVariant(

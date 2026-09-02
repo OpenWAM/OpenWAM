@@ -406,7 +406,12 @@ def run_dual_expert_libero_episode(
                                 if args.dual_expert_rollout_frame_chunk_size
                                 is not None
                                 else _frame_chunk_size(action_config)
-                            )
+                            ),
+                            attention_window_size=(
+                                None
+                                if args.dual_expert_inference_window_size is None
+                                else int(args.dual_expert_inference_window_size)
+                            ),
                         )
                         if uses_external_idm
                         else None

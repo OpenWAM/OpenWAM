@@ -7,6 +7,7 @@ import torch
 from open_wam.configs import TrainingConfig
 from open_wam.configs.policy_dual_expert import DualExpertPolicyConfig
 from open_wam.contracts import SampleConstructionMetadata
+from open_wam.models.common.flow_supervision import build_video_frame_loss_mask
 from open_wam.models.common.flow_training import (
     ActionFlowMatchTrainArtifacts,
 )
@@ -138,28 +139,25 @@ class DualExpertTrainingLayout:
         video_latents: torch.Tensor,
         batch: PolicyTrainBatch,
         default_history_frames: int,
+        prefix_condition_frames: int = 0,
+        target_num_video_frames: int | None = None,
     ) -> torch.Tensor:
-        future_loss_mask = torch.zeros(
-            video_latents.shape[0],
-            1,
-            video_latents.shape[2],
-            1,
-            1,
-            device=video_latents.device,
-            dtype=video_latents.dtype,
+        prefix_frames = int(prefix_condition_frames)
+        target_frames = (
+            int(video_latents.shape[2]) - prefix_frames
+            if target_num_video_frames is None
+            else int(target_num_video_frames)
         )
-        loss_frame_range = self.resolve_loss_frame_range(
-            batch=batch,
-            observed_num_frames=int(video_latents.shape[2]),
-            start_key="latent_loss_frame_start",
-            end_key="latent_loss_frame_end",
+        return build_video_frame_loss_mask(
+            video_latents,
+            sample_metadata=batch.extra.get("metadata"),
+            prefix_frame_count=prefix_frames,
+            target_frame_count=target_frames,
+            default_target_start=(
+                0 if prefix_frames > 0 else int(default_history_frames)
+            ),
+            error_label="DualExpert train loss-frame metadata",
         )
-        if loss_frame_range is None:
-            future_loss_mask[:, :, default_history_frames:] = 1.0
-            return future_loss_mask
-        loss_frame_start, loss_frame_end = loss_frame_range
-        future_loss_mask[:, :, loss_frame_start:loss_frame_end] = 1.0
-        return future_loss_mask
 
     @staticmethod
     def resolve_action_tokens_per_frame(

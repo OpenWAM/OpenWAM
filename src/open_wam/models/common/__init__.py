@@ -68,6 +68,7 @@ from .flow_inference import (
     build_video_flow_match_inference_scheduler,
 )
 from .flow_supervision import (
+    build_video_frame_loss_mask,
     denoised_actions_from_flow,
     denoised_video_latents_from_flow,
     reduce_frame_aligned_action_flow_match_loss,
@@ -102,6 +103,12 @@ from .runtime_controls import (
     should_update_cache_during_denoise,
 )
 from .rollout import RolloutCursor, advance_rollout_cursor
+from .temporal_windows import (
+    OneFrameConditionedHistoryWindow,
+    resolve_interleaved_cache_frames,
+    resolve_interleaved_history_frames,
+    resolve_one_frame_conditioned_history_window,
+)
 from .sharded_execution import (
     checkpoint_unshard_context,
     summon_full_parameters,
@@ -126,6 +133,7 @@ __all__ = [
     "PackedTokenKind",
     "PackedTokenLayout",
     "PackedTokenStream",
+    "OneFrameConditionedHistoryWindow",
     "JointRuntimeSchedulers",
     "MergedPrefixCachePayload",
     "RuntimeCachePolicy",
@@ -169,6 +177,7 @@ __all__ = [
     "prepare_sdpa_mask",
     "preserve_joint_observed_video_prefix",
     "build_video_flow_match_inference_scheduler",
+    "build_video_frame_loss_mask",
     "build_video_flow_match_train_artifacts",
     "denoised_actions_from_flow",
     "denoised_video_latents_from_flow",
@@ -186,6 +195,9 @@ __all__ = [
     "resolve_slot_pool_prefix_visibility",
     "resolve_runtime_warmup_reference",
     "resolve_runtime_guidance",
+    "resolve_interleaved_cache_frames",
+    "resolve_interleaved_history_frames",
+    "resolve_one_frame_conditioned_history_window",
     "sample_timestep_id",
     "select_attention_profile_mask",
     "flatten_action_token_mask",

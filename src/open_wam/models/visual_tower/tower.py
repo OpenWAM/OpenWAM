@@ -19,6 +19,7 @@ from open_wam.models.common import (
     FlowMatchScheduler,
     RolloutCursor,
     combine_cfg_prediction,
+    resolve_one_frame_conditioned_history_window,
     unpatchify_video_sequence,
 )
 from open_wam.models.video_backbone.contracts import (
@@ -927,11 +928,11 @@ class VisualTower(nn.Module):
     def generate_chunked_conditioned_video_latents(
         self,
         *,
-        observed_prefix: torch.Tensor,
+        observed_history: torch.Tensor,
         future_template: torch.Tensor,
         text_context: torch.Tensor | None,
         negative_text_context: torch.Tensor | None,
-        frame_start: int,
+        history_frame_start: int,
         chunk_size: int,
         window_size: int,
         chunk_origin_frame: int,
@@ -939,26 +940,28 @@ class VisualTower(nn.Module):
         num_train_timesteps: int,
         sigma_shift: float,
         guidance_scale: float,
+        prefix_condition_frames: int = 1,
         sample_seed: int | None = None,
     ) -> torch.Tensor:
         """Denoise a video chunk with the native VTA video-marginal program."""
 
-        if observed_prefix.ndim != 5 or future_template.ndim != 5:
+        if observed_history.ndim != 5 or future_template.ndim != 5:
             raise ValueError(
                 "Chunked conditioned-video generation expects [B, C, T, H, W] "
-                "prefix and future tensors."
+                "history and future tensors."
             )
-        if int(observed_prefix.shape[2]) != 1:
+        if int(prefix_condition_frames) != 1:
             raise ValueError(
-                "Chunked conditioned-video generation requires exactly one "
-                f"external prefix frame, got {observed_prefix.shape[2]}."
+                "Chunked conditioned-video rollout requires exactly one external "
+                f"condition frame, got prefix={prefix_condition_frames}."
             )
         if (
-            tuple(observed_prefix.shape[:2]) != tuple(future_template.shape[:2])
-            or tuple(observed_prefix.shape[-2:]) != tuple(future_template.shape[-2:])
+            tuple(observed_history.shape[:2]) != tuple(future_template.shape[:2])
+            or tuple(observed_history.shape[-2:])
+            != tuple(future_template.shape[-2:])
         ):
             raise ValueError(
-                "Chunked conditioned-video prefix and future tensors must share "
+                "Chunked conditioned-video history and future tensors must share "
                 "batch, channel, and spatial dimensions."
             )
         if int(future_template.shape[2]) <= 0:
@@ -978,7 +981,12 @@ class VisualTower(nn.Module):
         if sample_seed is not None:
             generator = torch.Generator(device=future_template.device)
             generator.manual_seed(int(sample_seed))
-        prefix = observed_prefix.to(device=future_template.device, dtype=model_dtype)
+        timeline_history = observed_history.to(
+            device=future_template.device,
+            dtype=model_dtype,
+        )
+        timeline_frame_start = int(history_frame_start)
+        timeline_chunk_origin = int(chunk_origin_frame) % int(chunk_size)
         scheduler = FlowMatchScheduler(
             shift=sigma_shift,
             sigma_min=0.0,
@@ -988,24 +996,73 @@ class VisualTower(nn.Module):
         scheduler.set_timesteps(num_inference_steps)
 
         generated_chunks: list[torch.Tensor] = []
+        generated_frame_count = 0
         with torch.inference_mode():
-            for chunk_start in range(0, int(future_template.shape[2]), int(chunk_size)):
-                chunk_end = min(
-                    chunk_start + int(chunk_size), int(future_template.shape[2])
+            while generated_frame_count < int(future_template.shape[2]):
+                history_window = resolve_one_frame_conditioned_history_window(
+                    history_frames=int(timeline_history.shape[2]),
+                    window_size=int(window_size),
+                    frame_chunk_size=int(chunk_size),
+                    chunk_origin_frame=timeline_chunk_origin,
                 )
+                if history_window.dropped_frames > 0:
+                    timeline_history = timeline_history[
+                        :, :, history_window.dropped_frames :
+                    ].contiguous()
+                    timeline_frame_start += int(history_window.dropped_frames)
+                timeline_chunk_origin = int(history_window.chunk_origin_frame)
+                # The first retained frame is the external condition. Remaining
+                # history and every generated frame use target-local chunk ids.
+                next_target_frame = int(timeline_history.shape[2]) - int(
+                    prefix_condition_frames
+                )
+                chunk_offset = (
+                    next_target_frame - timeline_chunk_origin
+                ) % int(chunk_size)
+                frames_until_boundary = int(chunk_size) - chunk_offset
+                returned_frame_count = min(
+                    frames_until_boundary,
+                    int(future_template.shape[2]) - generated_frame_count,
+                )
+                # Always reconstruct the complete current model block. When
+                # execution stopped inside a block, the already-observed prefix
+                # is excluded from this model call and regenerated only as
+                # unsaved context for the requested suffix. This preserves the
+                # train-time bidirectional noisy-to-noisy attention law without
+                # replacing committed real history on the rollout timeline.
+                model_history_frame_count = int(timeline_history.shape[2]) - int(
+                    chunk_offset
+                )
+                if model_history_frame_count < int(prefix_condition_frames):
+                    raise ValueError(
+                        "Chunked conditioned-video history cannot reconstruct "
+                        "the current target block, "
+                        f"history={timeline_history.shape[2]}, "
+                        f"prefix={prefix_condition_frames}, "
+                        f"chunk_offset={chunk_offset}."
+                    )
+                model_history = timeline_history[
+                    :, :, :model_history_frame_count
+                ]
+                current_frame_count = int(chunk_size)
                 current = torch.randn(
-                    future_template[:, :, chunk_start:chunk_end].shape,
+                    (
+                        int(future_template.shape[0]),
+                        int(future_template.shape[1]),
+                        current_frame_count,
+                        int(future_template.shape[3]),
+                        int(future_template.shape[4]),
+                    ),
                     device=future_template.device,
                     dtype=model_dtype,
                     generator=generator,
                 )
-                history = torch.cat([prefix, *generated_chunks], dim=2)
                 condition_latents = torch.cat(
-                    [history, torch.zeros_like(current)], dim=2
+                    [model_history, torch.zeros_like(current)], dim=2
                 )
-                history_frames = int(history.shape[2])
+                history_frames = int(model_history.shape[2])
                 for timestep in scheduler.timesteps.to(device=future_template.device):
-                    model_latents = torch.cat([history, current], dim=2)
+                    model_latents = torch.cat([model_history, current], dim=2)
                     timestep_values = torch.zeros(
                         int(model_latents.shape[0]),
                         int(model_latents.shape[2]),
@@ -1022,9 +1079,9 @@ class VisualTower(nn.Module):
                         text_context=text_context,
                         chunk_size=chunk_size,
                         window_size=window_size,
-                        frame_start=int(frame_start) - 1,
-                        chunk_origin_frame=int(chunk_origin_frame),
-                        prefix_condition_frames=1,
+                        frame_start=timeline_frame_start,
+                        chunk_origin_frame=timeline_chunk_origin,
+                        prefix_condition_frames=int(prefix_condition_frames),
                         stage="infer",
                     )
                     if guidance_scale > 1.0:
@@ -1037,9 +1094,9 @@ class VisualTower(nn.Module):
                                 text_context=negative_text_context,
                                 chunk_size=chunk_size,
                                 window_size=window_size,
-                                frame_start=int(frame_start) - 1,
-                                chunk_origin_frame=int(chunk_origin_frame),
-                                prefix_condition_frames=1,
+                                frame_start=timeline_frame_start,
+                                chunk_origin_frame=timeline_chunk_origin,
+                                prefix_condition_frames=int(prefix_condition_frames),
                                 stage="infer",
                             )
                         )
@@ -1053,7 +1110,16 @@ class VisualTower(nn.Module):
                         timestep,
                         current,
                     )
-                generated_chunks.append(current)
+                returned_chunk = current[
+                    :,
+                    :,
+                    chunk_offset : chunk_offset + returned_frame_count,
+                ]
+                generated_chunks.append(returned_chunk)
+                timeline_history = torch.cat(
+                    [timeline_history, returned_chunk], dim=2
+                )
+                generated_frame_count += returned_frame_count
         return torch.cat(generated_chunks, dim=2).to(dtype=future_template.dtype)
 
     def cache_capability(self) -> str:
