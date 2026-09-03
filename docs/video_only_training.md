@@ -80,7 +80,7 @@ dataset-based inference:
 | Program | Data and model sequence | Supervision |
 | --- | --- | --- |
 | `prefix_suffix` | One noisy video stream from a causal prefix/suffix bucket | Future suffix only |
-| `chunked_conditioned_video` | Native `[V_noisy, V_condition]` sequence using VTA chunk/window attention | Every target frame after one external condition frame |
+| `chunked_conditioned_video` | Native `[V_noisy, V_condition]` sequence using VTA chunk/window attention | Every valid target frame after one external condition frame |
 
 `prefix_suffix` is the existing objective and remains selected by
 `causal_video_prediction_libero_latent_local.yaml`.
@@ -93,7 +93,13 @@ independent frame-wise video noise. The condition copy is augmented with
 probability `0.5`; the external frame stays clean in both copies. Task-text
 dropout remains independent at probability `0.1`. The maintained preset enables
 per-block activation recomputation, matching the M5 recipe and keeping the
-1000-frame objective viable under single-device execution.
+full-segment objective viable under single-device execution.
+
+Both chunked causal-video and VTA training consume the dataset-provided latent
+loss range. Fixed-shape materialization may retain a zero-order-held tail, but
+frames outside that valid range have zero video loss. The maintained
+full-trajectory LIBERO recipe stores each shorter trajectory compactly, so this
+mask hardening does not alter its existing checkpoint objective.
 
 The packed runtime contains only the two video copies. It does not construct a
 zero-width or placeholder action sequence, invoke the action embedder, or

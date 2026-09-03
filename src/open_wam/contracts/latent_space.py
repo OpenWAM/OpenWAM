@@ -116,6 +116,32 @@ def identify_video_latent_space(
     )
 
 
+def require_compatible_video_latent_spaces(
+    producer: VideoLatentSpaceIdentity | None,
+    consumer: VideoLatentSpaceIdentity | None,
+) -> dict[str, str]:
+    """Require a content-identical latent coordinate space for composition."""
+
+    if producer is None or consumer is None:
+        missing = []
+        if producer is None:
+            missing.append("producer")
+        if consumer is None:
+            missing.append("consumer")
+        raise ValueError(
+            "Generated-video composition requires artifact-backed latent-space "
+            f"identity for {', '.join(missing)}."
+        )
+    if producer != consumer:
+        raise ValueError(
+            "Generated-video producer and action consumer use different latent "
+            "spaces: "
+            f"producer={producer.artifact_sha256}, "
+            f"consumer={consumer.artifact_sha256}."
+        )
+    return producer.to_mapping()
+
+
 def _validate_sha256(value: str, *, field_name: str) -> None:
     if len(value) != 64:
         raise ValueError(f"Video latent-space {field_name} must be a SHA-256 digest.")
@@ -160,4 +186,5 @@ __all__ = [
     "VIDEO_LATENT_SPACE_SCHEMA_V1",
     "VideoLatentSpaceIdentity",
     "identify_video_latent_space",
+    "require_compatible_video_latent_spaces",
 ]

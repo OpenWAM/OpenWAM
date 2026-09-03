@@ -4,6 +4,7 @@ from .latent_space import (
     VIDEO_LATENT_SPACE_SCHEMA_V1,
     VideoLatentSpaceIdentity,
     identify_video_latent_space,
+    require_compatible_video_latent_spaces,
 )
 from .paths import REPO_ROOT, find_repo_root, resolve_repo_path
 from .sample_metadata import (
@@ -64,6 +65,7 @@ __all__ = [
     "find_repo_root",
     "identify_video_latent_space",
     "normalized_video_frame_count",
+    "require_compatible_video_latent_spaces",
     "resolve_repo_path",
     "resolve_video_source_fps",
     "single_sample_metadata_mapping",

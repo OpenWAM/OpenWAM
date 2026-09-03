@@ -10,10 +10,10 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from open_wam.evals.libero_dual_expert_composition import (
-    add_external_idm_arguments,
-    external_idm_options_from_args,
-    load_external_idm_composition,
-    validate_external_idm_arguments,
+    action_consumer_options_from_args,
+    add_action_consumer_arguments,
+    load_video_action_composition,
+    validate_action_consumer_arguments,
 )
 from open_wam.evals.libero_dual_expert_rollout import (
     DualExpertLiberoEpisodeOptions,
@@ -160,7 +160,7 @@ def main() -> None:
             "video-conditioned action checkpoint."
         ),
     )
-    add_external_idm_arguments(parser)
+    add_action_consumer_arguments(parser)
     parser.add_argument(
         "--frontend-encode-mode",
         choices=(DEPRECATED_FRONTEND_ENCODE_MODE, CURRENT_FRONTEND_ENCODE_MODE),
@@ -236,7 +236,7 @@ def main() -> None:
         ),
     )
     args = parser.parse_args()
-    validate_external_idm_arguments(args, parser=parser)
+    validate_action_consumer_arguments(args, parser=parser)
     load_options = DualExpertLiberoLoadOptions(
         config=args.config,
         checkpoint=args.checkpoint,
@@ -285,10 +285,10 @@ def main() -> None:
         ),
     )
     runtime = load_dual_expert_libero_runtime(load_options)
-    external_idm = load_external_idm_composition(
+    video_action_composition = load_video_action_composition(
         primary_runtime=runtime,
         primary_options=load_options,
-        external_options=external_idm_options_from_args(args),
+        consumer_options=action_consumer_options_from_args(args),
     )
     task_resources = resolve_dual_expert_libero_task_resources(
         args.benchmark,
@@ -322,7 +322,7 @@ def main() -> None:
         env,
         include_episode_coordinates=False,
         close_env_after_rollout=True,
-        external_idm=external_idm,
+        video_action_composition=video_action_composition,
     )
 
 

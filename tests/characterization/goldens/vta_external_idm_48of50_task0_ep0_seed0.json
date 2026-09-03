@@ -35,21 +35,31 @@
     "action_dim": 7,
     "runtime_role": "video_producer",
     "frontend_encode_mode": "lingbot_streaming_vae",
-    "external_idm_composition": {
+    "video_action_composition": {
       "component_report": {
         "config_sha256": "c4d64f339b547d603c1b92340deb6eda36e94203ffe7ca869158ff7b1a4391a1",
         "program": "generalist_joint_denoising",
         "action_horizon": 16,
         "action_dim": 7,
         "runtime_role": "video_conditioned_action_consumer",
-        "provided_dynamics_objectives": [
-          "video_conditioned_action"
+        "provided_conditioning_modalities": [
+          "video"
         ]
       },
       "compatibility": {
         "route": "generated_video_then_action",
         "video_producer_program": "video_then_action",
-        "external_idm_program": "generalist_joint_denoising",
+        "action_consumer_program": "generalist_joint_denoising",
+        "action_consumer": {
+          "input_modalities": [
+            "video"
+          ],
+          "output_modalities": [
+            "action"
+          ],
+          "rng_policy": "isolated_step_seed",
+          "recurrent_history_policy": "explicit_reconciliation"
+        },
         "video_latent_space": {
           "schema_version": "open_wam.video_latent_space.v1",
           "encoder_family": "diffusers.models.autoencoders.autoencoder_kl_wan.AutoencoderKLWan@0.37.1",

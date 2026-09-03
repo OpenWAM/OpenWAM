@@ -383,19 +383,29 @@ class VariantPipeline(nn.Module):
         :class:`VisualStageOutputs` contract.
         """
 
-        self.policy_variant.validate_inference_output_request(context.output_request)
+        self.policy_variant.validate_inference_context(context)
+        video_action_request = context.video_conditioned_action
+        if video_action_request is not None:
+            video_action_request.validate_consumer_latent_space(
+                visual_outputs.frontend.latent_space_identity
+            )
+        resolved_context = self.policy_variant.resolve_inference_context(context)
         resolved_state = self.policy_variant.prepare_infer_state(
             visual_tower=self.visual_tower,
             visual_outputs=visual_outputs,
-            context=context,
+            context=resolved_context,
             previous_state=infer_state,
         )
         policy_output = self.policy_variant.forward_infer_step(
             visual_tower=self.visual_tower,
             visual_outputs=visual_outputs,
-            context=context,
+            context=resolved_context,
             infer_state=resolved_state,
         )
+        if video_action_request is not None:
+            video_action_request.validate_output_frame_start(
+                policy_output.generation_frame_start
+            )
         decoder_output = self.resolve_infer_decoder_output(
             policy_output,
             previous_decoder_state=resolved_state.decoder_state,

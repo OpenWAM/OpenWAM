@@ -13,6 +13,7 @@ from open_wam.configs import (
     DualExpertActionExpertInitMode,
     DualExpertConditionMode,
     DualExpertPolicyConfig,
+    DynamicsObjective,
     ExperimentConfig,
     HistoryStreamVisibility,
     InferenceConfig,
@@ -34,6 +35,7 @@ from open_wam.models.common import (
 from open_wam.models.common.attention_profiles import (
     build_chunked_temporal_exact_attention_profile,
 )
+from open_wam.models.common.dynamics_objectives import resolve_dynamics_rollout_plan
 from open_wam.models.common.proprio_conditioning import (
     HiddenProprioContext,
     ProprioContextGranularity,
@@ -41,6 +43,8 @@ from open_wam.models.common.proprio_conditioning import (
 )
 from open_wam.models.common.rollout_startup import build_strict_action_context_mask
 from open_wam.models.policy_variants import (
+    PolicyCompositionRngPolicy,
+    PolicyGeneratedVideo,
     PolicyInferContext,
     PolicyInferenceOutputRequest,
     PolicyInferState,
@@ -112,7 +116,12 @@ from open_wam.models.policy_variants.dual_expert.runtime import (
 from open_wam.models.policy_variants.dual_expert.variant import DualExpertPolicyVariant
 from open_wam.models.video_backbone.config import SharedVideoTransformerConfig
 from open_wam.models.visual_tower.replica_core import SharedVideoTransformerCore
-from open_wam.pipelines import build_variant_pipeline_from_config
+from open_wam.pipelines import (
+    build_variant_pipeline_from_config,
+    build_video_conditioned_action_context,
+    resolve_policy_video_action_consumer_plan,
+    resolve_policy_video_producer_plan,
+)
 
 _CONFIG_INITIALIZATION = open_wam.configs
 
@@ -2703,6 +2712,311 @@ def test_dual_expert_video_producer_mode_skips_action_expert(
         )
 
 
+@pytest.mark.parametrize("next_observation_frames", (1, 2))
+def test_dual_expert_vta_native_and_two_model_composition_are_exactly_equal(
+    next_observation_frames: int,
+) -> None:
+    def build_pipeline():
+        return build_variant_pipeline_from_config(
+            ExperimentConfig(
+                data=RobotWinDataConfig(
+                    num_frames=4,
+                    action_schema=ActionSchemaConfig(
+                        action_dim=4,
+                        action_horizon=4,
+                        state_dim=4,
+                        state_horizon=1,
+                    ),
+                ),
+                backbone=SharedVideoTransformerConfig(
+                    implementation="shared_transformer",
+                    hidden_size=32,
+                    num_layers=1,
+                    num_heads=4,
+                    attention_head_dim=8,
+                    ffn_dim=64,
+                    text_dim=16,
+                    freq_dim=8,
+                    load_reference_core_weights=False,
+                    load_text_conditioning=False,
+                    load_wan_vae_frontend=False,
+                ),
+                policy_variant=DualExpertPolicyConfig(
+                    hidden_size=32,
+                    program=VideoActionProgram.VIDEO_THEN_ACTION,
+                    video_prefix_frames=1,
+                    num_action_layers=1,
+                    proprio_context_mode=ProprioContextMode.PER_CHUNK_ADDITIVE,
+                ),
+                action_decoder=DualExpertActionDecoderConfig(
+                    hidden_size=32,
+                    action_dim=4,
+                    action_horizon=4,
+                ),
+                training=TrainingConfig(
+                    chunk_size=2,
+                    window_size=8,
+                    action_loss_weight=1.0,
+                    latent_loss_weight=1.0,
+                ),
+                inference=InferenceConfig(
+                    frame_chunk_size=2,
+                    video_num_inference_steps=2,
+                    action_num_inference_steps=2,
+                ),
+            )
+        )
+
+    torch.manual_seed(17)
+    native_pipeline = build_pipeline()
+    torch.manual_seed(17)
+    producer_pipeline = build_pipeline()
+    torch.manual_seed(17)
+    consumer_pipeline = build_pipeline()
+    latents = torch.randn(1, 48, 1, 8, 8, generator=torch.Generator().manual_seed(3))
+    text = torch.randn(1, 5, 16, generator=torch.Generator().manual_seed(5))
+    negative_text = torch.randn(
+        1, 5, 16, generator=torch.Generator().manual_seed(7)
+    )
+    context = PolicyInferContext(state=torch.tensor([[[0.1, 0.2, 0.3, 0.4]]]))
+
+    torch.manual_seed(23)
+    native = native_pipeline.forward_infer_step_from_latents(
+        latents,
+        context=context,
+        text_context=text,
+        negative_text_context=negative_text,
+    )
+
+    producer_plan = resolve_policy_video_producer_plan(
+        producer_pipeline.policy_variant
+    )
+    consumer_plan = resolve_policy_video_action_consumer_plan(
+        consumer_pipeline.policy_variant
+    )
+    assert producer_plan.output_request == PolicyInferenceOutputRequest.video_only()
+    assert (
+        consumer_plan.capability.rng_policy
+        is PolicyCompositionRngPolicy.CALLER_STREAM
+    )
+    torch.manual_seed(23)
+    video = producer_pipeline.forward_infer_step_from_latents(
+        latents,
+        context=PolicyInferContext(
+            state=context.state,
+            output_request=producer_plan.output_request,
+        ),
+        text_context=text,
+        negative_text_context=negative_text,
+    )
+    assert video.policy_output.generated_video is not None
+    action_context = build_video_conditioned_action_context(
+        context,
+        video.policy_output.generated_video,
+    )
+    composed = consumer_pipeline.forward_infer_step_from_latents(
+        latents,
+        context=action_context,
+        text_context=text,
+        negative_text_context=negative_text,
+    )
+
+    assert native.policy_output.generated_video is not None
+    assert composed.policy_output.generated_video is not None
+    assert torch.equal(
+        native.policy_output.generated_video.latents,
+        video.policy_output.generated_video.latents,
+    )
+    assert torch.equal(
+        native.policy_output.generated_video.latents,
+        composed.policy_output.generated_video.latents,
+    )
+    assert torch.equal(
+        native.decoder_output.action_pred,
+        composed.decoder_output.action_pred,
+    )
+    assert native.policy_output.generation_frame_start == (
+        composed.policy_output.generation_frame_start
+    )
+    native_state = native.policy_output.next_state
+    producer_state = video.policy_output.next_state
+    consumer_state = composed.policy_output.next_state
+    assert native_state.step_index == producer_state.step_index == consumer_state.step_index == 1
+    assert native_state.cursor.current_start_frame == (
+        consumer_state.cursor.current_start_frame
+    )
+    native_runtime = native_state.variant_state
+    producer_runtime = producer_state.variant_state
+    consumer_runtime = consumer_state.variant_state
+    assert isinstance(native_runtime, DualExpertRuntimeState)
+    assert isinstance(producer_runtime, DualExpertRuntimeState)
+    assert isinstance(consumer_runtime, DualExpertRuntimeState)
+    assert native_runtime.split_cache_output_request is None
+    assert producer_runtime.split_cache_output_request == (
+        PolicyInferenceOutputRequest.video_only()
+    )
+    assert consumer_runtime.split_cache_output_request is None
+    assert native_runtime.action_cache is not None
+    assert producer_runtime.action_cache is None
+    assert consumer_runtime.action_cache is not None
+    for native_layer, consumer_layer in zip(
+        native_runtime.action_cache.layers,
+        consumer_runtime.action_cache.layers,
+        strict=True,
+    ):
+        assert torch.equal(native_layer.key, consumer_layer.key)
+        assert torch.equal(native_layer.value, consumer_layer.value)
+
+    next_latents = torch.randn(
+        1,
+        48,
+        next_observation_frames,
+        8,
+        8,
+        generator=torch.Generator().manual_seed(31),
+    )
+    next_context = PolicyInferContext(
+        state=torch.tensor([[[0.5, 0.6, 0.7, 0.8]]])
+    )
+    torch.manual_seed(37)
+    native_next = native_pipeline.forward_infer_step_from_latents(
+        next_latents,
+        context=next_context,
+        infer_state=native_state,
+        text_context=text,
+        negative_text_context=negative_text,
+    )
+    torch.manual_seed(37)
+    composed_video_next = producer_pipeline.forward_infer_step_from_latents(
+        next_latents,
+        context=PolicyInferContext(
+            state=next_context.state,
+            output_request=producer_plan.output_request,
+        ),
+        infer_state=producer_state,
+        text_context=text,
+        negative_text_context=negative_text,
+    )
+    assert composed_video_next.policy_output.generated_video is not None
+    composed_next = consumer_pipeline.forward_infer_step_from_latents(
+        next_latents,
+        context=build_video_conditioned_action_context(
+            next_context,
+            composed_video_next.policy_output.generated_video,
+        ),
+        infer_state=consumer_state,
+        text_context=text,
+        negative_text_context=negative_text,
+    )
+
+    assert native_next.policy_output.generated_video is not None
+    assert composed_next.policy_output.generated_video is not None
+    assert torch.equal(
+        native_next.policy_output.generated_video.latents,
+        composed_video_next.policy_output.generated_video.latents,
+    )
+    assert torch.equal(
+        native_next.policy_output.generated_video.latents,
+        composed_next.policy_output.generated_video.latents,
+    )
+    assert torch.equal(
+        native_next.decoder_output.action_pred,
+        composed_next.decoder_output.action_pred,
+    )
+    assert native_next.policy_output.next_state.step_index == (
+        composed_next.policy_output.next_state.step_index
+    ) == 2
+    assert native_next.policy_output.generation_frame_start == (
+        composed_next.policy_output.generation_frame_start
+    ) == 1 + next_observation_frames
+    native_next_runtime = native_next.policy_output.next_state.variant_state
+    consumer_next_runtime = composed_next.policy_output.next_state.variant_state
+    assert isinstance(native_next_runtime, DualExpertRuntimeState)
+    assert isinstance(consumer_next_runtime, DualExpertRuntimeState)
+    assert native_next_runtime.action_cache is not None
+    assert consumer_next_runtime.action_cache is not None
+    expected_cached_action_tokens = (next_observation_frames + 2) * 2
+    assert (
+        native_next_runtime.action_cache.action_seq_len
+        == consumer_next_runtime.action_cache.action_seq_len
+        == expected_cached_action_tokens
+    )
+    for native_layer, consumer_layer in zip(
+        native_next_runtime.action_cache.layers,
+        consumer_next_runtime.action_cache.layers,
+        strict=True,
+    ):
+        assert torch.equal(native_layer.key, consumer_layer.key)
+        assert torch.equal(native_layer.value, consumer_layer.value)
+
+
+@pytest.mark.parametrize(
+    "program",
+    (
+        VideoActionProgram.INVERSE_DYNAMICS,
+        VideoActionProgram.GENERALIST_JOINT_DENOISING,
+    ),
+)
+def test_dual_expert_conditional_consumer_owns_strict_idm_semantics(
+    program: VideoActionProgram,
+) -> None:
+    variant = DualExpertPolicyVariant(
+        DualExpertPolicyConfig(
+            hidden_size=32,
+            program=program,
+            num_action_layers=1,
+        ),
+        SharedVideoTransformerConfig(
+            implementation="shared_transformer",
+            hidden_size=32,
+            num_layers=1,
+            num_heads=4,
+            attention_head_dim=8,
+            ffn_dim=64,
+            text_dim=16,
+            freq_dim=8,
+            load_reference_core_weights=False,
+            load_text_conditioning=False,
+            load_wan_vae_frontend=False,
+        ),
+        TrainingConfig(chunk_size=4, window_size=64),
+        InferenceConfig(frame_chunk_size=4),
+        action_dim=4,
+        action_horizon=16,
+    )
+    generated = PolicyGeneratedVideo(
+        latents=torch.randn(1, 48, 4, 8, 8),
+        frame_start=1,
+    )
+    source = PolicyInferContext(
+        state=torch.randn(1, 1, 4),
+        previous_action=torch.randn(1, 4, 4),
+        extra={"task_text": ("move the object",)},
+    )
+
+    resolved = variant.resolve_inference_context(
+        build_video_conditioned_action_context(source, generated)
+    )
+
+    assert resolved.state is source.state
+    assert resolved.previous_action is source.previous_action
+    assert resolved.extra is source.extra
+    assert resolved.video_conditioned_action is None
+    assert resolved.dynamics is not None
+    assert resolved.dynamics.objective is DynamicsObjective.VIDEO_CONDITIONED_ACTION
+    assert resolved.dynamics.clean_video is generated.latents
+    assert resolved.dynamics.frame_chunk_size == 4
+    plan = resolve_dynamics_rollout_plan(
+        program=program,
+        request=resolved.dynamics,
+    )
+    assert plan.semantics.drop_text_conditioning is True
+    assert plan.semantics.history_frame_count == 1
+    assert plan.semantics.resolve_history_stream_visibility(
+        fallback=HistoryStreamVisibility.FULL
+    ) is HistoryStreamVisibility.VIDEO_ONLY
+
+
 def test_dual_expert_video_producer_honors_typed_chunk_geometry() -> None:
     from open_wam.models.policy_variants.dual_expert.rollout_geometry import (
         resolve_dual_expert_rollout_frame_chunk_size,
@@ -2719,6 +3033,47 @@ def test_dual_expert_video_producer_honors_typed_chunk_geometry() -> None:
     ) == (2, 8, 4)
 
 
+def test_dual_expert_video_producer_honors_typed_attention_window() -> None:
+    from open_wam.models.policy_variants.dual_expert.rollout_geometry import (
+        resolve_dual_expert_inference_window_size,
+    )
+
+    context = PolicyInferContext(
+        video_generation=PolicyVideoGenerationRequest(
+            frame_count=2,
+            attention_window_size=7,
+        )
+    )
+
+    assert (
+        resolve_dual_expert_inference_window_size(
+            context,
+            default_window_size=30,
+        )
+        == 7
+    )
+
+
+def test_dual_expert_video_producer_rejects_conflicting_attention_window() -> None:
+    from open_wam.models.policy_variants.dual_expert.rollout_geometry import (
+        resolve_dual_expert_inference_window_size,
+    )
+
+    context = PolicyInferContext(
+        video_generation=PolicyVideoGenerationRequest(
+            frame_count=2,
+            attention_window_size=7,
+        ),
+        extra={"dual_expert_inference_window_size": 30},
+    )
+
+    with pytest.raises(ValueError, match="conflicts with the typed video request"):
+        resolve_dual_expert_inference_window_size(
+            context,
+            default_window_size=30,
+        )
+
+
 def test_dual_expert_video_producer_rejects_conflicting_chunk_geometry() -> None:
     from open_wam.models.policy_variants.dual_expert.rollout_geometry import (
         resolve_dual_expert_rollout_frame_chunk_size,
@@ -2729,7 +3084,7 @@ def test_dual_expert_video_producer_rejects_conflicting_chunk_geometry() -> None
         extra={"dual_expert_rollout_frame_chunk_size": 3},
     )
 
-    with pytest.raises(ValueError, match="conflicts with the typed video generation"):
+    with pytest.raises(ValueError, match="conflicts with the typed video request"):
         resolve_dual_expert_rollout_frame_chunk_size(
             context,
             default_frame_chunk_size=4,

@@ -4685,7 +4685,7 @@ def test_standard_joint_training_can_match_scheduler_index_without_matching_sigm
     assert not torch.allclose(video_sigmas, action_sigmas, atol=2e-3, rtol=0.0)
 
 
-def test_staged_video_then_action_uses_declared_independent_noise_schedule() -> None:
+def test_video_then_action_uses_declared_independent_noise_schedule() -> None:
     backbone_config = LingbotCompatibleVideoBackboneConfig(
         hidden_size=32,
         num_layers=1,

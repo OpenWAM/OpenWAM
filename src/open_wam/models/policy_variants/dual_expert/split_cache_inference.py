@@ -1,4 +1,4 @@
-"""Split-cache recurrent inference program for staged DualExpert policies."""
+"""Split-cache recurrent inference for ordered DualExpert programs."""
 
 from __future__ import annotations
 
@@ -82,8 +82,22 @@ _DUAL_EXPERT_SLOT_POOL_ATTN_WINDOW = 30
 
 
 @dataclass(frozen=True)
+class _VideoConditionedActionStage:
+    predicted_latents: torch.Tensor
+    generation_frame_start: int
+    chunk_frames: int
+    action_tokens_per_frame: int
+    inference_window_size: int
+    action_only_rollout: bool
+    is_first_chunk: bool
+    skip_observation_update: bool
+    condition_frame_start_override: int | None
+    action_cache_rewind_frame_start: int | None
+
+
+@dataclass(frozen=True)
 class DualExpertSplitCacheInferenceProgram:
-    """Execute staged video/action rollout with persistent split caches."""
+    """Execute ordered video/action rollout with persistent split caches."""
 
     config: DualExpertPolicyConfig
     training_config: TrainingConfig
@@ -150,6 +164,16 @@ class DualExpertSplitCacheInferenceProgram:
             and output_request.modalities
             == frozenset({PolicyOutputModality.VIDEO})
         )
+        conditioned_action_request = context.video_conditioned_action
+        composed_action_rollout = conditioned_action_request is not None
+        if (
+            composed_action_rollout
+            and current_block_coupling is not CurrentBlockCoupling.VIDEO_THEN_ACTION
+        ):
+            raise ValueError(
+                "Split-cache generated-video consumption requires "
+                "video_then_action coupling."
+            )
         prior_output_request = runtime_state.split_cache_output_request
         if video_only_rollout:
             if runtime_state.action_cache is not None:
@@ -352,7 +376,56 @@ class DualExpertSplitCacheInferenceProgram:
             else generation_frame_start
         )
 
-        if action_only_rollout:
+        if composed_action_rollout:
+            assert conditioned_action_request is not None
+            generated_video = conditioned_action_request.generated_video
+            if generated_video.frame_start is None:
+                raise ValueError(
+                    "Video-conditioned action inference requires a generated-video "
+                    "frame origin."
+                )
+            if int(generated_video.frame_start) != int(generation_frame_start):
+                raise ValueError(
+                    "Generated video does not align with the consumer's next frame: "
+                    f"generated={int(generated_video.frame_start)}, "
+                    f"consumer={int(generation_frame_start)}."
+                )
+            predicted_latents = generated_video.latents.detach().to(
+                device=video_device,
+                dtype=video_dtype,
+            )
+            expected_geometry = (
+                batch_size,
+                latent_channels,
+                chunk_frames,
+                latent_height,
+                latent_width,
+            )
+            if tuple(predicted_latents.shape) != expected_geometry:
+                raise ValueError(
+                    "Generated video does not match the consumer's latent geometry: "
+                    f"expected={expected_geometry}, "
+                    f"actual={tuple(predicted_latents.shape)}."
+                )
+            clean_video_input = prepare_exact_single_stream_input(
+                latents=predicted_latents,
+                timestep=0.0,
+                text_emb=text_context_for_video,
+                frame_st_id=generation_frame_start,
+                backbone_config=visual_tower.config,
+                action_mode=False,
+            )
+            run_exact_single_stream_forward(
+                visual_tower.core,
+                input_dict=clean_video_input,
+                update_cache=1 if self.inference_config.use_cache else 0,
+                cache_name=cache_name,
+                action_mode=False,
+                guidance_scale=self.inference_config.guidance_scale,
+                negative_text_emb=negative_text_context,
+                force_cfg_batch=use_cfg,
+            )
+        elif action_only_rollout:
             predicted_latents = observed_prefix.new_empty(
                 batch_size,
                 latent_channels,
@@ -424,14 +497,47 @@ class DualExpertSplitCacheInferenceProgram:
                     latents = video_scheduler.step(video_noise_pred, timestep, latents)
             predicted_latents = latents
 
-        if video_only_rollout:
-            next_state = infer_state
-            next_state.step_index += 1
-            next_state.cursor.current_start_frame = int(
-                infer_state.cursor.current_start_frame
-                + max(1, runtime_state.chunk_advance_frames)
+        action_cache_rewind_frame_start_raw = context.extra.get(
+            "dual_expert_action_cache_rewind_frame_start"
+        )
+        if action_cache_rewind_frame_start_raw is None:
+            action_cache_rewind_frame_start_raw = context.extra.get(
+                "dual_expert_action_cache_prefix_frames"
             )
-            next_state.variant_state = runtime_state
+        action_cache_rewind_frame_start = (
+            None
+            if action_cache_rewind_frame_start_raw is None
+            else int(action_cache_rewind_frame_start_raw)
+        )
+        if (
+            action_cache_rewind_frame_start is None
+            and not is_first_chunk
+            and not skip_observation_update
+        ):
+            # Real observations commit only the executed prefix of the previous
+            # prediction. Discard any speculative action K/V beyond that boundary.
+            action_cache_rewind_frame_start = int(generation_frame_start)
+        next_state = infer_state
+        if video_only_rollout:
+            self._advance_infer_state(next_state, runtime_state)
+        action_stage = _VideoConditionedActionStage(
+            predicted_latents=predicted_latents,
+            generation_frame_start=int(generation_frame_start),
+            chunk_frames=int(chunk_frames),
+            action_tokens_per_frame=int(action_tokens_per_frame),
+            inference_window_size=int(inference_window_size),
+            action_only_rollout=bool(action_only_rollout),
+            is_first_chunk=bool(is_first_chunk),
+            skip_observation_update=bool(skip_observation_update),
+            condition_frame_start_override=(
+                None
+                if condition_frame_start_override_raw is None
+                else int(condition_frame_start_override_raw)
+            ),
+            action_cache_rewind_frame_start=action_cache_rewind_frame_start,
+        )
+
+        if video_only_rollout:
             empty_actions = torch.empty(
                 batch_size,
                 0,
@@ -499,6 +605,83 @@ class DualExpertSplitCacheInferenceProgram:
                     },
                 },
             )
+
+        return self._run_action_stage(
+            visual_tower=visual_tower,
+            visual_outputs=visual_outputs,
+            next_state=next_state,
+            runtime_state=runtime_state,
+            stage=action_stage,
+        )
+
+    def _run_action_stage(
+        self,
+        *,
+        visual_tower: VisualTower,
+        visual_outputs: VisualStageOutputs,
+        next_state: PolicyInferState,
+        runtime_state: DualExpertRuntimeState,
+        stage: _VideoConditionedActionStage,
+    ) -> PolicyInferOutput:
+        predicted_latents = stage.predicted_latents
+        generation_frame_start = int(stage.generation_frame_start)
+        chunk_frames = int(stage.chunk_frames)
+        action_tokens_per_frame = int(stage.action_tokens_per_frame)
+        action_horizon = int(chunk_frames * action_tokens_per_frame)
+        inference_window_size = int(stage.inference_window_size)
+        current_block_coupling = resolve_dual_expert_current_block_coupling(self.config)
+        generalist_rollout_mode = resolve_dynamics_rollout_plan(
+            program=self.config.program,
+        ).objective
+        action_only_rollout = bool(stage.action_only_rollout)
+        video_commit_before_action = (
+            current_block_coupling is CurrentBlockCoupling.VIDEO_THEN_ACTION
+        )
+        is_first_chunk = bool(stage.is_first_chunk)
+        skip_observation_update = bool(stage.skip_observation_update)
+        condition_frame_start_override_raw = stage.condition_frame_start_override
+        action_cache_rewind_frame_start_raw = stage.action_cache_rewind_frame_start
+        cache_name = "dual_expert_split_cache"
+        batch_size = int(stage.predicted_latents.shape[0])
+        device = next(self.action_expert.parameters()).device
+        dtype = next(self.action_expert.parameters()).dtype
+        video_device = next(visual_tower.core.parameters()).device
+        video_dtype = resolve_runtime_module_dtype(visual_tower.core)
+
+        text_context_for_video = runtime_state.text_context
+        if text_context_for_video is None:
+            text_context_for_video = torch.zeros(
+                batch_size,
+                visual_tower.config.max_text_tokens,
+                visual_tower.config.text_dim,
+                device=video_device,
+                dtype=video_dtype,
+            )
+        else:
+            text_context_for_video = text_context_for_video.to(
+                device=video_device,
+                dtype=video_dtype,
+            )
+        negative_text_context = self.conditioning.resolve_text_context(
+            visual_tower,
+            visual_outputs.frontend.conditioning.negative_text_context,
+            runtime_state.proprio_state,
+            batch_size=batch_size,
+            device=video_device,
+            dtype=video_dtype,
+            materialize_if_missing=False,
+        )
+        if self.config.generalist_mode_text_token and negative_text_context is not None:
+            negative_text_context, _ = (
+                self.conditioning.append_generalist_mode_text_token(
+                    visual_tower,
+                    negative_text_context,
+                    generalist_rollout_mode,
+                )
+            )
+        use_cfg = negative_text_context is not None and bool(
+            self.inference_config.use_cache
+        )
 
         # Don't advance `next_condition_frame_start` past the observation
         # write position. parallel-stream with `advance_frame_start=False` keeps
@@ -622,13 +805,6 @@ class DualExpertSplitCacheInferenceProgram:
         # (padded timestep=0) step we capture the fresh per-layer K/V
         # and append to `runtime_state.action_cache`, mirroring parallel-stream's
         # `update_cache=1` at the last action step.
-        action_cache_rewind_frame_start_raw = context.extra.get(
-            "dual_expert_action_cache_rewind_frame_start"
-        )
-        if action_cache_rewind_frame_start_raw is None:
-            action_cache_rewind_frame_start_raw = context.extra.get(
-                "dual_expert_action_cache_prefix_frames"
-            )
         if action_cache_rewind_frame_start_raw is not None:
             rewind_dual_expert_runtime_action_cache_to_frame(
                 runtime_state,
@@ -857,13 +1033,7 @@ class DualExpertSplitCacheInferenceProgram:
                 action_cache_before_trim,
                 max_action_seq_len=max_action_seq_len,
             )
-        next_state = infer_state
-        next_state.step_index += 1
-        next_state.cursor.current_start_frame = int(
-            infer_state.cursor.current_start_frame
-            + max(1, runtime_state.chunk_advance_frames)
-        )
-        next_state.variant_state = runtime_state
+        self._advance_infer_state(next_state, runtime_state)
         decoder_payload = DualExpertInferArtifacts(
             action_pred=sample,
             predicted_latents=(
@@ -968,3 +1138,15 @@ class DualExpertSplitCacheInferenceProgram:
                 ),
             },
         )
+
+    @staticmethod
+    def _advance_infer_state(
+        infer_state: PolicyInferState,
+        runtime_state: DualExpertRuntimeState,
+    ) -> None:
+        infer_state.step_index += 1
+        infer_state.cursor.current_start_frame = int(
+            infer_state.cursor.current_start_frame
+            + max(1, runtime_state.chunk_advance_frames)
+        )
+        infer_state.variant_state = runtime_state

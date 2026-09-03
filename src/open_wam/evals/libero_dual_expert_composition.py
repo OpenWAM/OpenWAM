@@ -14,6 +14,10 @@ from open_wam.configs import (
     DynamicsObjective,
     VideoActionProgram,
 )
+from open_wam.configs.policy_video_action import (
+    fixed_conditioning_mode_for_program,
+    supports_video_conditioned_action,
+)
 from open_wam.evals.libero_dual_expert_inputs import _build_infer_context
 from open_wam.evals.libero_dual_expert_runtime import (
     DualExpertActionRoute,
@@ -24,28 +28,28 @@ from open_wam.evals.libero_dual_expert_runtime import (
     uses_video_action_composition,
 )
 from open_wam.evals.realtime_speculation import restore_rng_state, snapshot_rng_state
-from open_wam.models.common.dynamics_objectives import (
-    resolve_dynamics_objective_semantics,
-)
 from open_wam.models.policy_variants import (
+    PolicyCompositionRngPolicy,
     PolicyGeneratedVideo,
-    PolicyRecurrentHistoryPolicy,
+    PolicyOutputModality,
 )
 from open_wam.models.visual_tower import VisualStageOutputs
 from open_wam.pipelines import (
+    PolicyVideoActionConsumerPlan,
     PolicyVideoProducerPlan,
     VariantRolloutSession,
     VariantRolloutStepOutput,
-    build_video_conditioned_action_request,
+    build_video_conditioned_action_context,
     require_compatible_video_latent_spaces,
+    resolve_policy_video_action_consumer_plan,
     resolve_policy_video_producer_plan,
 )
 from open_wam.utils import seed_everywhere
 
 
 @dataclass(frozen=True)
-class ExternalIdmLoadOptions:
-    """External checkpoint and device choices for one composed rollout."""
+class ActionConsumerLoadOptions:
+    """Action-consumer checkpoint and device choices for one composed rollout."""
 
     config: str | Path
     checkpoint: str | Path
@@ -56,67 +60,68 @@ class ExternalIdmLoadOptions:
 
 
 @dataclass(frozen=True)
-class ExternalIdmComposition:
+class VideoActionComposition:
     """A policy video producer composed with an external action consumer."""
 
     runtime: DualExpertLiberoRuntime
     producer_plan: PolicyVideoProducerPlan
+    consumer_plan: PolicyVideoActionConsumerPlan
     compatibility_report: dict[str, object]
 
 
 @dataclass(frozen=True)
-class ExternalIdmStepOutput:
-    """One external action-stage result and its deterministic seed."""
+class VideoActionConsumerStepOutput:
+    """One composed action-stage result and its deterministic seed."""
 
     rollout: VariantRolloutStepOutput
     inference_seed: int | None
 
 
-def add_external_idm_arguments(parser: argparse.ArgumentParser) -> None:
-    """Add the shared external-IDM CLI surface to a LIBERO driver."""
+def add_action_consumer_arguments(parser: argparse.ArgumentParser) -> None:
+    """Add the video-conditioned action-consumer options to a LIBERO driver."""
 
     parser.add_argument(
         "--action-consumer-cfg",
-        dest="external_idm_cfg",
+        dest="action_consumer_cfg",
         type=str,
         default=None,
         help="Resolved config for the video-conditioned action consumer.",
     )
     parser.add_argument(
         "--action-consumer-checkpoint",
-        dest="external_idm_checkpoint",
+        dest="action_consumer_checkpoint",
         type=str,
         default=None,
         help="Checkpoint file or checkpoint_step_* directory for the action consumer.",
     )
     parser.add_argument(
         "--action-consumer-set",
-        dest="external_idm_set_overrides",
+        dest="action_consumer_set_overrides",
         action="append",
         default=[],
         help="Apply an override only to the action-consumer config.",
     )
     parser.add_argument(
         "--action-consumer-runtime-device",
-        dest="external_idm_runtime_device",
+        dest="action_consumer_runtime_device",
         type=str,
         default=None,
     )
     parser.add_argument(
         "--action-consumer-action-device",
-        dest="external_idm_action_device",
+        dest="action_consumer_action_device",
         type=str,
         default=None,
     )
     parser.add_argument(
         "--action-consumer-frontend-device",
-        dest="external_idm_frontend_device",
+        dest="action_consumer_frontend_device",
         type=str,
         default=None,
     )
 
 
-def validate_external_idm_arguments(
+def validate_action_consumer_arguments(
     args: argparse.Namespace,
     *,
     parser: argparse.ArgumentParser | None = None,
@@ -124,27 +129,27 @@ def validate_external_idm_arguments(
     """Validate route-scoped external options and return whether they are active."""
 
     route = DualExpertActionRoute(args.dual_expert_gjd_action_route)
-    uses_external_idm = uses_video_action_composition(route)
+    uses_composition = uses_video_action_composition(route)
     supplied = any(
         getattr(args, name, None)
         for name in (
-            "external_idm_cfg",
-            "external_idm_checkpoint",
-            "external_idm_set_overrides",
-            "external_idm_runtime_device",
-            "external_idm_action_device",
-            "external_idm_frontend_device",
+            "action_consumer_cfg",
+            "action_consumer_checkpoint",
+            "action_consumer_set_overrides",
+            "action_consumer_runtime_device",
+            "action_consumer_action_device",
+            "action_consumer_frontend_device",
         )
     )
-    if uses_external_idm and not (
-        args.external_idm_cfg and args.external_idm_checkpoint
+    if uses_composition and not (
+        args.action_consumer_cfg and args.action_consumer_checkpoint
     ):
         _argument_error(
             parser,
             "generated_video_then_action requires both --action-consumer-cfg "
             "and --action-consumer-checkpoint.",
         )
-    if uses_external_idm and bool(
+    if uses_composition and bool(
         getattr(args, "dual_expert_action_only_rollout", False)
     ):
         _argument_error(
@@ -152,50 +157,50 @@ def validate_external_idm_arguments(
             "generated_video_then_action requires the primary policy to produce "
             "video; it cannot be combined with --dual-expert-action-only-rollout.",
         )
-    if not uses_external_idm and supplied:
+    if not uses_composition and supplied:
         _argument_error(
             parser,
-            "External IDM arguments are only valid with "
+            "Action-consumer arguments are only valid with "
             "--dual-expert-action-route generated_video_then_action.",
         )
-    return uses_external_idm
+    return uses_composition
 
 
-def external_idm_options_from_args(
+def action_consumer_options_from_args(
     args: argparse.Namespace,
-) -> ExternalIdmLoadOptions | None:
+) -> ActionConsumerLoadOptions | None:
     """Build typed external options after argument validation."""
 
-    if not validate_external_idm_arguments(args):
+    if not validate_action_consumer_arguments(args):
         return None
-    return ExternalIdmLoadOptions(
-        config=args.external_idm_cfg,
-        checkpoint=args.external_idm_checkpoint,
-        set_overrides=tuple(args.external_idm_set_overrides),
-        runtime_device=args.external_idm_runtime_device,
-        action_device=args.external_idm_action_device,
-        frontend_device=args.external_idm_frontend_device,
+    return ActionConsumerLoadOptions(
+        config=args.action_consumer_cfg,
+        checkpoint=args.action_consumer_checkpoint,
+        set_overrides=tuple(args.action_consumer_set_overrides),
+        runtime_device=args.action_consumer_runtime_device,
+        action_device=args.action_consumer_action_device,
+        frontend_device=args.action_consumer_frontend_device,
     )
 
 
-def load_external_idm_composition(
+def load_video_action_composition(
     *,
     primary_runtime: DualExpertLiberoRuntime,
     primary_options: DualExpertLiberoLoadOptions,
-    external_options: ExternalIdmLoadOptions | None,
-) -> ExternalIdmComposition | None:
+    consumer_options: ActionConsumerLoadOptions | None,
+) -> VideoActionComposition | None:
     """Load and validate the optional action stage for one primary runtime."""
 
     route = DualExpertActionRoute(primary_options.dual_expert_gjd_action_route)
     if not uses_video_action_composition(route):
-        if external_options is not None:
+        if consumer_options is not None:
             raise ValueError(
-                "External IDM load options require the generated-video external-IDM route."
+                "Action-consumer options require the generated-video composition route."
             )
         return None
-    if external_options is None:
+    if consumer_options is None:
         raise ValueError(
-            "The generated-video external-IDM route requires external load options."
+            "The generated-video composition route requires action-consumer options."
         )
 
     producer_plan = resolve_policy_video_producer_plan(
@@ -203,12 +208,12 @@ def load_external_idm_composition(
     )
     runtime = load_dual_expert_libero_runtime(
         DualExpertLiberoLoadOptions(
-            config=external_options.config,
-            checkpoint=external_options.checkpoint,
+            config=consumer_options.config,
+            checkpoint=consumer_options.checkpoint,
             merge_checkpoint_runtime_config=False,
-            set_overrides=external_options.set_overrides,
-            source=f"{primary_options.source} external IDM",
-            checkpoint_error="External IDM composition requires a checkpoint.",
+            set_overrides=consumer_options.set_overrides,
+            source=f"{primary_options.source} action consumer",
+            checkpoint_error="Video/action composition requires a consumer checkpoint.",
             raw_window_frames=primary_runtime.raw_window_frames,
             startup_model_obs_frames=primary_runtime.startup_model_obs_frames,
             startup_env_init_steps=primary_runtime.startup_env_init_steps,
@@ -225,11 +230,11 @@ def load_external_idm_composition(
             frontend_encode_mode=primary_options.frontend_encode_mode,
             reset_policy_state_each_chunk=primary_options.reset_policy_state_each_chunk,
             runtime_device=(
-                external_options.runtime_device or str(primary_runtime.runtime_device)
+                consumer_options.runtime_device or str(primary_runtime.runtime_device)
             ),
-            action_device=external_options.action_device,
-            frontend_device=external_options.frontend_device,
-            decode_device=external_options.frontend_device,
+            action_device=consumer_options.action_device,
+            frontend_device=consumer_options.frontend_device,
+            decode_device=consumer_options.frontend_device,
             allow_deprecated_libero_config=(
                 primary_options.allow_deprecated_libero_config
             ),
@@ -240,33 +245,25 @@ def load_external_idm_composition(
             runtime_role=(
                 LiberoPolicyRuntimeRole.VIDEO_CONDITIONED_ACTION_CONSUMER
             ),
-            provided_dynamics_objectives=(DynamicsObjective.VIDEO_CONDITIONED_ACTION,),
+            provided_conditioning_modalities=(PolicyOutputModality.VIDEO,),
         )
     )
     if runtime.action_device != runtime.runtime_device:
         raise ValueError(
-            "External packed IDM inference requires its runtime and action "
+            "Video-conditioned action inference requires its runtime and action "
             "modules on the same device; got "
             f"runtime_device={runtime.runtime_device}, "
             f"action_device={runtime.action_device}."
         )
-    consumer_history_policy = (
-        runtime.pipeline.policy_variant.inference_capabilities.recurrent_history_policy
+    consumer_plan = resolve_policy_video_action_consumer_plan(
+        runtime.pipeline.policy_variant
     )
-    if (
-        consumer_history_policy
-        is not PolicyRecurrentHistoryPolicy.EXPLICIT_RECONCILIATION
-    ):
-        raise ValueError(
-            "The video-conditioned action consumer must explicitly reconcile its "
-            "speculative video/action history after execution; got "
-            f"history_policy={consumer_history_policy.value!r}."
-        )
     compatibility_report = dict(
-        validate_external_idm_contract(
+        validate_video_action_composition_contract(
             primary_runtime.config,
             runtime.config,
             producer_plan=producer_plan,
+            consumer_plan=consumer_plan,
         )
     )
     compatibility_report["video_latent_space"] = (
@@ -275,15 +272,16 @@ def load_external_idm_composition(
             runtime.pipeline.visual_tower.frontend.latent_space_identity,
         )
     )
-    return ExternalIdmComposition(
+    return VideoActionComposition(
         runtime=runtime,
         producer_plan=producer_plan,
+        consumer_plan=consumer_plan,
         compatibility_report=compatibility_report,
     )
 
 
-def infer_external_idm_action(
-    composition: ExternalIdmComposition,
+def infer_video_conditioned_action(
+    composition: VideoActionComposition,
     *,
     session: VariantRolloutSession,
     visual_outputs: VisualStageOutputs,
@@ -294,10 +292,17 @@ def infer_external_idm_action(
     reset_policy_state: bool,
     rollout_seed: int | None,
     chunk_index: int,
-) -> ExternalIdmStepOutput:
+    producer_rng_device: torch.device | str,
+) -> VideoActionConsumerStepOutput:
     """Predict actions from a generated video through the public runner API."""
 
     runtime = composition.runtime
+    rng_policy = composition.consumer_plan.capability.rng_policy
+    isolated_rng = rng_policy is PolicyCompositionRngPolicy.ISOLATED_STEP_SEED
+    inference_seed = composition.consumer_plan.resolve_step_seed(
+        rollout_seed=rollout_seed,
+        step_index=chunk_index,
+    )
     context = _build_infer_context(
         prompt,
         action_device=runtime.action_device,
@@ -305,7 +310,7 @@ def infer_external_idm_action(
         config=runtime.config,
         runtime_device=runtime.runtime_device,
         dual_expert_inference_window_size=inference_window_size,
-        # The typed DynamicsRolloutRequest below owns consumer chunk geometry.
+        # The typed generated-video request below owns consumer chunk geometry.
         # Do not duplicate it through the legacy DualExpert override.
         dual_expert_rollout_frame_chunk_size=None,
         dual_expert_action_only_rollout=False,
@@ -313,10 +318,6 @@ def infer_external_idm_action(
     _validate_generated_video_tensor_geometry(
         generated_video=generated_video,
         observed_video=visual_outputs.frontend.video_latents,
-    )
-    require_compatible_video_latent_spaces(
-        generated_video.latent_space_identity,
-        visual_outputs.frontend.latent_space_identity,
     )
     consumer_video = PolicyGeneratedVideo(
         latents=generated_video.latents.detach().to(
@@ -326,33 +327,32 @@ def infer_external_idm_action(
         frame_start=generated_video.frame_start,
         latent_space_identity=generated_video.latent_space_identity,
     )
-    context.dynamics = build_video_conditioned_action_request(consumer_video)
+    context = build_video_conditioned_action_context(context, consumer_video)
     infer_session = runtime.runner.reset(
         task_text=session.task_text,
         text_context=session.text_context,
         negative_text_context=session.negative_text_context,
     )
     infer_session.policy_state = None if reset_policy_state else session.policy_state
-    inference_seed = None if rollout_seed is None else int(rollout_seed + chunk_index)
-    rng_snapshot = snapshot_rng_state() if inference_seed is not None else None
+    rng_snapshot = snapshot_rng_state() if isolated_rng else None
     try:
         if inference_seed is not None:
-            # Make action-consumer noise deterministic without advancing the
-            # video producer's
-            # Python, NumPy, CPU, or CUDA random streams.
+            # Standalone conditional consumers own an isolated step stream;
+            # decomposed native consumers continue the producer stream.
             seed_everywhere(inference_seed)
-        rollout = runtime.runner.infer_prepared_step(
-            session=infer_session,
-            context=context,
-            visual_outputs=visual_outputs,
-        )
+        with composition.consumer_plan.rng_stream(
+            producer_device=producer_rng_device,
+            consumer_device=runtime.action_device,
+        ):
+            rollout = runtime.runner.infer_prepared_step(
+                session=infer_session,
+                context=context,
+                visual_outputs=visual_outputs,
+            )
     finally:
-        restore_rng_state(rng_snapshot)
-    _validate_generated_video_frame_alignment(
-        generated_video=consumer_video,
-        rollout=rollout,
-    )
-    return ExternalIdmStepOutput(
+        if rng_snapshot is not None:
+            restore_rng_state(rng_snapshot)
+    return VideoActionConsumerStepOutput(
         rollout=rollout,
         inference_seed=inference_seed,
     )
@@ -392,42 +392,12 @@ def _validate_generated_video_tensor_geometry(
         )
 
 
-def _validate_generated_video_frame_alignment(
-    *,
-    generated_video: PolicyGeneratedVideo,
-    rollout: VariantRolloutStepOutput,
-) -> None:
-    """Reject producer/consumer temporal origins that would misalign tokens."""
-
-    if generated_video.frame_start is None:
-        raise RuntimeError(
-            "Generated video is missing its temporal origin, so action-consumer "
-            "alignment cannot be verified."
-        )
-    raw_consumer_start = (
-        rollout.infer_output.policy_output.generation_frame_start
-    )
-    if raw_consumer_start is None:
-        raise RuntimeError(
-            "The video-conditioned action consumer did not report its generated "
-            "frame origin, so temporal handoff parity cannot be verified."
-        )
-    consumer_start = int(raw_consumer_start)
-    producer_start = int(generated_video.frame_start)
-    if consumer_start != producer_start:
-        raise RuntimeError(
-            "Generated-video producer and action consumer use different temporal "
-            "origins: "
-            f"producer_frame_start={producer_start}, "
-            f"consumer_frame_start={consumer_start}."
-        )
-
-
-def validate_external_idm_contract(
+def validate_video_action_composition_contract(
     primary_config: Any,
-    idm_config: Any,
+    consumer_config: Any,
     *,
     producer_plan: PolicyVideoProducerPlan,
+    consumer_plan: PolicyVideoActionConsumerPlan,
 ) -> dict[str, object]:
     """Require a lossless generated-video handoff into one action consumer."""
 
@@ -436,50 +406,62 @@ def validate_external_idm_contract(
         primary_config
     )
 
-    idm_program = VideoActionProgram(idm_config.policy_variant.program)
-    if idm_program is VideoActionProgram.INVERSE_DYNAMICS:
-        idm_route_source = "fixed_inverse_dynamics_program"
-    elif idm_program is VideoActionProgram.GENERALIST_JOINT_DENOISING:
-        active_idm_routes = tuple(
+    consumer_program = VideoActionProgram(consumer_config.policy_variant.program)
+    if consumer_program is VideoActionProgram.VIDEO_THEN_ACTION:
+        consumer_route_source = "native_video_then_action_program"
+        expected_coupling = CurrentBlockCoupling.VIDEO_THEN_ACTION
+    elif consumer_program is VideoActionProgram.INVERSE_DYNAMICS:
+        consumer_route_source = "fixed_inverse_dynamics_program"
+        expected_coupling = CurrentBlockCoupling.JOINT
+    elif consumer_program is VideoActionProgram.GENERALIST_JOINT_DENOISING:
+        active_action_routes = tuple(
             route
-            for route in idm_config.data.dynamics_routing.active_routes
+            for route in consumer_config.data.dynamics_routing.active_routes
             if route.mode is DynamicsObjective.VIDEO_CONDITIONED_ACTION
         )
-        if not active_idm_routes:
+        if not active_action_routes:
             raise ValueError(
-                "External GJD IDM checkpoint must declare a positive "
+                "A GJD action consumer must declare a positive "
                 "`video_conditioned_action` training route."
             )
-        idm_route_source = "generalist_joint_denoising_training_route"
+        consumer_route_source = "generalist_joint_denoising_training_route"
+        expected_coupling = CurrentBlockCoupling.JOINT
     else:
         raise ValueError(
-            "External IDM composition requires `inverse_dynamics` or "
-            "`generalist_joint_denoising`; "
-            f"got program={idm_program.value!r}."
+            "The action consumer does not support generated-video composition; "
+            f"got program={consumer_program.value!r}."
         )
     if (
-        idm_config.policy_variant.current_block_coupling
-        is not CurrentBlockCoupling.JOINT
+        not supports_video_conditioned_action(consumer_program)
+        or consumer_config.policy_variant.current_block_coupling
+        is not expected_coupling
     ):
         raise ValueError(
-            "External IDM requires packed joint coupling so clean-video action "
-            "prediction matches conditional training semantics."
+            "The action consumer's coupling does not match its generated-video "
+            "conditioning semantics: "
+            f"program={consumer_program.value!r}, "
+            f"expected={expected_coupling.value!r}, "
+            "actual="
+            f"{consumer_config.policy_variant.current_block_coupling.value!r}."
         )
 
-    compared = _generated_video_handoff_contract_fields(primary_config, idm_config)
+    compared = _generated_video_handoff_contract_fields(
+        primary_config,
+        consumer_config,
+    )
     mismatches = {
-        name: {"primary": primary, "external_idm": external}
-        for name, (primary, external) in compared.items()
-        if primary != external
+        name: {"producer": producer, "consumer": consumer}
+        for name, (producer, consumer) in compared.items()
+        if producer != consumer
     }
     if mismatches:
         details = "; ".join(
-            f"{name}: primary={values['primary']!r}, "
-            f"external_idm={values['external_idm']!r}"
+            f"{name}: producer={values['producer']!r}, "
+            f"consumer={values['consumer']!r}"
             for name, values in sorted(mismatches.items())
         )
         raise ValueError(
-            "Primary video generator and external IDM contracts differ: " + details
+            "Video producer and action consumer contracts differ: " + details
         )
     return {
         "route": DualExpertActionRoute.GENERATED_VIDEO_THEN_ACTION.value,
@@ -490,14 +472,15 @@ def validate_external_idm_contract(
         ),
         "video_producer": producer_plan.to_report(),
         "video_producer_route_source": producer_route_source,
-        "external_idm_program": idm_program.value,
-        "external_idm_route_source": idm_route_source,
+        "action_consumer_program": consumer_program.value,
+        "action_consumer": consumer_plan.to_report(),
+        "action_consumer_route_source": consumer_route_source,
         "validated_fields": sorted(compared),
     }
 
 
 def _validate_video_producer_training_contract(primary_config: Any) -> str:
-    """Reject routed checkpoints whose training contract never predicts video."""
+    """Require GJD producers to support the objective invoked by composition."""
 
     raw_program = getattr(primary_config.policy_variant, "program", None)
     try:
@@ -506,76 +489,95 @@ def _validate_video_producer_training_contract(primary_config: Any) -> str:
         # Video-only policy families use their own program enum. Their typed
         # inference capability remains the authoritative producer declaration.
         return "native_video_policy_program"
+    if (
+        fixed_conditioning_mode_for_program(program)
+        is DynamicsObjective.ACTION_CONDITIONED_VIDEO
+    ):
+        raise ValueError(
+            "An FDM-only policy cannot be used as the generated-video stage "
+            "because this composition route does not supply clean future actions."
+        )
     if program is not VideoActionProgram.GENERALIST_JOINT_DENOISING:
         return "fixed_video_action_program"
 
-    video_routes = tuple(
+    joint_routes = tuple(
         route
         for route in primary_config.data.dynamics_routing.active_routes
-        if resolve_dynamics_objective_semantics(route.mode).video_loss_active
+        if route.mode is DynamicsObjective.JOINT
     )
-    if not video_routes:
+    if not joint_routes:
         raise ValueError(
-            "A generalist-joint-denoising video producer must declare at least "
-            "one active training route with video supervision. A pure-IDM "
-            "checkpoint cannot be used as the generated-video stage."
+            "A generalist-joint-denoising video producer must declare a positive "
+            "`joint` training route because generated-video composition invokes "
+            "its joint rollout objective. Conditional-only FDM/IDM checkpoints "
+            "cannot be used as the generated-video stage."
         )
     return "generalist_joint_denoising_training_route"
 
 
 def build_composed_component_report(
     primary_runtime: DualExpertLiberoRuntime,
-    composition: ExternalIdmComposition | None,
+    composition: VideoActionComposition | None,
 ) -> dict[str, object]:
     """Return artifact metadata without mutating either runtime report."""
 
     report = dict(primary_runtime.component_report)
     if composition is None:
         return report
-    report["external_idm_composition"] = {
+    report["video_action_composition"] = {
         "checkpoint_file": str(composition.runtime.checkpoint_path.resolve()),
         "component_report": dict(composition.runtime.component_report),
         "compatibility": dict(composition.compatibility_report),
     }
     report["video_producer"] = composition.producer_plan.to_report()
+    report["action_consumer"] = composition.consumer_plan.to_report()
     return report
 
 
 def _generated_video_handoff_contract_fields(
     primary_config: Any,
-    idm_config: Any,
+    consumer_config: Any,
 ) -> dict[str, tuple[object, object]]:
     primary_data = primary_config.data
-    idm_data = idm_config.data
+    consumer_data = consumer_config.data
     primary_backbone = primary_config.backbone
-    idm_backbone = idm_config.backbone
+    consumer_backbone = consumer_config.backbone
     return {
-        "data.frame_stride": (primary_data.frame_stride, idm_data.frame_stride),
+        "data.frame_stride": (
+            primary_data.frame_stride,
+            consumer_data.frame_stride,
+        ),
         "data.canonical_height": (
             primary_data.canonical_height,
-            idm_data.canonical_height,
+            consumer_data.canonical_height,
         ),
         "data.canonical_width": (
             primary_data.canonical_width,
-            idm_data.canonical_width,
+            consumer_data.canonical_width,
         ),
-        "data.camera_names": (primary_data.camera_names, idm_data.camera_names),
+        "data.camera_names": (
+            primary_data.camera_names,
+            consumer_data.camera_names,
+        ),
         "data.latent_camera_names": (
             primary_data.latent_camera_names,
-            idm_data.latent_camera_names,
+            consumer_data.latent_camera_names,
         ),
-        "data.view_layout": (primary_data.view_layout, idm_data.view_layout),
+        "data.view_layout": (
+            primary_data.view_layout,
+            consumer_data.view_layout,
+        ),
         "data.latent_temporal_layout": (
             primary_data.latent_temporal_layout,
-            idm_data.latent_temporal_layout,
+            consumer_data.latent_temporal_layout,
         ),
         "backbone.latent_channels": (
             primary_backbone.latent_channels,
-            idm_backbone.latent_channels,
+            consumer_backbone.latent_channels,
         ),
         "backbone.latent_stride": (
             primary_backbone.latent_stride,
-            idm_backbone.latent_stride,
+            consumer_backbone.latent_stride,
         ),
         "backbone.patch_size": (
             (
@@ -584,9 +586,9 @@ def _generated_video_handoff_contract_fields(
                 primary_backbone.patch_size_w,
             ),
             (
-                idm_backbone.patch_size_t,
-                idm_backbone.patch_size_h,
-                idm_backbone.patch_size_w,
+                consumer_backbone.patch_size_t,
+                consumer_backbone.patch_size_h,
+                consumer_backbone.patch_size_w,
             ),
         ),
     }
@@ -602,14 +604,14 @@ def _argument_error(
 
 
 __all__ = [
-    "ExternalIdmComposition",
-    "ExternalIdmLoadOptions",
-    "ExternalIdmStepOutput",
-    "add_external_idm_arguments",
+    "ActionConsumerLoadOptions",
+    "VideoActionComposition",
+    "VideoActionConsumerStepOutput",
+    "action_consumer_options_from_args",
+    "add_action_consumer_arguments",
     "build_composed_component_report",
-    "external_idm_options_from_args",
-    "infer_external_idm_action",
-    "load_external_idm_composition",
-    "validate_external_idm_arguments",
-    "validate_external_idm_contract",
+    "infer_video_conditioned_action",
+    "load_video_action_composition",
+    "validate_action_consumer_arguments",
+    "validate_video_action_composition_contract",
 ]

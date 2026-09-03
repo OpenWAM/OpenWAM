@@ -14,10 +14,10 @@ if str(SRC_ROOT) not in sys.path:
 import open_wam.evals.libero_dual_expert_rollout as dual_expert_viz
 import open_wam.evals.libero_dual_expert_runtime as dual_expert_runtime
 from open_wam.evals.libero_dual_expert_composition import (
-    add_external_idm_arguments,
-    external_idm_options_from_args,
-    load_external_idm_composition,
-    validate_external_idm_arguments,
+    action_consumer_options_from_args,
+    add_action_consumer_arguments,
+    load_video_action_composition,
+    validate_action_consumer_arguments,
 )
 from open_wam.runtime.checkpoints import CheckpointCompatibilityPolicy
 from open_wam.utils import seed_everywhere
@@ -138,7 +138,7 @@ def main() -> None:
         choices=sorted(dual_expert_runtime.DUAL_EXPERT_ACTION_ROUTES),
         default="joint",
         help=(
-            "Diagnostic dual-expert GJD live-sim action route. `joint` is the normal rollout; "
+            "Policy action route. `joint` is the normal DualExpert rollout; "
             "`joint_video_then_idm` generates video with joint denoising and executes "
             "IDM actions conditioned on that generated video; "
             "`generated_video_then_action` composes a policy that declares video "
@@ -146,7 +146,7 @@ def main() -> None:
             "video-conditioned action checkpoint."
         ),
     )
-    add_external_idm_arguments(parser)
+    add_action_consumer_arguments(parser)
     parser.add_argument(
         "--frontend-encode-mode",
         choices=(
@@ -205,7 +205,7 @@ def main() -> None:
     parser.add_argument("--allow-deprecated-libero-config", action="store_true")
     parser.add_argument("--allow-deprecated-frontend-encode-mode", action="store_true")
     args = parser.parse_args()
-    validate_external_idm_arguments(args, parser=parser)
+    validate_action_consumer_arguments(args, parser=parser)
     if args.seeds is not None and (args.seed is not None or args.seed_by_episode):
         parser.error("--seeds is mutually exclusive with --seed and --seed-by-episode.")
 
@@ -307,14 +307,14 @@ def _load_batch_resources(args: argparse.Namespace) -> SimpleNamespace:
         },
     )
     runtime = dual_expert_runtime.load_dual_expert_libero_runtime(load_options)
-    external_idm = load_external_idm_composition(
+    video_action_composition = load_video_action_composition(
         primary_runtime=runtime,
         primary_options=load_options,
-        external_options=external_idm_options_from_args(args),
+        consumer_options=action_consumer_options_from_args(args),
     )
     return SimpleNamespace(
         runtime=runtime,
-        external_idm=external_idm,
+        video_action_composition=video_action_composition,
         task_cache={},
         reused_env=None,
         reused_env_task_id=None,
@@ -371,7 +371,11 @@ def _run_one_loaded_rollout(
         env,
         include_episode_coordinates=True,
         close_env_after_rollout=close_env_after_rollout,
-        external_idm=getattr(resources, "external_idm", None),
+        video_action_composition=getattr(
+            resources,
+            "video_action_composition",
+            None,
+        ),
     )
 
 

@@ -115,7 +115,7 @@ class DualExpertPackedInferenceProgram:
             == frozenset({PolicyOutputModality.VIDEO})
         ):
             raise ValueError(
-                "DualExpert video-only inference is only available to staged "
+                "DualExpert video-only inference is only available to ordered "
                 "`video_then_action` split-cache execution. Packed joint coupling "
                 "must denoise both modalities."
             )

@@ -107,6 +107,20 @@ def supports_dynamics_routing(
         return False
 
 
+def supports_video_conditioned_action(
+    program: VideoActionProgram | str | None,
+) -> bool:
+    """Return whether a program can consume clean future video to emit actions."""
+
+    if program is None:
+        return False
+    semantics = _program_semantics(program)
+    return bool(
+        VideoActionProgram(program) is VideoActionProgram.VIDEO_THEN_ACTION
+        or (semantics.supports_dynamics_routing and semantics.emits_action)
+    )
+
+
 def resolve_fixed_conditioning_mode(
     policy_config: PolicyVariantConfig,
 ) -> DynamicsObjective | None:

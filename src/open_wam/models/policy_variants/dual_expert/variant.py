@@ -1,10 +1,18 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 import torch
 
-from open_wam.configs import CurrentBlockCoupling, InferenceConfig, TrainingConfig
+from open_wam.configs import (
+    CurrentBlockCoupling,
+    DynamicsObjective,
+    InferenceConfig,
+    TrainingConfig,
+)
 from open_wam.configs.backbone import SharedVideoTransformerConfig
 from open_wam.configs.policy_dual_expert import DualExpertPolicyConfig
+from open_wam.configs.policy_video_action import supports_video_conditioned_action
 from open_wam.contracts import SampleConstructionMetadata
 from open_wam.models.common.dynamics_objectives import (
     resolve_dynamics_rollout_plan,
@@ -14,6 +22,9 @@ from open_wam.models.visual_tower import VisualStageOutputs, VisualTower
 
 from ..base import VideoActionPolicyVariant
 from ..contracts import (
+    DynamicsRolloutRequest,
+    PolicyCompositionCapability,
+    PolicyCompositionRngPolicy,
     PolicyGenerationActionOrigin,
     PolicyInferContext,
     PolicyInferenceCapabilities,
@@ -150,7 +161,45 @@ class DualExpertPolicyVariant(VideoActionPolicyVariant):
         return PolicyInferenceCapabilities(
             native_modalities=native,
             selective_requests=tuple(selective),
+            composition_capabilities=(
+                (
+                    PolicyCompositionCapability.video_to_action(
+                        rng_policy=(
+                            PolicyCompositionRngPolicy.CALLER_STREAM
+                            if coupling is CurrentBlockCoupling.VIDEO_THEN_ACTION
+                            else PolicyCompositionRngPolicy.ISOLATED_STEP_SEED
+                        )
+                    ),
+                )
+                if supports_video_conditioned_action(self.config.program)
+                else ()
+            ),
             recurrent_history_policy=recurrent_history_policy,
+        )
+
+    def resolve_inference_context(
+        self,
+        context: PolicyInferContext,
+    ) -> PolicyInferContext:
+        """Map a neutral video artifact onto this policy's native semantics."""
+
+        request = context.video_conditioned_action
+        if request is None:
+            return context
+        if (
+            resolve_dual_expert_current_block_coupling(self.config)
+            is CurrentBlockCoupling.VIDEO_THEN_ACTION
+        ):
+            return context
+        video = request.generated_video.latents
+        return replace(
+            context,
+            dynamics=DynamicsRolloutRequest(
+                objective=DynamicsObjective.VIDEO_CONDITIONED_ACTION,
+                clean_video=video,
+                frame_chunk_size=int(video.shape[2]),
+            ),
+            video_conditioned_action=None,
         )
 
     def build_rollout_infer_extra(

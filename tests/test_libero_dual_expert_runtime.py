@@ -8,11 +8,11 @@ import torch
 
 from open_wam.configs import (
     DualExpertPolicyConfig,
-    DynamicsObjective,
     ParallelStreamPolicyConfig,
     VideoActionProgram,
 )
 from open_wam.evals import libero_dual_expert_runtime as runtime
+from open_wam.models.policy_variants import PolicyOutputModality
 
 
 def test_generic_video_producer_is_only_admitted_for_explicit_producer_role() -> None:
@@ -33,17 +33,17 @@ def test_generic_video_producer_is_only_admitted_for_explicit_producer_role() ->
 
 
 def test_conditional_consumer_role_requires_declared_clean_video() -> None:
-    with pytest.raises(ValueError, match="requires provided dynamics objectives"):
+    with pytest.raises(ValueError, match="requires provided conditioning modalities"):
         runtime._validate_runtime_role_inputs(
             runtime.LiberoPolicyRuntimeRole.VIDEO_CONDITIONED_ACTION_CONSUMER,
             action_route=runtime.DualExpertActionRoute.GENERATED_VIDEO_THEN_ACTION,
-            provided_objectives=(),
+            provided_modalities=(),
         )
 
     runtime._validate_runtime_role_inputs(
         runtime.LiberoPolicyRuntimeRole.VIDEO_CONDITIONED_ACTION_CONSUMER,
         action_route=runtime.DualExpertActionRoute.GENERATED_VIDEO_THEN_ACTION,
-        provided_objectives=(DynamicsObjective.VIDEO_CONDITIONED_ACTION,),
+        provided_modalities=(PolicyOutputModality.VIDEO,),
     )
 
 
@@ -54,7 +54,7 @@ def test_conditional_consumer_role_requires_declared_clean_video() -> None:
         runtime.LiberoPolicyRuntimeRole.VIDEO_PRODUCER,
     ),
 )
-def test_only_action_consumer_may_declare_provided_dynamics_inputs(
+def test_only_action_consumer_may_declare_provided_conditioning_inputs(
     runtime_role: runtime.LiberoPolicyRuntimeRole,
 ) -> None:
     action_route = (
@@ -69,7 +69,7 @@ def test_only_action_consumer_may_declare_provided_dynamics_inputs(
         runtime._validate_runtime_role_inputs(
             runtime_role,
             action_route=action_route,
-            provided_objectives=(DynamicsObjective.VIDEO_CONDITIONED_ACTION,),
+            provided_modalities=(PolicyOutputModality.VIDEO,),
         )
 
 
@@ -78,13 +78,13 @@ def test_runtime_role_must_match_action_route() -> None:
         runtime._validate_runtime_role_inputs(
             runtime.LiberoPolicyRuntimeRole.NATIVE_POLICY,
             action_route=runtime.DualExpertActionRoute.GENERATED_VIDEO_THEN_ACTION,
-            provided_objectives=(),
+            provided_modalities=(),
         )
     with pytest.raises(ValueError, match="requires the generated-video action"):
         runtime._validate_runtime_role_inputs(
             runtime.LiberoPolicyRuntimeRole.VIDEO_PRODUCER,
             action_route=runtime.DualExpertActionRoute.JOINT,
-            provided_objectives=(),
+            provided_modalities=(),
         )
 
 
@@ -121,7 +121,7 @@ def test_live_sim_allows_fixed_idm_only_when_clean_video_is_provided() -> None:
 
     runtime._validate_live_sim_dynamics_program(
         policy,
-        provided_objectives=(DynamicsObjective.VIDEO_CONDITIONED_ACTION,),
+        provided_modalities=(PolicyOutputModality.VIDEO,),
     )
 
 

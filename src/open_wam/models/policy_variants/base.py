@@ -85,6 +85,39 @@ class PolicyVariant(nn.Module, ABC):
             f"{sorted(item.value for item in capabilities.native_modalities)}."
         )
 
+    def validate_inference_context(self, context: PolicyInferContext) -> None:
+        """Validate ordinary output selection and transferable artifact inputs."""
+
+        self.validate_inference_output_request(context.output_request)
+        request = context.video_conditioned_action
+        if request is None:
+            return
+        if context.dynamics is not None or context.video_generation is not None:
+            raise ValueError(
+                "Video-conditioned action inference cannot also request dynamics "
+                "routing or video generation in the same policy call."
+            )
+        if (
+            context.output_request is not None
+            and not context.output_request.requests(PolicyOutputModality.ACTION)
+        ):
+            raise ValueError(
+                "Video-conditioned action inference requires an action output."
+            )
+        if not self.inference_capabilities.supports_composition(request.capability):
+            raise ValueError(
+                f"{type(self).__name__} does not support generated-video to action "
+                "composition."
+            )
+
+    def resolve_inference_context(
+        self,
+        context: PolicyInferContext,
+    ) -> PolicyInferContext:
+        """Translate generic inference inputs into variant-owned semantics."""
+
+        return context
+
     def pipeline_requirements(
         self,
         *,

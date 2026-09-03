@@ -180,3 +180,35 @@ def test_rng_snapshot_replays_python_numpy_and_torch_draws() -> None:
         assert torch.equal(actual[2], expected[2])
     finally:
         realtime_speculation.restore_rng_state(outer_snapshot)
+
+
+def test_preserve_rng_state_isolates_auxiliary_draws() -> None:
+    outer_snapshot = realtime_speculation.snapshot_rng_state()
+    try:
+        random.seed(51)
+        np.random.seed(52)
+        torch.manual_seed(53)
+        expected_snapshot = realtime_speculation.snapshot_rng_state()
+
+        with realtime_speculation.preserve_rng_state():
+            random.random()
+            np.random.rand()
+            torch.rand(3)
+
+        expected = (
+            random.random(),
+            float(np.random.rand()),
+            torch.rand(3),
+        )
+        realtime_speculation.restore_rng_state(expected_snapshot)
+        actual = (
+            random.random(),
+            float(np.random.rand()),
+            torch.rand(3),
+        )
+
+        assert actual[0] == expected[0]
+        assert actual[1] == expected[1]
+        assert torch.equal(actual[2], expected[2])
+    finally:
+        realtime_speculation.restore_rng_state(outer_snapshot)

@@ -138,6 +138,18 @@ def test_policy_variant_rejects_unimplemented_selective_outputs() -> None:
         )
 
 
+def test_native_policy_inference_does_not_resolve_capabilities_without_request() -> None:
+    class NativePolicy:
+        @property
+        def inference_capabilities(self):
+            raise AssertionError("native inference resolved optional capabilities")
+
+    PolicyVariant.validate_inference_output_request(
+        NativePolicy(),  # type: ignore[arg-type]
+        None,
+    )
+
+
 def test_observed_history_reconciliation_updates_policy_and_conditioning() -> None:
     pipeline = _ObservedHistoryTarget()
     runner = VariantRolloutRunner(pipeline)  # type: ignore[arg-type]

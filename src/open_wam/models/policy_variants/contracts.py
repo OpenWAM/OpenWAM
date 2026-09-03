@@ -7,13 +7,16 @@ from typing import Any, TypeVar
 
 import torch
 
-from open_wam.contracts import VideoLatentSpaceIdentity
 from open_wam.configs.enums import (
     DynamicsObjective,
     ProprioContextMode,
     TextConditioningMode,
 )
 from open_wam.configs.policy_contracts import PolicyConditioningRequirements
+from open_wam.contracts import (
+    VideoLatentSpaceIdentity,
+    require_compatible_video_latent_spaces,
+)
 from open_wam.models.common import RolloutCursor
 from open_wam.models.common.dynamics_contracts import DynamicsRolloutRequest
 from open_wam.models.visual_tower.contracts import VisualComponentTopology
@@ -65,6 +68,20 @@ class PolicyRecurrentHistoryPolicy(str, Enum):
     EXPLICIT_RECONCILIATION = "explicit_reconciliation"
 
 
+class PolicyCompositionRngPolicy(str, Enum):
+    """How a composed consumer obtains its inference random stream.
+
+    ``CALLER_STREAM`` preserves the random stream left by the producer. This is
+    required when two independent policy instances decompose one native ordered
+    program exactly. ``ISOLATED_STEP_SEED`` requires an explicit rollout seed
+    and gives a standalone conditional consumer a distinct step seed without
+    advancing the producer's stream.
+    """
+
+    CALLER_STREAM = "caller_stream"
+    ISOLATED_STEP_SEED = "isolated_step_seed"
+
+
 @dataclass(frozen=True)
 class PolicyInferenceOutputRequest:
     """Architecture-independent selection of inference products.
@@ -103,13 +120,67 @@ class PolicyInferenceOutputRequest:
 
 
 @dataclass(frozen=True)
+class PolicyCompositionCapability:
+    """Artifact inputs and policy outputs supported by a composed inference call."""
+
+    input_modalities: frozenset[PolicyOutputModality]
+    output_modalities: frozenset[PolicyOutputModality]
+    rng_policy: PolicyCompositionRngPolicy = (
+        PolicyCompositionRngPolicy.ISOLATED_STEP_SEED
+    )
+
+    def __post_init__(self) -> None:
+        inputs = frozenset(
+            PolicyOutputModality(modality) for modality in self.input_modalities
+        )
+        outputs = frozenset(
+            PolicyOutputModality(modality) for modality in self.output_modalities
+        )
+        if not inputs or not outputs:
+            raise ValueError(
+                "Policy composition capabilities require non-empty inputs and outputs."
+            )
+        object.__setattr__(self, "input_modalities", inputs)
+        object.__setattr__(self, "output_modalities", outputs)
+        object.__setattr__(
+            self,
+            "rng_policy",
+            PolicyCompositionRngPolicy(self.rng_policy),
+        )
+
+    @classmethod
+    def video_to_action(
+        cls,
+        *,
+        rng_policy: PolicyCompositionRngPolicy = (
+            PolicyCompositionRngPolicy.ISOLATED_STEP_SEED
+        ),
+    ) -> PolicyCompositionCapability:
+        return cls(
+            input_modalities=frozenset({PolicyOutputModality.VIDEO}),
+            output_modalities=frozenset({PolicyOutputModality.ACTION}),
+            rng_policy=rng_policy,
+        )
+
+    def matches(self, required: PolicyCompositionCapability) -> bool:
+        """Match transferable inputs and outputs independently of execution policy."""
+
+        return (
+            self.input_modalities == required.input_modalities
+            and self.output_modalities == required.output_modalities
+        )
+
+
+@dataclass(frozen=True)
 class PolicyInferenceCapabilities:
     """Outputs a policy produces natively and can select independently.
 
     ``native_modalities`` describes a normal inference call with no selective
     request. ``selective_requests`` lists exact subsets that the policy can
-    produce without running the omitted output stages. A composition may still
-    consume a subset of the native output when no selective route exists.
+    produce without running the omitted output stages. ``composition_capabilities``
+    declares transferable artifact inputs a separate policy instance can consume.
+    A composition may still consume a subset of the native output when no
+    selective producer route exists.
     """
 
     native_modalities: frozenset[PolicyOutputModality]
@@ -117,6 +188,7 @@ class PolicyInferenceCapabilities:
     recurrent_history_policy: PolicyRecurrentHistoryPolicy = (
         PolicyRecurrentHistoryPolicy.UNSUPPORTED
     )
+    composition_capabilities: tuple[PolicyCompositionCapability, ...] = ()
 
     def __post_init__(self) -> None:
         native = frozenset(
@@ -147,6 +219,28 @@ class PolicyInferenceCapabilities:
             seen_selective.add(request.modalities)
         object.__setattr__(self, "native_modalities", native)
         object.__setattr__(self, "selective_requests", selective)
+        compositions = tuple(self.composition_capabilities)
+        for index, capability in enumerate(compositions):
+            if any(
+                capability.matches(other)
+                for other in compositions[index + 1 :]
+            ):
+                raise ValueError(
+                    "Policy composition input/output capabilities must be unique."
+                )
+        for capability in compositions:
+            if not capability.output_modalities.issubset(native):
+                raise ValueError(
+                    "Policy composition outputs must be a subset of native outputs; "
+                    f"native={sorted(item.value for item in native)}, "
+                    "composition_outputs="
+                    f"{sorted(item.value for item in capability.output_modalities)}."
+                )
+        object.__setattr__(
+            self,
+            "composition_capabilities",
+            compositions,
+        )
         history_policy = PolicyRecurrentHistoryPolicy(
             self.recurrent_history_policy
         )
@@ -182,6 +276,29 @@ class PolicyInferenceCapabilities:
             if request.modalities == required:
                 return request
         return None
+
+    def supports_composition(
+        self,
+        capability: PolicyCompositionCapability,
+    ) -> bool:
+        """Return whether the policy accepts one transferable artifact route."""
+
+        return self.composition_for(capability) is not None
+
+    def composition_for(
+        self,
+        capability: PolicyCompositionCapability,
+    ) -> PolicyCompositionCapability | None:
+        """Resolve consumer-owned execution semantics for an artifact route."""
+
+        return next(
+            (
+                declared
+                for declared in self.composition_capabilities
+                if declared.matches(capability)
+            ),
+            None,
+        )
 
 
 @dataclass(frozen=True)
@@ -243,7 +360,7 @@ class PolicyGeneratedVideo:
     """Future-only latent video emitted for downstream composition.
 
     Conditioning or observed-prefix frames are deliberately excluded. This
-    makes a causal video-only model, a staged VTA policy, and a jointly decoded
+    makes a causal video-only model, a selective VTA producer, and a jointly decoded
     policy expose the same downstream handoff semantics.
     """
 
@@ -265,7 +382,7 @@ class PolicyGeneratedVideo:
 
 @dataclass(frozen=True)
 class PolicyVideoGenerationRequest:
-    """Geometry requested from a video-producing inference stage."""
+    """Future-frame geometry and history window requested from a video producer."""
 
     frame_count: int
     attention_window_size: int | None = None
@@ -281,6 +398,58 @@ class PolicyVideoGenerationRequest:
             raise ValueError(
                 "Video generation attention_window_size must be positive when "
                 f"provided, got {self.attention_window_size}."
+            )
+
+
+@dataclass(frozen=True)
+class PolicyVideoConditionedActionRequest:
+    """Transfer a future video artifact into an independent action policy call.
+
+    Observed history, text, proprioception, and executed-action history remain on
+    the ordinary inference context and recurrent session. The consumer decides
+    which of those available signals are visible under its own policy semantics.
+    """
+
+    generated_video: PolicyGeneratedVideo
+
+    def __post_init__(self) -> None:
+        if self.generated_video.frame_start is None:
+            raise ValueError(
+                "Generated video is missing its temporal origin, so action-consumer "
+                "alignment cannot be verified."
+            )
+
+    @property
+    def capability(self) -> PolicyCompositionCapability:
+        return PolicyCompositionCapability.video_to_action()
+
+    def validate_consumer_latent_space(
+        self,
+        consumer: VideoLatentSpaceIdentity | None,
+    ) -> None:
+        """Reject identified producer and consumer spaces that cannot compose."""
+
+        producer = self.generated_video.latent_space_identity
+        if producer is None and consumer is None:
+            return
+        require_compatible_video_latent_spaces(producer, consumer)
+
+    def validate_output_frame_start(self, frame_start: int | None) -> None:
+        """Require the consumer output to preserve the transferred time origin."""
+
+        producer_start = self.generated_video.frame_start
+        assert producer_start is not None
+        if frame_start is None:
+            raise RuntimeError(
+                "The video-conditioned action consumer did not report its generated "
+                "frame origin, so temporal handoff parity cannot be verified."
+            )
+        if int(producer_start) != int(frame_start):
+            raise RuntimeError(
+                "Generated-video producer and action consumer use different temporal "
+                "origins: "
+                f"producer_frame_start={int(producer_start)}, "
+                f"consumer_frame_start={int(frame_start)}."
             )
 
 
@@ -618,6 +787,7 @@ class PolicyInferContext:
     # binding its fourth argument to the same field.
     output_request: PolicyInferenceOutputRequest | None = None
     video_generation: PolicyVideoGenerationRequest | None = None
+    video_conditioned_action: PolicyVideoConditionedActionRequest | None = None
 
 
 @dataclass

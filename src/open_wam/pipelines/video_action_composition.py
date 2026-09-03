@@ -2,17 +2,23 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass, replace
 
-from open_wam.configs import DynamicsObjective
-from open_wam.contracts import VideoLatentSpaceIdentity
+import torch
+
+from open_wam.contracts import require_compatible_video_latent_spaces
 from open_wam.models.policy_variants import (
-    DynamicsRolloutRequest,
+    PolicyCompositionCapability,
+    PolicyCompositionRngPolicy,
     PolicyGeneratedVideo,
+    PolicyInferContext,
     PolicyInferenceOutputRequest,
     PolicyOutputModality,
     PolicyRecurrentHistoryPolicy,
     PolicyVariant,
+    PolicyVideoConditionedActionRequest,
     PolicyVideoGenerationRequest,
 )
 
@@ -46,6 +52,106 @@ class PolicyVideoProducerPlan:
             "uses_selective_output": self.uses_selective_output,
             "recurrent_history_policy": self.recurrent_history_policy.value,
         }
+
+
+@dataclass(frozen=True)
+class PolicyVideoActionConsumerPlan:
+    """A policy that accepts transferred video and emits actions."""
+
+    capability: PolicyCompositionCapability
+    recurrent_history_policy: PolicyRecurrentHistoryPolicy
+
+    def resolve_step_seed(
+        self,
+        *,
+        rollout_seed: int | None,
+        step_index: int,
+    ) -> int | None:
+        """Resolve the consumer seed required by its declared RNG policy."""
+
+        if self.capability.rng_policy is PolicyCompositionRngPolicy.CALLER_STREAM:
+            return None
+        if rollout_seed is None:
+            raise ValueError(
+                "The action consumer requires an explicit rollout seed so each "
+                "composed step receives an isolated deterministic random stream."
+            )
+        return int(rollout_seed) + int(step_index)
+
+    @contextmanager
+    def rng_stream(
+        self,
+        *,
+        producer_device: torch.device | str,
+        consumer_device: torch.device | str,
+    ) -> Iterator[None]:
+        """Preserve one logical random stream across a composed policy call."""
+
+        if (
+            self.capability.rng_policy
+            is not PolicyCompositionRngPolicy.CALLER_STREAM
+        ):
+            yield
+            return
+        source = torch.device(producer_device)
+        target = torch.device(consumer_device)
+        if source.type != target.type:
+            raise ValueError(
+                "Chained composition RNG requires producer and consumer devices "
+                f"of the same type; got producer={source}, consumer={target}."
+            )
+        if source.type != "cuda":
+            yield
+            return
+        source = _resolve_cuda_device(source)
+        target = _resolve_cuda_device(target)
+        if source == target:
+            yield
+            return
+        _copy_cuda_rng_state(source=source, target=target)
+        try:
+            yield
+        finally:
+            _copy_cuda_rng_state(source=target, target=source)
+
+    def to_report(self) -> dict[str, object]:
+        return {
+            "input_modalities": sorted(
+                modality.value for modality in self.capability.input_modalities
+            ),
+            "output_modalities": sorted(
+                modality.value for modality in self.capability.output_modalities
+            ),
+            "rng_policy": self.capability.rng_policy.value,
+            "recurrent_history_policy": self.recurrent_history_policy.value,
+        }
+
+
+def resolve_policy_video_action_consumer_plan(
+    policy: PolicyVariant,
+) -> PolicyVideoActionConsumerPlan:
+    """Require a policy to support independent generated-video consumption."""
+
+    capability = PolicyCompositionCapability.video_to_action()
+    capabilities = policy.inference_capabilities
+    declared_capability = capabilities.composition_for(capability)
+    if declared_capability is None:
+        raise ValueError(
+            f"{type(policy).__name__} does not declare generated-video to action "
+            "composition support."
+        )
+    if (
+        capabilities.recurrent_history_policy
+        is PolicyRecurrentHistoryPolicy.UNSUPPORTED
+    ):
+        raise ValueError(
+            f"{type(policy).__name__} does not declare safe recurrent history "
+            "semantics for video-conditioned action composition."
+        )
+    return PolicyVideoActionConsumerPlan(
+        capability=declared_capability,
+        recurrent_history_policy=capabilities.recurrent_history_policy,
+    )
 
 
 def resolve_policy_video_producer_plan(
@@ -104,46 +210,48 @@ def require_generated_video(
 
 def build_video_conditioned_action_request(
     generated_video: PolicyGeneratedVideo,
-) -> DynamicsRolloutRequest:
-    """Build the unified second-stage request from a generated video chunk."""
+) -> PolicyVideoConditionedActionRequest:
+    """Build a consumer-neutral request from a generated video chunk."""
 
-    return DynamicsRolloutRequest(
-        objective=DynamicsObjective.VIDEO_CONDITIONED_ACTION,
-        clean_video=generated_video.latents,
-        frame_chunk_size=int(generated_video.latents.shape[2]),
+    return PolicyVideoConditionedActionRequest(
+        generated_video=generated_video,
     )
 
 
-def require_compatible_video_latent_spaces(
-    producer: VideoLatentSpaceIdentity | None,
-    consumer: VideoLatentSpaceIdentity | None,
-) -> dict[str, str]:
-    """Require a content-identical latent coordinate space for composition."""
+def build_video_conditioned_action_context(
+    context: PolicyInferContext,
+    generated_video: PolicyGeneratedVideo,
+) -> PolicyInferContext:
+    """Attach transferred video while preserving all available consumer context."""
 
-    if producer is None or consumer is None:
-        missing = []
-        if producer is None:
-            missing.append("producer")
-        if consumer is None:
-            missing.append("consumer")
-        raise ValueError(
-            "Generated-video composition requires artifact-backed latent-space "
-            f"identity for {', '.join(missing)}."
-        )
-    if producer != consumer:
-        raise ValueError(
-            "Generated-video producer and action consumer use different latent "
-            "spaces: "
-            f"producer={producer.artifact_sha256}, "
-            f"consumer={consumer.artifact_sha256}."
-        )
-    return producer.to_mapping()
+    return replace(
+        context,
+        dynamics=None,
+        output_request=None,
+        video_generation=None,
+        video_conditioned_action=build_video_conditioned_action_request(
+            generated_video
+        ),
+    )
+
+
+def _resolve_cuda_device(device: torch.device) -> torch.device:
+    if device.index is not None:
+        return device
+    return torch.device("cuda", torch.cuda.current_device())
+
+
+def _copy_cuda_rng_state(*, source: torch.device, target: torch.device) -> None:
+    torch.cuda.set_rng_state(torch.cuda.get_rng_state(source), device=target)
 
 
 __all__ = [
+    "PolicyVideoActionConsumerPlan",
     "PolicyVideoProducerPlan",
+    "build_video_conditioned_action_context",
     "build_video_conditioned_action_request",
     "require_compatible_video_latent_spaces",
     "require_generated_video",
+    "resolve_policy_video_action_consumer_plan",
     "resolve_policy_video_producer_plan",
 ]

@@ -201,6 +201,7 @@ class VariantRolloutRunner:
             dynamics=context.dynamics,
             output_request=context.output_request,
             video_generation=context.video_generation,
+            video_conditioned_action=context.video_conditioned_action,
             extra={
                 **context.extra,
                 "task_text": context.extra.get("task_text", session.task_text),

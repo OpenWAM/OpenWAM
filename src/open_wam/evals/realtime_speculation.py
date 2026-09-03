@@ -6,8 +6,9 @@ import copy
 import random
 from collections.abc import Mapping
 from concurrent.futures import Future
+from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Protocol, TypeVar
+from typing import TYPE_CHECKING, Any, Iterator, Protocol, TypeVar
 
 import numpy as np
 import torch
@@ -24,6 +25,7 @@ if TYPE_CHECKING:
 __all__ = [
     "RuntimeRngSnapshot",
     "clone_session",
+    "preserve_rng_state",
     "resolve_future_result",
     "restore_rng_state",
     "restore_visual_runtime",
@@ -196,6 +198,17 @@ def restore_rng_state(snapshot: RuntimeRngSnapshot | None) -> None:
     torch.set_rng_state(snapshot.torch_cpu_state)
     if snapshot.torch_cuda_state is not None and torch.cuda.is_available():
         torch.cuda.set_rng_state_all(snapshot.torch_cuda_state)
+
+
+@contextmanager
+def preserve_rng_state() -> Iterator[None]:
+    """Run auxiliary work without advancing the caller's global RNG streams."""
+
+    snapshot = snapshot_rng_state()
+    try:
+        yield
+    finally:
+        restore_rng_state(snapshot)
 
 
 def resolve_future_result(

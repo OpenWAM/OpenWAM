@@ -26,6 +26,7 @@ from open_wam.evals.libero_visualization import resolve_device as _resolve_devic
 from open_wam.models.common.rollout_history import (
     resolve_execute_action_steps as _resolve_shared_execute_action_steps,
 )
+from open_wam.models.policy_variants import PolicyOutputModality
 from open_wam.models.policy_variants.dual_expert.inference_backend import (
     ensure_dual_expert_inference_backend,
 )
@@ -165,7 +166,7 @@ class DualExpertLiberoLoadOptions:
         CheckpointCompatibilityPolicy.ALLOW_CHECKPOINT_SUPERSET
     )
     runtime_role: LiberoPolicyRuntimeRole = LiberoPolicyRuntimeRole.NATIVE_POLICY
-    provided_dynamics_objectives: tuple[DynamicsObjective, ...] = ()
+    provided_conditioning_modalities: tuple[PolicyOutputModality, ...] = ()
     component_report_extra: Mapping[str, object] = field(default_factory=dict)
 
 
@@ -176,7 +177,7 @@ def load_dual_expert_libero_runtime(options: DualExpertLiberoLoadOptions) -> Dua
     _validate_runtime_role_inputs(
         runtime_role,
         action_route=options.dual_expert_gjd_action_route,
-        provided_objectives=options.provided_dynamics_objectives,
+        provided_modalities=options.provided_conditioning_modalities,
     )
     config_path = Path(options.config)
     if not config_path.is_absolute():
@@ -215,7 +216,7 @@ def load_dual_expert_libero_runtime(options: DualExpertLiberoLoadOptions) -> Dua
     is_dual_expert = config.policy_variant.name is PolicyVariantName.DUAL_EXPERT
     _validate_live_sim_dynamics_program(
         config.policy_variant,
-        provided_objectives=options.provided_dynamics_objectives,
+        provided_modalities=options.provided_conditioning_modalities,
     )
     require_current_libero_policy_paradigm(
         config,
@@ -418,10 +419,10 @@ def load_dual_expert_libero_runtime(options: DualExpertLiberoLoadOptions) -> Dua
             ),
         }
     )
-    if options.provided_dynamics_objectives:
-        component_report["provided_dynamics_objectives"] = [
-            DynamicsObjective(objective).value
-            for objective in options.provided_dynamics_objectives
+    if options.provided_conditioning_modalities:
+        component_report["provided_conditioning_modalities"] = [
+            PolicyOutputModality(modality).value
+            for modality in options.provided_conditioning_modalities
         ]
     _print_log("load_report", component_report)
     return DualExpertLiberoRuntime(
@@ -464,7 +465,7 @@ def _validate_runtime_role_inputs(
     runtime_role: LiberoPolicyRuntimeRole,
     *,
     action_route: DualExpertActionRoute | str,
-    provided_objectives: tuple[DynamicsObjective, ...],
+    provided_modalities: tuple[PolicyOutputModality, ...],
 ) -> None:
     """Require explicit clean inputs for conditional consumer runtimes."""
 
@@ -481,17 +482,17 @@ def _validate_runtime_role_inputs(
             "generated-video action composition route."
         )
     available = frozenset(
-        DynamicsObjective(objective) for objective in provided_objectives
+        PolicyOutputModality(modality) for modality in provided_modalities
     )
     expected = (
-        frozenset({DynamicsObjective.VIDEO_CONDITIONED_ACTION})
+        frozenset({PolicyOutputModality.VIDEO})
         if role is LiberoPolicyRuntimeRole.VIDEO_CONDITIONED_ACTION_CONSUMER
         else frozenset()
     )
     if available != expected:
         raise ValueError(
-            f"LIBERO runtime role {role.value!r} requires provided dynamics "
-            f"objectives {sorted(item.value for item in expected)!r}; got "
+            f"LIBERO runtime role {role.value!r} requires provided conditioning "
+            f"modalities {sorted(item.value for item in expected)!r}; got "
             f"{sorted(item.value for item in available)!r}. Only the "
             "video-conditioned action consumer receives a clean future tensor "
             "from this composition route."
@@ -518,7 +519,7 @@ def _require_current_frontend_encode_mode(
 def _validate_live_sim_dynamics_program(
     policy_config: PolicyVariantConfig,
     *,
-    provided_objectives: tuple[DynamicsObjective, ...] = (),
+    provided_modalities: tuple[PolicyOutputModality, ...] = (),
 ) -> None:
     """Reject programs that require clean future tensors unavailable in sim."""
 
@@ -526,9 +527,14 @@ def _validate_live_sim_dynamics_program(
     if fixed_mode is None:
         return
     available = frozenset(
-        DynamicsObjective(objective) for objective in provided_objectives
+        PolicyOutputModality(modality) for modality in provided_modalities
     )
-    if fixed_mode in available:
+    required_modality = (
+        PolicyOutputModality.VIDEO
+        if fixed_mode is DynamicsObjective.VIDEO_CONDITIONED_ACTION
+        else PolicyOutputModality.ACTION
+    )
+    if required_modality in available:
         return
     raise ValueError(
         f"The configured {fixed_mode.value!r} dynamics objective is an offline "

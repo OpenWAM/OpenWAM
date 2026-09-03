@@ -664,8 +664,19 @@ uv run --extra sim python scripts/run_libero_dual_expert_visualization.py \
 ```
 
 The six standard non-GJD dual-expert rollout programs use an `800` timestep and
-`50` chunk limit. Conditional FDM/IDM is offline-only and does not use this live
-rollout command. GJD LIBERO rollout is a source-checkout integration and
+`50` chunk limit. Conditional FDM/IDM programs are offline diagnostics by
+default. The composition route below makes IDM usable online by supplying clean
+future video; FDM remains offline because this route does not supply future
+actions. The
+`--action-route generated_video_then_action` composition route loads separate
+producer and consumer sessions. Using the same VTA checkpoint for both roles is
+the maintained manual VTA split; using a fixed IDM or IDM-enabled GJD consumer
+keeps text-free IDM semantics with one clean history frame and the configured
+future chunk (four latent frames and sixteen actions by default). See
+`notes/video_action_composition.md` for CLI examples, extension contracts, and
+the strict parity gates.
+
+GJD LIBERO rollout is a source-checkout integration and
 defaults to `1500/100`:
 
 ```bash

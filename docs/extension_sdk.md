@@ -322,6 +322,23 @@ normal typed config sections.
 3. Register a builder under the YAML `extension_type`.
 4. Add config, construction, gradient, and recurrent-inference tests.
 
+A policy that participates in separate-model composition should declare its
+artifact inputs and outputs in
+`PolicyInferenceCapabilities.composition_capabilities`. Producers publish a
+typed artifact such as `PolicyGeneratedVideo`; consumers receive the artifact
+through an ordinary inference context and decide which available prompt,
+proprio, and recurrent-history signals are visible. Keep model-specific
+adaptation inside the policy variant by overriding `resolve_inference_context`.
+The generic pipeline validates the neutral request once, then passes the
+resolved context to both state preparation and inference. It must not transport
+private caches or opaque in-flight state between models.
+
+If decomposition must preserve a native stochastic program exactly, declare a
+`PolicyCompositionRngPolicy` on the capability. `caller_stream` continues the
+producer stream, including across CUDA devices; `isolated_step_seed` gives the
+consumer an independent per-step stream. See
+`notes/video_action_composition.md` for the complete contract and parity gates.
+
 ```python
 from open_wam.sdk.config import ExtensionPolicyConfig
 from open_wam.sdk.policy import register_policy_variant

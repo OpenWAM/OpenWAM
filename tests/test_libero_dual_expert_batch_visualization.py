@@ -146,7 +146,9 @@ def test_loaded_rollout_forwards_policy_and_execution_chunk_overrides() -> None:
                 DualExpertLiberoEpisodeOptions=episode_options,
                 run_dual_expert_libero_episode=lambda *args, **kwargs: {
                     "episode": args[0],
-                    "external_idm": kwargs.get("external_idm"),
+                    "video_action_composition": kwargs.get(
+                        "video_action_composition"
+                    ),
                 },
             ),
         }
@@ -169,7 +171,10 @@ def test_loaded_rollout_forwards_policy_and_execution_chunk_overrides() -> None:
         save_rollout_video=False,
         skip_comparison_video=True,
     )
-    resources = SimpleNamespace(runtime="runtime", external_idm="external-idm")
+    resources = SimpleNamespace(
+        runtime="runtime",
+        video_action_composition="composition",
+    )
 
     result = helpers._run_one_loaded_rollout(
         args,
@@ -185,7 +190,7 @@ def test_loaded_rollout_forwards_policy_and_execution_chunk_overrides() -> None:
     assert captured["dual_expert_inference_window_size"] == 30
     assert result["episode"].task_id == 4
     assert result["episode"].episode_idx == 7
-    assert result["external_idm"] == "external-idm"
+    assert result["video_action_composition"] == "composition"
 
 
 def test_resolve_execute_action_steps_defaults_to_full_horizon() -> None:

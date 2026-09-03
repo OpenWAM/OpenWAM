@@ -20,9 +20,9 @@ import torch
 
 from open_wam.configs import DynamicsObjective
 from open_wam.evals.libero_dual_expert_composition import (
-    ExternalIdmComposition,
+    VideoActionComposition,
     build_composed_component_report,
-    infer_external_idm_action,
+    infer_video_conditioned_action,
 )
 from open_wam.evals.libero_dual_expert_inputs import (
     _build_infer_context,
@@ -51,6 +51,7 @@ from open_wam.evals.libero_rollout_artifacts import (
     extract_predicted_latents,
     persist_libero_rollout_artifacts,
 )
+from open_wam.evals.realtime_speculation import preserve_rng_state
 from open_wam.integrations import (
     LIBERO_ROLLOUT_VIEW_KEYS,
     LiberoTaskSpec,
@@ -177,7 +178,7 @@ def run_dual_expert_libero_episode(
     *,
     include_episode_coordinates: bool,
     close_env_after_rollout: bool,
-    external_idm: ExternalIdmComposition | None = None,
+    video_action_composition: VideoActionComposition | None = None,
 ) -> dict[str, object]:
     """Execute one exact dual-expert/GJD LIBERO episode with loaded resources."""
 
@@ -206,19 +207,21 @@ def run_dual_expert_libero_episode(
     runner = resources.runner
     use_lingbot_streaming_vae = bool(resources.use_lingbot_streaming_vae)
     action_route = DualExpertActionRoute(args.dual_expert_gjd_action_route)
-    uses_external_idm = uses_video_action_composition(action_route)
-    if uses_external_idm != (external_idm is not None):
+    uses_composition = uses_video_action_composition(action_route)
+    if uses_composition != (video_action_composition is not None):
         raise ValueError(
-            "The generated-video external-IDM route and loaded external composition "
+            "The generated-video action route and loaded composition "
             "must be supplied together."
         )
-    external_runtime = None if external_idm is None else external_idm.runtime
-    action_config = config if external_runtime is None else external_runtime.config
-    if external_runtime is not None and (
-        bool(external_runtime.use_lingbot_streaming_vae) != use_lingbot_streaming_vae
+    consumer_runtime = (
+        None if video_action_composition is None else video_action_composition.runtime
+    )
+    action_config = config if consumer_runtime is None else consumer_runtime.config
+    if consumer_runtime is not None and (
+        bool(consumer_runtime.use_lingbot_streaming_vae) != use_lingbot_streaming_vae
     ):
         raise ValueError(
-            "Primary and external IDM runtimes must use the same frontend encode mode."
+            "Video producer and action consumer must use the same frontend encode mode."
         )
 
     try:
@@ -265,18 +268,18 @@ def run_dual_expert_libero_episode(
         terminal = False
         chunk_count = 0
         session = runner.reset(task_text=(prompt,))
-        external_idm_session = (
+        action_consumer_session = (
             None
-            if external_runtime is None
-            else external_runtime.runner.reset(task_text=(prompt,))
+            if consumer_runtime is None
+            else consumer_runtime.runner.reset(task_text=(prompt,))
         )
         streaming_next_visual_outputs = None
-        external_streaming_next_visual_outputs = None
+        consumer_streaming_next_visual_outputs = None
         streaming_next_obs_window: list[dict[str, np.ndarray]] | None = None
         if use_lingbot_streaming_vae:
             pipeline.visual_tower.reset_runtime_state()
-            if external_runtime is not None:
-                external_runtime.pipeline.visual_tower.reset_runtime_state()
+            if consumer_runtime is not None:
+                consumer_runtime.pipeline.visual_tower.reset_runtime_state()
 
         while env.env.timestep < args.max_timestep and not done and not terminal:
             if args.max_chunks is not None and chunk_count >= args.max_chunks:
@@ -334,41 +337,44 @@ def run_dual_expert_libero_episode(
                         if use_lingbot_streaming_vae
                         else ("streaming" if chunk_count == 0 else "offline")
                     )
-                external_visual_outputs = None
-                if external_runtime is not None:
+                consumer_visual_outputs = None
+                if consumer_runtime is not None:
                     if use_lingbot_streaming_vae and chunk_count > 0:
-                        if external_streaming_next_visual_outputs is None:
+                        if consumer_streaming_next_visual_outputs is None:
                             raise RuntimeError(
-                                "External IDM streaming VAE expected encoded "
+                                "Action-consumer streaming VAE expected encoded "
                                 "observations from the previous chunk."
                             )
-                        external_visual_outputs = external_streaming_next_visual_outputs
-                        external_streaming_next_visual_outputs = None
+                        consumer_visual_outputs = consumer_streaming_next_visual_outputs
+                        consumer_streaming_next_visual_outputs = None
                     else:
-                        if external_idm_session is None:
+                        if action_consumer_session is None:
                             raise RuntimeError(
-                                "External IDM session was not initialized."
+                                "Action-consumer session was not initialized."
                             )
-                        external_views = _obs_list_to_views(
+                        consumer_views = _obs_list_to_views(
                             model_obs_window,
-                            device=external_runtime.frontend_device,
+                            device=consumer_runtime.frontend_device,
                         )
-                        external_visual_outputs = _prepare_dual_expert_visual_outputs(
-                            external_runtime.pipeline,
-                            views=external_views,
-                            task_text=(prompt,),
-                            frontend_device=external_runtime.frontend_device,
-                            runtime_device=external_runtime.runtime_device,
-                            use_streaming_frontend=(
-                                chunk_count == 0
-                                or external_runtime.use_lingbot_streaming_vae
-                            ),
-                            preserve_stream_cache=False,
-                            text_context=external_idm_session.text_context,
-                            negative_text_context=(
-                                external_idm_session.negative_text_context
-                            ),
-                        )
+                        with preserve_rng_state():
+                            consumer_visual_outputs = (
+                                _prepare_dual_expert_visual_outputs(
+                                    consumer_runtime.pipeline,
+                                    views=consumer_views,
+                                    task_text=(prompt,),
+                                    frontend_device=consumer_runtime.frontend_device,
+                                    runtime_device=consumer_runtime.runtime_device,
+                                    use_streaming_frontend=(
+                                        chunk_count == 0
+                                        or consumer_runtime.use_lingbot_streaming_vae
+                                    ),
+                                    preserve_stream_cache=False,
+                                    text_context=action_consumer_session.text_context,
+                                    negative_text_context=(
+                                        action_consumer_session.negative_text_context
+                                    ),
+                                )
+                            )
                 _print_log(
                     "stage",
                     {
@@ -395,8 +401,8 @@ def run_dual_expert_libero_episode(
                         args.dual_expert_action_only_rollout
                     ),
                     output_request=(
-                        external_idm.producer_plan.output_request
-                        if uses_external_idm
+                        video_action_composition.producer_plan.output_request
+                        if uses_composition
                         else None
                     ),
                     video_generation=(
@@ -413,12 +419,15 @@ def run_dual_expert_libero_episode(
                                 else int(args.dual_expert_inference_window_size)
                             ),
                         )
-                        if uses_external_idm
+                        if uses_composition
                         else None
                     ),
                 )
                 pre_infer_policy_state = None
-                if not uses_external_idm and session.policy_state is not None:
+                if (
+                    action_route is DualExpertActionRoute.JOINT_VIDEO_THEN_IDM
+                    and session.policy_state is not None
+                ):
                     pre_infer_policy_state = copy.deepcopy(session.policy_state)
                 infer_session = runner.reset(
                     task_text=session.task_text,
@@ -442,12 +451,12 @@ def run_dual_expert_libero_episode(
                         primary_infer_output,
                         request=infer_context.video_generation,
                     )
-                    if uses_external_idm
+                    if uses_composition
                     else None
                 )
                 if generated_video is not None:
                     route_predicted_latents = generated_video.latents
-                external_idm_inference_seed = None
+                action_consumer_inference_seed = None
                 if action_route is DualExpertActionRoute.JOINT_VIDEO_THEN_IDM:
                     if (
                         not isinstance(route_predicted_latents, torch.Tensor)
@@ -489,27 +498,26 @@ def run_dual_expert_libero_episode(
                         visual_outputs=visual_outputs,
                     )
                     infer_output = step_output.infer_output
-                elif uses_external_idm:
-                    if (
-                        generated_video is None
-                    ):
+                elif uses_composition:
+                    if generated_video is None:
                         raise RuntimeError(
-                            "External IDM composition requires its producer stage "
+                            "Video/action composition requires its producer stage "
                             "to publish a non-empty generated-video chunk."
                         )
                     if (
-                        external_idm is None
-                        or external_runtime is None
-                        or external_idm_session is None
-                        or external_visual_outputs is None
+                        video_action_composition is None
+                        or consumer_runtime is None
+                        or action_consumer_session is None
+                        or consumer_visual_outputs is None
                     ):
                         raise RuntimeError(
-                            "External IDM route was selected without complete runtime state."
+                            "The composed action route was selected without complete "
+                            "consumer runtime state."
                         )
-                    external_step = infer_external_idm_action(
-                        external_idm,
-                        session=external_idm_session,
-                        visual_outputs=external_visual_outputs,
+                    consumer_step = infer_video_conditioned_action(
+                        video_action_composition,
+                        session=action_consumer_session,
+                        visual_outputs=consumer_visual_outputs,
                         model_obs_window=model_obs_window,
                         prompt=prompt,
                         generated_video=generated_video,
@@ -517,10 +525,11 @@ def run_dual_expert_libero_episode(
                         reset_policy_state=bool(args.reset_policy_state_each_chunk),
                         rollout_seed=seed,
                         chunk_index=chunk_count,
+                        producer_rng_device=resources.runtime_device,
                     )
-                    step_output = external_step.rollout
+                    step_output = consumer_step.rollout
                     infer_output = step_output.infer_output
-                    external_idm_inference_seed = external_step.inference_seed
+                    action_consumer_inference_seed = consumer_step.inference_seed
                 _print_log(
                     "stage",
                     {
@@ -531,9 +540,9 @@ def run_dual_expert_libero_episode(
                         "dual_expert_gjd_action_route": str(action_route.value),
                     },
                 )
-            if uses_external_idm:
+            if uses_composition:
                 session = primary_step_output.session
-                external_idm_session = step_output.session
+                action_consumer_session = step_output.session
             else:
                 session = step_output.session
             actions = (
@@ -599,15 +608,16 @@ def run_dual_expert_libero_episode(
                 if not isinstance(predicted_latents, torch.Tensor)
                 else list(predicted_latents.shape),
                 "dual_expert_gjd_action_route": action_route.value,
-                "external_idm_inference_seed": external_idm_inference_seed,
                 "first_action_preview": [float(v) for v in actions[0].tolist()],
                 "policy_debug": policy_debug,
-                "primary_policy_debug": (
-                    _summarize_policy_debug(primary_infer_output.policy_output)
-                    if uses_external_idm
-                    else None
-                ),
             }
+            if uses_composition:
+                chunk_log["video_action_composition"] = {
+                    "action_consumer_inference_seed": action_consumer_inference_seed,
+                    "producer_policy_debug": _summarize_policy_debug(
+                        primary_infer_output.policy_output
+                    ),
+                }
             _print_log(chunk_log_label(chunk_count), chunk_log)
             chunk_logs.append(chunk_log)
 
@@ -759,33 +769,34 @@ def run_dual_expert_libero_episode(
                 }
                 _print_log(chunk_log_label(chunk_count), streaming_update_log)
                 chunk_logs.append(streaming_update_log)
-                if external_runtime is not None:
-                    if external_idm_session is None:
+                if consumer_runtime is not None:
+                    if action_consumer_session is None:
                         raise RuntimeError(
-                            "External IDM session is missing during frontend update."
+                            "Action-consumer session is missing during frontend update."
                         )
-                    external_streaming_views = _obs_list_to_views(
+                    consumer_streaming_views = _obs_list_to_views(
                         executed_obs_frames,
-                        device=external_runtime.frontend_device,
+                        device=consumer_runtime.frontend_device,
                     )
-                    external_streaming_next_visual_outputs = (
-                        _prepare_dual_expert_visual_outputs(
-                            external_runtime.pipeline,
-                            views=external_streaming_views,
-                            task_text=(prompt,),
-                            frontend_device=external_runtime.frontend_device,
-                            runtime_device=external_runtime.runtime_device,
-                            use_streaming_frontend=True,
-                            preserve_stream_cache=True,
-                            text_context=external_idm_session.text_context,
-                            negative_text_context=(
-                                external_idm_session.negative_text_context
-                            ),
+                    with preserve_rng_state():
+                        consumer_streaming_next_visual_outputs = (
+                            _prepare_dual_expert_visual_outputs(
+                                consumer_runtime.pipeline,
+                                views=consumer_streaming_views,
+                                task_text=(prompt,),
+                                frontend_device=consumer_runtime.frontend_device,
+                                runtime_device=consumer_runtime.runtime_device,
+                                use_streaming_frontend=True,
+                                preserve_stream_cache=True,
+                                text_context=action_consumer_session.text_context,
+                                negative_text_context=(
+                                    action_consumer_session.negative_text_context
+                                ),
+                            )
                         )
-                    )
 
             primary_history_infer_output = (
-                primary_infer_output if uses_external_idm else infer_output
+                primary_infer_output if uses_composition else infer_output
             )
             if (
                 (
@@ -798,12 +809,12 @@ def run_dual_expert_libero_episode(
                 and env.env.timestep < args.max_timestep
                 and (
                     (
-                        external_idm is not None
-                        and external_idm.producer_plan.recurrent_history_policy
+                        video_action_composition is not None
+                        and video_action_composition.producer_plan.recurrent_history_policy
                         is PolicyRecurrentHistoryPolicy.EXPLICIT_RECONCILIATION
                     )
                     or (
-                        external_idm is None
+                        video_action_composition is None
                         and "dual_expert_packed_history_debug"
                         in primary_history_infer_output.policy_output.aux
                     )
@@ -850,7 +861,7 @@ def run_dual_expert_libero_episode(
                     rollout_frame_chunk_size=args.dual_expert_rollout_frame_chunk_size,
                     execution_commit=execution_commit,
                 )
-                if uses_external_idm and not history_output.applied:
+                if uses_composition and not history_output.applied:
                     raise RuntimeError(
                         "The video producer declared explicit observed-history "
                         "reconciliation but did not apply it."
@@ -867,8 +878,11 @@ def run_dual_expert_libero_episode(
                 chunk_logs.append(warmup_log)
 
             if (
-                external_runtime is not None
-                and external_idm_session is not None
+                consumer_runtime is not None
+                and action_consumer_session is not None
+                and video_action_composition is not None
+                and video_action_composition.consumer_plan.recurrent_history_policy
+                is PolicyRecurrentHistoryPolicy.EXPLICIT_RECONCILIATION
                 and (
                     executed_obs_frames
                     if use_lingbot_streaming_vae
@@ -880,78 +894,73 @@ def run_dual_expert_libero_episode(
             ):
                 if use_lingbot_streaming_vae:
                     if (
-                        external_streaming_next_visual_outputs is None
+                        consumer_streaming_next_visual_outputs is None
                         or streaming_next_obs_window is None
                     ):
                         raise RuntimeError(
-                            "External IDM streaming history reconciliation requires "
+                            "Action-consumer streaming history reconciliation requires "
                             "pre-encoded observations."
                         )
-                    external_warmup_outputs = external_streaming_next_visual_outputs
-                    external_warmup_obs = streaming_next_obs_window
+                    consumer_warmup_outputs = consumer_streaming_next_visual_outputs
+                    consumer_warmup_obs = streaming_next_obs_window
                 else:
-                    external_warmup_obs = real_future_frames
-                    external_warmup_views = _obs_list_to_views(
-                        external_warmup_obs,
-                        device=external_runtime.frontend_device,
+                    consumer_warmup_obs = real_future_frames
+                    consumer_warmup_views = _obs_list_to_views(
+                        consumer_warmup_obs,
+                        device=consumer_runtime.frontend_device,
                     )
-                    external_warmup_outputs = _prepare_dual_expert_visual_outputs(
-                        external_runtime.pipeline,
-                        views=external_warmup_views,
+                    consumer_warmup_outputs = _prepare_dual_expert_visual_outputs(
+                        consumer_runtime.pipeline,
+                        views=consumer_warmup_views,
                         task_text=(prompt,),
-                        frontend_device=external_runtime.frontend_device,
-                        runtime_device=external_runtime.runtime_device,
+                        frontend_device=consumer_runtime.frontend_device,
+                        runtime_device=consumer_runtime.runtime_device,
                         use_streaming_frontend=False,
                         preserve_stream_cache=False,
-                        text_context=external_idm_session.text_context,
+                        text_context=action_consumer_session.text_context,
                         negative_text_context=(
-                            external_idm_session.negative_text_context
+                            action_consumer_session.negative_text_context
                         ),
                     )
-                external_proprio_history = build_libero_state_history(
-                    external_warmup_obs,
-                    state_horizon=len(external_warmup_obs),
+                consumer_proprio_history = build_libero_state_history(
+                    consumer_warmup_obs,
+                    state_horizon=len(consumer_warmup_obs),
                     state_encoding=(
-                        external_runtime.config.data.action_target.state_encoding
+                        consumer_runtime.config.data.action_target.state_encoding
                     ),
                 )
-                external_history = external_runtime.runner.reconcile_observed_history(
-                    session=external_idm_session,
-                    visual_outputs=external_warmup_outputs,
-                    observation_frame_count=len(external_warmup_obs),
+                consumer_history = consumer_runtime.runner.reconcile_observed_history(
+                    session=action_consumer_session,
+                    visual_outputs=consumer_warmup_outputs,
+                    observation_frame_count=len(consumer_warmup_obs),
                     action_history=warmup_action_history,
-                    proprio_history=external_proprio_history,
+                    proprio_history=consumer_proprio_history,
                     inference_window_size=args.dual_expert_inference_window_size,
                     rollout_frame_chunk_size=(
                         args.dual_expert_rollout_frame_chunk_size
                     ),
                     execution_commit=execution_commit,
                 )
-                if not external_history.applied:
+                if not consumer_history.applied:
                     raise RuntimeError(
                         "The video-conditioned action consumer declared explicit "
                         "observed-history reconciliation but did not apply it."
                     )
-                external_idm_session = external_history.session
-                external_warmup_log = {
+                action_consumer_session = consumer_history.session
+                consumer_warmup_log = {
                     **log_coordinates,
                     "chunk_index": chunk_count,
-                    "phase": "external_idm_packed_history_warmup",
-                    **external_history.debug,
+                    "phase": "video_action_composition_packed_history_warmup",
+                    **consumer_history.debug,
                 }
-                _print_log(chunk_log_label(chunk_count), external_warmup_log)
-                chunk_logs.append(external_warmup_log)
+                _print_log(chunk_log_label(chunk_count), consumer_warmup_log)
+                chunk_logs.append(consumer_warmup_log)
 
             chunk_count += 1
 
         policy_config = config.policy_variant
         policy_program = getattr(policy_config, "program", None)
         policy_condition_mode = getattr(policy_config, "condition_mode", None)
-        consumer_checkpoint_file = (
-            None
-            if external_runtime is None
-            else str(external_runtime.checkpoint_path.resolve())
-        )
         summary = {
             "benchmark": args.benchmark,
             "task_id": task_id,
@@ -967,7 +976,7 @@ def run_dual_expert_libero_episode(
             "rollout_video_path": None,
             "pipeline": (
                 "open_wam_policy_video_action_composition"
-                if uses_external_idm
+                if uses_composition
                 else "open_wam_dual_expert"
             ),
             "program": (
@@ -997,11 +1006,15 @@ def run_dual_expert_libero_episode(
             ),
             "action_count": len(action_trace),
             "checkpoint_file": str(resources.checkpoint_path.resolve()),
-            "action_consumer_checkpoint_file": consumer_checkpoint_file,
-            "external_idm_checkpoint_file": consumer_checkpoint_file,
             "action_route": action_route.value,
             "dual_expert_gjd_action_route": action_route.value,
         }
+        if consumer_runtime is not None:
+            summary["video_action_composition"] = {
+                "action_consumer_checkpoint_file": str(
+                    consumer_runtime.checkpoint_path.resolve()
+                )
+            }
         artifact_output = persist_libero_rollout_artifacts(
             pipeline=pipeline,
             identity=LiberoRolloutArtifactIdentity(
@@ -1025,7 +1038,7 @@ def run_dual_expert_libero_episode(
                 chunk_events=chunk_logs,
                 component_report=build_composed_component_report(
                     resources,
-                    external_idm,
+                    video_action_composition,
                 ),
             ),
             summary=summary,
