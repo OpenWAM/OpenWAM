@@ -17,7 +17,7 @@ from .enums import (
 
 @dataclass(frozen=True)
 class InferenceConfig:
-    """Inference-layer config shared by all future action heads."""
+    """Inference-layer config shared by every policy architecture."""
 
     video_num_inference_steps: int = 25
     action_num_inference_steps: int = 50
@@ -67,6 +67,10 @@ class InferenceConfig:
     # anchored while future frames are generated.
     joint_observed_video_prefix_frames: int = 1
     frame_chunk_size: int = 2
+    # Logical temporal-block distance visible during recurrent inference.
+    # VTA-compatible interleaved and causal-video programs use two block ids
+    # per model chunk.
+    attention_window_size: int = 30
     use_cache: bool = True
     guidance_scale: float = 1.0
     action_guidance_scale: float = 1.0
@@ -101,6 +105,11 @@ class InferenceConfig:
                 "joint_cfg_application": JointCfgApplication,
             },
         )
+        if int(self.attention_window_size) <= 0:
+            raise ValueError(
+                "Inference attention_window_size must be positive, "
+                f"got {self.attention_window_size}."
+            )
 
 
 def parse_inference_config(raw_value: Mapping[str, Any] | None) -> InferenceConfig:
@@ -209,6 +218,7 @@ def parse_inference_config(raw_value: Mapping[str, Any] | None) -> InferenceConf
             1,
         ),
         frame_chunk_size=raw.get("frame_chunk_size", 2),
+        attention_window_size=raw.get("attention_window_size", 30),
         use_cache=raw.get("use_cache", True),
         guidance_scale=raw.get("guidance_scale", 1.0),
         action_guidance_scale=raw.get("action_guidance_scale", 1.0),

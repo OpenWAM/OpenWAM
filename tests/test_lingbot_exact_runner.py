@@ -16,6 +16,7 @@ from open_wam.configs import (
     VideoActionProgram,
 )
 from open_wam.data import build_synthetic_batch
+from open_wam.models.policy_variants import PolicyInferState, PolicyTemporalGeometry
 from open_wam.models.video_backbone.config import SharedVideoTransformerConfig
 from open_wam.models.visual_tower.reference_loader import load_wan_transformer_class
 from open_wam.pipelines import build_exact_runtime_runner_from_config
@@ -27,7 +28,8 @@ from .reference_model_test_utils import reference_model_path_or_skip
 def test_lingbot_runner_forwards_frame_aligned_proprio_history() -> None:
     captured: dict[str, object] = {}
     hidden_proprio_history = torch.randn(1, 3, 4)
-    next_state = SimpleNamespace(cache={})
+    geometry = PolicyTemporalGeometry(frame_chunk_size=2, attention_window_size=8)
+    next_state = PolicyInferState(cache={})
 
     class FakePolicy:
         def warm_reference_cache(self, *_args, **kwargs):
@@ -38,6 +40,7 @@ def test_lingbot_runner_forwards_frame_aligned_proprio_history() -> None:
     runner.pipeline = SimpleNamespace(
         policy_variant=FakePolicy(),
         visual_tower=object(),
+        default_temporal_geometry=geometry,
     )
     visual_outputs = SimpleNamespace(
         frontend=SimpleNamespace(
@@ -50,7 +53,7 @@ def test_lingbot_runner_forwards_frame_aligned_proprio_history() -> None:
     runner._prepare_visual_outputs = lambda **_kwargs: visual_outputs
 
     output = runner.warmup_cache(
-        session=LingbotExactSession(policy_state=SimpleNamespace()),
+        session=LingbotExactSession(policy_state=PolicyInferState()),
         video_latents=torch.zeros(1, 4, 3, 2, 2),
         action_history=torch.zeros(1, 6, 2),
         hidden_proprio_history=hidden_proprio_history,
@@ -58,6 +61,8 @@ def test_lingbot_runner_forwards_frame_aligned_proprio_history() -> None:
 
     assert output.session.policy_state is next_state
     assert captured["hidden_proprio_history"] is hidden_proprio_history
+    assert captured["temporal_geometry"] == geometry
+    assert output.session.policy_state.temporal_geometry == geometry
 
 
 def test_lingbot_exact_runner_supports_warmup_and_chunk_generation(tmp_path: Path) -> None:
@@ -106,7 +111,6 @@ def test_lingbot_exact_runner_supports_warmup_and_chunk_generation(tmp_path: Pat
             hidden_size=32,
             frame_chunk_size=2,
             action_per_frame=2,
-            attn_window=8,
             used_action_channel_ids=(0, 3),
             inverse_used_action_channel_ids=(0, 2, 2, 1),
             action_norm_method="quantiles",
@@ -119,7 +123,7 @@ def test_lingbot_exact_runner_supports_warmup_and_chunk_generation(tmp_path: Pat
             action_horizon=4,
         ),
         training=TrainingConfig(chunk_size=2, window_size=8),
-        inference=InferenceConfig(frame_chunk_size=2),
+        inference=InferenceConfig(frame_chunk_size=2, attention_window_size=8),
     )
 
     batch = build_synthetic_batch(config.data, batch_size=2)
@@ -129,6 +133,10 @@ def test_lingbot_exact_runner_supports_warmup_and_chunk_generation(tmp_path: Pat
     assert shared_transformer is runner.pipeline.visual_tower.core
     assert not hasattr(runner.policy_variant, "reference_transformer")
     session = runner.reset(task_text=batch.task_text)
+    assert session.policy_state.temporal_geometry == PolicyTemporalGeometry(
+        frame_chunk_size=2,
+        attention_window_size=8,
+    )
 
     alias_views = {f"observation.images.{name}": value for name, value in batch.views.items()}
     raw_action_history = torch.rand(2, 4, 2)
@@ -141,6 +149,10 @@ def test_lingbot_exact_runner_supports_warmup_and_chunk_generation(tmp_path: Pat
 
     assert warmup.session.policy_state.cache["cache_initialized"] is True
     assert warmup.session.policy_state.cache["frame_start"] == 2
+    assert (
+        warmup.session.policy_state.temporal_geometry
+        == session.policy_state.temporal_geometry
+    )
 
     infer_chunk = runner.infer_chunk(session=warmup.session)
     second_chunk = runner.infer_chunk(session=infer_chunk.session)
@@ -154,3 +166,7 @@ def test_lingbot_exact_runner_supports_warmup_and_chunk_generation(tmp_path: Pat
     assert infer_chunk.predicted_latents.shape[:3] == (2, 48, 2)
     assert second_chunk.chunk_action_pred.shape == (2, 4, 4)
     assert second_chunk.session.policy_state.step_index == 2
+    assert (
+        second_chunk.session.policy_state.temporal_geometry
+        == session.policy_state.temporal_geometry
+    )

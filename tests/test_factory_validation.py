@@ -52,13 +52,12 @@ def test_exact_parallel_stream_uses_vendored_reference_model_by_default() -> Non
             hidden_size=32,
             frame_chunk_size=2,
             action_per_frame=2,
-            attn_window=8,
         ),
         action_decoder=ParallelStreamActionDecoderConfig(
             hidden_size=32, action_dim=4, action_horizon=4
         ),
         training=TrainingConfig(chunk_size=2, window_size=8),
-        inference=InferenceConfig(frame_chunk_size=2),
+        inference=InferenceConfig(frame_chunk_size=2, attention_window_size=8),
     )
 
     pipeline = build_variant_pipeline_from_config(config)
@@ -95,7 +94,6 @@ def test_action_conditioned_parallel_stream_builds_with_shared_backbone() -> Non
             hidden_size=32,
             frame_chunk_size=2,
             action_per_frame=2,
-            attn_window=8,
             video_action_condition_source="noisy_action",
             video_action_attention_scope="block_local",
             joint_timestep_coupling=JointTimestepCoupling.MATCH_SIGMA,
@@ -104,7 +102,11 @@ def test_action_conditioned_parallel_stream_builds_with_shared_backbone() -> Non
             hidden_size=32, action_dim=4, action_horizon=4
         ),
         training=TrainingConfig(chunk_size=2, window_size=8),
-        inference=InferenceConfig(frame_chunk_size=2, use_cache=False),
+        inference=InferenceConfig(
+            frame_chunk_size=2,
+            attention_window_size=8,
+            use_cache=False,
+        ),
     )
 
     pipeline = build_variant_pipeline_from_config(config)
@@ -164,13 +166,12 @@ def test_reference_core_weight_loading_uses_vendored_reference_model_by_default(
             hidden_size=32,
             frame_chunk_size=2,
             action_per_frame=2,
-            attn_window=8,
         ),
         action_decoder=ParallelStreamActionDecoderConfig(
             hidden_size=32, action_dim=4, action_horizon=4
         ),
         training=TrainingConfig(chunk_size=2, window_size=8),
-        inference=InferenceConfig(frame_chunk_size=2),
+        inference=InferenceConfig(frame_chunk_size=2, attention_window_size=8),
     )
 
     pipeline = build_variant_pipeline_from_config(config)
@@ -199,7 +200,6 @@ def test_exact_parallel_stream_uses_decoder_action_dim_when_dataset_stays_raw() 
             reference_profile="libero",
             frame_chunk_size=4,
             action_per_frame=4,
-            attn_window=30,
         ),
         action_decoder=ParallelStreamActionDecoderConfig(
             hidden_size=32, action_dim=30, action_horizon=16
@@ -209,6 +209,7 @@ def test_exact_parallel_stream_uses_decoder_action_dim_when_dataset_stays_raw() 
         ),
         inference=InferenceConfig(
             frame_chunk_size=4,
+            attention_window_size=30,
             guidance_scale=5.0,
             action_guidance_scale=1.0,
             video_num_inference_steps=20,
@@ -258,7 +259,6 @@ def test_exact_parallel_stream_reference_profile_rejects_mismatched_text_length(
             reference_profile="libero",
             frame_chunk_size=4,
             action_per_frame=4,
-            attn_window=30,
         ),
         action_decoder=ParallelStreamActionDecoderConfig(
             hidden_size=32, action_dim=30, action_horizon=16
@@ -268,6 +268,7 @@ def test_exact_parallel_stream_reference_profile_rejects_mismatched_text_length(
         ),
         inference=InferenceConfig(
             frame_chunk_size=4,
+            attention_window_size=30,
             guidance_scale=5.0,
             action_guidance_scale=1.0,
             video_num_inference_steps=20,
@@ -300,13 +301,12 @@ def test_parallel_stream_requires_shared_transformer_backbone() -> None:
             hidden_size=32,
             frame_chunk_size=2,
             action_per_frame=2,
-            attn_window=8,
         ),
         action_decoder=ParallelStreamActionDecoderConfig(
             hidden_size=32, action_dim=4, action_horizon=4
         ),
         training=TrainingConfig(chunk_size=2, window_size=8),
-        inference=InferenceConfig(frame_chunk_size=2),
+        inference=InferenceConfig(frame_chunk_size=2, attention_window_size=8),
     )
 
     try:
@@ -384,7 +384,6 @@ def test_dual_expert_policy_builds_with_shared_transformer_backbone() -> None:
                 program=VideoActionProgram.VIDEO_THEN_ACTION,
                 frame_chunk_size=2,
                 action_per_frame=2,
-                attn_window=8,
             ),
             ParallelStreamActionDecoderConfig(
                 hidden_size=32,

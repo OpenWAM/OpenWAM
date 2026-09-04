@@ -685,7 +685,7 @@ def test_parallel_stream_gjd_uses_shared_planning_recipe() -> None:
     raw = _gjd_raw_config(architecture="parallel_stream")
     _assert_gjd_fullseg_w64_raw_config(raw)
     assert "proprio_context_mode" not in raw["policy_variant"]
-    assert raw["policy_variant"]["attn_window"] == 30
+    assert raw["inference"]["attention_window_size"] == 30
     assert "preserve_video_pretrain_history" not in raw["policy_variant"]
 
 

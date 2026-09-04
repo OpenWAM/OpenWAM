@@ -14,6 +14,7 @@ from open_wam.models.common.temporal_windows import (
 from open_wam.models.policy_variants.contracts import (
     PolicyInferenceOutputRequest,
     PolicyOutputModality,
+    PolicyTemporalGeometry,
     PolicyVideoConditionedActionRequest,
     PolicyVideoGenerationRequest,
 )
@@ -38,6 +39,7 @@ class _InferenceContextLike(Protocol):
     output_request: PolicyInferenceOutputRequest | None
     video_generation: PolicyVideoGenerationRequest | None
     video_conditioned_action: PolicyVideoConditionedActionRequest | None
+    temporal_geometry: PolicyTemporalGeometry | None
     extra: Mapping[str, Any]
 
 
@@ -58,39 +60,6 @@ def resolve_dual_expert_sequence_actions_per_frame(
             f"got action_horizon={action_horizon}, frame_chunk_size={frame_chunk_size}."
         )
     return action_horizon // frame_chunk_size
-
-
-def resolve_dual_expert_inference_window_size(
-    context: _InferenceContextLike,
-    *,
-    default_window_size: int,
-) -> int:
-    """Resolve the positive rollout attention window from config and runtime overrides."""
-
-    raw_override = context.extra.get("dual_expert_inference_window_size")
-    generation_request = getattr(context, "video_generation", None)
-    requested_window = (
-        None if generation_request is None else generation_request.attention_window_size
-    )
-    if (
-        requested_window is not None
-        and raw_override is not None
-        and int(requested_window) != int(raw_override)
-    ):
-        raise ValueError(
-            "DualExpert inference-window override conflicts with the typed video "
-            "request: "
-            f"legacy={int(raw_override)}, typed={int(requested_window)}."
-        )
-    if requested_window is not None:
-        resolved = int(requested_window)
-    elif raw_override is not None:
-        resolved = int(raw_override)
-    else:
-        resolved = int(default_window_size)
-    if resolved <= 0:
-        raise ValueError(f"DualExpert inference window size must be positive, got {resolved}.")
-    return resolved
 
 
 def resolve_dual_expert_rollout_frame_chunk_size(
@@ -119,6 +88,12 @@ def resolve_dual_expert_rollout_frame_chunk_size(
         )
     action_tokens_per_frame = base_action_horizon // base_frame_chunk_size
     raw_override = context.extra.get("dual_expert_rollout_frame_chunk_size")
+    temporal_geometry = getattr(context, "temporal_geometry", None)
+    fallback_frame_chunk_size = (
+        base_frame_chunk_size
+        if temporal_geometry is None
+        else int(temporal_geometry.frame_chunk_size)
+    )
     generation_request = getattr(context, "video_generation", None)
     conditioned_action_request = getattr(context, "video_conditioned_action", None)
     requested_video_frames = None
@@ -143,7 +118,7 @@ def resolve_dual_expert_rollout_frame_chunk_size(
     elif raw_override is not None:
         frame_chunk_size = int(raw_override)
     else:
-        frame_chunk_size = base_frame_chunk_size
+        frame_chunk_size = fallback_frame_chunk_size
     if frame_chunk_size <= 0:
         raise ValueError(
             f"DualExpert rollout frame chunk size must be positive, got {frame_chunk_size}."
@@ -330,7 +305,6 @@ __all__ = [
     "dual_expert_config_uses_strict_rollout_parity",
     "resolve_dual_expert_action_only_rollout",
     "resolve_dual_expert_inference_output_request",
-    "resolve_dual_expert_inference_window_size",
     "resolve_dual_expert_rollout_cache_window_frames",
     "resolve_dual_expert_rollout_frame_chunk_size",
     "resolve_dual_expert_rollout_history_frames",

@@ -24,6 +24,7 @@ from open_wam.sdk.policy import (
     PolicyOutputModality,
     PolicyPipelineRequirements,
     PolicyRecurrentHistoryPolicy,
+    PolicyTemporalGeometry,
     PolicyVariant,
     PolicyVideoGenerationRequest,
     PolicyVisualStage,
@@ -63,6 +64,7 @@ def test_role_specific_sdk_exposes_extension_contracts() -> None:
     assert PolicyVideoGenerationRequest.__module__.endswith(
         "policy_variants.contracts"
     )
+    assert PolicyTemporalGeometry.__module__.endswith("policy_variants.contracts")
     assert PolicyVisualStage.CORE.value == "core"
     assert ActionDecoder.__module__ == "open_wam.models.action_decoders.base"
     assert PreparedAttentionProfile.__module__.endswith("attention_contracts")

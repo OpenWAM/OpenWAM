@@ -13,7 +13,6 @@ from ..contracts import (
 from .contracts import DualExpertRuntimeState
 from .rollout_geometry import (
     resolve_dual_expert_rollout_cache_window_frames,
-    resolve_dual_expert_sequence_actions_per_frame,
 )
 
 
@@ -21,9 +20,8 @@ def reconcile_dual_expert_observed_history(
     *,
     policy_state: PolicyInferState | None,
     history: PolicyObservedHistory,
-    default_inference_window_size: int,
-    default_frame_chunk_size: int,
     action_horizon: int,
+    action_tokens_per_frame: int,
     action_dim: int,
 ) -> PolicyObservedHistoryOutput:
     """Replace the last speculative chunk with real video/action/proprio history."""
@@ -40,6 +38,13 @@ def reconcile_dual_expert_observed_history(
             debug={"warmup_skipped": True, "reason": "no_dual_expert_runtime_state"},
         )
 
+    temporal_geometry = policy_state.temporal_geometry
+    if temporal_geometry is None:
+        raise RuntimeError(
+            "DualExpert observed-history reconciliation requires resolved "
+            "session temporal geometry."
+        )
+
     real_latents = history.video_latents
     if real_latents.ndim != 5 or int(real_latents.shape[2]) <= 0:
         raise ValueError(
@@ -49,25 +54,11 @@ def reconcile_dual_expert_observed_history(
     runtime_device = real_latents.device
     runtime_dtype = real_latents.dtype
     frame_chunk_size = (
-        int(history.rollout_frame_chunk_size)
-        if history.rollout_frame_chunk_size is not None
-        else int(default_frame_chunk_size)
+        int(history.execution_commit.speculative_span.frame_count)
+        if history.execution_commit is not None
+        else int(temporal_geometry.frame_chunk_size)
     )
-    if frame_chunk_size <= 0:
-        raise ValueError(
-            "Observed rollout frame chunk size must be positive, "
-            f"got {frame_chunk_size}."
-        )
-    inference_window_size = (
-        int(history.inference_window_size)
-        if history.inference_window_size is not None
-        else int(default_inference_window_size)
-    )
-    if inference_window_size <= 0:
-        raise ValueError(
-            "DualExpert observed-history window size must be positive, "
-            f"got {inference_window_size}."
-        )
+    inference_window_size = int(temporal_geometry.attention_window_size)
     history_window_frames = max(
         int(real_latents.shape[2]),
         resolve_dual_expert_rollout_cache_window_frames(
@@ -75,10 +66,12 @@ def reconcile_dual_expert_observed_history(
             frame_chunk_size=frame_chunk_size,
         ),
     )
-    action_tokens_per_frame = resolve_dual_expert_sequence_actions_per_frame(
-        action_horizon=int(action_horizon),
-        frame_chunk_size=int(default_frame_chunk_size),
-    )
+    action_tokens_per_frame = int(action_tokens_per_frame)
+    if action_tokens_per_frame <= 0:
+        raise ValueError(
+            "DualExpert observed-history action_tokens_per_frame must be positive, "
+            f"got {action_tokens_per_frame}."
+        )
     committed_span = _validate_temporal_commit(
         policy_state=policy_state,
         runtime_state=runtime_state,
@@ -150,7 +143,7 @@ def reconcile_dual_expert_observed_history(
             action_history=history.action_history,
             action_horizon=int(action_horizon),
             action_dim=int(action_dim),
-            default_frame_chunk_size=int(default_frame_chunk_size),
+            action_tokens_per_frame=action_tokens_per_frame,
             speculative_action_tokens=speculative_action_tokens,
             history_window_frames=history_window_frames,
             runtime_device=runtime_device,
@@ -335,7 +328,7 @@ def _reconcile_action_history(
     action_history: torch.Tensor | None,
     action_horizon: int,
     action_dim: int,
-    default_frame_chunk_size: int,
+    action_tokens_per_frame: int,
     speculative_action_tokens: int,
     history_window_frames: int,
     runtime_device: torch.device,
@@ -382,10 +375,6 @@ def _reconcile_action_history(
         combined_actions = warm_actions
     else:
         combined_actions = torch.cat([base_actions, warm_actions], dim=1)
-    action_tokens_per_frame = resolve_dual_expert_sequence_actions_per_frame(
-        action_horizon=action_horizon,
-        frame_chunk_size=default_frame_chunk_size,
-    )
     max_action_history_tokens = history_window_frames * action_tokens_per_frame
     runtime_state.past_clean_actions = combined_actions[
         :, -max_action_history_tokens:

@@ -151,8 +151,6 @@ class VariantRolloutRunner:
         observation_frame_count: int,
         action_history: torch.Tensor | None = None,
         proprio_history: torch.Tensor | None = None,
-        inference_window_size: int | None = None,
-        rollout_frame_chunk_size: int | None = None,
         execution_commit: PolicyExecutionCommit | None = None,
     ) -> VariantRolloutHistoryOutput:
         """Replace speculative policy history with newly observed execution."""
@@ -163,8 +161,6 @@ class VariantRolloutRunner:
                 observation_frame_count=int(observation_frame_count),
                 action_history=action_history,
                 proprio_history=proprio_history,
-                inference_window_size=inference_window_size,
-                rollout_frame_chunk_size=rollout_frame_chunk_size,
                 execution_commit=execution_commit,
             ),
             session.policy_state,
@@ -202,6 +198,7 @@ class VariantRolloutRunner:
             output_request=context.output_request,
             video_generation=context.video_generation,
             video_conditioned_action=context.video_conditioned_action,
+            temporal_geometry=context.temporal_geometry,
             extra={
                 **context.extra,
                 "task_text": context.extra.get("task_text", session.task_text),

@@ -8,6 +8,7 @@ import torch
 import yaml
 from torch import nn
 
+from open_wam.configs import DeprecatedPolicyConfigFieldWarning
 from open_wam.configs.enums import (
     RolloutContextPolicy,
     SampleTargetAlignment,
@@ -280,7 +281,9 @@ def test_merge_runtime_config_from_checkpoint_keeps_data_sources_but_restores_ru
     checkpoint_pretrained = tmp_path / "checkpoint-pretrained"
     checkpoint_pretrained.mkdir()
     checkpoint_config = yaml.safe_load(base_config_path.read_text(encoding="utf-8"))
+    checkpoint_config["schema_version"] = 1
     checkpoint_config["backbone"]["pretrained_model_name_or_path"] = str(checkpoint_pretrained)
+    checkpoint_config["inference"].pop("attention_window_size")
     checkpoint_config["policy_variant"]["attn_window"] = 31
     checkpoint_config["inference"]["action_num_inference_steps"] = 37
     (checkpoint_dir / "resolved_config.yaml").write_text(
@@ -288,14 +291,18 @@ def test_merge_runtime_config_from_checkpoint_keeps_data_sources_but_restores_ru
         encoding="utf-8",
     )
 
-    merged_config, resolved_config_path = merge_runtime_config_from_checkpoint(base_config, checkpoint_dir)
+    with pytest.warns(DeprecatedPolicyConfigFieldWarning, match="attn_window"):
+        merged_config, resolved_config_path = merge_runtime_config_from_checkpoint(
+            base_config,
+            checkpoint_dir,
+        )
 
     assert resolved_config_path == (checkpoint_dir / "resolved_config.yaml").resolve()
     assert merged_config.data.local_root == "/tmp/custom-libero-root"
     assert merged_config.data.train_batch_size == 99
     assert merged_config.data.val_batch_size == 77
     assert str(merged_config.backbone.pretrained_model_name_or_path) == str(checkpoint_pretrained)
-    assert int(merged_config.policy_variant.attn_window) == 31
+    assert int(merged_config.inference.attention_window_size) == 31
     assert merged_config.training == base_config.training
     assert int(merged_config.inference.action_num_inference_steps) == 37
 

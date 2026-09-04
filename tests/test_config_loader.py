@@ -139,6 +139,41 @@ def test_authored_retired_policy_fields_are_rejected(field_name: str) -> None:
         normalize_video_action_policy_fields({field_name: None}, warn=False)
 
 
+def test_parallel_attention_window_is_owned_by_inference_config(
+    tmp_path: Path,
+) -> None:
+    source_path = (
+        REPO_ROOT / "configs/experiments/parallel_stream_libero_joint.yaml"
+    )
+    raw = yaml.safe_load(source_path.read_text(encoding="utf-8"))
+    raw["policy_variant"]["attn_window"] = 30
+    config_path = tmp_path / "parallel_policy_window.yaml"
+    config_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+
+    with pytest.raises(
+        ValueError,
+        match=r"policy_variant\.attn_window.*inference\.attention_window_size",
+    ):
+        load_experiment_config(config_path)
+
+
+@pytest.mark.parametrize(
+    "config_name",
+    (
+        "causal_video_prediction_libero_chunked_conditioned.yaml",
+        "dual_expert_libero_video_then_action.yaml",
+        "parallel_stream_libero_video_then_action.yaml",
+    ),
+)
+def test_vta_compatible_routes_share_inference_temporal_geometry(
+    config_name: str,
+) -> None:
+    config = load_experiment_config(REPO_ROOT / "configs/experiments" / config_name)
+
+    assert config.inference.frame_chunk_size == 4
+    assert config.inference.attention_window_size == 30
+
+
 @pytest.mark.parametrize(
     "legacy_values",
     (
@@ -282,6 +317,56 @@ def test_current_checkpoint_schema_bypasses_historical_migration(
     config = load_experiment_config(config_path, checkpoint_runtime_compat=True)
 
     assert config.name == raw["name"]
+
+
+def test_schema_v1_checkpoint_migrates_parallel_attention_window_owner(
+    tmp_path: Path,
+) -> None:
+    source_path = (
+        REPO_ROOT
+        / "configs/experiments/parallel_stream_libero_video_then_action.yaml"
+    )
+    raw = yaml.safe_load(source_path.read_text(encoding="utf-8"))
+    raw["schema_version"] = 1
+    raw["inference"].pop("attention_window_size")
+    raw["policy_variant"]["attn_window"] = 30
+    config_path = tmp_path / "resolved_config.yaml"
+    config_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+
+    with pytest.warns(
+        DeprecatedPolicyConfigFieldWarning,
+        match=r"policy_variant\.attn_window.*inference\.attention_window_size",
+    ):
+        config = load_experiment_config(
+            config_path,
+            checkpoint_runtime_compat=True,
+        )
+
+    assert config.inference.attention_window_size == 30
+    assert not hasattr(config.policy_variant, "attn_window")
+
+
+def test_schema_v1_checkpoint_rejects_conflicting_attention_window_owners(
+    tmp_path: Path,
+) -> None:
+    source_path = (
+        REPO_ROOT
+        / "configs/experiments/parallel_stream_libero_video_then_action.yaml"
+    )
+    raw = yaml.safe_load(source_path.read_text(encoding="utf-8"))
+    raw["schema_version"] = 1
+    raw["policy_variant"]["attn_window"] = 29
+    config_path = tmp_path / "resolved_config.yaml"
+    config_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+
+    with pytest.raises(
+        ValueError,
+        match=r"inference\.attention_window_size.*policy_variant\.attn_window",
+    ):
+        load_experiment_config(
+            config_path,
+            checkpoint_runtime_compat=True,
+        )
 
 
 def test_resolved_config_filename_does_not_select_checkpoint_migration(
@@ -2068,7 +2153,7 @@ def test_parallel_stream_generalist_joint_denoising_yaml_config_loads() -> None:
     assert config.policy_variant.current_block_coupling == "joint"
     assert config.policy_variant.proprio_context_mode == ProprioContextMode.PER_CHUNK_ADDITIVE
     assert config.policy_variant.joint_timestep_coupling == JointTimestepCoupling.INDEPENDENT
-    assert config.policy_variant.attn_window == 30
+    assert config.inference.attention_window_size == 30
     assert config.policy_variant.sequence_contract == (
         VideoActionSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO
     )

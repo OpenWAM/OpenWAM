@@ -70,7 +70,6 @@ def test_lingbot_reference_transformer_weights_load_as_is(tmp_path: Path) -> Non
             hidden_size=32,
             frame_chunk_size=2,
             action_per_frame=2,
-            attn_window=8,
         ),
         action_decoder=ParallelStreamActionDecoderConfig(
             hidden_size=32,
@@ -78,7 +77,7 @@ def test_lingbot_reference_transformer_weights_load_as_is(tmp_path: Path) -> Non
             action_horizon=8,
         ),
         training=TrainingConfig(chunk_size=2, window_size=8),
-        inference=InferenceConfig(frame_chunk_size=2),
+        inference=InferenceConfig(frame_chunk_size=2, attention_window_size=8),
     )
 
     pipeline = build_variant_pipeline_from_config(config)

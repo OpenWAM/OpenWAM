@@ -309,6 +309,11 @@ def parse_policy_variant_config(
             **shared_policy_fields,
         )
     if name == config_enums.PolicyVariantName.PARALLEL_STREAM:
+        if "attn_window" in resolved_raw:
+            raise ValueError(
+                "policy_variant.attn_window is not a policy property; configure "
+                "inference.attention_window_size instead."
+            )
         removed_fields = {
             "runtime_mode",
             "current_block_coupling",
@@ -360,7 +365,6 @@ def parse_policy_variant_config(
             action_per_frame=resolved_raw.get(
                 "action_per_frame", default_action_per_frame
             ),
-            attn_window=resolved_raw.get("attn_window", training_config.window_size),
             sequence_order=_coerce_enum_tuple(
                 config_enums.ParallelSequenceComponent, sequence_order
             ),

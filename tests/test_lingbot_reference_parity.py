@@ -86,7 +86,6 @@ def test_exact_train_runtime_matches_reference_transformer_forward_train(tmp_pat
         hidden_size=32,
         frame_chunk_size=2,
         action_per_frame=2,
-        attn_window=8,
     )
     training_config = TrainingConfig(chunk_size=2, window_size=8)
     video_latents = torch.randn(2, 48, 2, 24, 20)

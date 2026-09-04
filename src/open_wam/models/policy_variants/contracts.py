@@ -302,6 +302,31 @@ class PolicyInferenceCapabilities:
 
 
 @dataclass(frozen=True)
+class PolicyTemporalGeometry:
+    """Architecture-independent temporal geometry for one inference session.
+
+    ``attention_window_size`` is measured in logical temporal block ids.
+    VTA-compatible interleaved and causal-video programs assign two block ids
+    to each model chunk.
+    """
+
+    frame_chunk_size: int
+    attention_window_size: int
+
+    def __post_init__(self) -> None:
+        if int(self.frame_chunk_size) <= 0:
+            raise ValueError(
+                "Policy temporal frame_chunk_size must be positive, "
+                f"got {self.frame_chunk_size}."
+            )
+        if int(self.attention_window_size) <= 0:
+            raise ValueError(
+                "Policy temporal attention_window_size must be positive, "
+                f"got {self.attention_window_size}."
+            )
+
+
+@dataclass(frozen=True)
 class PolicyTemporalSpan:
     """Half-open model-frame interval owned by one inference transaction."""
 
@@ -382,22 +407,14 @@ class PolicyGeneratedVideo:
 
 @dataclass(frozen=True)
 class PolicyVideoGenerationRequest:
-    """Future-frame geometry and history window requested from a video producer."""
+    """Number of future frames requested from a video producer."""
 
     frame_count: int
-    attention_window_size: int | None = None
 
     def __post_init__(self) -> None:
         if int(self.frame_count) <= 0:
             raise ValueError(
                 f"Video generation frame_count must be positive, got {self.frame_count}."
-            )
-        if self.attention_window_size is not None and int(
-            self.attention_window_size
-        ) <= 0:
-            raise ValueError(
-                "Video generation attention_window_size must be positive when "
-                f"provided, got {self.attention_window_size}."
             )
 
 
@@ -742,6 +759,27 @@ class PolicyInferState:
     cache: Any = field(default_factory=dict)
     variant_state: Any | None = None
     decoder_state: Any | None = None
+    temporal_geometry: PolicyTemporalGeometry | None = None
+
+    def bind_temporal_geometry(
+        self,
+        temporal_geometry: PolicyTemporalGeometry,
+        *,
+        label: str = "inference state",
+    ) -> PolicyTemporalGeometry:
+        """Bind immutable temporal geometry to this inference session."""
+
+        if (
+            self.temporal_geometry is not None
+            and self.temporal_geometry != temporal_geometry
+        ):
+            raise ValueError(
+                "Policy temporal geometry cannot change within an inference "
+                f"session: {label} has {self.temporal_geometry}, requested "
+                f"{temporal_geometry}."
+            )
+        self.temporal_geometry = temporal_geometry
+        return temporal_geometry
 
 
 @dataclass(frozen=True)
@@ -753,16 +791,13 @@ class PolicyObservedHistory:
     the actions actually executed for this commit; a policy decides how much
     speculative action history they replace. ``observation_frame_count`` is
     the raw environment-frame count and can differ from latent time.
-    ``rollout_frame_chunk_size`` identifies the speculative request being
-    reconciled; it is independent of a model's fixed internal block geometry.
+    ``execution_commit`` identifies the speculative model span being reconciled.
     """
 
     video_latents: torch.Tensor
     observation_frame_count: int
     action_history: torch.Tensor | None = None
     proprio_history: torch.Tensor | None = None
-    inference_window_size: int | None = None
-    rollout_frame_chunk_size: int | None = None
     execution_commit: PolicyExecutionCommit | None = None
 
 
@@ -788,6 +823,14 @@ class PolicyInferContext:
     output_request: PolicyInferenceOutputRequest | None = None
     video_generation: PolicyVideoGenerationRequest | None = None
     video_conditioned_action: PolicyVideoConditionedActionRequest | None = None
+    temporal_geometry: PolicyTemporalGeometry | None = None
+
+    def require_temporal_geometry(self) -> PolicyTemporalGeometry:
+        if self.temporal_geometry is None:
+            raise RuntimeError(
+                "Policy inference context has not resolved temporal geometry."
+            )
+        return self.temporal_geometry
 
 
 @dataclass

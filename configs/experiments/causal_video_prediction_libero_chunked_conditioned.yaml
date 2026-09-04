@@ -137,6 +137,7 @@ inference:
   guidance_scale: 5.0
   use_cache: false
   frame_chunk_size: 4
+  attention_window_size: 30
 
 trainer:
   limit_train_batches: null

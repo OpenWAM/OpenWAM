@@ -46,6 +46,7 @@ from .contracts import (
     PolicyPipelineRequirements,
     PolicyPreparedInputs,
     PolicyRecurrentHistoryPolicy,
+    PolicyTemporalGeometry,
     PolicyTemporalSpan,
     PolicyTrainBatch,
     PolicyTrainOutput,
@@ -668,13 +669,14 @@ class CausalVideoPredictionPolicyVariant(PolicyVariant):
         context: PolicyInferContext,
         previous_state: PolicyInferState | None = None,
     ) -> PolicyInferState:
-        del visual_tower, visual_outputs, context
+        del visual_tower, visual_outputs
         if previous_state is not None:
             return previous_state
+        temporal_geometry = context.require_temporal_geometry()
         cursor = RolloutCursor(
             current_start_frame=0,
             block_index=0,
-            chunk_size=self.inference_config.frame_chunk_size,
+            chunk_size=temporal_geometry.frame_chunk_size,
         )
         return PolicyInferState(step_index=0, cursor=cursor)
 
@@ -770,7 +772,7 @@ class CausalVideoPredictionPolicyVariant(PolicyVariant):
         initial_model_frame_start: int,
         initial_chunk_origin_frame: int,
         frame_count: int,
-        attention_window_size: int,
+        temporal_geometry: PolicyTemporalGeometry,
     ) -> tuple[
         ObservedVideoHistoryState,
         ObservedVideoHistoryState,
@@ -784,27 +786,23 @@ class CausalVideoPredictionPolicyVariant(PolicyVariant):
                 initial_observed_latents,
                 start_frame=int(initial_start_frame),
                 model_frame_start=int(initial_model_frame_start),
-                model_frame_chunk_size=int(self.inference_config.frame_chunk_size),
+                temporal_geometry=temporal_geometry,
                 chunk_origin_frame=int(initial_chunk_origin_frame),
                 prefix_frame_count=1,
-                attention_window_size=int(attention_window_size),
             )
         elif not isinstance(history_state, ObservedVideoHistoryState):
             raise TypeError(
                 "Chunked causal-video inference received incompatible recurrent "
                 f"state {type(history_state).__name__}."
             )
-        if int(history_state.model_frame_chunk_size) != int(
-            self.inference_config.frame_chunk_size
-        ):
+        if history_state.temporal_geometry != temporal_geometry:
             raise ValueError(
                 "Chunked causal-video recurrent state does not match inference "
-                f"geometry: state={history_state.model_frame_chunk_size}, "
-                f"configured={self.inference_config.frame_chunk_size}."
+                f"geometry: state={history_state.temporal_geometry}, "
+                f"requested={temporal_geometry}."
             )
         pending_state, generated_span = history_state.begin_generation(
             frame_count=int(frame_count),
-            attention_window_size=int(attention_window_size),
         )
         return history_state, pending_state, generated_span
 
@@ -859,7 +857,8 @@ class CausalVideoPredictionPolicyVariant(PolicyVariant):
             )
         observed_prefix = video_latents[:, :, :1]
         future_template = video_latents[:, :, 1 : 1 + future_frames]
-        attention_window_size = int(self.training_config.window_size)
+        temporal_geometry = context.require_temporal_geometry()
+        attention_window_size = int(temporal_geometry.attention_window_size)
         history_state, pending_state, generated_span = (
             self._begin_chunked_video_generation(
                 infer_state=infer_state,
@@ -874,7 +873,7 @@ class CausalVideoPredictionPolicyVariant(PolicyVariant):
                     sample_metadata.get("chunk_origin_frame", 0)
                 ),
                 frame_count=future_frames,
-                attention_window_size=attention_window_size,
+                temporal_geometry=temporal_geometry,
             )
         )
         predicted_future = visual_tower.generate_chunked_conditioned_video_latents(
@@ -885,7 +884,7 @@ class CausalVideoPredictionPolicyVariant(PolicyVariant):
                 visual_outputs.frontend.conditioning.negative_text_context
             ),
             history_frame_start=int(history_state.model_frame_start),
-            chunk_size=int(self.inference_config.frame_chunk_size),
+            chunk_size=int(temporal_geometry.frame_chunk_size),
             window_size=attention_window_size,
             chunk_origin_frame=int(history_state.chunk_origin_frame),
             prefix_condition_frames=int(history_state.prefix_frame_count),
@@ -1016,11 +1015,8 @@ class CausalVideoPredictionPolicyVariant(PolicyVariant):
         )
         next_history_state = infer_state.variant_state
         if self.config.program is CausalVideoProgram.CHUNKED_CONDITIONED_VIDEO:
-            attention_window_size = (
-                int(self.training_config.window_size)
-                if request.attention_window_size is None
-                else int(request.attention_window_size)
-            )
+            temporal_geometry = context.require_temporal_geometry()
+            attention_window_size = int(temporal_geometry.attention_window_size)
             history_state, next_history_state, generated_span = (
                 self._begin_chunked_video_generation(
                     infer_state=infer_state,
@@ -1031,7 +1027,7 @@ class CausalVideoPredictionPolicyVariant(PolicyVariant):
                     ),
                     initial_chunk_origin_frame=0,
                     frame_count=frame_count,
-                    attention_window_size=attention_window_size,
+                    temporal_geometry=temporal_geometry,
                 )
             )
             observed_prefix = history_state.video_latents
@@ -1044,7 +1040,7 @@ class CausalVideoPredictionPolicyVariant(PolicyVariant):
                     visual_outputs.frontend.conditioning.negative_text_context
                 ),
                 history_frame_start=int(history_state.model_frame_start),
-                chunk_size=int(self.inference_config.frame_chunk_size),
+                chunk_size=int(temporal_geometry.frame_chunk_size),
                 window_size=attention_window_size,
                 chunk_origin_frame=int(history_state.chunk_origin_frame),
                 prefix_condition_frames=int(history_state.prefix_frame_count),

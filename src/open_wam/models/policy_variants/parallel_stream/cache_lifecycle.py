@@ -111,7 +111,7 @@ def run_parallel_exact_cache_warmup(
     rollout_geometry = resolve_dynamics_rollout_geometry(
         rollout_semantics,
         fallback_frame_chunk_size=int(inference_config.frame_chunk_size),
-        fallback_attention_window_size=int(policy_config.attn_window),
+        fallback_attention_window_size=int(inference_config.attention_window_size),
         fallback_history_stream_visibility=policy_config.history_stream_visibility,
     )
     rollout_window_size = rollout_geometry.attention_window_size

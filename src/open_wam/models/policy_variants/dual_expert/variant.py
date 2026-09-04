@@ -39,6 +39,7 @@ from ..contracts import (
     PolicyPreparedInputs,
     PolicyRecurrentHistoryPolicy,
     PolicyRolloutContract,
+    PolicyTemporalGeometry,
     PolicyTrainBatch,
     PolicyTrainOutput,
     PolicyVisualStage,
@@ -55,6 +56,10 @@ from .observed_history import reconcile_dual_expert_observed_history
 from .packed_block import DualExpertPackedBlockStack
 from .packed_inference import DualExpertPackedInferenceProgram
 from .packed_training import DualExpertPackedTrainingProgram
+from .rollout_geometry import (
+    resolve_dual_expert_rollout_frame_chunk_size,
+    resolve_dual_expert_sequence_actions_per_frame,
+)
 from .sequence_layout import DualExpertTrainingLayout
 from .split_cache_inference import DualExpertSplitCacheInferenceProgram
 
@@ -183,6 +188,21 @@ class DualExpertPolicyVariant(VideoActionPolicyVariant):
     ) -> PolicyInferContext:
         """Map a neutral video artifact onto this policy's native semantics."""
 
+        context = super().resolve_inference_context(context)
+        frame_chunk_size, _, _ = resolve_dual_expert_rollout_frame_chunk_size(
+            context,
+            default_frame_chunk_size=int(self.inference_config.frame_chunk_size),
+            base_action_horizon=int(self.action_horizon),
+        )
+        context = replace(
+            context,
+            temporal_geometry=PolicyTemporalGeometry(
+                frame_chunk_size=frame_chunk_size,
+                attention_window_size=(
+                    context.require_temporal_geometry().attention_window_size
+                ),
+            ),
+        )
         request = context.video_conditioned_action
         if request is None:
             return context
@@ -346,9 +366,11 @@ class DualExpertPolicyVariant(VideoActionPolicyVariant):
         return reconcile_dual_expert_observed_history(
             policy_state=infer_state,
             history=history,
-            default_inference_window_size=int(self.training_config.window_size),
-            default_frame_chunk_size=int(self.inference_config.frame_chunk_size),
             action_horizon=int(self.action_horizon),
+            action_tokens_per_frame=resolve_dual_expert_sequence_actions_per_frame(
+                action_horizon=int(self.action_horizon),
+                frame_chunk_size=int(self.inference_config.frame_chunk_size),
+            ),
             action_dim=int(self.action_dim),
         )
 

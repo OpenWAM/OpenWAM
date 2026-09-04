@@ -17,7 +17,7 @@ from open_wam.configs.trainer import TrainerConfig
 from open_wam.configs.training import TrainingConfig
 from open_wam.configs.validation import ValidationConfig
 
-EXPERIMENT_CONFIG_SCHEMA_VERSION = 1
+EXPERIMENT_CONFIG_SCHEMA_VERSION = 2
 
 
 @dataclass(frozen=True)

@@ -149,7 +149,7 @@ def test_video_action_backends_expose_equivalent_pipeline_requirements(
         load_reference_core_weights=False,
     )
     training = TrainingConfig(chunk_size=2, window_size=8)
-    inference = InferenceConfig(frame_chunk_size=2)
+    inference = InferenceConfig(frame_chunk_size=2, attention_window_size=8)
     shared_policy_fields = {
         "program": program,
         "hidden_size": 32,
@@ -174,7 +174,6 @@ def test_video_action_backends_expose_equivalent_pipeline_requirements(
             **shared_policy_fields,
             frame_chunk_size=2,
             action_per_frame=2,
-            attn_window=8,
         ),
         backbone_config=backbone,
         training_config=training,
@@ -238,7 +237,7 @@ def test_public_factory_preserves_requirements_when_video_action_backend_changes
         load_reference_core_weights=False,
     )
     training = TrainingConfig(chunk_size=2, window_size=8)
-    inference = InferenceConfig(frame_chunk_size=2)
+    inference = InferenceConfig(frame_chunk_size=2, attention_window_size=8)
     shared_policy_fields = {
         "program": program,
         "hidden_size": 32,
@@ -270,7 +269,6 @@ def test_public_factory_preserves_requirements_when_video_action_backend_changes
                 **shared_policy_fields,
                 frame_chunk_size=2,
                 action_per_frame=2,
-                attn_window=8,
             ),
             action_decoder=ParallelStreamActionDecoderConfig(
                 hidden_size=32,

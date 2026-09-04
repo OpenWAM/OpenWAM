@@ -79,7 +79,6 @@ class ParallelStreamPolicyConfig(VideoActionPolicyConfig):
     reference_profile: str | None = None
     frame_chunk_size: int = 2
     action_per_frame: int = 1
-    attn_window: int = 8
     sequence_order: tuple[ParallelSequenceComponent, ...] = field(
         default_factory=lambda: (
             ParallelSequenceComponent.VIDEO_NOISY,

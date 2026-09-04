@@ -7,6 +7,7 @@ from open_wam.models.policy_variants import (
     PolicyExecutionCommit,
     PolicyInferState,
     PolicyObservedHistory,
+    PolicyTemporalGeometry,
     PolicyTemporalSpan,
     RolloutCursor,
 )
@@ -37,6 +38,14 @@ def _reconcile(
         step_index=step_index,
         cursor=RolloutCursor(current_start_frame=current_start_frame),
         variant_state=runtime_state,
+        temporal_geometry=PolicyTemporalGeometry(
+            frame_chunk_size=(
+                4
+                if rollout_frame_chunk_size is None
+                else rollout_frame_chunk_size
+            ),
+            attention_window_size=inference_window_size,
+        ),
     )
     return reconcile_dual_expert_observed_history(
         policy_state=policy_state,
@@ -45,13 +54,10 @@ def _reconcile(
             observation_frame_count=observation_frame_count,
             action_history=action_history,
             proprio_history=proprio_history,
-            inference_window_size=inference_window_size,
-            rollout_frame_chunk_size=rollout_frame_chunk_size,
             execution_commit=execution_commit,
         ),
-        default_inference_window_size=64,
-        default_frame_chunk_size=4,
         action_horizon=16,
+        action_tokens_per_frame=4,
         action_dim=7,
     )
 
@@ -429,9 +435,8 @@ def test_non_dual_expert_state_is_a_noop() -> None:
             video_latents=_video([1.0]),
             observation_frame_count=4,
         ),
-        default_inference_window_size=30,
-        default_frame_chunk_size=4,
         action_horizon=16,
+        action_tokens_per_frame=4,
         action_dim=7,
     )
 

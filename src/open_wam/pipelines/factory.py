@@ -36,6 +36,7 @@ from open_wam.models.policy_variants import (
     CausalVideoPredictionPolicyVariant,
     DualExpertPolicyVariant,
     ParallelStreamPolicyVariant,
+    PolicyTemporalGeometry as _PolicyTemporalGeometry,
     PolicyVariant,
 )
 from open_wam.models.policy_variants.parallel_stream.action_adapter import (
@@ -199,6 +200,10 @@ def build_variant_pipeline_from_config(config: ExperimentConfig) -> VariantPipel
         policy_variant=policy_variant,
         action_decoder=action_decoder,
         preprocessor=build_canonical_video_preprocessor(config.data),
+        default_temporal_geometry=_PolicyTemporalGeometry(
+            frame_chunk_size=int(config.inference.frame_chunk_size),
+            attention_window_size=int(config.inference.attention_window_size),
+        ),
         action_sampler_mask=action_sampler_mask,
         action_sampler_inactive_value=config.data.action_mapping.inactive_value,
     )

@@ -18,6 +18,7 @@ from open_wam.models.policy_variants import (
     PolicyObservedHistory,
     PolicyObservedHistoryOutput,
     PolicyOutputModality,
+    PolicyTemporalGeometry,
 )
 from open_wam.models.policy_variants.base import PolicyVariant
 from open_wam.pipelines import VariantPipeline, VariantRolloutRunner
@@ -150,6 +151,37 @@ def test_native_policy_inference_does_not_resolve_capabilities_without_request()
     )
 
 
+def test_pipeline_resolves_default_inference_temporal_geometry() -> None:
+    geometry = PolicyTemporalGeometry(
+        frame_chunk_size=4,
+        attention_window_size=17,
+    )
+    context = VariantPipeline._resolve_temporal_geometry(
+        PolicyInferContext(),
+        default=geometry,
+    )
+
+    assert context.temporal_geometry == geometry
+
+
+def test_pipeline_rejects_temporal_geometry_changes_within_session() -> None:
+    initial = PolicyTemporalGeometry(frame_chunk_size=4, attention_window_size=30)
+    state = PolicyInferState(temporal_geometry=initial)
+
+    state.bind_temporal_geometry(
+        initial,
+        label="test state",
+    )
+    with pytest.raises(ValueError, match="cannot change within an inference session"):
+        state.bind_temporal_geometry(
+            PolicyTemporalGeometry(
+                frame_chunk_size=2,
+                attention_window_size=30,
+            ),
+            label="test state",
+        )
+
+
 def test_observed_history_reconciliation_updates_policy_and_conditioning() -> None:
     pipeline = _ObservedHistoryTarget()
     runner = VariantRolloutRunner(pipeline)  # type: ignore[arg-type]
@@ -181,8 +213,6 @@ def test_observed_history_reconciliation_updates_policy_and_conditioning() -> No
         observation_frame_count=8,
         action_history=actions,
         proprio_history=proprio,
-        inference_window_size=30,
-        rollout_frame_chunk_size=2,
     )
 
     assert len(pipeline.calls) == 1
@@ -192,8 +222,6 @@ def test_observed_history_reconciliation_updates_policy_and_conditioning() -> No
     assert history.observation_frame_count == 8
     assert history.action_history is actions
     assert history.proprio_history is proprio
-    assert history.inference_window_size == 30
-    assert history.rollout_frame_chunk_size == 2
     assert result.session.policy_state is not previous_state
     assert result.session.policy_state.step_index == 9
     assert result.session.task_text == session.task_text

@@ -50,11 +50,15 @@ from open_wam.models.policy_variants import (
     PolicyInferState,
     PolicyOutputModality,
     PolicyRecurrentHistoryPolicy,
+    PolicyTemporalGeometry,
     PolicyTrainBatch,
     PolicyVideoGenerationRequest,
     RolloutCursor,
 )
 from open_wam.models.policy_variants.dual_expert import runtime as dual_expert_runtime
+from open_wam.models.policy_variants.dual_expert import (
+    split_cache_inference as split_cache_inference_module,
+)
 from open_wam.models.policy_variants.dual_expert.attention import (
     build_chunk_causal_video_mask,
     build_dual_expert_attention_mask,
@@ -2061,7 +2065,11 @@ def test_dual_expert_split_cache_infer_threads_per_chunk_action_proprio(
     )
     pipeline = build_variant_pipeline_from_config(config)
     captured_hidden_contexts: list[torch.Tensor | None] = []
+    captured_attention_geometry: list[tuple[int, int]] = []
     original_pre_dit = pipeline.policy_variant.action_expert.pre_dit
+    original_attention_mask = (
+        split_cache_inference_module.build_dual_expert_inference_action_attention_mask
+    )
 
     def capture_pre_dit(*args, **kwargs):
         hidden_context = kwargs.get("hidden_context")
@@ -2070,8 +2078,22 @@ def test_dual_expert_split_cache_infer_threads_per_chunk_action_proprio(
         )
         return original_pre_dit(*args, **kwargs)
 
+    def capture_attention_mask(**kwargs):
+        captured_attention_geometry.append(
+            (
+                int(kwargs["chunk_size_frames"]),
+                int(kwargs["window_size_frames"]),
+            )
+        )
+        return original_attention_mask(**kwargs)
+
     monkeypatch.setattr(
         pipeline.policy_variant.action_expert, "pre_dit", capture_pre_dit
+    )
+    monkeypatch.setattr(
+        split_cache_inference_module,
+        "build_dual_expert_inference_action_attention_mask",
+        capture_attention_mask,
     )
 
     output = pipeline.forward_infer_step_from_latents(
@@ -2082,6 +2104,8 @@ def test_dual_expert_split_cache_infer_threads_per_chunk_action_proprio(
 
     assert output.decoder_output.action_pred.shape == (1, 4, 4)
     assert pipeline.policy_variant._split_cache_inference_blocks_restored is True
+    assert captured_attention_geometry
+    assert set(captured_attention_geometry) == {(2, 30)}
     assert len(captured_hidden_contexts) == 3
     for hidden_context in captured_hidden_contexts:
         assert hidden_context is not None
@@ -2992,6 +3016,10 @@ def test_dual_expert_conditional_consumer_owns_strict_idm_semantics(
         state=torch.randn(1, 1, 4),
         previous_action=torch.randn(1, 4, 4),
         extra={"task_text": ("move the object",)},
+        temporal_geometry=PolicyTemporalGeometry(
+            frame_chunk_size=4,
+            attention_window_size=30,
+        ),
     )
 
     resolved = variant.resolve_inference_context(
@@ -3031,47 +3059,6 @@ def test_dual_expert_video_producer_honors_typed_chunk_geometry() -> None:
         default_frame_chunk_size=4,
         base_action_horizon=16,
     ) == (2, 8, 4)
-
-
-def test_dual_expert_video_producer_honors_typed_attention_window() -> None:
-    from open_wam.models.policy_variants.dual_expert.rollout_geometry import (
-        resolve_dual_expert_inference_window_size,
-    )
-
-    context = PolicyInferContext(
-        video_generation=PolicyVideoGenerationRequest(
-            frame_count=2,
-            attention_window_size=7,
-        )
-    )
-
-    assert (
-        resolve_dual_expert_inference_window_size(
-            context,
-            default_window_size=30,
-        )
-        == 7
-    )
-
-
-def test_dual_expert_video_producer_rejects_conflicting_attention_window() -> None:
-    from open_wam.models.policy_variants.dual_expert.rollout_geometry import (
-        resolve_dual_expert_inference_window_size,
-    )
-
-    context = PolicyInferContext(
-        video_generation=PolicyVideoGenerationRequest(
-            frame_count=2,
-            attention_window_size=7,
-        ),
-        extra={"dual_expert_inference_window_size": 30},
-    )
-
-    with pytest.raises(ValueError, match="conflicts with the typed video request"):
-        resolve_dual_expert_inference_window_size(
-            context,
-            default_window_size=30,
-        )
 
 
 def test_dual_expert_video_producer_rejects_conflicting_chunk_geometry() -> None:
@@ -3428,6 +3415,7 @@ def test_dual_expert_packed_infer_uses_rollout_history_contract_for_cached_conte
         ),
         inference=InferenceConfig(
             frame_chunk_size=2,
+            attention_window_size=8,
             video_num_inference_steps=2,
             action_num_inference_steps=2,
         ),

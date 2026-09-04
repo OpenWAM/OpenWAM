@@ -337,7 +337,7 @@ def validate_reference_profile(
         )
     if profile.attn_window != runtime.attn_window:
         raise ValueError(
-            "Exact LingBot reference profile attn_window does not match the policy config, "
+            "Exact LingBot reference profile attn_window does not match the inference config, "
             f"profile={profile.attn_window}, config={runtime.attn_window}."
         )
     if (

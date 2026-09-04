@@ -40,12 +40,12 @@ def test_exact_libero_train_inputs_expand_raw_actions_to_model_space() -> None:
             reference_profile="libero",
             frame_chunk_size=4,
             action_per_frame=4,
-            attn_window=30,
         ),
         action_decoder=ParallelStreamActionDecoderConfig(hidden_size=32, action_dim=30, action_horizon=16),
         training=TrainingConfig(chunk_size=4, window_size=30, video_sigma_shift=5.0, action_sigma_shift=1.0),
         inference=InferenceConfig(
             frame_chunk_size=4,
+            attention_window_size=30,
             guidance_scale=5.0,
             action_guidance_scale=1.0,
             video_num_inference_steps=20,

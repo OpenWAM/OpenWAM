@@ -395,7 +395,11 @@ def test_build_infer_context_uses_joint_dynamics_by_default() -> None:
         data=SimpleNamespace(
             action_schema=SimpleNamespace(state_horizon=1),
             action_target=SimpleNamespace(state_encoding="eef_pos_axisangle_gripper_2d"),
-        )
+        ),
+        inference=SimpleNamespace(
+            frame_chunk_size=4,
+            attention_window_size=64,
+        ),
     )
 
     output_request = PolicyInferenceOutputRequest.video_only()
@@ -411,7 +415,10 @@ def test_build_infer_context_uses_joint_dynamics_by_default() -> None:
     )
 
     assert context.extra["task_text"] == ("task",)
-    assert context.extra["dual_expert_inference_window_size"] == 30
+    assert context.temporal_geometry is not None
+    assert context.temporal_geometry.frame_chunk_size == 4
+    assert context.temporal_geometry.attention_window_size == 30
+    assert "dual_expert_inference_window_size" not in context.extra
     assert "action_conditioning_mode" not in context.extra
     assert "dual_expert_action_only_rollout" not in context.extra
     assert context.output_request is output_request

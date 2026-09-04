@@ -55,6 +55,7 @@ from open_wam.models.common.flow_matching import (
 )
 from open_wam.models.policy_variants.contracts import (
     DecoderArtifactEnvelope,
+    PolicyTemporalGeometry,
     PolicyTrainBatch,
     PolicyTrainOutput,
 )
@@ -459,7 +460,6 @@ def test_generalist_mode_context_injection_preserves_cfg_negative_branch() -> No
         program=VideoActionProgram.GENERALIST_JOINT_DENOISING,
         frame_chunk_size=2,
         action_per_frame=2,
-        attn_window=8,
         generalist_mode_text_token=True,
     )
     text_emb = torch.randn(1, 4, 16)
@@ -579,23 +579,19 @@ def test_generalist_conditional_local_window_sees_one_previous_video_frame_only(
 
 
 def test_generalist_conditional_rollout_modes_use_one_frame_history_window() -> None:
-    policy_config = ParallelStreamPolicyConfig(
-        hidden_size=32,
-        program=VideoActionProgram.JOINT,
-        attn_window=30,
-    )
+    inference_config = InferenceConfig(attention_window_size=30)
 
     assert (
         reference_runtime_module._window_size_for_generalist_conditioning(
             DynamicsObjective.ACTION_CONDITIONED_VIDEO,
-            fallback_window_size=policy_config.attn_window,
+            fallback_window_size=inference_config.attention_window_size,
         )
         == 3
     )
     assert (
         reference_runtime_module._window_size_for_generalist_conditioning(
             DynamicsObjective.VIDEO_CONDITIONED_ACTION,
-            fallback_window_size=policy_config.attn_window,
+            fallback_window_size=inference_config.attention_window_size,
         )
         == 3
     )
@@ -609,7 +605,7 @@ def test_generalist_conditional_rollout_modes_use_one_frame_history_window() -> 
     assert (
         reference_runtime_module._window_size_for_generalist_conditioning(
             DynamicsObjective.JOINT,
-            fallback_window_size=policy_config.attn_window,
+            fallback_window_size=inference_config.attention_window_size,
         )
         == 30
     )
@@ -633,7 +629,6 @@ def test_generalist_mode_context_requires_configured_encoder() -> None:
         program=VideoActionProgram.GENERALIST_JOINT_DENOISING,
         frame_chunk_size=2,
         action_per_frame=2,
-        attn_window=8,
         generalist_mode_text_token=True,
     )
 
@@ -718,7 +713,6 @@ def test_parallel_variant_configures_generalist_mode_encoder() -> None:
         program=VideoActionProgram.GENERALIST_JOINT_DENOISING,
         frame_chunk_size=2,
         action_per_frame=2,
-        attn_window=8,
         generalist_mode_text_token=True,
         proprio_context_mode=ProprioContextMode.TEXT_CONTEXT_TOKEN,  # deprecated compatibility
     )
@@ -897,12 +891,12 @@ def test_deprecated_text_token_proprio_context_changes_exact_rollout_after_cache
         program=VideoActionProgram.ACTION_THEN_VIDEO,
         frame_chunk_size=1,
         action_per_frame=1,
-        attn_window=2,
         proprio_context_mode=ProprioContextMode.TEXT_CONTEXT_TOKEN,  # deprecated compatibility
     )
     training_config = TrainingConfig(chunk_size=1, window_size=2)
     inference_config = InferenceConfig(
         frame_chunk_size=1,
+        attention_window_size=2,
         use_cache=True,
         guidance_scale=1.0,
         action_guidance_scale=1.0,
@@ -972,7 +966,6 @@ def test_deprecated_parallel_stream_text_token_proprio_adds_state_to_train_artif
         program=VideoActionProgram.VIDEO_THEN_ACTION,
         frame_chunk_size=2,
         action_per_frame=2,
-        attn_window=8,
         proprio_context_mode=ProprioContextMode.TEXT_CONTEXT_TOKEN,  # deprecated compatibility
     )
     variant = ParallelStreamPolicyVariant(
@@ -1049,11 +1042,11 @@ def test_exact_runtime_forces_cfg_batch_when_cache_is_shared() -> None:
         program=VideoActionProgram.VIDEO_THEN_ACTION,
         frame_chunk_size=2,
         action_per_frame=2,
-        attn_window=8,
     )
     training_config = TrainingConfig(chunk_size=2, window_size=8)
     inference_config = InferenceConfig(
         frame_chunk_size=2,
+        attention_window_size=8,
         use_cache=True,
         guidance_scale=1.0,
         action_guidance_scale=2.0,
@@ -1166,11 +1159,11 @@ def test_staged_action_condition_only_zeros_absolute_frame_zero(monkeypatch) -> 
         program=VideoActionProgram.ACTION_THEN_VIDEO,
         frame_chunk_size=2,
         action_per_frame=2,
-        attn_window=8,
     )
     training_config = TrainingConfig(chunk_size=2, window_size=8)
     inference_config = InferenceConfig(
         frame_chunk_size=2,
+        attention_window_size=8,
         use_cache=False,
         guidance_scale=1.0,
         action_guidance_scale=1.0,
@@ -1286,13 +1279,13 @@ def test_joint_like_first_chunk_anchors_observed_video_frame(monkeypatch) -> Non
         program=VideoActionProgram.GENERALIST_JOINT_DENOISING,
         frame_chunk_size=2,
         action_per_frame=2,
-        attn_window=8,
         video_action_attention_scope="block_local",
         joint_timestep_coupling=JointTimestepCoupling.MATCH_SIGMA,
     )
     training_config = TrainingConfig(chunk_size=2, window_size=8)
     inference_config = InferenceConfig(
         frame_chunk_size=2,
+        attention_window_size=8,
         use_cache=False,
         guidance_scale=1.0,
         action_guidance_scale=1.0,
@@ -1524,7 +1517,6 @@ def test_staged_rollout_applies_hidden_proprio_to_video_and_action(monkeypatch) 
         program=VideoActionProgram.ACTION_THEN_VIDEO,
         frame_chunk_size=2,
         action_per_frame=2,
-        attn_window=8,
         proprio_context_mode=ProprioContextMode.PER_CHUNK_ADDITIVE,
     )
 
@@ -1535,6 +1527,7 @@ def test_staged_rollout_applies_hidden_proprio_to_video_and_action(monkeypatch) 
         training_config=TrainingConfig(chunk_size=2, window_size=8),
         inference_config=InferenceConfig(
             frame_chunk_size=2,
+            attention_window_size=8,
             use_cache=False,
             guidance_scale=1.0,
             action_guidance_scale=1.0,
@@ -1633,7 +1626,6 @@ def test_action_then_video_skip_video_prediction_runs_action_only(monkeypatch) -
         program=VideoActionProgram.ACTION_THEN_VIDEO,
         frame_chunk_size=2,
         action_per_frame=2,
-        attn_window=8,
     )
     artifacts = run_parallel_exact_inference_rollout(
         transformer=_FakeReferenceTransformer(),
@@ -1642,6 +1634,7 @@ def test_action_then_video_skip_video_prediction_runs_action_only(monkeypatch) -
         training_config=TrainingConfig(chunk_size=2, window_size=8),
         inference_config=InferenceConfig(
             frame_chunk_size=2,
+            attention_window_size=8,
             use_cache=True,
             guidance_scale=1.0,
             action_guidance_scale=1.0,
@@ -2067,9 +2060,12 @@ def test_exact_cache_warmup_preserves_explicit_negative_frame_start_on_init() ->
         program=VideoActionProgram.VIDEO_THEN_ACTION,
         frame_chunk_size=4,
         action_per_frame=4,
-        attn_window=8,
     )
-    inference_config = InferenceConfig(frame_chunk_size=4, use_cache=True)
+    inference_config = InferenceConfig(
+        frame_chunk_size=4,
+        attention_window_size=8,
+        use_cache=True,
+    )
     observed_video_latents = torch.randn(1, 48, 4, 8, 8)
     observed_action_latents = torch.randn(1, 4, 4, 4, 1)
     text_emb = torch.randn(1, 512, 16)
@@ -2103,7 +2099,10 @@ def test_parallel_stream_variant_selects_exact_cache_write_contract() -> None:
         freq_dim=8,
     )
     training_config = TrainingConfig(chunk_size=2, window_size=8)
-    inference_config = InferenceConfig(frame_chunk_size=2)
+    inference_config = InferenceConfig(
+        frame_chunk_size=2,
+        attention_window_size=8,
+    )
 
     canonical = ParallelStreamPolicyVariant(
         ParallelStreamPolicyConfig(
@@ -2111,7 +2110,6 @@ def test_parallel_stream_variant_selects_exact_cache_write_contract() -> None:
             program=VideoActionProgram.VIDEO_THEN_ACTION,
             frame_chunk_size=2,
             action_per_frame=2,
-            attn_window=8,
         ),
         backbone_config=backbone_config,
         training_config=training_config,
@@ -2126,7 +2124,6 @@ def test_parallel_stream_variant_selects_exact_cache_write_contract() -> None:
             program=VideoActionProgram.JOINT,
             frame_chunk_size=2,
             action_per_frame=2,
-            attn_window=8,
         ),
         backbone_config=backbone_config,
         training_config=training_config,
@@ -2142,7 +2139,6 @@ def test_parallel_stream_variant_selects_exact_cache_write_contract() -> None:
             program=VideoActionProgram.VIDEO_NOISY_TO_ACTION,
             frame_chunk_size=2,
             action_per_frame=2,
-            attn_window=8,
         ),
         backbone_config=backbone_config,
         training_config=training_config,
@@ -2157,7 +2153,6 @@ def test_parallel_stream_variant_selects_exact_cache_write_contract() -> None:
             program=VideoActionProgram.ACTION_NOISY_TO_VIDEO,
             frame_chunk_size=2,
             action_per_frame=2,
-            attn_window=8,
         ),
         backbone_config=backbone_config,
         training_config=training_config,
@@ -2203,7 +2198,6 @@ def test_action_conditioned_reference_profile_validates_inference_step_counts() 
                 reference_profile="libero_joint",
                 frame_chunk_size=4,
                 action_per_frame=4,
-                attn_window=30,
             ),
             backbone_config=backbone_config,
             training_config=TrainingConfig(chunk_size=4, window_size=30),
@@ -2217,6 +2211,46 @@ def test_action_conditioned_reference_profile_validates_inference_step_counts() 
             action_dim=30,
             action_horizon=16,
             num_frames=4,
+        )
+
+
+def test_reference_profile_validates_effective_session_geometry() -> None:
+    variant = ParallelStreamPolicyVariant(
+        ParallelStreamPolicyConfig(
+            hidden_size=32,
+            program=VideoActionProgram.JOINT,
+            reference_profile="libero_joint",
+            frame_chunk_size=4,
+            action_per_frame=4,
+        ),
+        backbone_config=LingbotCompatibleVideoBackboneConfig(
+            hidden_size=32,
+            num_layers=1,
+            num_heads=4,
+            attention_head_dim=8,
+            text_dim=16,
+            freq_dim=8,
+        ),
+        training_config=TrainingConfig(chunk_size=4, window_size=30),
+        inference_config=InferenceConfig(
+            frame_chunk_size=4,
+            attention_window_size=30,
+            video_num_inference_steps=20,
+            action_num_inference_steps=20,
+            guidance_scale=5.0,
+            action_guidance_scale=1.0,
+        ),
+        action_dim=30,
+        action_horizon=16,
+        num_frames=4,
+    )
+
+    with pytest.raises(ValueError, match="attn_window"):
+        variant._resolve_inference_config(
+            PolicyTemporalGeometry(
+                frame_chunk_size=4,
+                attention_window_size=17,
+            )
         )
 
 
@@ -2235,10 +2269,10 @@ def test_exact_cache_warmup_allows_shorter_video_history_than_action_history() -
         program=VideoActionProgram.VIDEO_THEN_ACTION,
         frame_chunk_size=4,
         action_per_frame=2,
-        attn_window=8,
     )
     inference_config = InferenceConfig(
         frame_chunk_size=4,
+        attention_window_size=8,
         use_cache=True,
         guidance_scale=1.0,
         action_guidance_scale=1.0,
@@ -2286,11 +2320,11 @@ def test_exact_runtime_uses_provided_negative_text_embeddings_for_cfg() -> None:
         program=VideoActionProgram.VIDEO_THEN_ACTION,
         frame_chunk_size=2,
         action_per_frame=2,
-        attn_window=8,
     )
     training_config = TrainingConfig(chunk_size=2, window_size=8)
     inference_config = InferenceConfig(
         frame_chunk_size=2,
+        attention_window_size=8,
         use_cache=True,
         guidance_scale=5.0,
         action_guidance_scale=1.0,
@@ -2371,7 +2405,6 @@ def test_exact_train_artifacts_default_to_flex_attention_profile() -> None:
         program=VideoActionProgram.VIDEO_THEN_ACTION,
         frame_chunk_size=2,
         action_per_frame=2,
-        attn_window=8,
     )
     training_config = TrainingConfig(chunk_size=2, window_size=8)
     video_latents = torch.randn(1, 48, 2, 8, 8)
@@ -2412,7 +2445,6 @@ def test_generalist_action_conditioned_override_drops_text_and_masks_action_loss
         program=VideoActionProgram.GENERALIST_JOINT_DENOISING,
         frame_chunk_size=2,
         action_per_frame=2,
-        attn_window=8,
     )
     training_config = TrainingConfig(chunk_size=2, window_size=8)
     video_latents = torch.randn(1, 48, 2, 8, 8)
@@ -2472,10 +2504,10 @@ def test_exact_runtime_applies_action_channel_mask_to_action_stream() -> None:
         program=VideoActionProgram.VIDEO_THEN_ACTION,
         frame_chunk_size=2,
         action_per_frame=2,
-        attn_window=8,
     )
     inference_config = InferenceConfig(
         frame_chunk_size=2,
+        attention_window_size=8,
         use_cache=True,
         guidance_scale=1.0,
         action_guidance_scale=1.0,
@@ -2545,7 +2577,6 @@ def test_parallel_exact_train_artifacts_accept_contextual_overrides() -> None:
         program=VideoActionProgram.VIDEO_THEN_ACTION,
         frame_chunk_size=4,
         action_per_frame=4,
-        attn_window=8,
     )
     training_config = TrainingConfig(
         chunk_size=4,
@@ -2604,7 +2635,6 @@ def test_parallel_exact_train_artifacts_prefer_full_condition_latents() -> None:
         program=VideoActionProgram.VIDEO_THEN_ACTION,
         frame_chunk_size=2,
         action_per_frame=2,
-        attn_window=8,
         noisy_video_condition_prob=0.0,
     )
     training_config = TrainingConfig(
@@ -2654,7 +2684,6 @@ def test_parallel_exact_train_artifacts_can_use_single_frame_context_condition_l
         program=VideoActionProgram.VIDEO_THEN_ACTION,
         frame_chunk_size=2,
         action_per_frame=2,
-        attn_window=8,
         noisy_video_condition_prob=0.0,
         context_condition_latent_source=ContextConditionLatentSource.SINGLE_FRAME_CONDITION_LATENT,
         use_condition_latents=True,
@@ -2718,7 +2747,6 @@ def test_parallel_exact_train_artifacts_require_single_frame_context_condition_l
         program=VideoActionProgram.VIDEO_THEN_ACTION,
         frame_chunk_size=2,
         action_per_frame=2,
-        attn_window=8,
         context_condition_latent_source=ContextConditionLatentSource.SINGLE_FRAME_CONDITION_LATENT,
         use_condition_latents=True,
         require_condition_latents=True,
@@ -2763,7 +2791,6 @@ def test_parallel_prefix_condition_train_artifacts_match_legacy_prefix_semantics
         program=VideoActionProgram.VIDEO_THEN_ACTION,
         frame_chunk_size=2,
         action_per_frame=2,
-        attn_window=4,
         sequence_contract=VideoActionSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO,
         context_condition_latent_source=ContextConditionLatentSource.SINGLE_FRAME_CONDITION_LATENT,
         use_condition_latents=True,
@@ -2831,7 +2858,6 @@ def test_parallel_prefix_condition_train_artifacts_honor_shared_video_schedule()
         program=VideoActionProgram.GENERALIST_JOINT_DENOISING,
         frame_chunk_size=2,
         action_per_frame=2,
-        attn_window=4,
         sequence_contract=VideoActionSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO,
         context_condition_latent_source=ContextConditionLatentSource.SINGLE_FRAME_CONDITION_LATENT,
         use_condition_latents=True,
@@ -2896,7 +2922,6 @@ def test_parallel_prefix_condition_train_artifacts_honor_match_sigma_coupling() 
         program=VideoActionProgram.JOINT,
         frame_chunk_size=2,
         action_per_frame=2,
-        attn_window=4,
         sequence_contract=VideoActionSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO,
         context_condition_latent_source=ContextConditionLatentSource.SINGLE_FRAME_CONDITION_LATENT,
         use_condition_latents=True,
@@ -2958,7 +2983,6 @@ def test_parallel_prefix_condition_generalist_joint_is_pure_joint_metadata() -> 
         hidden_size=32,
         frame_chunk_size=2,
         action_per_frame=2,
-        attn_window=4,
         sequence_contract=VideoActionSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO,
         context_condition_latent_source=ContextConditionLatentSource.SINGLE_FRAME_CONDITION_LATENT,
         use_condition_latents=True,
@@ -3003,7 +3027,6 @@ def test_parallel_generalist_sequence_contract_accepts_routed_conditional_modes(
         hidden_size=32,
         frame_chunk_size=2,
         action_per_frame=2,
-        attn_window=4,
         sequence_contract=VideoActionSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO,
         context_condition_latent_source=ContextConditionLatentSource.SINGLE_FRAME_CONDITION_LATENT,
         use_condition_latents=True,
@@ -3033,7 +3056,6 @@ def test_legacy_prefix_variant_preserves_frame_aligned_proprio_state() -> None:
         program=VideoActionProgram.VIDEO_THEN_ACTION,
         frame_chunk_size=2,
         action_per_frame=2,
-        attn_window=4,
         proprio_context_mode=ProprioContextMode.PER_CHUNK_ADDITIVE,
         sequence_contract=VideoActionSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO,
         context_condition_latent_source=ContextConditionLatentSource.SINGLE_FRAME_CONDITION_LATENT,
@@ -3130,7 +3152,6 @@ def test_parallel_gjd_routes_planning_and_conditional_layouts_by_mode(
         hidden_size=32,
         frame_chunk_size=2,
         action_per_frame=2,
-        attn_window=4,
         sequence_contract=VideoActionSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO,
         proprio_context_mode=ProprioContextMode.PER_CHUNK_ADDITIVE,
         context_condition_latent_source=ContextConditionLatentSource.SINGLE_FRAME_CONDITION_LATENT,
@@ -3249,7 +3270,6 @@ def test_parallel_exact_train_artifacts_split_video_and_action_loss_masks() -> N
         program=VideoActionProgram.VIDEO_THEN_ACTION,
         frame_chunk_size=4,
         action_per_frame=4,
-        attn_window=8,
     )
     training_config = TrainingConfig(
         chunk_size=4,
@@ -3302,7 +3322,6 @@ def test_parallel_stream_decoder_ignores_history_frames_outside_loss_mask() -> N
         program=VideoActionProgram.VIDEO_THEN_ACTION,
         frame_chunk_size=2,
         action_per_frame=2,
-        attn_window=8,
     )
     training_config = TrainingConfig(
         chunk_size=2,
@@ -3383,7 +3402,6 @@ def test_parallel_stream_decoder_accepts_prefix_video_action_frame_mismatch() ->
         program=VideoActionProgram.VIDEO_THEN_ACTION,
         frame_chunk_size=2,
         action_per_frame=2,
-        attn_window=4,
         sequence_contract=VideoActionSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO,
         context_condition_latent_source=ContextConditionLatentSource.SINGLE_FRAME_CONDITION_LATENT,
         use_condition_latents=True,
@@ -3465,7 +3483,6 @@ def test_parallel_action_conditioned_train_artifacts_accept_contextual_overrides
         program=VideoActionProgram.JOINT,
         frame_chunk_size=4,
         action_per_frame=4,
-        attn_window=8,
         video_action_condition_source="noisy_action",
         history_stream_visibility="video_only",
     )
@@ -3505,7 +3522,7 @@ def test_parallel_action_conditioned_train_artifacts_accept_contextual_overrides
     )
 
 
-def test_parallel_action_conditioned_inference_uses_policy_attention_geometry(
+def test_parallel_action_conditioned_inference_uses_shared_attention_geometry(
     monkeypatch,
 ) -> None:
     captured: list[tuple[int, int, str | None]] = []
@@ -3579,7 +3596,6 @@ def test_parallel_action_conditioned_inference_uses_policy_attention_geometry(
         program=VideoActionProgram.JOINT,
         frame_chunk_size=4,
         action_per_frame=4,
-        attn_window=30,
         video_action_condition_source="noisy_action",
         history_stream_visibility="video_only",
     )
@@ -3591,6 +3607,7 @@ def test_parallel_action_conditioned_inference_uses_policy_attention_geometry(
     )
     inference_config = InferenceConfig(
         frame_chunk_size=4,
+        attention_window_size=30,
         use_cache=False,
         guidance_scale=1.0,
         action_guidance_scale=1.0,
@@ -3701,7 +3718,6 @@ def test_action_conditioned_override_after_warmup_uses_local_startup_window(
         program=VideoActionProgram.GENERALIST_JOINT_DENOISING,
         frame_chunk_size=2,
         action_per_frame=2,
-        attn_window=30,
     )
     training_config = TrainingConfig(chunk_size=2, window_size=8)
     inference_config = InferenceConfig(
@@ -3785,7 +3801,6 @@ def test_conditional_exact_cache_warmup_keeps_one_recent_history_frame() -> None
         program=VideoActionProgram.GENERALIST_JOINT_DENOISING,
         frame_chunk_size=2,
         action_per_frame=1,
-        attn_window=30,
     )
     inference_config = InferenceConfig(
         frame_chunk_size=2,
@@ -3968,7 +3983,6 @@ def test_conditional_rollout_rejects_reused_full_window_cache() -> None:
         program=VideoActionProgram.GENERALIST_JOINT_DENOISING,
         frame_chunk_size=2,
         action_per_frame=1,
-        attn_window=30,
     )
     training_config = TrainingConfig(chunk_size=2, window_size=8)
     inference_config = InferenceConfig(
@@ -4106,7 +4120,6 @@ def test_video_conditioned_action_returns_prediction_but_commits_clean_action_hi
         program=VideoActionProgram.GENERALIST_JOINT_DENOISING,
         frame_chunk_size=2,
         action_per_frame=2,
-        attn_window=30,
     )
     training_config = TrainingConfig(chunk_size=2, window_size=8)
     inference_config = InferenceConfig(
@@ -4278,7 +4291,6 @@ def test_parallel_fixed_dynamics_rollout_exactly_matches_gjd_submode(
                 program=program,
                 frame_chunk_size=2,
                 action_per_frame=2,
-                attn_window=30,
                 joint_timestep_coupling=JointTimestepCoupling.INDEPENDENT,
             ),
             training_config=training_config,
@@ -4356,7 +4368,6 @@ def test_parallel_action_conditioned_train_artifacts_can_force_clean_video_condi
         program=VideoActionProgram.JOINT,
         frame_chunk_size=4,
         action_per_frame=4,
-        attn_window=8,
         video_action_condition_source="noisy_action",
         noisy_video_condition_prob=1.0,
     )
@@ -4466,7 +4477,6 @@ def test_joint_inference_masks_inactive_action_channels(monkeypatch) -> None:
         program=VideoActionProgram.JOINT,
         frame_chunk_size=2,
         action_per_frame=2,
-        attn_window=8,
         video_action_condition_source="noisy_action",
         joint_timestep_coupling=JointTimestepCoupling.MATCH_SIGMA,
     )
@@ -4480,6 +4490,7 @@ def test_joint_inference_masks_inactive_action_channels(monkeypatch) -> None:
     )
     inference_config = InferenceConfig(
         frame_chunk_size=2,
+        attention_window_size=8,
         use_cache=False,
         video_num_inference_steps=1,
         action_num_inference_steps=1,
@@ -4523,7 +4534,6 @@ def test_standard_joint_training_couples_video_and_action_noise_clarity() -> Non
         program=VideoActionProgram.JOINT,
         frame_chunk_size=2,
         action_per_frame=2,
-        attn_window=8,
         video_action_condition_source="noisy_action",
         joint_timestep_coupling=JointTimestepCoupling.MATCH_SIGMA,
     )
@@ -4577,7 +4587,6 @@ def test_standard_joint_training_can_share_video_scheduler_clock() -> None:
         program=VideoActionProgram.JOINT,
         frame_chunk_size=2,
         action_per_frame=2,
-        attn_window=8,
         video_action_condition_source="noisy_action",
         joint_timestep_coupling=JointTimestepCoupling.SHARED_VIDEO_SCHEDULE,
     )
@@ -4641,7 +4650,6 @@ def test_standard_joint_training_can_match_scheduler_index_without_matching_sigm
         program=VideoActionProgram.JOINT,
         frame_chunk_size=2,
         action_per_frame=2,
-        attn_window=8,
         video_action_condition_source="noisy_action",
         joint_timestep_coupling=JointTimestepCoupling.MATCH_INDEX,
     )
@@ -4702,7 +4710,6 @@ def test_video_then_action_uses_declared_independent_noise_schedule() -> None:
         program=VideoActionProgram.VIDEO_THEN_ACTION,
         frame_chunk_size=2,
         action_per_frame=2,
-        attn_window=8,
         joint_timestep_coupling=JointTimestepCoupling.INDEPENDENT,
     )
     training_config = TrainingConfig(
@@ -4829,7 +4836,6 @@ def _generalist_policy_config(
         hidden_size=32,
         frame_chunk_size=2,
         action_per_frame=2,
-        attn_window=8,
         video_action_condition_source="noisy_action",
         joint_timestep_coupling=joint_timestep_coupling,
         program=VideoActionProgram.GENERALIST_JOINT_DENOISING,
@@ -5242,11 +5248,11 @@ def test_exact_cache_warmup_passes_per_chunk_hidden_context(monkeypatch) -> None
         program=VideoActionProgram.DECOUPLED_SAME_STEP,
         frame_chunk_size=2,
         action_per_frame=3,
-        attn_window=4,
         proprio_context_mode=ProprioContextMode.PER_CHUNK_ADDITIVE,
     )
     inference_config = InferenceConfig(
         frame_chunk_size=2,
+        attention_window_size=4,
         use_cache=True,
         guidance_scale=1.0,
         action_guidance_scale=1.0,
@@ -5309,11 +5315,11 @@ def test_conditional_cache_warmup_uses_latest_frame_aligned_proprio_history(
         program=VideoActionProgram.GENERALIST_JOINT_DENOISING,
         frame_chunk_size=2,
         action_per_frame=3,
-        attn_window=4,
         proprio_context_mode=ProprioContextMode.PER_CHUNK_ADDITIVE,
     )
     inference_config = InferenceConfig(
         frame_chunk_size=2,
+        attention_window_size=4,
         use_cache=True,
         guidance_scale=1.0,
         action_guidance_scale=1.0,
@@ -5442,11 +5448,11 @@ def test_action_conditioned_rollout_cache_commit_passes_per_chunk_hidden_context
         program=VideoActionProgram.JOINT,
         frame_chunk_size=2,
         action_per_frame=3,
-        attn_window=4,
         proprio_context_mode=ProprioContextMode.PER_CHUNK_ADDITIVE,
     )
     inference_config = InferenceConfig(
         frame_chunk_size=2,
+        attention_window_size=4,
         use_cache=True,
         guidance_scale=1.0,
         action_guidance_scale=1.0,

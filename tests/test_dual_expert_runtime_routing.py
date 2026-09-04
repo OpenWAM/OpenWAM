@@ -5,13 +5,13 @@ from types import SimpleNamespace
 import pytest
 
 from open_wam.configs import CurrentBlockCoupling, VideoActionProgram
+from open_wam.models.policy_variants import PolicyTemporalGeometry
 from open_wam.models.policy_variants.dual_expert.inference_backend import (
     ensure_dual_expert_inference_backend,
     ensure_dual_expert_policy_variant_inference_backend,
 )
 from open_wam.models.policy_variants.dual_expert.rollout_geometry import (
     resolve_dual_expert_action_only_rollout,
-    resolve_dual_expert_inference_window_size,
     resolve_dual_expert_rollout_frame_chunk_size,
 )
 from open_wam.models.policy_variants.dual_expert.runtime_routes import (
@@ -107,15 +107,29 @@ def test_runtime_route_does_not_infer_architecture_from_program_alone() -> None:
     assert route.kind is DualExpertRuntimeRouteKind.NOT_DUAL_EXPERT
 
 
-def test_dual_expert_rollout_overrides_preserve_configured_action_token_density() -> None:
+def test_dual_expert_rollout_override_preserves_configured_action_token_density() -> None:
     context = SimpleNamespace(
         extra={
-            "dual_expert_inference_window_size": 17,
             "dual_expert_rollout_frame_chunk_size": 2,
         }
     )
 
-    assert resolve_dual_expert_inference_window_size(context, default_window_size=30) == 17
+    assert resolve_dual_expert_rollout_frame_chunk_size(
+        context,
+        default_frame_chunk_size=4,
+        base_action_horizon=16,
+    ) == (2, 8, 4)
+
+
+def test_dual_expert_rollout_honors_resolved_temporal_geometry() -> None:
+    context = SimpleNamespace(
+        extra={},
+        temporal_geometry=PolicyTemporalGeometry(
+            frame_chunk_size=2,
+            attention_window_size=17,
+        ),
+    )
+
     assert resolve_dual_expert_rollout_frame_chunk_size(
         context,
         default_frame_chunk_size=4,

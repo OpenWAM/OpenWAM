@@ -10,7 +10,11 @@ from open_wam.models.common.temporal_windows import (
     resolve_one_frame_conditioned_history_window,
 )
 
-from .contracts import PolicyObservedHistory, PolicyTemporalSpan
+from .contracts import (
+    PolicyObservedHistory,
+    PolicyTemporalGeometry,
+    PolicyTemporalSpan,
+)
 
 
 def _validate_video_latents(video_latents: torch.Tensor, *, label: str) -> None:
@@ -18,49 +22,6 @@ def _validate_video_latents(video_latents: torch.Tensor, *, label: str) -> None:
         raise ValueError(
             f"{label} must be non-empty [B, C, T, H, W] latents, "
             f"got {tuple(video_latents.shape)}."
-        )
-
-
-def _resolve_window_size(
-    current: int | None,
-    requested: int | None,
-) -> int | None:
-    if requested is not None and int(requested) <= 0:
-        raise ValueError(
-            f"Observed-video attention windows must be positive, got {requested}."
-        )
-    if current is not None and requested is not None and int(current) != int(requested):
-        raise ValueError(
-            "A recurrent video rollout cannot change attention windows mid-session; "
-            f"current={current}, requested={requested}."
-        )
-    return current if current is not None else requested
-
-
-def _validate_model_frame_chunk_size(frame_chunk_size: int) -> int:
-    if int(frame_chunk_size) <= 0:
-        raise ValueError(
-            "Observed-video model frame chunk size must be positive, "
-            f"got {frame_chunk_size}."
-        )
-    return int(frame_chunk_size)
-
-
-def _validate_requested_frame_count(
-    pending_span: PolicyTemporalSpan,
-    requested: int | None,
-) -> None:
-    if requested is None:
-        return
-    if int(requested) <= 0:
-        raise ValueError(
-            "Observed-video requested frame count must be positive, "
-            f"got {requested}."
-        )
-    if int(requested) != int(pending_span.frame_count):
-        raise ValueError(
-            "Observed-video reconciliation must report the pending generation "
-            f"length; pending={pending_span.frame_count}, requested={requested}."
         )
 
 
@@ -76,11 +37,10 @@ class ObservedVideoHistoryState:
     video_latents: torch.Tensor
     observed_span: PolicyTemporalSpan
     model_frame_start: int
-    model_frame_chunk_size: int
+    temporal_geometry: PolicyTemporalGeometry
     chunk_origin_frame: int = 0
     prefix_frame_count: int = 1
     pending_span: PolicyTemporalSpan | None = None
-    attention_window_size: int | None = None
 
     def __post_init__(self) -> None:
         _validate_video_latents(self.video_latents, label="Observed video history")
@@ -95,14 +55,14 @@ class ObservedVideoHistoryState:
                 "Observed-video recurrent history requires exactly one external "
                 f"condition frame, got {self.prefix_frame_count}."
             )
-        _validate_model_frame_chunk_size(self.model_frame_chunk_size)
-        if not 0 <= int(self.chunk_origin_frame) < int(self.model_frame_chunk_size):
+        if not 0 <= int(self.chunk_origin_frame) < int(
+            self.temporal_geometry.frame_chunk_size
+        ):
             raise ValueError(
                 "Observed-video chunk origin must be canonical for its retained "
                 f"window, got origin={self.chunk_origin_frame}, "
-                f"chunk={self.model_frame_chunk_size}."
+                f"chunk={self.temporal_geometry.frame_chunk_size}."
             )
-        _resolve_window_size(None, self.attention_window_size)
         if self.pending_span is not None and int(
             self.pending_span.start_frame
         ) != int(self.observed_span.end_frame):
@@ -119,10 +79,9 @@ class ObservedVideoHistoryState:
         *,
         start_frame: int,
         model_frame_start: int | None = None,
-        model_frame_chunk_size: int,
+        temporal_geometry: PolicyTemporalGeometry,
         chunk_origin_frame: int = 0,
         prefix_frame_count: int = 1,
-        attention_window_size: int | None = None,
     ) -> ObservedVideoHistoryState:
         _validate_video_latents(video_latents, label="Initial observed video")
         if int(prefix_frame_count) != 1:
@@ -130,7 +89,7 @@ class ObservedVideoHistoryState:
                 "Observed-video recurrent history requires exactly one external "
                 f"condition frame, got {prefix_frame_count}."
             )
-        resolved_chunk_size = _validate_model_frame_chunk_size(model_frame_chunk_size)
+        resolved_chunk_size = int(temporal_geometry.frame_chunk_size)
         resolved_model_frame_start = (
             int(start_frame)
             if model_frame_start is None
@@ -139,20 +98,19 @@ class ObservedVideoHistoryState:
         resolved_latents = video_latents.detach()
         resolved_start_frame = int(start_frame)
         resolved_chunk_origin = int(chunk_origin_frame) % resolved_chunk_size
-        if attention_window_size is not None:
-            window = resolve_one_frame_conditioned_history_window(
-                history_frames=int(resolved_latents.shape[2]),
-                window_size=int(attention_window_size),
-                frame_chunk_size=resolved_chunk_size,
-                chunk_origin_frame=resolved_chunk_origin,
-            )
-            if window.dropped_frames > 0:
-                resolved_latents = resolved_latents[
-                    :, :, window.dropped_frames :
-                ].contiguous()
-                resolved_start_frame += int(window.dropped_frames)
-                resolved_model_frame_start += int(window.dropped_frames)
-            resolved_chunk_origin = int(window.chunk_origin_frame)
+        window = resolve_one_frame_conditioned_history_window(
+            history_frames=int(resolved_latents.shape[2]),
+            window_size=int(temporal_geometry.attention_window_size),
+            frame_chunk_size=resolved_chunk_size,
+            chunk_origin_frame=resolved_chunk_origin,
+        )
+        if window.dropped_frames > 0:
+            resolved_latents = resolved_latents[
+                :, :, window.dropped_frames :
+            ].contiguous()
+            resolved_start_frame += int(window.dropped_frames)
+            resolved_model_frame_start += int(window.dropped_frames)
+        resolved_chunk_origin = int(window.chunk_origin_frame)
         return cls(
             video_latents=resolved_latents,
             observed_span=PolicyTemporalSpan(
@@ -160,17 +118,15 @@ class ObservedVideoHistoryState:
                 frame_count=int(resolved_latents.shape[2]),
             ),
             model_frame_start=resolved_model_frame_start,
-            model_frame_chunk_size=resolved_chunk_size,
+            temporal_geometry=temporal_geometry,
             chunk_origin_frame=resolved_chunk_origin,
             prefix_frame_count=int(prefix_frame_count),
-            attention_window_size=attention_window_size,
         )
 
     def begin_generation(
         self,
         *,
         frame_count: int,
-        attention_window_size: int | None,
     ) -> tuple[ObservedVideoHistoryState, PolicyTemporalSpan]:
         if self.pending_span is not None:
             raise RuntimeError(
@@ -184,10 +140,6 @@ class ObservedVideoHistoryState:
         next_state = replace(
             self,
             pending_span=generated_span,
-            attention_window_size=_resolve_window_size(
-                self.attention_window_size,
-                attention_window_size,
-            ),
         )
         return next_state, generated_span
 
@@ -209,10 +161,6 @@ class ObservedVideoHistoryState:
                 "Observed-video execution does not match the pending generation; "
                 f"pending={self.pending_span}, committed={commit.speculative_span}."
             )
-        _validate_requested_frame_count(
-            self.pending_span,
-            history.rollout_frame_chunk_size,
-        )
         executed_span = commit.executed_span
         if int(executed_span.start_frame) != int(self.observed_span.end_frame):
             raise ValueError(
@@ -241,13 +189,8 @@ class ObservedVideoHistoryState:
             device=self.video_latents.device,
             dtype=self.video_latents.dtype,
         )
-        resolved_window_size = _resolve_window_size(
-            self.attention_window_size,
-            history.inference_window_size,
-        )
-        model_frame_chunk_size = _validate_model_frame_chunk_size(
-            self.model_frame_chunk_size
-        )
+        resolved_window_size = int(self.temporal_geometry.attention_window_size)
+        model_frame_chunk_size = int(self.temporal_geometry.frame_chunk_size)
         combined_latents = torch.cat(
             [self.video_latents, committed_latents], dim=2
         )
@@ -255,20 +198,19 @@ class ObservedVideoHistoryState:
         retained_start_frame = int(self.observed_span.start_frame)
         retained_model_frame_start = int(self.model_frame_start)
         retained_chunk_origin = int(self.chunk_origin_frame)
-        if resolved_window_size is not None:
-            window = resolve_one_frame_conditioned_history_window(
-                history_frames=int(combined_latents.shape[2]),
-                window_size=resolved_window_size,
-                frame_chunk_size=model_frame_chunk_size,
-                chunk_origin_frame=retained_chunk_origin,
-            )
-            if window.dropped_frames > 0:
-                retained_latents = combined_latents[
-                    :, :, window.dropped_frames :
-                ].contiguous()
-                retained_start_frame += int(window.dropped_frames)
-                retained_model_frame_start += int(window.dropped_frames)
-            retained_chunk_origin = int(window.chunk_origin_frame)
+        window = resolve_one_frame_conditioned_history_window(
+            history_frames=int(combined_latents.shape[2]),
+            window_size=resolved_window_size,
+            frame_chunk_size=model_frame_chunk_size,
+            chunk_origin_frame=retained_chunk_origin,
+        )
+        if window.dropped_frames > 0:
+            retained_latents = combined_latents[
+                :, :, window.dropped_frames :
+            ].contiguous()
+            retained_start_frame += int(window.dropped_frames)
+            retained_model_frame_start += int(window.dropped_frames)
+        retained_chunk_origin = int(window.chunk_origin_frame)
         return replace(
             self,
             video_latents=retained_latents,
@@ -279,7 +221,6 @@ class ObservedVideoHistoryState:
             model_frame_start=retained_model_frame_start,
             chunk_origin_frame=retained_chunk_origin,
             pending_span=None,
-            attention_window_size=resolved_window_size,
         )
 
 

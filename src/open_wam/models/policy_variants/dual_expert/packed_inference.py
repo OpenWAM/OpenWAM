@@ -67,9 +67,8 @@ from .modules import DualExpertActionExpert
 from .packed_block import DualExpertPackedBlockStack
 from .rollout_geometry import (
     resolve_dual_expert_inference_output_request,
-    resolve_dual_expert_inference_window_size,
     resolve_dual_expert_rollout_cache_window_frames,
-    resolve_dual_expert_rollout_frame_chunk_size,
+    resolve_dual_expert_sequence_actions_per_frame,
 )
 from .sequence_layout import build_action_grid_ids_for_sequence
 
@@ -141,9 +140,8 @@ class DualExpertPackedInferenceProgram:
                 "coupling, "
                 f"got current_block_coupling={current_block_coupling.value!r}."
             )
-        inference_window_size = resolve_dual_expert_inference_window_size(
-            context,
-            default_window_size=int(self.training_config.window_size),
+        inference_window_size = int(
+            context.require_temporal_geometry().attention_window_size
         )
         device = next(visual_tower.core.parameters()).device
         action_device = next(self.action_expert.parameters()).device
@@ -154,13 +152,12 @@ class DualExpertPackedInferenceProgram:
             )
         dtype = next(self.action_expert.parameters()).dtype
         batch_size = int(visual_outputs.frontend.video_latents.shape[0])
-        frame_chunk_size, action_horizon, action_tokens_per_frame = (
-            resolve_dual_expert_rollout_frame_chunk_size(
-                context,
-                default_frame_chunk_size=int(self.inference_config.frame_chunk_size),
-                base_action_horizon=int(self.action_horizon),
-            )
+        frame_chunk_size = int(context.require_temporal_geometry().frame_chunk_size)
+        action_tokens_per_frame = resolve_dual_expert_sequence_actions_per_frame(
+            action_horizon=int(self.action_horizon),
+            frame_chunk_size=int(self.inference_config.frame_chunk_size),
         )
+        action_horizon = frame_chunk_size * action_tokens_per_frame
         rollout_geometry = dynamics_rollout_plan.resolve_geometry(
             fallback_frame_chunk_size=frame_chunk_size,
             fallback_attention_window_size=inference_window_size,

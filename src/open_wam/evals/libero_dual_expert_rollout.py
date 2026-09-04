@@ -413,11 +413,6 @@ def run_dual_expert_libero_episode(
                                 is not None
                                 else _frame_chunk_size(action_config)
                             ),
-                            attention_window_size=(
-                                None
-                                if args.dual_expert_inference_window_size is None
-                                else int(args.dual_expert_inference_window_size)
-                            ),
                         )
                         if uses_composition
                         else None
@@ -857,8 +852,6 @@ def run_dual_expert_libero_episode(
                     observation_frame_count=len(warmup_obs_window),
                     action_history=warmup_action_history,
                     proprio_history=proprio_history,
-                    inference_window_size=args.dual_expert_inference_window_size,
-                    rollout_frame_chunk_size=args.dual_expert_rollout_frame_chunk_size,
                     execution_commit=execution_commit,
                 )
                 if uses_composition and not history_output.applied:
@@ -935,10 +928,6 @@ def run_dual_expert_libero_episode(
                     observation_frame_count=len(consumer_warmup_obs),
                     action_history=warmup_action_history,
                     proprio_history=consumer_proprio_history,
-                    inference_window_size=args.dual_expert_inference_window_size,
-                    rollout_frame_chunk_size=(
-                        args.dual_expert_rollout_frame_chunk_size
-                    ),
                     execution_commit=execution_commit,
                 )
                 if not consumer_history.applied:

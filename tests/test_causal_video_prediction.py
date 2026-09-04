@@ -30,6 +30,7 @@ from open_wam.models.policy_variants import (
     PolicyOutputModality,
     PolicyPreparedInputs,
     PolicyRecurrentHistoryPolicy,
+    PolicyTemporalGeometry,
     PolicyTemporalSpan,
     PolicyTrainBatch,
     PolicyVideoGenerationRequest,
@@ -63,6 +64,7 @@ TRAINING_STEP_GOLDEN = CAUSAL_VIDEO_GOLDEN_ROOT / "training_step_v1.safetensors"
 MULTICHUNK_ROLLOUT_GOLDEN = (
     CAUSAL_VIDEO_GOLDEN_ROOT / "multichunk_rollout_v1.safetensors"
 )
+_W30_F4 = PolicyTemporalGeometry(frame_chunk_size=4, attention_window_size=30)
 
 
 def test_task_prompt_causal_video_prediction_rejects_missing_conditioning() -> None:
@@ -312,10 +314,8 @@ def test_causal_video_composition_synthesizes_future_template_from_one_observati
         visual_outputs,  # type: ignore[arg-type]
         PolicyInferContext(
             extra={"task_text": ("move the object",)},
-            video_generation=PolicyVideoGenerationRequest(
-                frame_count=4,
-                attention_window_size=30,
-            ),
+            video_generation=PolicyVideoGenerationRequest(frame_count=4),
+            temporal_geometry=_W30_F4,
         ),
         PolicyInferState(),
     )
@@ -338,10 +338,8 @@ def test_causal_video_composition_synthesizes_future_template_from_one_observati
             visual_outputs,  # type: ignore[arg-type]
             PolicyInferContext(
                 extra={"task_text": ("move the object",)},
-                video_generation=PolicyVideoGenerationRequest(
-                    frame_count=4,
-                    attention_window_size=30,
-                ),
+                video_generation=PolicyVideoGenerationRequest(frame_count=4),
+                temporal_geometry=_W30_F4,
             ),
             output.next_state,
         )
@@ -350,8 +348,6 @@ def test_causal_video_composition_synthesizes_future_template_from_one_observati
         PolicyObservedHistory(
             video_latents=next_observed,
             observation_frame_count=16,
-            inference_window_size=30,
-            rollout_frame_chunk_size=4,
             execution_commit=PolicyExecutionCommit(
                 speculative_span=PolicyTemporalSpan(start_frame=1, frame_count=4),
                 executed_frame_count=4,
@@ -385,10 +381,8 @@ def test_causal_video_composition_synthesizes_future_template_from_one_observati
         next_visual_outputs,  # type: ignore[arg-type]
         PolicyInferContext(
             extra={"task_text": ("move the object",)},
-            video_generation=PolicyVideoGenerationRequest(
-                frame_count=4,
-                attention_window_size=30,
-            ),
+            video_generation=PolicyVideoGenerationRequest(frame_count=4),
+            temporal_geometry=_W30_F4,
         ),
         history_output.next_state,
     )
@@ -437,10 +431,8 @@ def test_causal_video_composition_reconciles_repeated_short_requests() -> None:
 
     context = PolicyInferContext(
         extra={"task_text": ("move the object",)},
-        video_generation=PolicyVideoGenerationRequest(
-            frame_count=2,
-            attention_window_size=30,
-        ),
+        video_generation=PolicyVideoGenerationRequest(frame_count=2),
+        temporal_geometry=_W30_F4,
     )
     first_output = variant.forward_infer_step(
         _Tower(),  # type: ignore[arg-type]
@@ -455,14 +447,12 @@ def test_causal_video_composition_reconciles_repeated_short_requests() -> None:
         first_output.next_state.variant_state,
         ObservedVideoHistoryState,
     )
-    assert first_output.next_state.variant_state.model_frame_chunk_size == 4
+    assert first_output.next_state.variant_state.temporal_geometry == _W30_F4
 
     reconciled = variant.reconcile_observed_history(
         PolicyObservedHistory(
             video_latents=next_observed,
             observation_frame_count=8,
-            inference_window_size=30,
-            rollout_frame_chunk_size=2,
             execution_commit=PolicyExecutionCommit(
                 speculative_span=PolicyTemporalSpan(start_frame=1, frame_count=2),
                 executed_frame_count=2,
@@ -531,7 +521,8 @@ def test_native_chunked_causal_inference_honors_reconciliation_capability() -> N
                     "chunk_origin_frame": 0,
                 },
             ),
-        }
+        },
+        temporal_geometry=_W30_F4,
     )
     first_output = variant.forward_infer_step(
         _Tower(),  # type: ignore[arg-type]
@@ -554,8 +545,6 @@ def test_native_chunked_causal_inference_honors_reconciliation_capability() -> N
         PolicyObservedHistory(
             video_latents=next_observed,
             observation_frame_count=16,
-            inference_window_size=30,
-            rollout_frame_chunk_size=4,
             execution_commit=PolicyExecutionCommit(
                 speculative_span=PolicyTemporalSpan(start_frame=1, frame_count=4),
                 executed_frame_count=4,
@@ -628,6 +617,7 @@ def test_prefix_suffix_composition_advances_from_each_real_observation_chunk() -
             PolicyInferContext(
                 extra={"task_text": ("move the object",)},
                 video_generation=PolicyVideoGenerationRequest(frame_count=4),
+                temporal_geometry=_W30_F4,
             ),
             state,
         )

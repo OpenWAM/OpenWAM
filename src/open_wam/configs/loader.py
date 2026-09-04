@@ -62,11 +62,11 @@ def _resolve_config_schema(
     version = declared
     if version == EXPERIMENT_CONFIG_SCHEMA_VERSION:
         return raw
-    if version == 0:
+    if version in (0, 1):
         if not checkpoint_runtime_compat:
             raise ValueError(
-                "Experiment config schema_version 0 is checkpoint metadata; "
-                "load it through an explicit checkpoint compatibility path."
+                f"Experiment config schema_version {version} requires migration; "
+                "load it through the explicit checkpoint compatibility path."
             )
         migrated = apply_checkpoint_runtime_compat(raw)
         migrated["schema_version"] = EXPERIMENT_CONFIG_SCHEMA_VERSION

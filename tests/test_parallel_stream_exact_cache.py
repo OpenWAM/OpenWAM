@@ -271,9 +271,11 @@ def test_ensure_exact_cache_initialized_delegates_shared_allocation(
         policy_config=ParallelStreamPolicyConfig(
             program=VideoActionProgram.VIDEO_THEN_ACTION,
             action_per_frame=4,
-            attn_window=12,
         ),
-        inference_config=InferenceConfig(frame_chunk_size=3),
+        inference_config=InferenceConfig(
+            frame_chunk_size=3,
+            attention_window_size=12,
+        ),
         cache_context=context,
         cache_spec=ExactCacheInterfaceSpec(
             write_mode=ParallelExactCacheWriteMode.SINGLE_STREAM_STAGED,

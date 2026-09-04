@@ -53,6 +53,7 @@ inference:
   # Short rollout knobs for quick inference smoke tests
   video_num_inference_steps: 4
   action_num_inference_steps: 4
+  attention_window_size: 30
   use_cache: true
   guidance_scale: 1.0
 

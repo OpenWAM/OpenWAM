@@ -3871,7 +3871,6 @@ def test_dual_expert_runtime_control_roles_have_one_owner() -> None:
             "dual_expert_config_uses_strict_rollout_parity",
             "resolve_dual_expert_action_only_rollout",
             "resolve_dual_expert_inference_output_request",
-            "resolve_dual_expert_inference_window_size",
             "resolve_dual_expert_rollout_cache_window_frames",
             "resolve_dual_expert_rollout_frame_chunk_size",
             "resolve_dual_expert_rollout_history_frames",

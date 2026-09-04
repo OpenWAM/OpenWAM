@@ -32,7 +32,6 @@ policy_variant:
   hidden_size: 256
   frame_chunk_size: 2
   action_per_frame: 2
-  attn_window: 8
   sequence_order: [video_noisy, video_condition, action_noisy, action_condition]
   mask_mode: lingbot_chunked
   cache_mode: metadata_only
@@ -59,6 +58,7 @@ inference:
   video_num_inference_steps: 4
   action_num_inference_steps: 4
   frame_chunk_size: 2
+  attention_window_size: 8
   use_cache: true
   guidance_scale: 1.0
 

@@ -158,13 +158,13 @@ def run_parallel_staged_inference_rollout(
             inference_config=inference_config,
             cache_context=cache_context,
             cache_spec=cache_spec,
-            attn_window=int(policy_config.attn_window),
+            attn_window=int(inference_config.attention_window_size),
         )
     elif inference_config.use_cache and cache_context.cache_initialized:
         validate_existing_exact_cache_attention_window(
             transformer,
             cache_name=cache_context.cache_name,
-            requested_attn_window=int(policy_config.attn_window),
+            requested_attn_window=int(inference_config.attention_window_size),
         )
     generation_frame_start = current_frame_start
     initial_observed_context_committed = False
@@ -187,7 +187,7 @@ def run_parallel_staged_inference_rollout(
                 current_frame_start=current_frame_start,
                 step_index=int(infer_cache.get("step_index", 0)),
                 current_block_coupling=current_block_coupling,
-                window_size=int(policy_config.attn_window),
+                window_size=int(inference_config.attention_window_size),
                 hidden_proprio_state=hidden_proprio_state,
             )
         )
@@ -404,7 +404,7 @@ def run_parallel_staged_inference_rollout(
                 action_channel_mask=action_channel_mask,
                 update_cache=1,
                 chunk_size=inference_config.frame_chunk_size,
-                window_size=policy_config.attn_window,
+                window_size=inference_config.attention_window_size,
                 current_block_coupling=current_block_coupling,
                 history_stream_visibility=resolve_parallel_history_stream_visibility(
                     policy_config

@@ -30,6 +30,7 @@ from open_wam.models.common.rollout_history import resolve_execute_action_steps
 from open_wam.models.policy_variants import (
     DynamicsRolloutRequest,
     PolicyInferContext,
+    PolicyTemporalGeometry,
 )
 from open_wam.models.policy_variants.dual_expert.inference_backend import (
     ensure_dual_expert_inference_backend,
@@ -62,6 +63,7 @@ from .dual_expert_refactor_contract import (
     FULL_STATE_RESUME_ASSET_ID,
     GJD_INFERENCE_CONTRACT,
     METHOD_BY_ASSET_ID,
+    DualExpertInferenceContract,
     DualExpertMethodSpec,
     DualExpertTrainingProfile,
     GJDTrainingMode,
@@ -579,6 +581,7 @@ def run_inference_characterization(
     backend_report = ensure_dual_expert_inference_backend(pipeline, config)
     pipeline.eval()
     fixture = load_rollout_input_fixture(fixture_root / "mot_streaming_startup.json")
+    contract = GJD_INFERENCE_CONTRACT if method.is_gjd else DEFAULT_INFERENCE_CONTRACT
     reports: dict[str, Any] = {}
     try:
         scenarios = inference_scenarios_for(method)
@@ -608,6 +611,7 @@ def run_inference_characterization(
                 device=device,
                 chunk_count=chunk_count,
                 require_cache_rollover=require_cache_rollover,
+                rollout_contract=contract,
             )
             print(
                 "[dual_expert_characterization] "
@@ -615,9 +619,6 @@ def run_inference_characterization(
                 f"scenario={scenario.scenario_id} status=passed",
                 flush=True,
             )
-        contract = (
-            GJD_INFERENCE_CONTRACT if method.is_gjd else DEFAULT_INFERENCE_CONTRACT
-        )
         payload = {
             "schema_version": 1,
             "phase": ("cache_rollover" if require_cache_rollover else "inference"),
@@ -861,6 +862,7 @@ def _run_inference_scenario(
     device: torch.device,
     chunk_count: int,
     require_cache_rollover: bool,
+    rollout_contract: DualExpertInferenceContract,
 ) -> dict[str, Any]:
     views = {name: value.to(device=device) for name, value in fixture.views.items()}
     state = fixture.state.to(device=device)
@@ -939,6 +941,10 @@ def _run_inference_scenario(
                     state=state,
                     dynamics=dynamics,
                     extra=extra,
+                    temporal_geometry=PolicyTemporalGeometry(
+                        frame_chunk_size=rollout_contract.model_frame_chunk_size,
+                        attention_window_size=rollout_contract.inference_window_size,
+                    ),
                 ),
                 infer_state=infer_state,
             )
@@ -1014,7 +1020,6 @@ def _inference_extra(
     return {
         "task_text": fixture.task_text,
         "action_device": str(device),
-        "dual_expert_inference_window_size": 30,
     }
 
 

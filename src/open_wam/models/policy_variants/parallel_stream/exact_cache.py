@@ -275,7 +275,7 @@ def ensure_exact_cache_initialized(
     if not inference_config.use_cache:
         return cache_context
     resolved_attn_window = int(
-        policy_config.attn_window if attn_window is None else attn_window
+        inference_config.attention_window_size if attn_window is None else attn_window
     )
     if resolved_attn_window <= 0:
         raise ValueError(

@@ -55,7 +55,6 @@ def _policy(
         hidden_size=16,
         frame_chunk_size=2,
         action_per_frame=2,
-        attn_window=8,
         video_action_condition_source="noisy_action",
         joint_timestep_coupling=coupling,
         program=program,

@@ -14,6 +14,7 @@ from open_wam.models.policy_variants import (
     DynamicsRolloutRequest,
     PolicyInferOutput,
     PolicyInferState,
+    PolicyTemporalGeometry,
 )
 from open_wam.models.policy_variants.parallel_stream import ParallelStreamPolicyVariant
 from open_wam.models.visual_tower import VisualStageOutputs
@@ -124,6 +125,17 @@ class LingbotExactRunner:
     def policy_variant(self) -> ParallelStreamPolicyVariant:
         return self.pipeline.policy_variant
 
+    def _bind_session_geometry(
+        self,
+        state: PolicyInferState,
+        *,
+        label: str,
+    ) -> PolicyTemporalGeometry:
+        return state.bind_temporal_geometry(
+            self.pipeline.default_temporal_geometry,
+            label=label,
+        )
+
     def reset(
         self,
         *,
@@ -136,7 +148,9 @@ class LingbotExactRunner:
         policy_state = self.policy_variant.reset_reference_runtime(
             visual_tower=self.pipeline.visual_tower,
             cache_name=cache_name,
+            temporal_geometry=self.pipeline.default_temporal_geometry,
         )
+        self._bind_session_geometry(policy_state, label="reset state")
         return LingbotExactSession(
             policy_state=policy_state,
             task_text=task_text,
@@ -172,6 +186,10 @@ class LingbotExactRunner:
             negative_text_context=negative_text_context,
             preserve_stream_cache=True,
         )
+        temporal_geometry = self._bind_session_geometry(
+            session.policy_state,
+            label="warmup input state",
+        )
         next_policy_state = self.policy_variant.warm_reference_cache(
             self.pipeline.visual_tower,
             visual_outputs,
@@ -182,7 +200,9 @@ class LingbotExactRunner:
             dynamics=dynamics,
             proprio_state=proprio_state,
             hidden_proprio_history=hidden_proprio_history,
+            temporal_geometry=temporal_geometry,
         )
+        self._bind_session_geometry(next_policy_state, label="warmup output state")
         return LingbotExactWarmupOutput(
             session=LingbotExactSession(
                 policy_state=next_policy_state,
@@ -233,6 +253,10 @@ class LingbotExactRunner:
                 else session.negative_text_context
             )
         )
+        temporal_geometry = self._bind_session_geometry(
+            session.policy_state,
+            label="chunk input state",
+        )
         policy_output = self.policy_variant.generate_reference_chunk(
             visual_tower=self.pipeline.visual_tower,
             visual_outputs=visual_outputs,
@@ -243,6 +267,11 @@ class LingbotExactRunner:
             advance_frame_start=advance_frame_start,
             skip_video_prediction=skip_video_prediction,
             dynamics=dynamics,
+            temporal_geometry=temporal_geometry,
+        )
+        self._bind_session_geometry(
+            policy_output.next_state,
+            label="chunk output state",
         )
         decoder_output = self.pipeline.resolve_infer_decoder_output(
             policy_output,

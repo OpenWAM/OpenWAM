@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 import torch
 
 from open_wam.configs import (
@@ -32,6 +34,7 @@ from ..contracts import (
     PolicyInferOutput,
     PolicyInferState,
     PolicyPreparedInputs,
+    PolicyTemporalGeometry,
     PolicyTrainBatch,
     PolicyTrainOutput,
     PolicyVisualStage,
@@ -101,6 +104,12 @@ class ParallelStreamPolicyVariant(VideoActionPolicyVariant):
             if self.exact_action_adapter.spec is not None
             else None
         )
+        self._validate_reference_runtime_config(self.inference_config)
+
+    def _validate_reference_runtime_config(
+        self,
+        inference_config: InferenceConfig,
+    ) -> None:
         validate_reference_profile(
             self.reference_profile,
             LingbotReferenceRuntimeContract(
@@ -108,16 +117,16 @@ class ParallelStreamPolicyVariant(VideoActionPolicyVariant):
                 action_dim=self.action_dim,
                 action_per_frame=self.config.action_per_frame,
                 policy_frame_chunk_size=self.config.frame_chunk_size,
-                inference_frame_chunk_size=self.inference_config.frame_chunk_size,
-                attn_window=self.config.attn_window,
-                guidance_scale=self.inference_config.guidance_scale,
+                inference_frame_chunk_size=inference_config.frame_chunk_size,
+                attn_window=inference_config.attention_window_size,
+                guidance_scale=inference_config.guidance_scale,
                 require_guidance_scale_match=supports_dynamics_routing(
                     self.config.program
                 ),
-                action_guidance_scale=self.inference_config.action_guidance_scale,
-                video_num_inference_steps=self.inference_config.video_num_inference_steps,
-                action_num_inference_steps=self.inference_config.action_num_inference_steps,
-                video_exec_step=self.inference_config.video_exec_step,
+                action_guidance_scale=inference_config.action_guidance_scale,
+                video_num_inference_steps=inference_config.video_num_inference_steps,
+                action_num_inference_steps=inference_config.action_num_inference_steps,
+                video_exec_step=inference_config.video_exec_step,
                 video_sigma_shift=self.training_config.video_sigma_shift,
                 action_sigma_shift=self.training_config.action_sigma_shift,
             ),
@@ -575,15 +584,17 @@ class ParallelStreamPolicyVariant(VideoActionPolicyVariant):
     ) -> PolicyInferState:
         if previous_state is not None:
             return previous_state
-        del visual_outputs, context
+        del visual_outputs
+        temporal_geometry = context.require_temporal_geometry()
         cursor = RolloutCursor(
             current_start_frame=0,
             block_index=0,
-            chunk_size=self.inference_config.frame_chunk_size,
+            chunk_size=temporal_geometry.frame_chunk_size,
         )
         return PolicyInferState(
             step_index=0,
             cursor=cursor,
+            temporal_geometry=temporal_geometry,
             cache={
                 "runtime_mode": self._runtime_mode_label(),
                 "cache_name": "open_wam_exact",
@@ -603,18 +614,21 @@ class ParallelStreamPolicyVariant(VideoActionPolicyVariant):
         *,
         visual_tower: VisualTower,
         cache_name: str = "open_wam_exact",
+        temporal_geometry: PolicyTemporalGeometry,
     ) -> PolicyInferState:
+        inference_config = self._resolve_inference_config(temporal_geometry)
         visual_tower.reset_runtime_backbone_cache(
             action_dim=self.action_dim, cache_name=cache_name
         )
         cursor = RolloutCursor(
             current_start_frame=0,
             block_index=0,
-            chunk_size=self.inference_config.frame_chunk_size,
+            chunk_size=inference_config.frame_chunk_size,
         )
         return PolicyInferState(
             step_index=0,
             cursor=cursor,
+            temporal_geometry=temporal_geometry,
             cache={
                 "runtime_mode": self._runtime_mode_label(),
                 "cache_name": cache_name,
@@ -641,6 +655,7 @@ class ParallelStreamPolicyVariant(VideoActionPolicyVariant):
         dynamics: DynamicsRolloutRequest | None = None,
         proprio_state: torch.Tensor | None = None,
         hidden_proprio_history: torch.Tensor | None = None,
+        temporal_geometry: PolicyTemporalGeometry,
     ) -> PolicyInferState:
         # Warmup mirrors the original LingBot server lifecycle: observed video
         # and aligned action history are committed to the exact cache before any
@@ -673,11 +688,14 @@ class ParallelStreamPolicyVariant(VideoActionPolicyVariant):
             program=self.config.program,
             request=dynamics,
         )
+        resolved_inference_config = self._resolve_inference_config(
+            temporal_geometry
+        )
         next_cache = run_parallel_exact_cache_warmup(
             transformer=reference_transformer,
             backbone_config=self.backbone_config,
             policy_config=self.config,
-            inference_config=self.inference_config,
+            inference_config=resolved_inference_config,
             observed_video_latents=observed_video_latents,
             observed_action_latents=observed_action_latents,
             text_emb=visual_outputs.frontend.conditioning.text_context,
@@ -729,11 +747,12 @@ class ParallelStreamPolicyVariant(VideoActionPolicyVariant):
                 block_index=int(next_cache.get("step_index", infer_state.step_index)),
                 chunk_size=int(
                     next_cache.get(
-                        "frame_chunk_size", self.inference_config.frame_chunk_size
+                        "frame_chunk_size", resolved_inference_config.frame_chunk_size
                     )
                 ),
             ),
             cache=next_cache,
+            temporal_geometry=temporal_geometry,
         )
 
     def _pack_dynamics_action(
@@ -767,11 +786,15 @@ class ParallelStreamPolicyVariant(VideoActionPolicyVariant):
         advance_frame_start: bool = False,
         skip_video_prediction: bool = False,
         dynamics: DynamicsRolloutRequest | None = None,
+        temporal_geometry: PolicyTemporalGeometry,
     ) -> PolicyInferOutput:
         # Chunk generation stays exact-runtime-native as well. This keeps the
         # canonical parallel-stream policy variant small: the variant owns rollout
         # control and adapter conversion, while the exact runtime helper owns
         # the LingBot denoising schedule itself.
+        resolved_inference_config = self._resolve_inference_config(
+            temporal_geometry
+        )
         if visual_outputs is not None:
             reference_transformer = visual_tower.ensure_runtime_backbone_device(
                 action_dim=self.action_dim,
@@ -834,7 +857,7 @@ class ParallelStreamPolicyVariant(VideoActionPolicyVariant):
                 backbone_config=self.backbone_config,
                 policy_config=self.config,
                 training_config=self.training_config,
-                inference_config=self.inference_config,
+                inference_config=resolved_inference_config,
                 action_dim=self.action_dim,
                 condition_latents=condition_latents,
                 text_emb=text_emb,
@@ -872,7 +895,7 @@ class ParallelStreamPolicyVariant(VideoActionPolicyVariant):
                 backbone_config=self.backbone_config,
                 policy_config=self.config,
                 training_config=self.training_config,
-                inference_config=self.inference_config,
+                inference_config=resolved_inference_config,
                 action_dim=self.action_dim,
                 condition_latents=condition_latents,
                 text_emb=text_emb,
@@ -906,7 +929,7 @@ class ParallelStreamPolicyVariant(VideoActionPolicyVariant):
             ),
             chunk_size=int(
                 infer_artifacts.next_cache.get(
-                    "frame_chunk_size", self.inference_config.frame_chunk_size
+                    "frame_chunk_size", resolved_inference_config.frame_chunk_size
                 )
             ),
         )
@@ -946,6 +969,7 @@ class ParallelStreamPolicyVariant(VideoActionPolicyVariant):
                 step_index=int(infer_artifacts.next_cache["step_index"]),
                 cursor=next_cursor,
                 cache=infer_artifacts.next_cache,
+                temporal_geometry=temporal_geometry,
             ),
             decoder_artifacts=DecoderArtifactEnvelope(
                 contract=PARALLEL_STREAM_DECODER_ARTIFACT_CONTRACT,
@@ -969,6 +993,7 @@ class ParallelStreamPolicyVariant(VideoActionPolicyVariant):
         context: PolicyInferContext,
         infer_state: PolicyInferState,
     ) -> PolicyInferOutput:
+        temporal_geometry = context.require_temporal_geometry()
         warmed_state = infer_state
         condition_outputs: VisualStageOutputs | None = visual_outputs
         if context.previous_action is not None:
@@ -992,6 +1017,7 @@ class ParallelStreamPolicyVariant(VideoActionPolicyVariant):
                 proprio_state=self.conditioning.select_rollout_proprio_state(
                     context.state
                 ),
+                temporal_geometry=temporal_geometry,
             )
             condition_outputs = None
         return self.generate_reference_chunk(
@@ -1000,4 +1026,17 @@ class ParallelStreamPolicyVariant(VideoActionPolicyVariant):
             infer_state=warmed_state,
             proprio_state=self.conditioning.select_rollout_proprio_state(context.state),
             dynamics=context.dynamics,
+            temporal_geometry=temporal_geometry,
         )
+
+    def _resolve_inference_config(
+        self,
+        temporal_geometry: PolicyTemporalGeometry,
+    ) -> InferenceConfig:
+        resolved = replace(
+            self.inference_config,
+            frame_chunk_size=int(temporal_geometry.frame_chunk_size),
+            attention_window_size=int(temporal_geometry.attention_window_size),
+        )
+        self._validate_reference_runtime_config(resolved)
+        return resolved

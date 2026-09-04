@@ -177,6 +177,7 @@ inference:
   video_num_inference_steps: 20
   action_num_inference_steps: 20
   frame_chunk_size: 4
+  attention_window_size: 30
   use_cache: true
   guidance_scale: 5.0
 

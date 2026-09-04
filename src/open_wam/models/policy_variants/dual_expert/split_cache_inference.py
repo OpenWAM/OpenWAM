@@ -68,18 +68,12 @@ from .decoder_artifacts import (
 from .modules import DualExpertActionExpert
 from .rollout_geometry import (
     resolve_dual_expert_inference_output_request,
-    resolve_dual_expert_inference_window_size,
-    resolve_dual_expert_rollout_frame_chunk_size,
+    resolve_dual_expert_sequence_actions_per_frame,
 )
 from .runtime_routes import (
     DUAL_EXPERT_SPLIT_CACHE_INFERENCE_COUPLINGS,
 )
 from .sequence_layout import build_action_grid_ids_for_sequence
-
-# Default LingBot-reference slot-pool window used by both
-# `initialize_exact_runtime_cache` and the parallel-stream-aligned video-cache trim.
-_DUAL_EXPERT_SLOT_POOL_ATTN_WINDOW = 30
-
 
 @dataclass(frozen=True)
 class _VideoConditionedActionStage:
@@ -137,13 +131,12 @@ class DualExpertSplitCacheInferenceProgram:
         video_device = next(visual_tower.core.parameters()).device
         video_dtype = resolve_runtime_module_dtype(visual_tower.core)
 
-        chunk_frames, action_horizon, action_tokens_per_frame = (
-            resolve_dual_expert_rollout_frame_chunk_size(
-                context,
-                default_frame_chunk_size=int(self.inference_config.frame_chunk_size),
-                base_action_horizon=int(self.action_horizon),
-            )
+        chunk_frames = int(context.require_temporal_geometry().frame_chunk_size)
+        action_tokens_per_frame = resolve_dual_expert_sequence_actions_per_frame(
+            action_horizon=int(self.action_horizon),
+            frame_chunk_size=int(self.inference_config.frame_chunk_size),
         )
+        action_horizon = chunk_frames * action_tokens_per_frame
         runtime_state.chunk_advance_frames = int(chunk_frames)
         current_block_coupling = resolve_dual_expert_current_block_coupling(self.config)
         native_modalities = video_action_program_output_modalities(
@@ -297,9 +290,8 @@ class DualExpertSplitCacheInferenceProgram:
             raise ValueError(
                 "DualExpert condition-frame rewind is only valid for observation-conditioned replans."
             )
-        inference_window_size = resolve_dual_expert_inference_window_size(
-            context,
-            default_window_size=_DUAL_EXPERT_SLOT_POOL_ATTN_WINDOW,
+        inference_window_size = int(
+            context.require_temporal_geometry().attention_window_size
         )
         # parallel-stream-aligned per-chunk warmup. On chunk 0 we allocate the
         # slot-pool backend via `initialize_exact_runtime_cache` and write the
@@ -834,8 +826,7 @@ class DualExpertSplitCacheInferenceProgram:
         # `build_chunked_temporal_exact_attention_profile` for the inference
         # `[video_cache; past_action_cache; current_action]` layout. Block
         # ids are video=chunk*2 / action=chunk*2+1, the within-window check
-        # uses `training_config.window_size` (same value parallel-stream passes as
-        # `input_dict["window_size"]` at inference), and clean/noise causal
+        # uses the session's resolved inference window, and clean/noise causal
         # rules match parallel-stream's chunked_temporal_exact profile.
         if (
             runtime_state.video_tokens_per_frame is None
@@ -871,8 +862,8 @@ class DualExpertSplitCacheInferenceProgram:
             current_action_seq_len=action_horizon,
             video_tokens_per_frame=int(runtime_state.video_tokens_per_frame),
             action_tokens_per_frame=action_tokens_per_frame,
-            chunk_size_frames=max(1, int(self.training_config.chunk_size)),
-            window_size_frames=max(1, int(self.training_config.window_size)),
+            chunk_size_frames=chunk_frames,
+            window_size_frames=inference_window_size,
             device=device,
             video_can_attend_action=False,
             video_frame_start=video_frame_start,

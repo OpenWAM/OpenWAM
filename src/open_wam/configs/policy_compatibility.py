@@ -296,6 +296,57 @@ def normalize_video_action_config_fields(
     return normalized
 
 
+def _migrate_checkpoint_parallel_attention_window(
+    raw_config: Mapping[str, Any],
+    *,
+    warn: bool,
+) -> dict[str, Any]:
+    """Move the former Parallel Stream window to its shared inference owner."""
+
+    normalized = dict(raw_config)
+    raw_policy = normalized.get("policy_variant")
+    if not isinstance(raw_policy, Mapping) or "attn_window" not in raw_policy:
+        return normalized
+    if (
+        _plain_config_value(raw_policy.get("name"))
+        != PolicyVariantName.PARALLEL_STREAM.value
+    ):
+        return normalized
+
+    policy = dict(raw_policy)
+    legacy_value = policy.pop("attn_window")
+    normalized["policy_variant"] = policy
+
+    raw_inference = normalized.get("inference", {})
+    if not isinstance(raw_inference, Mapping):
+        raise TypeError(
+            "Checkpoint config `inference` must be a mapping when migrating "
+            "`policy_variant.attn_window`."
+        )
+    inference = dict(raw_inference)
+    canonical_name = "attention_window_size"
+    if (
+        canonical_name in inference
+        and _plain_config_value(inference[canonical_name])
+        != _plain_config_value(legacy_value)
+    ):
+        raise ValueError(
+            "Conflicting checkpoint config fields "
+            "`inference.attention_window_size` and deprecated "
+            f"`policy_variant.attn_window`: {inference[canonical_name]!r} "
+            f"!= {legacy_value!r}."
+        )
+    inference[canonical_name] = legacy_value
+    normalized["inference"] = inference
+    if warn:
+        _warn_legacy_field(
+            legacy_name="policy_variant.attn_window",
+            canonical_name="inference.attention_window_size",
+            stacklevel=3,
+        )
+    return normalized
+
+
 def migrate_checkpoint_video_action_config_fields(
     raw_config: Mapping[str, Any],
     *,
@@ -303,7 +354,10 @@ def migrate_checkpoint_video_action_config_fields(
 ) -> dict[str, Any]:
     """Canonicalize names and retired fields in checkpoint metadata only."""
 
-    normalized = dict(raw_config)
+    normalized = _migrate_checkpoint_parallel_attention_window(
+        raw_config,
+        warn=warn,
+    )
     raw_policy = normalized.get("policy_variant")
     if isinstance(raw_policy, Mapping):
         normalized["policy_variant"] = (

@@ -2149,8 +2149,8 @@ def test_mixed_video_latent_encoder_canonical_and_per_view_manifest_is_trainable
         output_root,
         temporary_root=tmp_path,
     ) == (
-        19058,
-        "da91e21f5ce12419419e14cd4c56982fdafb175d9b8521ea559d6c443217ba30",
+        19087,
+        "6e7ec9b175e030ae61fecddde93c2d2a4d238e14d6053dd85945e0e32bcfca23",
     )
 
 

@@ -9,6 +9,7 @@ from open_wam.integrations import build_libero_state_history
 from open_wam.models.policy_variants import (
     PolicyInferContext,
     PolicyInferenceOutputRequest,
+    PolicyTemporalGeometry,
     PolicyVideoGenerationRequest,
 )
 
@@ -30,8 +31,6 @@ def _build_infer_context(
         "task_text": (prompt,),
         "action_device": str(action_device),
     }
-    if dual_expert_inference_window_size is not None:
-        extra["dual_expert_inference_window_size"] = int(dual_expert_inference_window_size)
     if dual_expert_rollout_frame_chunk_size is not None:
         extra["dual_expert_rollout_frame_chunk_size"] = int(dual_expert_rollout_frame_chunk_size)
     if dual_expert_action_only_rollout:
@@ -52,6 +51,14 @@ def _build_infer_context(
         state=state,
         output_request=output_request,
         video_generation=video_generation,
+        temporal_geometry=PolicyTemporalGeometry(
+            frame_chunk_size=int(config.inference.frame_chunk_size),
+            attention_window_size=(
+                int(config.inference.attention_window_size)
+                if dual_expert_inference_window_size is None
+                else int(dual_expert_inference_window_size)
+            ),
+        ),
         extra=extra,
     )
 

@@ -46,8 +46,7 @@ def build_dual_expert_inference_action_attention_mask(
       * noisy queries past clean: ``kv < q``
       * noisy queries same-frame noisy: ``kv == q``
       * within_window on block-id delta, with ``window_size_frames`` passed
-        through unchanged from ``training_config.window_size`` (matching
-        parallel-stream's `input_dict["window_size"]`).
+        through unchanged from the resolved inference geometry.
 
     All cached tokens are clean (already-denoised K/V written at past chunks
     or the current chunk's clean obs/pred); only the fresh current-action

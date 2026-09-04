@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import torch
 from torch import nn
@@ -22,6 +22,7 @@ from open_wam.models.policy_variants import (
     PolicyModuleTopology,
     PolicyObservedHistory,
     PolicyObservedHistoryOutput,
+    PolicyTemporalGeometry,
     PolicyTrainBatch,
     PolicyTrainOutput,
     PolicyVariant,
@@ -57,6 +58,7 @@ class VariantPipeline(nn.Module):
         policy_variant: PolicyVariant,
         action_decoder: ActionDecoder,
         preprocessor: ConfiguredCanonicalVideoPreprocessor,
+        default_temporal_geometry: PolicyTemporalGeometry,
         action_sampler_mask: torch.Tensor | None = None,
         action_sampler_inactive_value: float = 0.0,
     ) -> None:
@@ -64,6 +66,7 @@ class VariantPipeline(nn.Module):
         self.visual_tower = visual_tower
         self.policy_variant = policy_variant
         self.action_decoder = action_decoder
+        self.default_temporal_geometry = default_temporal_geometry
         self._validate_decoder_artifact_contract()
         self.preprocessor = preprocessor
         self.action_sampler_inactive_value = float(action_sampler_inactive_value)
@@ -383,6 +386,10 @@ class VariantPipeline(nn.Module):
         :class:`VisualStageOutputs` contract.
         """
 
+        context = self._resolve_temporal_geometry(
+            context,
+            default=self.default_temporal_geometry,
+        )
         self.policy_variant.validate_inference_context(context)
         video_action_request = context.video_conditioned_action
         if video_action_request is not None:
@@ -390,17 +397,31 @@ class VariantPipeline(nn.Module):
                 visual_outputs.frontend.latent_space_identity
             )
         resolved_context = self.policy_variant.resolve_inference_context(context)
+        temporal_geometry = resolved_context.require_temporal_geometry()
+        if infer_state is not None:
+            infer_state.bind_temporal_geometry(
+                temporal_geometry,
+                label="previous inference state",
+            )
         resolved_state = self.policy_variant.prepare_infer_state(
             visual_tower=self.visual_tower,
             visual_outputs=visual_outputs,
             context=resolved_context,
             previous_state=infer_state,
         )
+        resolved_state.bind_temporal_geometry(
+            temporal_geometry,
+            label="prepared inference state",
+        )
         policy_output = self.policy_variant.forward_infer_step(
             visual_tower=self.visual_tower,
             visual_outputs=visual_outputs,
             context=resolved_context,
             infer_state=resolved_state,
+        )
+        policy_output.next_state.bind_temporal_geometry(
+            temporal_geometry,
+            label="next inference state",
         )
         if video_action_request is not None:
             video_action_request.validate_output_frame_start(
@@ -416,6 +437,15 @@ class VariantPipeline(nn.Module):
             policy_output=policy_output,
             decoder_output=decoder_output,
         )
+
+    @staticmethod
+    def _resolve_temporal_geometry(
+        context: PolicyInferContext,
+        *,
+        default: PolicyTemporalGeometry,
+    ) -> PolicyInferContext:
+        geometry = context.temporal_geometry or default
+        return replace(context, temporal_geometry=geometry)
 
     def forward_infer_step_from_latents(
         self,
