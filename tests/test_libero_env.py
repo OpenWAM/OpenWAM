@@ -179,6 +179,7 @@ def test_libero_runtime_factories_forward_explicit_options(
 ) -> None:
     calls: list[tuple[str, dict[str, object]]] = []
     bootstrapped_roots: list[Path | None] = []
+    renderer_profiles: list[object] = []
     libero_package = ModuleType("libero")
     libero_package.__path__ = []  # type: ignore[attr-defined]
     libero_subpackage = ModuleType("libero.libero")
@@ -209,6 +210,11 @@ def test_libero_runtime_factories_forward_explicit_options(
         libero_runtime,
         "ensure_local_libero_config",
         lambda project_root=None: bootstrapped_roots.append(project_root),
+    )
+    monkeypatch.setattr(
+        libero_runtime,
+        "activate_libero_renderer",
+        lambda profile: renderer_profiles.append(profile),
     )
     task_spec = libero_tasks.LiberoTaskSpec(
         benchmark_name="libero_10",
@@ -246,6 +252,10 @@ def test_libero_runtime_factories_forward_explicit_options(
     assert offscreen == "offscreen-env"
     assert control == "control-env"
     assert bootstrapped_roots == [tmp_path, tmp_path]
+    assert [str(profile) for profile in renderer_profiles] == [
+        "online_rollout",
+        "online_rollout",
+    ]
     assert calls == [
         (
             "offscreen",
@@ -278,6 +288,12 @@ def test_libero_runtime_factories_forward_explicit_options(
 
 
 def test_libero_tracking_preserves_target_and_substep_alignment(monkeypatch) -> None:
+    renderer_profiles: list[object] = []
+    monkeypatch.setattr(
+        libero_tracking,
+        "activate_libero_renderer",
+        renderer_profiles.append,
+    )
     task_spec = libero_tasks.LiberoTaskSpec(
         benchmark_name="libero_10",
         task_id=0,
@@ -363,6 +379,7 @@ def test_libero_tracking_preserves_target_and_substep_alignment(monkeypatch) -> 
         torch.tensor([0.01, 0.01]),
     )
     assert [int(frame[0, 0, 0]) for frame in result.camera_frames["agentview_image"]] == [17] * 4
+    assert [str(profile) for profile in renderer_profiles] == ["offline_analysis"]
     assert env.closed is True
 
 

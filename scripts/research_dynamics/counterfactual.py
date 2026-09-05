@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import csv
 import json
-import os
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -14,7 +13,11 @@ import numpy as np
 import pyarrow.parquet as pq
 import torch
 
-from open_wam.configs import ActionSpace, ProprioContextMode
+from open_wam.configs import (
+    ActionSpace,
+    LiberoRendererProfile,
+    ProprioContextMode,
+)
 from open_wam.data.action_pose import quaternion_to_axis_angle
 from open_wam.data.counterfactual_actions import (
     BRANCH_PRESETS,
@@ -25,6 +28,7 @@ from open_wam.data.counterfactual_actions import (
 )
 from open_wam.data.latent_temporal import raw_window_frames_for_latents
 from open_wam.integrations import (
+    activate_libero_renderer,
     build_libero_offscreen_env,
     ensure_local_libero_config,
     load_libero_task_init_states,
@@ -94,9 +98,11 @@ class BranchRender:
 def main(argv: list[str] | None = None) -> None:
     args = _parse_args(argv)
     seed_everywhere(args.seed)
-    os.environ.setdefault("MUJOCO_GL", args.mujoco_gl)
-    if args.pyopengl_platform:
-        os.environ.setdefault("PYOPENGL_PLATFORM", args.pyopengl_platform)
+    renderer_config = activate_libero_renderer(
+        LiberoRendererProfile.OFFLINE_ANALYSIS,
+        requested_backend=args.mujoco_gl,
+        requested_pyopengl_platform=args.pyopengl_platform,
+    )
 
     config_path = Path(args.config).expanduser().resolve()
     checkpoint_file = resolve_checkpoint_file(args.checkpoint)
@@ -186,6 +192,7 @@ def main(argv: list[str] | None = None) -> None:
         "modes": [mode.value for mode in modes],
         "config_overrides": list(args.set_overrides),
         "fdm_drop_text_conditioning": bool(args.fdm_drop_text_conditioning),
+        "libero_renderer": renderer_config.to_dict(),
         "model_seed_policy": "branch_independent_per_case_mode",
         "seed": int(args.seed),
         "cases": [_case_to_row(case) for case in cases],
@@ -231,6 +238,7 @@ def main(argv: list[str] | None = None) -> None:
             ),
             ignore_done=True,
             project_root=Path.cwd(),
+            renderer_profile=LiberoRendererProfile.OFFLINE_ANALYSIS,
         )
         try:
             for branch_name in branches:

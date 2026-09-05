@@ -25,9 +25,11 @@ if str(SRC_ROOT) not in sys.path:
 
 from open_wam.integrations import (  # noqa: E402
     LiberoTaskSpec,
+    activate_libero_renderer,
     ensure_local_libero_config,
     load_libero_task_init_states,
 )
+from open_wam.configs import LiberoRendererProfile  # noqa: E402
 from open_wam.third_party.lingbot import _ensure_flash_attn_shims  # noqa: E402
 from open_wam.utils import seed_everywhere  # noqa: E402
 
@@ -101,6 +103,9 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    renderer_config = activate_libero_renderer(
+        LiberoRendererProfile.ONLINE_ROLLOUT
+    )
     _configure_reference_runtime(args.reference_repo_root)
 
     if not torch.cuda.is_available():
@@ -115,6 +120,7 @@ def main() -> None:
         transformer_dir=Path(args.transformer_dir) if args.transformer_dir else None,
     )
     component_report = _build_reference_component_report(model)
+    component_report["libero_renderer"] = renderer_config.to_dict()
     _print_log("load_report", component_report)
     env = None
     try:

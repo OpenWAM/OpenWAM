@@ -9,6 +9,7 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
+from open_wam.configs import LiberoRendererProfile
 from open_wam.evals.libero_dual_expert_composition import (
     action_consumer_options_from_args,
     add_action_consumer_arguments,
@@ -30,6 +31,7 @@ from open_wam.evals.libero_dual_expert_runtime import (
     load_dual_expert_libero_runtime,
     uses_video_action_composition,
 )
+from open_wam.integrations import activate_libero_renderer
 from open_wam.runtime.checkpoints import CheckpointCompatibilityPolicy
 
 
@@ -237,6 +239,8 @@ def main() -> None:
     )
     args = parser.parse_args()
     validate_action_consumer_arguments(args, parser=parser)
+    renderer_profile = LiberoRendererProfile.ONLINE_ROLLOUT
+    activate_libero_renderer(renderer_profile)
     load_options = DualExpertLiberoLoadOptions(
         config=args.config,
         checkpoint=args.checkpoint,
@@ -293,8 +297,12 @@ def main() -> None:
     task_resources = resolve_dual_expert_libero_task_resources(
         args.benchmark,
         args.task_id,
+        renderer_profile=renderer_profile,
     )
-    env = construct_dual_expert_libero_env(task_resources.task_spec)
+    env = construct_dual_expert_libero_env(
+        task_resources.task_spec,
+        renderer_profile=renderer_profile,
+    )
     episode = DualExpertLiberoEpisodeOptions(
         benchmark=args.benchmark,
         task_id=args.task_id,
@@ -314,6 +322,7 @@ def main() -> None:
         video_fps=args.video_fps,
         seed=args.seed,
         save_rollout_video=bool(args.save_rollout_video),
+        renderer_profile=renderer_profile,
     )
     run_dual_expert_libero_episode(
         episode,

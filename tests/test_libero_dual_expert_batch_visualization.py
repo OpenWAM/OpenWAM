@@ -78,7 +78,7 @@ def test_acquire_rollout_env_reuses_env_within_task_and_closes_on_task_switch() 
     helpers = _load_functions("_acquire_rollout_env", "_close_reused_env")
     constructed: list[_FakeEnv] = []
 
-    def construct_dual_expert_libero_env(task_spec):
+    def construct_dual_expert_libero_env(task_spec, **_):
         env = _FakeEnv(str(task_spec))
         constructed.append(env)
         return env
@@ -87,7 +87,11 @@ def test_acquire_rollout_env_reuses_env_within_task_and_closes_on_task_switch() 
         construct_dual_expert_libero_env=construct_dual_expert_libero_env
     )
     args = SimpleNamespace(reuse_env_per_task=True)
-    resources = SimpleNamespace(reused_env=None, reused_env_task_id=None)
+    resources = SimpleNamespace(
+        reused_env=None,
+        reused_env_task_id=None,
+        renderer_profile="online_rollout",
+    )
 
     env0, close0 = helpers._acquire_rollout_env(args, resources, task_spec="task0", task_id=0)
     env0_again, close0_again = helpers._acquire_rollout_env(args, resources, task_spec="task0", task_id=0)
@@ -108,7 +112,7 @@ def test_acquire_rollout_env_does_not_reuse_when_disabled() -> None:
     helpers = _load_functions("_acquire_rollout_env", "_close_reused_env")
     constructed: list[_FakeEnv] = []
 
-    def construct_dual_expert_libero_env(task_spec):
+    def construct_dual_expert_libero_env(task_spec, **_):
         env = _FakeEnv(str(task_spec))
         constructed.append(env)
         return env
@@ -117,7 +121,11 @@ def test_acquire_rollout_env_does_not_reuse_when_disabled() -> None:
         construct_dual_expert_libero_env=construct_dual_expert_libero_env
     )
     args = SimpleNamespace(reuse_env_per_task=False)
-    resources = SimpleNamespace(reused_env=None, reused_env_task_id=None)
+    resources = SimpleNamespace(
+        reused_env=None,
+        reused_env_task_id=None,
+        renderer_profile="online_rollout",
+    )
 
     env0, close0 = helpers._acquire_rollout_env(args, resources, task_spec="task0", task_id=0)
     env1, close1 = helpers._acquire_rollout_env(args, resources, task_spec="task0", task_id=0)
@@ -174,6 +182,7 @@ def test_loaded_rollout_forwards_policy_and_execution_chunk_overrides() -> None:
     resources = SimpleNamespace(
         runtime="runtime",
         video_action_composition="composition",
+        renderer_profile="online_rollout",
     )
 
     result = helpers._run_one_loaded_rollout(

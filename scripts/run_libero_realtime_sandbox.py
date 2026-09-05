@@ -25,6 +25,7 @@ def _prepend_import_path(path: Path) -> None:
 _prepend_import_path(SRC_ROOT)
 
 from open_wam.configs import (
+    LiberoRendererProfile,
     ParallelRuntimeMode,
     load_experiment_config,
 )
@@ -46,9 +47,11 @@ from open_wam.evals import (
 )
 from open_wam.integrations import (
     LiberoControlConfig,
+    activate_libero_renderer,
     ensure_local_libero_config,
     libero_rollout,
     load_libero_task_init_states,
+    resolve_libero_renderer_config,
     resolve_libero_task_by_id,
 )
 from open_wam.integrations.realtime_contracts import PlannedControlStep
@@ -417,6 +420,7 @@ def main() -> None:
     )
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
+    activate_libero_renderer(LiberoRendererProfile.ONLINE_ROLLOUT)
     _apply_realtime_cli_profiles(args, sys.argv[1:])
 
     if args.max_actions <= 0:
@@ -670,6 +674,7 @@ def _apply_common_inference_overrides(
 
 
 def _construct_realtime_libero_env(task_spec, *, env_horizon: int | None):
+    activate_libero_renderer(LiberoRendererProfile.ONLINE_ROLLOUT)
     ensure_local_libero_config(REPO_ROOT)
     from libero.libero.envs import OffScreenRenderEnv  # type: ignore
 
@@ -744,6 +749,9 @@ def _run_exact_like_realtime_rollout(
     )
     component_report = {
         "pipeline": "open_wam_exact",
+        "libero_renderer": resolve_libero_renderer_config(
+            LiberoRendererProfile.ONLINE_ROLLOUT
+        ).to_dict(),
         "policy_variant": str(config.policy_variant.name),
         "runtime_mode": str(config.policy_variant.runtime_mode),
         "checkpoint_file": None if checkpoint_path is None else str(checkpoint_path.resolve()),
@@ -1677,6 +1685,9 @@ def _run_sequence_policy_realtime_rollout(
     runner = VariantRolloutRunner(pipeline)
     load_report = {
         "pipeline": "open_wam_variant_sequence_rollout",
+        "libero_renderer": resolve_libero_renderer_config(
+            LiberoRendererProfile.ONLINE_ROLLOUT
+        ).to_dict(),
         "policy_variant": str(config.policy_variant.name),
         "rollout_label": str(rollout_label),
         "checkpoint_file": str(checkpoint_path.resolve()),

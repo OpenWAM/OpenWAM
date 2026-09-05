@@ -4,7 +4,6 @@ from __future__ import annotations
 import argparse
 import csv
 import json
-import os
 import shutil
 from collections import Counter, defaultdict
 from dataclasses import dataclass
@@ -18,6 +17,7 @@ import numpy as np
 import pyarrow.parquet as pq
 import torch
 
+from open_wam.configs import LiberoRendererProfile
 from open_wam.data.action_pose import quaternion_to_axis_angle
 from open_wam.data.counterfactual_actions import (
     BRANCH_PRESETS,
@@ -27,6 +27,7 @@ from open_wam.data.counterfactual_actions import (
     expand_branch_names,
 )
 from open_wam.data.latent_temporal import raw_window_frames_for_latents
+from open_wam.integrations import activate_libero_renderer
 
 DEFAULT_BRANCHES = BRANCH_PRESETS["training_10"]
 DEFAULT_CONTEXT_WINDOW_FRAMES = 16
@@ -84,9 +85,11 @@ class RenderedObservationSequence:
 
 def main(argv: list[str] | None = None) -> None:
     args = _parse_args(argv)
-    os.environ.setdefault("MUJOCO_GL", args.mujoco_gl)
-    if args.pyopengl_platform:
-        os.environ.setdefault("PYOPENGL_PLATFORM", args.pyopengl_platform)
+    renderer_config = activate_libero_renderer(
+        LiberoRendererProfile.DATASET_GENERATION,
+        requested_backend=args.mujoco_gl,
+        requested_pyopengl_platform=args.pyopengl_platform,
+    )
 
     branches = expand_branch_names(args.branches)
     t0_fractions = tuple(float(value) for value in _parse_csv_tuple(args.t0_fractions))
@@ -121,6 +124,7 @@ def main(argv: list[str] | None = None) -> None:
         "replay_status_path": str(Path(args.replay_status_path).expanduser().resolve()),
         "target_transitions": int(args.target_transitions),
         "actual_transitions": 0,
+        "libero_renderer": renderer_config.to_dict(),
         "task_ids": list(_parse_int_csv(args.task_ids)),
         "episodes_per_task": int(args.episodes_per_task),
         "selected_episode_count": len(source_episodes),
@@ -214,6 +218,7 @@ def main(argv: list[str] | None = None) -> None:
             horizon=args.env_horizon,
             ignore_done=True,
             project_root=Path.cwd(),
+            renderer_profile=LiberoRendererProfile.DATASET_GENERATION,
         )
         try:
             for episode in episodes:

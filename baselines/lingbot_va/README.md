@@ -46,7 +46,7 @@ export LINGBOT_BASELINE_PYTHON=/path/to/lingbot-va-env/bin/python
 export LINGBOT_VA_MODEL_ROOT=/path/to/lingbot-va-posttrain-libero-long
 
 PYTHONPATH=src:outputs/lingbot_va_pydeps \
-PYTHONUNBUFFERED=1 MUJOCO_GL=egl TOKENIZERS_PARALLELISM=false \
+PYTHONUNBUFFERED=1 TOKENIZERS_PARALLELISM=false \
 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True CUDA_VISIBLE_DEVICES=0 \
   "$LINGBOT_BASELINE_PYTHON" \
   -m baselines.lingbot_va.run_libero10_baseline \
@@ -57,7 +57,7 @@ Single smoke episode:
 
 ```bash
 PYTHONPATH=src:outputs/lingbot_va_pydeps \
-PYTHONUNBUFFERED=1 MUJOCO_GL=egl TOKENIZERS_PARALLELISM=false \
+PYTHONUNBUFFERED=1 TOKENIZERS_PARALLELISM=false \
 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True CUDA_VISIBLE_DEVICES=0 \
   "$LINGBOT_BASELINE_PYTHON" \
   -m baselines.lingbot_va.run_libero10_baseline \
@@ -88,6 +88,8 @@ The runner imports upstream `VA_Server` and preserves the LIBERO client loop:
 
 Open-WAM only provides argument parsing, resumable episode grids/manifests,
 JSON summaries, and optional rollout video rendering.
+The suite's `runtime.renderer_profile: online_rollout` pins this online baseline
+to EGL before upstream simulator modules are imported.
 
 ## Artifacts
 

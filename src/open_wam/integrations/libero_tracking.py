@@ -8,6 +8,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
+from open_wam.configs import LiberoRendererProfile
 from open_wam.data.action_pose import PoseSequence, reconstruct_absolute_pose_targets
 from open_wam.integrations.libero_gripper_control import (
     project_libero_gripper_state,
@@ -20,6 +21,7 @@ from open_wam.integrations.libero_osc_control import (
     quaternion_angular_error_degrees,
 )
 from open_wam.integrations.libero_runtime import build_libero_offscreen_env
+from open_wam.integrations.libero_rendering import activate_libero_renderer
 from open_wam.integrations.libero_tasks import (
     LiberoTaskSpec,
     load_libero_task_init_states,
@@ -66,12 +68,16 @@ def track_relative_targets_in_libero_env(
     camera_height: int = 256,
     camera_width: int = 256,
     project_root: Path | None = None,
+    renderer_profile: LiberoRendererProfile | str = (
+        LiberoRendererProfile.OFFLINE_ANALYSIS
+    ),
 ) -> LiberoTrackingResult:
     """Replay one public WAM trajectory in the real LIBERO simulator."""
 
     if control_config is None:
         control_config = LiberoControlConfig()
 
+    activate_libero_renderer(renderer_profile)
     task_spec = resolve_libero_task(task_text, project_root=project_root)
     init_states = load_libero_task_init_states(
         task_spec,
@@ -95,6 +101,7 @@ def track_relative_targets_in_libero_env(
         ),
         ignore_done=True,
         project_root=project_root,
+        renderer_profile=renderer_profile,
     )
     try:
         obs = env.reset()

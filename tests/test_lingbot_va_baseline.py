@@ -2,6 +2,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
+from open_wam.configs import LiberoRendererProfile
+
 from baselines.lingbot_va.config import (
     CheckpointSpec,
     RolloutSuiteConfig,
@@ -101,6 +105,17 @@ def test_suite_mapping_uses_suite_defaults(tmp_path: Path) -> None:
     assert config.max_timestep == 11
     assert config.render_video is False
     assert config.continue_on_error is True
+    assert config.renderer_profile is LiberoRendererProfile.ONLINE_ROLLOUT
+
+
+def test_suite_mapping_rejects_non_online_renderer(tmp_path: Path) -> None:
+    raw = {
+        "model_root": str(tmp_path / "model"),
+        "runtime": {"renderer_profile": "offline_analysis"},
+    }
+
+    with pytest.raises(ValueError, match="online_rollout"):
+        suite_config_from_mapping(raw, base_dir=Path.cwd())
 
 
 def test_suite_mapping_rejects_transformer_override(tmp_path: Path) -> None:
@@ -177,6 +192,7 @@ def test_tracked_suite_template_uses_portable_model_root(monkeypatch, tmp_path: 
     config = load_suite_config(template)
 
     assert config.checkpoints[0].model_root == tmp_path
+    assert config.renderer_profile is LiberoRendererProfile.ONLINE_ROLLOUT
 
 
 def test_summary_validation_rejects_bad_full_eval_rows(tmp_path: Path) -> None:

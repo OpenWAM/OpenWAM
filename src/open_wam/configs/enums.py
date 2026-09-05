@@ -345,6 +345,21 @@ class LiberoAbsoluteJointExecutionMode(StrEnum):
     DIRECT_GOAL = "direct_goal"
 
 
+class LiberoRendererBackend(StrEnum):
+    """Headless OpenGL backend used by a LIBERO simulator process."""
+
+    EGL = "egl"
+    OSMESA = "osmesa"
+
+
+class LiberoRendererProfile(StrEnum):
+    """Workload-level renderer contract for reproducible LIBERO execution."""
+
+    ONLINE_ROLLOUT = "online_rollout"
+    OFFLINE_ANALYSIS = "offline_analysis"
+    DATASET_GENERATION = "dataset_generation"
+
+
 class ActionTargetStateEncoding(StrEnum):
     """How proprio state should be unpacked into pose/gripper fields."""
 

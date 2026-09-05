@@ -27,6 +27,10 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
+from open_wam.configs import LiberoRendererProfile  # noqa: E402
+from open_wam.integrations.libero_rendering import (  # noqa: E402
+    activate_libero_renderer,
+)
 from open_wam.integrations.libero_tasks import (  # noqa: E402
     LiberoTaskSpec,
     ensure_local_libero_config,
@@ -125,8 +129,13 @@ def main() -> None:
 
     subsets = parse_subset_selector(args.subsets)
     os.environ["LIBERO_REPO_ROOT"] = str(args.libero_repo_root)
-    os.environ["MUJOCO_GL"] = args.mujoco_gl
-    os.environ["PYOPENGL_PLATFORM"] = args.pyopengl_platform or args.mujoco_gl
+    activate_libero_renderer(
+        LiberoRendererProfile.OFFLINE_ANALYSIS,
+        requested_backend=args.mujoco_gl,
+        requested_pyopengl_platform=(
+            args.pyopengl_platform or args.mujoco_gl
+        ),
+    )
 
     if args.collect_run is not None:
         collect_run(args=args, subsets=subsets, run_id=args.collect_run)

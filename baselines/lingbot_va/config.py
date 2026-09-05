@@ -8,6 +8,8 @@ from typing import Any, Iterable, Mapping, Sequence
 
 import yaml
 
+from open_wam.configs import LiberoRendererProfile
+
 
 _ENV_WITH_DEFAULT = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-(.*?))?\}")
 
@@ -128,6 +130,14 @@ class RolloutSuiteConfig:
     render_video: bool = True
     continue_on_error: bool = False
     resume: bool = False
+    renderer_profile: LiberoRendererProfile = LiberoRendererProfile.ONLINE_ROLLOUT
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "renderer_profile",
+            LiberoRendererProfile(self.renderer_profile),
+        )
 
     def to_json_dict(self) -> dict[str, Any]:
         return {
@@ -142,6 +152,7 @@ class RolloutSuiteConfig:
             "video_fps": self.video_fps,
             "output_dir": str(self.output_dir),
             "cuda_device": self.cuda_device,
+            "renderer_profile": self.renderer_profile.value,
             "render_video": self.render_video,
             "continue_on_error": self.continue_on_error,
             "resume": self.resume,
@@ -238,6 +249,15 @@ def suite_config_from_mapping(raw_config: Mapping[str, Any], *, base_dir: Path |
         video_fps=float(runtime.get("video_fps", raw_config.get("video_fps", 60.0))),
         output_dir=output_dir,
         cuda_device=int(runtime.get("cuda_device", raw_config.get("cuda_device", 0))),
+        renderer_profile=LiberoRendererProfile(
+            runtime.get(
+                "renderer_profile",
+                raw_config.get(
+                    "renderer_profile",
+                    LiberoRendererProfile.ONLINE_ROLLOUT.value,
+                ),
+            )
+        ),
         render_video=_bool_value(runtime.get("render_video", raw_config.get("render_video", True))),
         continue_on_error=_bool_value(
             runtime.get("continue_on_error", raw_config.get("continue_on_error", False))
@@ -315,6 +335,11 @@ def _checkpoint_from_mapping(
 
 
 def validate_libero10_only(config: RolloutSuiteConfig) -> None:
+    if config.renderer_profile is not LiberoRendererProfile.ONLINE_ROLLOUT:
+        raise ValueError(
+            "The vanilla LingBot-VA online baseline requires "
+            "runtime.renderer_profile='online_rollout' (EGL)."
+        )
     if config.episode_specs:
         bad = sorted({episode.benchmark for episode in config.episode_specs if episode.benchmark != "libero_10"})
         if bad:

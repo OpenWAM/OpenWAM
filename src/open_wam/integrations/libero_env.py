@@ -14,6 +14,7 @@ from open_wam.configs import (
     DataConfig,
     GripperRepresentation,
     LiberoAbsoluteJointExecutionMode,
+    LiberoRendererProfile,
 )
 from open_wam.data.action_normalization import (
     denormalize_action_targets,
@@ -28,6 +29,7 @@ from open_wam.integrations.libero_gripper_control import (
     gripper_command_for_substep as _raw_gripper_command_for_substep,
     gripper_qpos_tracking_command as _gripper_qpos_tracking_command,
 )
+from open_wam.integrations.libero_rendering import activate_libero_renderer
 from open_wam.integrations.libero_joint_control import (
     absolute_joint_position_to_libero_joint_delta_action,
     disable_libero_joint_position_controller_interpolator,
@@ -144,6 +146,7 @@ class LiberoBenchmarkAdapter:
         self._pending_absolute_joint_gripper_representation: GripperRepresentation | None = None
 
     def reset(self, spec: EpisodeSpec) -> SimulatorObservation:
+        activate_libero_renderer(LiberoRendererProfile.ONLINE_ROLLOUT)
         task_id = 0 if spec.task_id is None else int(spec.task_id)
         task_spec = resolve_libero_task_by_id(self.config.benchmark_name, task_id, project_root=self.project_root)
         init_states = load_libero_task_init_states(task_spec, project_root=self.project_root)
@@ -167,6 +170,7 @@ class LiberoBenchmarkAdapter:
                 use_camera_obs=bool(self.config.use_camera_obs),
                 has_offscreen_renderer=bool(self.config.has_offscreen_renderer),
                 project_root=self.project_root,
+                renderer_profile=LiberoRendererProfile.ONLINE_ROLLOUT,
             )
         else:
             self._env = build_libero_offscreen_env(
@@ -178,6 +182,7 @@ class LiberoBenchmarkAdapter:
                 ignore_done=self.config.ignore_done,
                 control_freq=self.config.control_freq,
                 project_root=self.project_root,
+                renderer_profile=LiberoRendererProfile.ONLINE_ROLLOUT,
             )
         if spec.seed is not None:
             reset_seed = int(spec.seed)

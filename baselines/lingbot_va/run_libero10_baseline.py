@@ -3,6 +3,8 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+from open_wam.configs import LiberoRendererProfile
+
 from .config import CheckpointSpec, RolloutSuiteConfig, load_episode_manifest, load_suite_config, parse_int_selection, resolve_path
 
 
@@ -76,6 +78,7 @@ def main() -> None:
             video_fps=args.video_fps,
             output_dir=Path(args.output_dir),
             cuda_device=args.cuda_device,
+            renderer_profile=LiberoRendererProfile.ONLINE_ROLLOUT,
             render_video=not args.no_render_video,
             continue_on_error=args.continue_on_error,
             resume=args.resume,

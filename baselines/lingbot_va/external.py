@@ -48,6 +48,10 @@ def prepare_python_paths(source_repo: str | Path | None = None) -> Path:
 
 def load_external_modules(source_repo: str | Path | None = None) -> ExternalModules:
     resolved_source = prepare_python_paths(source_repo)
+    from open_wam.configs import LiberoRendererProfile
+    from open_wam.integrations import activate_libero_renderer
+
+    activate_libero_renderer(LiberoRendererProfile.ONLINE_ROLLOUT)
     _bootstrap_libero_config_without_prompt()
 
     from open_wam.third_party.lingbot import _ensure_flash_attn_shims

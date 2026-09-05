@@ -24,6 +24,7 @@ TEMPLATE_ROOT = _PACKAGE_ROOT / "templates"
 EXPERIMENT_CONFIG_ROOT = CONFIG_ROOT / "experiments"
 EVALUATION_CONFIG_ROOT = CONFIG_ROOT / "evals"
 EXAMPLE_CONFIG_ROOT = CONFIG_ROOT / "examples"
+SIMULATOR_CONFIG_ROOT = CONFIG_ROOT / "simulators"
 
 
 class DeprecatedConfigNameWarning(FutureWarning):
@@ -225,6 +226,7 @@ __all__ = [
     "EXAMPLE_CONFIG_ROOT",
     "EXPERIMENT_CONFIG_ALIASES",
     "EXPERIMENT_CONFIG_ROOT",
+    "SIMULATOR_CONFIG_ROOT",
     "TEMPLATE_ROOT",
     "DeprecatedConfigNameWarning",
     "canonical_config_stem",

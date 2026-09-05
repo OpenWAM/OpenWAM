@@ -29,6 +29,8 @@ episodes:
   seed:
 
 runtime:
+  # Normal LingBot online policy rollout is pinned to EGL.
+  renderer_profile: online_rollout
   # Upstream client loops while env timestep < 800.
   max_timestep: 800
   max_chunks:

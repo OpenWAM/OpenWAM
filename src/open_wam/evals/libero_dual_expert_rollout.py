@@ -18,7 +18,7 @@ from typing import Any
 import numpy as np
 import torch
 
-from open_wam.configs import DynamicsObjective
+from open_wam.configs import DynamicsObjective, LiberoRendererProfile
 from open_wam.evals.libero_dual_expert_composition import (
     VideoActionComposition,
     build_composed_component_report,
@@ -55,6 +55,7 @@ from open_wam.evals.realtime_speculation import preserve_rng_state
 from open_wam.integrations import (
     LIBERO_ROLLOUT_VIEW_KEYS,
     LiberoTaskSpec,
+    activate_libero_renderer,
     build_libero_offscreen_env,
     build_libero_state_history,
     extract_libero_rollout_observation,
@@ -142,6 +143,14 @@ class DualExpertLiberoEpisodeOptions:
     seed: int | None
     save_rollout_video: bool = False
     skip_comparison_video: bool = False
+    renderer_profile: LiberoRendererProfile = LiberoRendererProfile.ONLINE_ROLLOUT
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "renderer_profile",
+            LiberoRendererProfile(self.renderer_profile),
+        )
 
 
 def _raw_env_done(env: object) -> bool:
@@ -153,9 +162,14 @@ def _raw_env_done(env: object) -> bool:
 def resolve_dual_expert_libero_task_resources(
     benchmark_name: str,
     task_id: int,
+    *,
+    renderer_profile: LiberoRendererProfile | str = (
+        LiberoRendererProfile.ONLINE_ROLLOUT
+    ),
 ) -> DualExpertLiberoTaskResources:
     """Resolve task metadata and initialization states for one benchmark task."""
 
+    activate_libero_renderer(renderer_profile)
     task_spec, prompt = _resolve_task_spec(benchmark_name, task_id)
     return DualExpertLiberoTaskResources(
         task_spec=task_spec,
@@ -164,10 +178,16 @@ def resolve_dual_expert_libero_task_resources(
     )
 
 
-def construct_dual_expert_libero_env(task_spec: LiberoTaskSpec) -> Any:
+def construct_dual_expert_libero_env(
+    task_spec: LiberoTaskSpec,
+    *,
+    renderer_profile: LiberoRendererProfile | str = (
+        LiberoRendererProfile.ONLINE_ROLLOUT
+    ),
+) -> Any:
     """Construct the exact 128px offscreen environment with bounded retries."""
 
-    return _construct_single_env(task_spec)
+    return _construct_single_env(task_spec, renderer_profile=renderer_profile)
 
 
 def run_dual_expert_libero_episode(
@@ -186,6 +206,7 @@ def run_dual_expert_libero_episode(
         raise RuntimeError(
             "Failed to construct LIBERO OffScreenRenderEnv after 5 retries."
         )
+    renderer_config = activate_libero_renderer(args.renderer_profile)
     task_id = int(args.task_id)
     episode_idx = int(args.episode_idx)
     seed = args.seed
@@ -997,6 +1018,7 @@ def run_dual_expert_libero_episode(
             "checkpoint_file": str(resources.checkpoint_path.resolve()),
             "action_route": action_route.value,
             "dual_expert_gjd_action_route": action_route.value,
+            "libero_renderer": renderer_config.to_dict(),
         }
         if consumer_runtime is not None:
             summary["video_action_composition"] = {
@@ -1084,7 +1106,11 @@ def _resolve_task_spec(benchmark_name: str, task_id: int) -> tuple[LiberoTaskSpe
     return task_spec, task_spec.task_language
 
 
-def _construct_single_env(task_spec: LiberoTaskSpec):
+def _construct_single_env(
+    task_spec: LiberoTaskSpec,
+    *,
+    renderer_profile: LiberoRendererProfile | str,
+):
     count = 0
     env = None
     while env is None and count < 5:
@@ -1096,6 +1122,7 @@ def _construct_single_env(task_spec: LiberoTaskSpec):
                 horizon=1000,
                 ignore_done=False,
                 project_root=REPO_ROOT,
+                renderer_profile=renderer_profile,
             )
         except Exception as exc:  # pragma: no cover - best-effort retry path
             print(f"construct env failed ({count + 1}/5): {exc}")

@@ -96,6 +96,7 @@ def uses_video_action_composition(route: DualExpertActionRoute | str) -> bool:
 
     return DualExpertActionRoute(route) in VIDEO_ACTION_COMPOSITION_ROUTES
 
+
 __all__ = [
     "CURRENT_FRONTEND_ENCODE_MODE",
     "DEPRECATED_FRONTEND_ENCODE_MODE",

@@ -5,6 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from open_wam.configs import LiberoRendererProfile
+from open_wam.integrations.libero_rendering import activate_libero_renderer
 from open_wam.integrations.libero_tasks import (
     LiberoTaskSpec,
     ensure_local_libero_config,
@@ -27,9 +29,13 @@ def build_libero_offscreen_env(
     ignore_done: bool = True,
     control_freq: int | None = None,
     project_root: Path | None = None,
+    renderer_profile: LiberoRendererProfile | str = (
+        LiberoRendererProfile.ONLINE_ROLLOUT
+    ),
 ) -> Any:
     """Construct one offscreen LIBERO environment for evaluation."""
 
+    activate_libero_renderer(renderer_profile)
     ensure_local_libero_config(project_root)
     from libero.libero.envs import OffScreenRenderEnv  # type: ignore
 
@@ -60,9 +66,13 @@ def build_libero_control_env(
     use_camera_obs: bool = False,
     has_offscreen_renderer: bool = False,
     project_root: Path | None = None,
+    renderer_profile: LiberoRendererProfile | str = (
+        LiberoRendererProfile.ONLINE_ROLLOUT
+    ),
 ) -> Any:
     """Construct LIBERO's ControlEnv with explicit render/camera knobs."""
 
+    activate_libero_renderer(renderer_profile)
     ensure_local_libero_config(project_root)
     from libero.libero.envs.env_wrapper import ControlEnv  # type: ignore
 

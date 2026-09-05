@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from open_wam.integrations import activate_libero_renderer
+
 from .config import RolloutSuiteConfig, iter_episode_specs, validate_libero10_only
 from .libero_rollout import LingBotVALiberoRunner, RolloutResult
 
@@ -20,6 +22,7 @@ class SuiteRunResult:
 
 def run_suite(config: RolloutSuiteConfig) -> SuiteRunResult:
     validate_libero10_only(config)
+    activate_libero_renderer(config.renderer_profile)
     output_dir = config.output_dir.expanduser().resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     results_path = output_dir / "results.jsonl"

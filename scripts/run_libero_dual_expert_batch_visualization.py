@@ -13,12 +13,14 @@ if str(SRC_ROOT) not in sys.path:
 
 import open_wam.evals.libero_dual_expert_rollout as dual_expert_viz
 import open_wam.evals.libero_dual_expert_runtime as dual_expert_runtime
+from open_wam.configs import LiberoRendererProfile
 from open_wam.evals.libero_dual_expert_composition import (
     action_consumer_options_from_args,
     add_action_consumer_arguments,
     load_video_action_composition,
     validate_action_consumer_arguments,
 )
+from open_wam.integrations import activate_libero_renderer
 from open_wam.runtime.checkpoints import CheckpointCompatibilityPolicy
 from open_wam.utils import seed_everywhere
 
@@ -209,7 +211,10 @@ def main() -> None:
     if args.seeds is not None and (args.seed is not None or args.seed_by_episode):
         parser.error("--seeds is mutually exclusive with --seed and --seed-by-episode.")
 
+    renderer_profile = LiberoRendererProfile.ONLINE_ROLLOUT
+    activate_libero_renderer(renderer_profile)
     resources = _load_batch_resources(args)
+    resources.renderer_profile = renderer_profile
     task_ids = _parse_int_ranges(args.task_ids, label="task-ids")
     episode_idxs = _parse_int_ranges(args.episode_idxs, label="episode-idxs")
     if args.reuse_env_per_task and args.loop_order != "task_episode":
@@ -363,6 +368,7 @@ def _run_one_loaded_rollout(
         seed=seed,
         save_rollout_video=bool(args.save_rollout_video),
         skip_comparison_video=bool(args.skip_comparison_video),
+        renderer_profile=resources.renderer_profile,
     )
     return dual_expert_viz.run_dual_expert_libero_episode(
         episode,
@@ -385,6 +391,7 @@ def _resolve_task(resources: SimpleNamespace, benchmark_name: str, task_id: int)
         resources.task_cache[cache_key] = dual_expert_viz.resolve_dual_expert_libero_task_resources(
             benchmark_name,
             int(task_id),
+            renderer_profile=resources.renderer_profile,
         )
     return resources.task_cache[cache_key]
 
@@ -397,11 +404,20 @@ def _acquire_rollout_env(
     task_id: int,
 ):
     if not args.reuse_env_per_task:
-        return dual_expert_viz.construct_dual_expert_libero_env(task_spec), True
+        return (
+            dual_expert_viz.construct_dual_expert_libero_env(
+                task_spec,
+                renderer_profile=resources.renderer_profile,
+            ),
+            True,
+        )
     if resources.reused_env is not None and resources.reused_env_task_id != int(task_id):
         _close_reused_env(resources)
     if resources.reused_env is None:
-        resources.reused_env = dual_expert_viz.construct_dual_expert_libero_env(task_spec)
+        resources.reused_env = dual_expert_viz.construct_dual_expert_libero_env(
+            task_spec,
+            renderer_profile=resources.renderer_profile,
+        )
         resources.reused_env_task_id = int(task_id)
     return resources.reused_env, False
 

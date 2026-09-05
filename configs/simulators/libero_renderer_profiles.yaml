@@ -1,0 +1,10 @@
+schema_version: 1
+
+# Renderer selection is process-global and must happen before LIBERO imports.
+profiles:
+  online_rollout:
+    backend: egl
+  offline_analysis:
+    backend: osmesa
+  dataset_generation:
+    backend: osmesa
