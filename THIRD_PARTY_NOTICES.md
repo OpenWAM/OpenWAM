@@ -22,3 +22,18 @@ granted for earlier versions are not revoked.
 
 The vendored module is adapted to Open-WAM's import and runtime boundaries.
 Its upstream attribution and Apache-2.0 terms are preserved.
+
+## Stanford Institutional Marks
+
+- Components: `docs/assets/affiliations/stanford-wordmark.png`,
+  `docs/assets/affiliations/stanford-ai-lab.jpg`, and
+  `docs/assets/affiliations/stanford-svl.png`
+- Sources: [Stanford Identity Guide](https://identity.stanford.edu/visual-identity/stanford-logos/wordmarks/),
+  [Stanford Artificial Intelligence Laboratory](https://ai.stanford.edu/logo/),
+  and [Stanford Vision and Learning Lab](https://svl.stanford.edu/)
+- Rights holder: Stanford University
+
+These unmodified marks identify the project's institutional affiliation. They
+are proprietary, are not licensed under AGPL-3.0-only, and may not be reused
+except as permitted by Stanford University's applicable brand and trademark
+policies.

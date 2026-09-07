@@ -1,12 +1,37 @@
 # Open-WAM
 
-**OpenWAM Team, Stanford University**
+**OpenWAM Team, Stanford Vision and Learning Lab (SVL), Stanford University**
 
 [![CI](https://github.com/DaivdYuan/OpenWAM-staging-public/actions/workflows/ci.yml/badge.svg)](https://github.com/DaivdYuan/OpenWAM-staging-public/actions/workflows/ci.yml)
 [![Documentation](https://img.shields.io/badge/docs-online-blue.svg)](https://daivdyuan.github.io/OpenWAM-staging-public/)
 [![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12-blue.svg)](https://www.python.org/)
 [![License: AGPL v3](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
 [![Status: alpha](https://img.shields.io/badge/status-alpha-orange.svg)](CHANGELOG.md)
+
+**Open-WAM is work from the
+[Stanford Vision and Learning Lab (SVL)](https://svl.stanford.edu/) at
+[Stanford University](https://www.stanford.edu/).** SVL is a research group of
+the [Stanford Artificial Intelligence Laboratory (SAIL)](https://ai.stanford.edu/).
+
+<table>
+  <tr>
+    <td align="center" width="34%">
+      <a href="https://www.stanford.edu/">
+        <img src="docs/assets/affiliations/stanford-wordmark.png" alt="Stanford University" width="210">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://ai.stanford.edu/">
+        <img src="docs/assets/affiliations/stanford-ai-lab.jpg" alt="Stanford Artificial Intelligence Laboratory" width="230">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://svl.stanford.edu/">
+        <img src="docs/assets/affiliations/stanford-svl.png" alt="Stanford Vision and Learning Lab" width="118">
+      </a>
+    </td>
+  </tr>
+</table>
 
 **Open-WAM is a research framework for training, comparing, and evaluating
 video-action world models for robot learning.** It separates model topology,
@@ -326,7 +351,7 @@ If Open-WAM supports your research, cite the software record in
 ```bibtex
 @software{open_wam_2026,
   title   = {Open-WAM},
-  author  = {{OpenWAM Team, Stanford University}},
+  author  = {{OpenWAM Team, Stanford Vision and Learning Lab (SVL), Stanford University}},
   year    = {2026},
   version = {0.1.0},
   url     = {https://github.com/DaivdYuan/OpenWAM-staging-public}
@@ -345,3 +370,5 @@ work that uses Open-WAM should cite the software record in
 Third-party components retain their own terms; the adapted LingBot-VA module
 is distributed under Apache License 2.0. Full attributions are listed in
 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) and [`LICENSES/`](LICENSES/).
+Stanford, SAIL, and SVL marks are not licensed under AGPL-3.0-only and remain
+the property of Stanford University.

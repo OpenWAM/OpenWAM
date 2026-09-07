@@ -1,0 +1,20 @@
+Stanford institutional marks
+============================
+
+Retrieved: 2026-09-07
+
+stanford-wordmark.png
+  Source: https://identity.stanford.edu/wp-content/uploads/sites/3/2020/06/wordmark-nospace-red.png
+  SHA-256: dfa520f00ffdbf1a17ed22c5d8011e0f4da7611764416028d527a9b4cb529a82
+
+stanford-ai-lab.jpg
+  Source: https://ai.stanford.edu/wp-content/uploads/2015/01/AI-Horiz_rgb.jpg
+  SHA-256: 169032ebf84f9ed4483a571b2494e77db6c8e8003e5016528fc0b2a4a57a662c
+
+stanford-svl.png
+  Source: https://svl.stanford.edu/assets/images/logosvg.01ab8194.png
+  SHA-256: 1d33d07ada3855231fcb783621103930d7363e3e9529658db8e907343366f537
+
+These unmodified marks are proprietary Stanford University assets and are not
+licensed under Open-WAM's AGPL-3.0-only terms. See THIRD_PARTY_NOTICES.md and
+Stanford's current brand and trademark policies before reuse.

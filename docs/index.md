@@ -1,5 +1,30 @@
 # Open-WAM Documentation
 
+**Open-WAM is work from the
+[Stanford Vision and Learning Lab (SVL)](https://svl.stanford.edu/) at
+[Stanford University](https://www.stanford.edu/).** SVL is a research group of
+the [Stanford Artificial Intelligence Laboratory (SAIL)](https://ai.stanford.edu/).
+
+<table>
+  <tr>
+    <td align="center" width="34%">
+      <a href="https://www.stanford.edu/">
+        <img src="assets/affiliations/stanford-wordmark.png" alt="Stanford University" width="210">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://ai.stanford.edu/">
+        <img src="assets/affiliations/stanford-ai-lab.jpg" alt="Stanford Artificial Intelligence Laboratory" width="230">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://svl.stanford.edu/">
+        <img src="assets/affiliations/stanford-svl.png" alt="Stanford Vision and Learning Lab" width="118">
+      </a>
+    </td>
+  </tr>
+</table>
+
 Open-WAM is an extensible library for training and evaluating world action
 models while keeping the shared visual backbone stable. The public docs focus
 on reproducible usage, typed extension points, and benchmark contracts.
