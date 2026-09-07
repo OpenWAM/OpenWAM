@@ -1,6 +1,6 @@
-# Open-WAM Datasets
+# OpenWAM Datasets
 
-Open-WAM keeps dataset-specific storage and parsing behind adapters selected by
+OpenWAM keeps dataset-specific storage and parsing behind adapters selected by
 `data.dataset_type`. Every adapter produces the same model-facing contracts:
 
 - canonical camera views or pre-encoded view latents

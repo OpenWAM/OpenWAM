@@ -1,6 +1,6 @@
 # Changelog
 
-Open-WAM follows semantic-versioned public surfaces for configs, CLI flags,
+OpenWAM follows semantic-versioned public surfaces for configs, CLI flags,
 result schemas, artifact manifests, and checkpoint layout expectations.
 
 ## 0.1.0 - Unreleased

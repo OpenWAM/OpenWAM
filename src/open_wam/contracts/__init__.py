@@ -1,4 +1,4 @@
-"""Dependency-free contracts shared across Open-WAM subsystems."""
+"""Dependency-free contracts shared across OpenWAM subsystems."""
 
 from .latent_space import (
     VIDEO_LATENT_SPACE_SCHEMA_V1,

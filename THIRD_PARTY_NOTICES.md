@@ -1,13 +1,13 @@
 # Third-Party Notices
 
-Open-WAM is distributed under the GNU Affero General Public License v3.0,
+OpenWAM is distributed under the GNU Affero General Public License v3.0,
 subject to the attribution notice in `NOTICE`, except for third-party material
 identified below. Those components retain their original copyright and license
 terms.
 
-## Prior Open-WAM Contributions
+## Prior OpenWAM Contributions
 
-Open-WAM development contributions were previously received and distributed
+OpenWAM development contributions were previously received and distributed
 under the MIT License. Its notice is retained in `LICENSES/MIT.txt`. The public
 release as a collective work is distributed under AGPL-3.0-only; rights already
 granted for earlier versions are not revoked.
@@ -20,7 +20,7 @@ granted for earlier versions are not revoked.
 - License: Apache License 2.0
 - License text: `LICENSES/Apache-2.0.txt`
 
-The vendored module is adapted to Open-WAM's import and runtime boundaries.
+The vendored module is adapted to OpenWAM's import and runtime boundaries.
 Its upstream attribution and Apache-2.0 terms are preserved.
 
 ## Stanford Institutional Marks

@@ -1,4 +1,4 @@
-"""Explicit loading for application-owned Open-WAM extensions."""
+"""Explicit loading for application-owned OpenWAM extensions."""
 
 from __future__ import annotations
 
@@ -38,7 +38,7 @@ def load_extension_module(spec: str) -> LoadedExtension:
         if loaded is not None:
             return loaded
         if normalized_spec in _LOADING_EXTENSIONS:
-            raise RuntimeError(f"Recursive Open-WAM extension load detected for {normalized_spec!r}.")
+            raise RuntimeError(f"Recursive OpenWAM extension load detected for {normalized_spec!r}.")
         _LOADING_EXTENSIONS.add(normalized_spec)
         try:
             module = import_module(module_name)
@@ -46,12 +46,12 @@ def load_extension_module(spec: str) -> LoadedExtension:
                 hook = getattr(module, hook_name)
             except AttributeError as exc:
                 raise AttributeError(
-                    f"Open-WAM extension module {module_name!r} has no registration hook "
+                    f"OpenWAM extension module {module_name!r} has no registration hook "
                     f"{hook_name!r}."
                 ) from exc
             if not callable(hook):
                 raise TypeError(
-                    f"Open-WAM extension hook {normalized_spec!r} must be callable."
+                    f"OpenWAM extension hook {normalized_spec!r} must be callable."
                 )
             hook()
             loaded = LoadedExtension(module_name=module_name, hook_name=hook_name)
@@ -77,14 +77,14 @@ def loaded_extensions() -> tuple[LoadedExtension, ...]:
 def _parse_extension_spec(spec: str) -> tuple[str, str]:
     normalized = spec.strip()
     if not normalized:
-        raise ValueError("Open-WAM extension spec must be a non-empty module path.")
+        raise ValueError("OpenWAM extension spec must be a non-empty module path.")
     module_name, separator, hook_name = normalized.partition(":")
     module_name = module_name.strip()
     hook_name = hook_name.strip() if separator else DEFAULT_EXTENSION_HOOK
     if not module_name:
-        raise ValueError(f"Open-WAM extension spec {spec!r} is missing a module path.")
+        raise ValueError(f"OpenWAM extension spec {spec!r} is missing a module path.")
     if not hook_name:
-        raise ValueError(f"Open-WAM extension spec {spec!r} is missing a hook name.")
+        raise ValueError(f"OpenWAM extension spec {spec!r} is missing a hook name.")
     return module_name, hook_name
 
 

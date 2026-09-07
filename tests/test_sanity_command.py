@@ -76,12 +76,12 @@ def test_sanity_cli_reports_missing_train_extra(monkeypatch) -> None:
 
     monkeypatch.setattr(builtins, "__import__", fail_runtime_import)
 
-    with pytest.raises(SystemExit, match=r"open-wam\[train\].*torch"):
+    with pytest.raises(SystemExit, match=r"openwam\[train\].*torch"):
         cli.main(["--cfg", "experiment.yaml"])
 
 
 def test_sanity_rejects_the_historical_unused_multi_batch_value() -> None:
-    with pytest.raises(SystemExit, match=r"exactly one batch.*open-wam-eval"):
+    with pytest.raises(SystemExit, match=r"exactly one batch.*openwam-eval"):
         cli.main(["--cfg", "experiment.yaml", "--max-batches", "2"])
 
 
@@ -132,7 +132,7 @@ def test_sanity_command_public_tiny_numerical_contract(tmp_path: Path, capsys) -
     summary = json.loads(output_path.read_text(encoding="utf-8"))
     assert json.loads(capsys.readouterr().out) == summary
     assert summary["schema_version"] == "open_wam.result.v1"
-    assert summary["command"] == "open-wam-sanity"
+    assert summary["command"] == "openwam-sanity"
     assert summary["benchmark"] == "public_tiny"
     assert summary["seed"] == 17
     assert summary["metrics"]["rollout_steps"] == 1

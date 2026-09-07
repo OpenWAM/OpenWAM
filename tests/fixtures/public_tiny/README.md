@@ -7,7 +7,7 @@ checkpoints, GPUs, or simulators.
 Use it with:
 
 ```bash
-open-wam-validate-config configs/examples/public_tiny_synthetic_contract.yaml
+openwam-validate-config configs/examples/public_tiny_synthetic_contract.yaml
 ```
 
 Torch-backed train/eval smoke tests should use this fixture only in a gated CPU

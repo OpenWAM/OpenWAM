@@ -1,4 +1,4 @@
-"""Example Open-WAM extension package scaffold."""
+"""Example OpenWAM extension package scaffold."""
 
 from .extension import register_open_wam
 

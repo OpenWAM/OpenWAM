@@ -235,7 +235,7 @@ def _convert_wan22_to_lingbot_init(
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Convert official Wan2.2-TI2V-5B transformer weights into LingBot/Open-WAM format."
+        description="Convert official Wan2.2-TI2V-5B transformer weights into LingBot/OpenWAM format."
     )
     parser.add_argument("--wan-root", required=True, type=Path, help="Official Wan2.2-TI2V-5B model root.")
     parser.add_argument("--output-root", required=True, type=Path, help="Output model root to create.")

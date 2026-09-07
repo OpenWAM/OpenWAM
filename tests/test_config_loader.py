@@ -3495,8 +3495,8 @@ def test_composable_runtime_fields_load(tmp_path: Path) -> None:
     raw["trainer"]["batch_adapter"] = "latents"
     raw["trainer"]["loop_policy"] = "steps"
     raw["trainer"]["strategy"] = "single_device"
-    raw["trainer"]["default_root_dir"] = "/tmp/open-wam-test"
-    raw["trainer"]["checkpoint_dir"] = "/tmp/open-wam-test/checkpoints"
+    raw["trainer"]["default_root_dir"] = "/tmp/openwam-test"
+    raw["trainer"]["checkpoint_dir"] = "/tmp/openwam-test/checkpoints"
     raw["trainer"]["save_interval"] = 5
     raw["trainer"]["checkpoint_mode"] = "model_only"
     raw["trainer"]["max_checkpoints_to_keep"] = 3
@@ -3504,15 +3504,15 @@ def test_composable_runtime_fields_load(tmp_path: Path) -> None:
     raw["trainer"]["runtime_backbone_export_components"] = [
         "visual_tower.shared_video_backbone"
     ]
-    raw["trainer"]["resume_from"] = "/tmp/open-wam-test/checkpoints/checkpoint_step_5"
+    raw["trainer"]["resume_from"] = "/tmp/openwam-test/checkpoints/checkpoint_step_5"
     raw["trainer"]["enable_jsonl_logging"] = True
     raw["trainer"]["metrics_filename"] = "run.jsonl"
     raw["trainer"]["enable_wandb"] = True
-    raw["trainer"]["wandb_project"] = "open-wam"
+    raw["trainer"]["wandb_project"] = "openwam"
     raw["trainer"]["wandb_entity"] = "robotics"
     raw["trainer"]["wandb_mode"] = "offline"
     raw["trainer"]["run_name"] = "smoke-run"
-    raw["data"]["latent_root"] = "/tmp/open-wam-test/latents"
+    raw["data"]["latent_root"] = "/tmp/openwam-test/latents"
     raw["data"]["latent_subdir"] = "custom_latents"
     raw["data"]["latent_camera_names"] = ["latent_cam_0", "latent_cam_1"]
 
@@ -3544,8 +3544,8 @@ def test_composable_runtime_fields_load(tmp_path: Path) -> None:
     assert config.trainer.batch_adapter == "latents"
     assert config.trainer.loop_policy == "steps"
     assert config.trainer.strategy == "single_device"
-    assert config.trainer.default_root_dir == "/tmp/open-wam-test"
-    assert config.trainer.checkpoint_dir == "/tmp/open-wam-test/checkpoints"
+    assert config.trainer.default_root_dir == "/tmp/openwam-test"
+    assert config.trainer.checkpoint_dir == "/tmp/openwam-test/checkpoints"
     assert config.trainer.save_interval == 5
     assert config.trainer.checkpoint_mode == "model_only"
     assert config.trainer.max_checkpoints_to_keep == 3
@@ -3553,15 +3553,15 @@ def test_composable_runtime_fields_load(tmp_path: Path) -> None:
     assert config.trainer.runtime_backbone_export_components == (
         TrainingComponentSelector.VISUAL_TOWER_SHARED_VIDEO_BACKBONE,
     )
-    assert config.trainer.resume_from == "/tmp/open-wam-test/checkpoints/checkpoint_step_5"
+    assert config.trainer.resume_from == "/tmp/openwam-test/checkpoints/checkpoint_step_5"
     assert config.trainer.enable_jsonl_logging is True
     assert config.trainer.metrics_filename == "run.jsonl"
     assert config.trainer.enable_wandb is True
-    assert config.trainer.wandb_project == "open-wam"
+    assert config.trainer.wandb_project == "openwam"
     assert config.trainer.wandb_entity == "robotics"
     assert config.trainer.wandb_mode == "offline"
     assert config.trainer.run_name == "smoke-run"
-    assert config.data.latent_root == "/tmp/open-wam-test/latents"
+    assert config.data.latent_root == "/tmp/openwam-test/latents"
     assert config.data.latent_subdir == "custom_latents"
     assert config.data.latent_camera_names == ("latent_cam_0", "latent_cam_1")
 

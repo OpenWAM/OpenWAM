@@ -156,7 +156,7 @@ try:
 except ImportError as exc:
     message = str(exc)
     assert f"{package_name}.{public_name}" in message
-    assert "open-wam[sim]" in message
+    assert "openwam[sim]" in message
     assert "uv sync --extra sim" in message
     assert f"Missing module: {missing_module}." in message
 else:
@@ -173,12 +173,12 @@ def test_console_entrypoints_are_declared() -> None:
     pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     scripts = pyproject["project"]["scripts"]
 
-    assert scripts["open-wam-train"] == "open_wam.cli.train:main"
-    assert scripts["open-wam-eval"] == "open_wam.cli.eval:main"
-    assert scripts["open-wam-inspect-config"] == "open_wam.cli.inspect_config:main"
-    assert scripts["open-wam-validate-config"] == "open_wam.cli.validate_config:main"
-    assert scripts["open-wam-sanity"] == "open_wam.cli.sanity:main"
-    assert scripts["open-wam-sim-rollout"] == "open_wam.cli.sim_rollout:main"
+    assert scripts["openwam-train"] == "open_wam.cli.train:main"
+    assert scripts["openwam-eval"] == "open_wam.cli.eval:main"
+    assert scripts["openwam-inspect-config"] == "open_wam.cli.inspect_config:main"
+    assert scripts["openwam-validate-config"] == "open_wam.cli.validate_config:main"
+    assert scripts["openwam-sanity"] == "open_wam.cli.sanity:main"
+    assert scripts["openwam-sim-rollout"] == "open_wam.cli.sim_rollout:main"
 
 
 @pytest.mark.unit
@@ -398,7 +398,7 @@ def test_inspect_config_cli_accepts_legacy_and_new_config_flags() -> None:
 @pytest.mark.unit
 def test_result_envelope_schema_is_versioned_and_json_serializable() -> None:
     envelope = build_result_envelope(
-        command="open-wam-eval",
+        command="openwam-eval",
         config="configs/evals/example.yaml",
         metrics={"mean_action_mse": 1.0},
         checkpoint=None,
@@ -416,7 +416,7 @@ def test_result_envelope_schema_is_versioned_and_json_serializable() -> None:
 @pytest.mark.unit
 def test_result_envelope_preserves_reserved_keys_when_extra_collides() -> None:
     envelope = build_result_envelope(
-        command="open-wam-sanity",
+        command="openwam-sanity",
         config="configs/experiments/example.yaml",
         metrics={"loss": 1.0},
         extra={
@@ -440,7 +440,7 @@ def test_repo_path_resolution_detects_source_root(tmp_path: Path) -> None:
     nested = source_root / "src" / "open_wam" / "runtime"
     nested.mkdir(parents=True)
     (source_root / "pyproject.toml").write_text(
-        '[project]\nname = "open-wam"\nversion = "9.9.9"\n',
+        '[project]\nname = "openwam"\nversion = "9.9.9"\n',
         encoding="utf-8",
     )
     marker = nested / "paths.py"
@@ -460,7 +460,7 @@ def test_repo_path_resolution_ignores_unrelated_git_roots(
     unrelated_nested.mkdir(parents=True)
     (unrelated_root / ".git").mkdir()
     (unrelated_root / "pyproject.toml").write_text(
-        '[project]\nname = "not-open-wam"\n',
+        '[project]\nname = "not-openwam"\n',
         encoding="utf-8",
     )
     marker = unrelated_nested / "module.py"

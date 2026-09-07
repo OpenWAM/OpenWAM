@@ -1,6 +1,6 @@
 # Compatibility Matrix
 
-Open-WAM is pre-1.0 Linux research software. Compatibility claims are split
+OpenWAM is pre-1.0 Linux research software. Compatibility claims are split
 between API compatibility and exact numerical characterization.
 
 ## Maintained Matrix
@@ -27,7 +27,7 @@ models requires re-characterization even when installation remains supported.
 
 The supported Diffusers range is intentionally capped below `0.38`. That
 release changed WAN RMS normalization precision and does not reproduce the
-characterized bf16 checkpoint outputs. Open-WAM's lock currently selects
+characterized bf16 checkpoint outputs. OpenWAM's lock currently selects
 `0.37.1`; raising the cap is a numerical migration and requires the real-model
 GPU characterization gate, not only an import or unit test.
 

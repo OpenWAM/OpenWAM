@@ -6,7 +6,7 @@ from pathlib import Path
 
 
 def main(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(description="Check an installed Open-WAM wheel.")
+    parser = argparse.ArgumentParser(description="Check an installed OpenWAM wheel.")
     parser.add_argument("--expected-package-root", type=Path)
     args = parser.parse_args(argv)
 

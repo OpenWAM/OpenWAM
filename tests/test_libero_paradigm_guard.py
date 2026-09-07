@@ -161,7 +161,7 @@ def test_libero_paradigm_guard_ignores_non_libero_smoke_config() -> None:
     ),
 )
 def test_libero_script_guard_never_allows_removed_entrypoints(script_name: str) -> None:
-    with pytest.raises(ValueError, match="was removed from the maintained Open-WAM runtime"):
+    with pytest.raises(ValueError, match="was removed from the maintained OpenWAM runtime"):
         require_current_libero_script(script_name)
 
 

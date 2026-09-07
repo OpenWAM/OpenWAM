@@ -382,7 +382,7 @@ def validate_lerobot_consortium_index_snapshot(data_config: LeRobotConsortiumDat
         "--repo-list notes/index/lerobot_consortium_hf_repo_ids.txt"
         if _CONSORTIUM_INDEX_MUTABLE
         else (
-            "The installed snapshot is read-only. Upgrade Open-WAM for a newer "
+            "The installed snapshot is read-only. Upgrade OpenWAM for a newer "
             f"snapshot, or set {_CONSORTIUM_INDEX_ROOT_ENV} to a writable "
             "snapshot directory and refresh it from a source checkout."
         )

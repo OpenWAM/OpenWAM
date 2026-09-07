@@ -1,13 +1,13 @@
 # Cookbook: Add A Policy Architecture
 
 Use this when an experiment needs a new parameter topology or policy-owned
-runtime while retaining Open-WAM's shared visual and training boundaries. If
+runtime while retaining OpenWAM's shared visual and training boundaries. If
 only visibility or supervision changes, prefer a runtime program. If only the
 final loss changes, add an action decoder instead.
 
 ## Extension Package
 
-Keep application code outside the Open-WAM source tree:
+Keep application code outside the OpenWAM source tree:
 
 ```text
 acme_open_wam/
@@ -41,7 +41,7 @@ def register_open_wam() -> None:
     register_policy_variant("acme.policy", build_policy)
 ```
 
-Select it without changing Open-WAM's finite built-in enum:
+Select it without changing OpenWAM's finite built-in enum:
 
 ```yaml
 policy_variant:
@@ -102,8 +102,8 @@ an out-of-tree policy extension; it requires a shared in-tree runtime contract.
 ## Validation
 
 ```bash
-open-wam-validate-config experiment.yaml
-open-wam-train --extension acme_open_wam.registration --cfg experiment.yaml
+openwam-validate-config experiment.yaml
+openwam-train --extension acme_open_wam.registration --cfg experiment.yaml
 ```
 
 Add deterministic tests for config parsing, one forward/backward update, and

@@ -7,7 +7,7 @@ from open_wam.configs import load_experiment_config
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Load and print one typed Open-WAM experiment config.")
+    parser = argparse.ArgumentParser(description="Load and print one typed OpenWAM experiment config.")
     parser.add_argument("--cfg", "--config", dest="config", required=True)
     return parser
 

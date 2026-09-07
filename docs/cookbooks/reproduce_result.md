@@ -24,7 +24,7 @@ reproduction recipe.
 5. Run static validation:
 
 ```bash
-open-wam-validate-config configs/experiments/<config>.yaml configs/evals/<eval>.yaml
+openwam-validate-config configs/experiments/<config>.yaml configs/evals/<eval>.yaml
 ```
 
 6. Run the smallest honest runtime check that matches the claim:

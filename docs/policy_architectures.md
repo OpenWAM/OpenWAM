@@ -1,6 +1,6 @@
 # Policy Architectures And Programs
 
-Open-WAM separates model topology from experiment semantics. This distinction
+OpenWAM separates model topology from experiment semantics. This distinction
 keeps checkpoints understandable and lets users change a conditioning program
 without selecting a different trainer or visual backbone.
 
@@ -126,7 +126,7 @@ Maintained YAML names encode architecture and program. For a one-off ablation,
 the public switch is `policy_variant.program`:
 
 ```bash
-open-wam-train \
+openwam-train \
   --cfg configs/experiments/dual_expert_libero_joint.yaml \
   --set policy_variant.program=video_then_action
 ```
@@ -134,7 +134,7 @@ open-wam-train \
 The config boundary derives low-level coupling fields and rejects conflicting
 program/coupling combinations.
 
-## Extending Open-WAM
+## Extending OpenWAM
 
 Choose the smallest extension that expresses the change:
 

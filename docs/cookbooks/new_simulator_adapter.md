@@ -1,7 +1,7 @@
 # Cookbook: Add A Simulator Adapter
 
 Use an installed extension package when a benchmark has a live environment
-that can be stepped in closed loop. No Open-WAM source edit is required.
+that can be stepped in closed loop. No OpenWAM source edit is required.
 
 ## Implement The Contract
 
@@ -42,7 +42,7 @@ The backend should expose reset with `EpisodeSpec`, return
 ## Run It
 
 ```bash
-open-wam-sim-rollout \
+openwam-sim-rollout \
   --extension acme_open_wam \
   --benchmark acme \
   --sim-option endpoint=localhost:5000 \

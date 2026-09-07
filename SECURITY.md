@@ -2,7 +2,7 @@
 
 ## Supported Versions
 
-Open-WAM is pre-1.0 research software. Security fixes target the current
+OpenWAM is pre-1.0 research software. Security fixes target the current
 `main` branch unless maintainers explicitly announce a release branch.
 
 ## Reporting A Vulnerability

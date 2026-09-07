@@ -51,7 +51,7 @@ data:
   # Safe to leave null unless you want a specific shared cache path.
   cache_dir: null
 
-  # Canonical consortium slot names that the rest of Open-WAM will see.
+  # Canonical consortium slot names that the rest of OpenWAM will see.
   camera_names:
     - observation.images.slot0
 

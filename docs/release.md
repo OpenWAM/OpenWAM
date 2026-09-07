@@ -1,6 +1,6 @@
 # Release Hygiene
 
-Open-WAM versions public interfaces more strictly than internal research code.
+OpenWAM versions public interfaces more strictly than internal research code.
 
 ## Public Surfaces
 
@@ -53,7 +53,7 @@ public artifact, not a repository snapshot. Its allowlist contains:
 - required project metadata;
 - project and third-party license/notice files.
 
-Hatch always places the root `.gitignore` in source distributions. Open-WAM
+Hatch always places the root `.gitignore` in source distributions. OpenWAM
 therefore includes that generic file explicitly in the allowlist and scans it
 with the rest of the public text surface.
 

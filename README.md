@@ -1,4 +1,4 @@
-<h1 align="center">Open-WAM</h1>
+<h1 align="center">OpenWAM</h1>
 
 <p align="center">
   <a href="https://www.stanford.edu/"><img src="docs/assets/affiliations/stanford-wordmark.png" alt="Stanford University" height="45" hspace="14" valign="middle"></a>
@@ -6,7 +6,7 @@
   <a href="https://svl.stanford.edu/"><img src="docs/assets/affiliations/stanford-svl.png" alt="Stanford Vision and Learning Lab" height="74" hspace="14" valign="middle"></a>
 </p>
 
-<p align="center"><strong>Open-WAM is developed by the OpenWAM Team in the <a href="https://svl.stanford.edu/">Stanford Vision and Learning Lab (SVL)</a>, a research group of the <a href="https://ai.stanford.edu/">Stanford Artificial Intelligence Laboratory (SAIL)</a> at <a href="https://www.stanford.edu/">Stanford University</a>.</strong></p>
+<p align="center"><strong>OpenWAM is developed by the OpenWAM Team in the <a href="https://svl.stanford.edu/">Stanford Vision and Learning Lab (SVL)</a>, a research group of the <a href="https://ai.stanford.edu/">Stanford Artificial Intelligence Laboratory (SAIL)</a> at <a href="https://www.stanford.edu/">Stanford University</a>.</strong></p>
 
 <p align="center">
   <a href="https://github.com/DaivdYuan/OpenWAM-staging-public/actions/workflows/ci.yml"><img src="https://github.com/DaivdYuan/OpenWAM-staging-public/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
@@ -16,7 +16,7 @@
   <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/status-alpha-orange.svg" alt="Status: alpha"></a>
 </p>
 
-**Open-WAM is a research framework for training, comparing, and evaluating
+**OpenWAM is a research framework for training, comparing, and evaluating
 video-action world models for robot learning.** It separates model topology,
 video/action conditioning, sequence semantics, visual execution, and action
 decoding so that controlled experiments share the same trainer and visual
@@ -31,14 +31,14 @@ stack.
   <a href="#citation">Citation</a>
 </p>
 
-> **Release status:** Open-WAM 0.1.0 is pre-release Linux research software.
+> **Release status:** OpenWAM 0.1.0 is pre-release Linux research software.
 > The public CPU lifecycle and synthetic artifacts are self-contained. Large
 > benchmark runs use separately provisioned datasets and checkpoints described
 > by the [artifact contract](docs/artifacts.md).
 
 ## Research Scope
 
-Open-WAM provides:
+OpenWAM provides:
 
 - one typed train, resume, evaluation, and simulator runtime across policy
   architectures;
@@ -73,20 +73,20 @@ names.
 
 ## Quick Start
 
-Open-WAM supports Linux with Python 3.11 or 3.12. Install
+OpenWAM supports Linux with Python 3.11 or 3.12. Install
 [`uv`](https://docs.astral.sh/uv/), then run the public CPU contract:
 
 ```bash
-git clone https://github.com/DaivdYuan/OpenWAM-staging-public.git Open-WAM
-cd Open-WAM
+git clone https://github.com/DaivdYuan/OpenWAM-staging-public.git OpenWAM
+cd OpenWAM
 
 uv sync --frozen --group dev --extra train --extra eval
 
-uv run open-wam-validate-config \
+uv run openwam-validate-config \
   configs/examples/public_tiny_synthetic_contract.yaml \
   configs/evals/public_tiny_synthetic_contract.yaml
 
-uv run --extra train open-wam-sanity \
+uv run --extra train openwam-sanity \
   --cfg configs/examples/public_tiny_synthetic_contract.yaml \
   --device cpu --max-batches 1 --rollout-steps 1
 ```
@@ -117,7 +117,7 @@ outside versioned experiment YAML. Start with the local path registry:
 
 ```bash
 cp configs/local_paths.sample.yaml configs/local_paths.yaml
-uv run open-wam-inspect-config \
+uv run openwam-inspect-config \
   --cfg configs/experiments/dual_expert_libero_joint.yaml
 ```
 
@@ -125,7 +125,7 @@ Populate only the aliases used by the selected config. The local registry is
 gitignored; set `OPEN_WAM_LOCAL_PATHS=/absolute/path/paths.yaml` to keep it
 elsewhere.
 
-All architectures use `open-wam-train`. The shipped Parallel Stream and Dual
+All architectures use `openwam-train`. The shipped Parallel Stream and Dual
 Expert LIBERO policy programs use the same validated full-trajectory W64 recipe
 described in [Training and Inference](docs/running_experiments.md#libero-policy-planning-default).
 The reference 30-layer configs are FSDP workloads characterized with four 48 GB GPUs:
@@ -184,7 +184,7 @@ selecting `forward_dynamics` or `inverse_dynamics`.
 Run offline metrics through the generic evaluator:
 
 ```bash
-uv run --extra eval open-wam-eval \
+uv run --extra eval openwam-eval \
   --cfg configs/evals/dual_expert_robotwin_smoke_eval.yaml \
   --checkpoint /path/to/model_state.pt \
   --device cuda:0
@@ -193,7 +193,7 @@ uv run --extra eval open-wam-eval \
 Run a configured environment through the simulator boundary:
 
 ```bash
-uv run --extra sim open-wam-sim-rollout \
+uv run --extra sim openwam-sim-rollout \
   --cfg configs/experiments/parallel_stream_robotwin_smoke.yaml \
   --checkpoint /path/to/model_state.pt \
   --benchmark robotwin \
@@ -225,7 +225,7 @@ This boundary keeps the visual stack stable while experiments vary one owned
 contract at a time. See [Architecture](docs/architecture.md) and
 [Policy Architectures and Programs](docs/policy_architectures.md).
 
-## Use Open-WAM With Your System
+## Use OpenWAM With Your System
 
 Out-of-tree packages load through repeatable `--extension module[:hook]`
 arguments. Choose the smallest owning boundary:
@@ -242,7 +242,7 @@ The packaged extension scaffold verifies registration, gradients, inference
 state, and packaging before custom code is introduced:
 
 ```bash
-uv run --extra train open-wam-train \
+uv run --extra train openwam-train \
   --cfg templates/extension_method/config.yaml \
   --extension open_wam.templates.extension_method \
   --save-root runs/extension-method-smoke \
@@ -261,7 +261,7 @@ dataset metadata, package versions, and device details. Use full provenance to
 hash a publication checkpoint:
 
 ```bash
-open-wam-eval --cfg evaluation.yaml --output-json result.json \
+openwam-eval --cfg evaluation.yaml --output-json result.json \
   --provenance-mode full
 ```
 
@@ -305,12 +305,12 @@ for every changed contract. Read [CONTRIBUTING.md](CONTRIBUTING.md), the
 
 ## Citation
 
-If Open-WAM supports your research, cite the software record in
+If OpenWAM supports your research, cite the software record in
 [`CITATION.cff`](CITATION.cff):
 
 ```bibtex
 @software{open_wam_2026,
-  title   = {Open-WAM},
+  title   = {OpenWAM},
   author  = {{OpenWAM Team, Stanford Vision and Learning Lab (SVL), Stanford University}},
   year    = {2026},
   version = {0.1.0},
@@ -320,11 +320,11 @@ If Open-WAM supports your research, cite the software record in
 
 ## License
 
-Open-WAM is released under the [GNU Affero General Public License v3.0](LICENSE)
+OpenWAM is released under the [GNU Affero General Public License v3.0](LICENSE)
 with the redistribution attribution described in [`NOTICE`](NOTICE). Covered
 modified versions and network services must provide corresponding source, and
-redistributed copies must preserve the Open-WAM attribution notice. Academic
-work that uses Open-WAM should cite the software record in
+redistributed copies must preserve the OpenWAM attribution notice. Academic
+work that uses OpenWAM should cite the software record in
 [`CITATION.cff`](CITATION.cff).
 
 Third-party components retain their own terms; the adapted LingBot-VA module

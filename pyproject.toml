@@ -3,7 +3,7 @@ requires = ["hatchling>=1.25.0"]
 build-backend = "hatchling.build"
 
 [project]
-name = "open-wam"
+name = "openwam"
 version = "0.1.0"
 description = "Extensible world-action-model training and evaluation with a LingBot-compatible visual core."
 readme = "README.md"
@@ -34,12 +34,12 @@ Issues = "https://github.com/DaivdYuan/OpenWAM-staging-public/issues"
 Repository = "https://github.com/DaivdYuan/OpenWAM-staging-public"
 
 [project.scripts]
-open-wam-train = "open_wam.cli.train:main"
-open-wam-eval = "open_wam.cli.eval:main"
-open-wam-inspect-config = "open_wam.cli.inspect_config:main"
-open-wam-validate-config = "open_wam.cli.validate_config:main"
-open-wam-sanity = "open_wam.cli.sanity:main"
-open-wam-sim-rollout = "open_wam.cli.sim_rollout:main"
+openwam-train = "open_wam.cli.train:main"
+openwam-eval = "open_wam.cli.eval:main"
+openwam-inspect-config = "open_wam.cli.inspect_config:main"
+openwam-validate-config = "open_wam.cli.validate_config:main"
+openwam-sanity = "open_wam.cli.sanity:main"
+openwam-sim-rollout = "open_wam.cli.sim_rollout:main"
 
 [project.optional-dependencies]
 core = []

@@ -1,9 +1,9 @@
-# Open-WAM Quickstart
+# OpenWAM Quickstart
 
 This guide is the public first-run path. It does not require private datasets,
 private checkpoints, CUDA, or external simulators.
 
-Open-WAM supports Linux with Python 3.11 or 3.12. Install `uv` before using the
+OpenWAM supports Linux with Python 3.11 or 3.12. Install `uv` before using the
 commands below.
 
 ## Install
@@ -22,7 +22,7 @@ metadata, and CLI parser surfaces without Torch or simulator packages.
 Validate the public synthetic train and evaluation configs:
 
 ```bash
-uv run open-wam-validate-config \
+uv run openwam-validate-config \
   configs/examples/public_tiny_synthetic_contract.yaml \
   configs/evals/public_tiny_synthetic_contract.yaml
 ```
@@ -31,7 +31,7 @@ Train one step and write a full-state checkpoint:
 
 ```bash
 RUN_ROOT="runs/public-tiny-$(date +%Y%m%d-%H%M%S)"
-uv run --extra train open-wam-train \
+uv run --extra train openwam-train \
   --cfg configs/examples/public_tiny_synthetic_contract.yaml \
   --save-root "$RUN_ROOT" \
   --expected-world-size 1 \
@@ -41,7 +41,7 @@ uv run --extra train open-wam-train \
 Resume full training state from step 1 and train through step 2:
 
 ```bash
-uv run --extra train open-wam-train \
+uv run --extra train openwam-train \
   --cfg configs/examples/public_tiny_synthetic_contract.yaml \
   --save-root "$RUN_ROOT" \
   --resume-from "$RUN_ROOT/checkpoints/checkpoint_step_1" \
@@ -53,7 +53,7 @@ uv run --extra train open-wam-train \
 Evaluate the resulting model checkpoint:
 
 ```bash
-uv run --extra eval open-wam-eval \
+uv run --extra eval openwam-eval \
   --cfg configs/evals/public_tiny_synthetic_contract.yaml \
   --checkpoint "$RUN_ROOT/checkpoints/checkpoint_step_2/model_state.pt" \
   --device cpu \
@@ -68,7 +68,7 @@ not a bitwise replay. `model_state.pt` is the inference and warm-start surface.
 For a single-command numerical contract check, run:
 
 ```bash
-uv run --extra train open-wam-sanity \
+uv run --extra train openwam-sanity \
   --cfg configs/examples/public_tiny_synthetic_contract.yaml \
   --device cpu --max-batches 1 --rollout-steps 1
 ```
@@ -86,14 +86,14 @@ uv run --extra train open-wam-sanity \
 Inspect a resolved typed config without launching training:
 
 ```bash
-uv run open-wam-inspect-config \
+uv run openwam-inspect-config \
   --cfg configs/experiments/dual_expert_libero_joint.yaml
 ```
 
 Run the packaged extension scaffold before customizing it:
 
 ```bash
-uv run --extra train open-wam-train \
+uv run --extra train openwam-train \
   --cfg templates/extension_method/config.yaml \
   --extension open_wam.templates.extension_method \
   --save-root runs/extension-method-smoke \
@@ -136,7 +136,7 @@ Populate only the keys referenced by the config you intend to run; unrelated
 placeholders may remain unchanged. The file is gitignored. You can also use:
 
 ```bash
-OPEN_WAM_LOCAL_PATHS=/absolute/path/to/local_paths.yaml uv run open-wam-eval ...
+OPEN_WAM_LOCAL_PATHS=/absolute/path/to/local_paths.yaml uv run openwam-eval ...
 ```
 
 ## LIBERO Local Rollout Setup
@@ -221,12 +221,12 @@ uv run --extra sim python -c "import robosuite, os; os.system(f'python {os.path.
 
 Preferred package commands:
 
-- `open-wam-train`
-- `open-wam-eval`
-- `open-wam-inspect-config`
-- `open-wam-validate-config`
-- `open-wam-sanity`
-- `open-wam-sim-rollout`
+- `openwam-train`
+- `openwam-eval`
+- `openwam-inspect-config`
+- `openwam-validate-config`
+- `openwam-sanity`
+- `openwam-sim-rollout`
 
 Legacy `python scripts/...` commands remain supported as compatibility
 entrypoints while the runtime is migrated into package modules.

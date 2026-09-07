@@ -39,7 +39,7 @@ class ArtifactManifestEntry:
 
 
 def load_artifact_manifest(path: str | Path) -> tuple[ArtifactManifestEntry, ...]:
-    """Load an Open-WAM artifact manifest."""
+    """Load an OpenWAM artifact manifest."""
 
     path = Path(path)
     raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}

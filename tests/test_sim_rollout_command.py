@@ -80,7 +80,7 @@ def test_sim_rollout_cli_reports_missing_simulator_extra(monkeypatch) -> None:
 
     monkeypatch.setattr(builtins, "__import__", fail_runtime_import)
 
-    with pytest.raises(SystemExit, match=r"open-wam\[sim\].*imageio"):
+    with pytest.raises(SystemExit, match=r"openwam\[sim\].*imageio"):
         cli.main(["--cfg", "experiment.yaml", "--benchmark", "calvin"])
 
 
@@ -149,7 +149,7 @@ def test_sim_rollout_command_preserves_controls_cleanup_and_result_envelope(
     summary_path = tmp_path / "calvin_contract.json"
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
     assert summary["schema_version"] == "open_wam.result.v1"
-    assert summary["command"] == "open-wam-sim-rollout"
+    assert summary["command"] == "openwam-sim-rollout"
     assert summary["benchmark"] == "calvin"
     assert summary["seed"] == 7
     assert summary["metrics"] == {

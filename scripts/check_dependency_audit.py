@@ -137,7 +137,7 @@ def validate_audit_report(
 
 def run_dependency_audit(*, policy_path: Path = DEFAULT_POLICY) -> AuditValidation:
     exceptions = load_audit_exceptions(policy_path)
-    with tempfile.TemporaryDirectory(prefix="open-wam-dependency-audit-") as temporary_dir:
+    with tempfile.TemporaryDirectory(prefix="openwam-dependency-audit-") as temporary_dir:
         requirements_path = Path(temporary_dir) / "requirements.txt"
         export = subprocess.run(
             [
@@ -203,7 +203,7 @@ def _format_exception(exception: AuditException) -> str:
 
 
 def main(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(description="Audit the frozen Open-WAM full environment.")
+    parser = argparse.ArgumentParser(description="Audit the frozen OpenWAM full environment.")
     parser.add_argument("--policy", type=Path, default=DEFAULT_POLICY)
     args = parser.parse_args(argv)
     try:

@@ -6,7 +6,7 @@ import argparse
 def build_train_arg_parser() -> argparse.ArgumentParser:
     """Build the argument contract shared by every training entrypoint."""
 
-    parser = argparse.ArgumentParser(description="Train an Open-WAM experiment.")
+    parser = argparse.ArgumentParser(description="Train an OpenWAM experiment.")
     config_group = parser.add_mutually_exclusive_group(required=True)
     config_group.add_argument("--cfg", "--config", dest="config", type=str)
     config_group.add_argument("--config-name", dest="config_name", type=str)

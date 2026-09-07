@@ -68,6 +68,6 @@ Required checks:
 ## Validation
 
 ```bash
-open-wam-validate-config experiment.yaml
-open-wam-train --extension acme_open_wam.registration --cfg experiment.yaml
+openwam-validate-config experiment.yaml
+openwam-train --extension acme_open_wam.registration --cfg experiment.yaml
 ```

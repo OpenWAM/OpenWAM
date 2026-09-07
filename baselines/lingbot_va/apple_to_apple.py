@@ -32,7 +32,7 @@ class ArmResult:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Combine vanilla LingBot-VA and Open-WAM LIBERO-10 rollout summaries."
+        description="Combine vanilla LingBot-VA and OpenWAM LIBERO-10 rollout summaries."
     )
     parser.add_argument("--lingbot-summary", required=True, type=Path)
     parser.add_argument("--openwam-summary", required=True, type=Path)
@@ -184,9 +184,9 @@ def _openwam_rows_by_episode(summary: Mapping[str, Any]) -> dict[tuple[str, int,
     for row in summary.get("paired_rows", []):
         if not isinstance(row, Mapping):
             continue
-        # Native LingBot names the env init id `episode_idx`; Open-WAM keeps both
+        # Native LingBot names the env init id `episode_idx`; OpenWAM keeps both
         # task-local `episode_idx` and actual rollout `init_id`, so match on the
-        # actual env init used by the Open-WAM rollout.
+        # actual env init used by the OpenWAM rollout.
         key = (
             benchmark,
             int(row["task_id"]),
@@ -206,13 +206,13 @@ def build_row_set_warnings(
     missing_lingbot = sorted(openwam_keys - lingbot_keys)
     if missing_openwam:
         warnings.append(
-            "Open-WAM summary is missing native LingBot rows: "
+            "OpenWAM summary is missing native LingBot rows: "
             + ", ".join(format_episode_key(key) for key in missing_openwam[:10])
             + ("" if len(missing_openwam) <= 10 else f", ... ({len(missing_openwam)} total)")
         )
     if missing_lingbot:
         warnings.append(
-            "Native LingBot summary is missing Open-WAM rows: "
+            "Native LingBot summary is missing OpenWAM rows: "
             + ", ".join(format_episode_key(key) for key in missing_lingbot[:10])
             + ("" if len(missing_lingbot) <= 10 else f", ... ({len(missing_lingbot)} total)")
         )
@@ -229,7 +229,7 @@ def format_markdown(summary: Mapping[str, Any]) -> str:
         f"# {summary['title']}",
         "",
         f"LingBot summary: `{summary.get('lingbot_summary_path')}`",
-        f"Open-WAM summary: `{summary.get('openwam_summary_path')}`",
+        f"OpenWAM summary: `{summary.get('openwam_summary_path')}`",
         "",
         "## Aggregate",
         "",

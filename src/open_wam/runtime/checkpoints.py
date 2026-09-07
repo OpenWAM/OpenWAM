@@ -161,7 +161,7 @@ def resolve_checkpoint_step_dir_from_transformer_dir(transformer_dir: str | Path
 def normalize_checkpoint_state_dict(
     checkpoint: Mapping[str, Any],
 ) -> dict[str, torch.Tensor]:
-    """Extract pipeline tensors from supported Open-WAM checkpoint layouts."""
+    """Extract pipeline tensors from supported OpenWAM checkpoint layouts."""
 
     state_dict = checkpoint.get("state_dict")
     if state_dict is None:

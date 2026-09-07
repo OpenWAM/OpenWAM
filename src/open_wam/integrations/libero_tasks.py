@@ -43,7 +43,7 @@ def ensure_local_libero_config(project_root: Path | None = None) -> Path:
 
     The original LIBERO package prompts on import if `~/.libero/config.yaml`
     does not exist. Collaborative tooling should not depend on interactive
-    setup, so Open-WAM writes a local config into `.cache/libero_config/` and
+    setup, so OpenWAM writes a local config into `.cache/libero_config/` and
     points `LIBERO_CONFIG_PATH` there before importing the upstream package.
     """
 
@@ -374,7 +374,7 @@ def _resolve_libero_paths() -> tuple[Path, Path]:
             return paths
 
     raise ImportError(
-        "LIBERO could not be imported. Install `open-wam[libero]` plus an "
+        "LIBERO could not be imported. Install `openwam[libero]` plus an "
         "importable upstream LIBERO package, or set LIBERO_REPO_ROOT to a "
         "checkout whose structure contains `libero/libero/__init__.py`."
     ) from import_error

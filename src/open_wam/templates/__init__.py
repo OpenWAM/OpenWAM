@@ -1,1 +1,1 @@
-"""Copyable extension templates distributed with Open-WAM."""
+"""Copyable extension templates distributed with OpenWAM."""

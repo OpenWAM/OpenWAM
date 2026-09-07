@@ -27,7 +27,7 @@ def test_standard_provenance_hashes_configs_but_not_large_artifacts(
         resolved_config={"name": "fixture", "seed": 7},
         checkpoint_path=checkpoint_path,
         mode="standard",
-        argv=("open-wam-eval", "--cfg", str(config_path)),
+        argv=("openwam-eval", "--cfg", str(config_path)),
     )
 
     assert provenance["schema_version"] == OPEN_WAM_PROVENANCE_SCHEMA_V1
@@ -38,7 +38,7 @@ def test_standard_provenance_hashes_configs_but_not_large_artifacts(
     )
     assert provenance["config"]["resolved_sha256"]
     assert provenance["checkpoint"]["sha256"] is None
-    assert provenance["command_argv"][0] == "open-wam-eval"
+    assert provenance["command_argv"][0] == "openwam-eval"
 
 
 def test_full_provenance_hashes_checkpoint_bytes(tmp_path: Path) -> None:
@@ -147,7 +147,7 @@ def test_git_identity_counts_untracked_sources_as_dirty(tmp_path: Path) -> None:
     package_file.parent.mkdir(parents=True)
     package_file.write_text("# fixture\n", encoding="utf-8")
     (repo / "pyproject.toml").write_text(
-        '[project]\nname = "open-wam"\n',
+        '[project]\nname = "openwam"\n',
         encoding="utf-8",
     )
     subprocess.run(("git", "init", "-q", str(repo)), check=True)
@@ -158,9 +158,9 @@ def test_git_identity_counts_untracked_sources_as_dirty(tmp_path: Path) -> None:
             "-C",
             str(repo),
             "-c",
-            "user.name=Open-WAM Test",
+            "user.name=OpenWAM Test",
             "-c",
-            "user.email=open-wam@example.invalid",
+            "user.email=openwam@example.invalid",
             "commit",
             "-qm",
             "fixture",
@@ -184,7 +184,7 @@ def test_git_identity_rejects_an_unrelated_checkout(
     checkout = tmp_path / "checkout"
     (checkout / "src" / "open_wam").mkdir(parents=True)
     (checkout / "pyproject.toml").write_text(
-        '[project]\nname = "open-wam"\n',
+        '[project]\nname = "openwam"\n',
         encoding="utf-8",
     )
     (checkout / ".git").mkdir()

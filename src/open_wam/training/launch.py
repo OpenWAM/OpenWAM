@@ -19,7 +19,7 @@ class LaunchEnvironment(str, Enum):
 class DistributedLaunchContext:
     """Validated process coordinates supplied by an external launcher.
 
-    Open-WAM deliberately does not spawn workers inside the training runtime.
+    OpenWAM deliberately does not spawn workers inside the training runtime.
     Launchers such as ``torchrun`` own process creation and communicate the
     resulting topology through the standard Torch distributed environment.
     """
@@ -138,7 +138,7 @@ def validate_training_launch(
         if launch_context.world_size != expected:
             raise ValueError(
                 f"Training expected {expected} process(es), but the launcher provided "
-                f"WORLD_SIZE={launch_context.world_size}. Open-WAM does not spawn "
+                f"WORLD_SIZE={launch_context.world_size}. OpenWAM does not spawn "
                 "workers "
                 f"from config; launch with `torchrun --nproc-per-node={expected} ...` "
                 "or correct the expectation."

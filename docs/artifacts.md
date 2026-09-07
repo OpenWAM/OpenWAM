@@ -1,6 +1,6 @@
 # Artifacts And Checkpoints
 
-Open-WAM separates public experiment configs from machine-local artifact paths.
+OpenWAM separates public experiment configs from machine-local artifact paths.
 
 ## Local Path Registry
 
@@ -13,7 +13,7 @@ cp configs/local_paths.sample.yaml configs/local_paths.yaml
 That file is gitignored. It can also live outside the repo:
 
 ```bash
-OPEN_WAM_LOCAL_PATHS=/path/to/local_paths.yaml uv run open-wam-eval ...
+OPEN_WAM_LOCAL_PATHS=/path/to/local_paths.yaml uv run openwam-eval ...
 ```
 
 ## Artifact Manifest
@@ -44,7 +44,7 @@ an HTTPS download URL, SHA-256 checksum, and license. The tiny synthetic entry
 proves structure and execution only; it is not evidence of model quality.
 
 Checkpoint and latent tensor files are loaded through the restricted
-`weights_only=True` PyTorch path. Open-WAM does not automatically retry unsafe
+`weights_only=True` PyTorch path. OpenWAM does not automatically retry unsafe
 pickle deserialization. Legacy CALVIN object-array language annotations require
 the explicit `trusted_legacy` policy and must only come from a trusted local
 dataset.

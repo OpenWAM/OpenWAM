@@ -1,6 +1,6 @@
 # GitHub Pages Documentation Site
 
-Open-WAM publishes documentation through a generated MkDocs source tree. The
+OpenWAM publishes documentation through a generated MkDocs source tree. The
 tracked public site source is the explicit allowlist in
 `scripts/build_docs_site.py`. Its pages live in `docs/`; generated consortium
 metadata under `notes/index/` is a package resource rather than site content.
@@ -21,7 +21,7 @@ gitignored. Rebuild `.docs_site/` after editing `docs/`.
 The `pages` GitHub Actions workflow runs on pushes to `main` and can also be
 started manually. It:
 
-- installs only MkDocs, not the Open-WAM package
+- installs only MkDocs, not the OpenWAM package
 - stages curated public docs with `scripts/build_docs_site.py`
 - asserts Torch is not importable in the docs job
 - builds the static site with `mkdocs build --clean`

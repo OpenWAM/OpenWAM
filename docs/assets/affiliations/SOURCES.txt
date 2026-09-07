@@ -16,5 +16,5 @@ stanford-svl.png
   SHA-256: 1d33d07ada3855231fcb783621103930d7363e3e9529658db8e907343366f537
 
 These unmodified marks are proprietary Stanford University assets and are not
-licensed under Open-WAM's AGPL-3.0-only terms. See THIRD_PARTY_NOTICES.md and
+licensed under OpenWAM's AGPL-3.0-only terms. See THIRD_PARTY_NOTICES.md and
 Stanford's current brand and trademark policies before reuse.

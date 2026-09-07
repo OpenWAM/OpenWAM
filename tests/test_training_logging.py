@@ -108,7 +108,7 @@ def test_build_log_sink_passes_standardized_wandb_tracking_context(monkeypatch, 
         trainer=replace(
             config.trainer,
             enable_wandb=True,
-            wandb_project="open-wam",
+            wandb_project="openwam",
             wandb_mode="offline",
         ),
     )
@@ -156,7 +156,7 @@ def test_build_log_sink_passes_standardized_wandb_tracking_context(monkeypatch, 
     )
     sink.close()
 
-    assert captured["project"] == "open-wam"
+    assert captured["project"] == "openwam"
     assert captured["mode"] == "offline"
     assert captured["run_name"] == (
         "robotwin · dual_expert · video_then_action · track-run"

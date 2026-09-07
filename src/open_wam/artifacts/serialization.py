@@ -1,6 +1,6 @@
 """Safe deserialization boundaries for tensor-bearing artifacts.
 
-Open-WAM artifacts are data, not executable Python object graphs. The normal
+OpenWAM artifacts are data, not executable Python object graphs. The normal
 loader therefore uses PyTorch's restricted weights-only unpickler. A second
 loader admits only the NumPy reconstruction globals needed by historical
 LIBERO init-state files while retaining the weights-only restrictions.
@@ -38,9 +38,9 @@ def load_tensor_artifact(
         )
     except pickle.UnpicklingError as exc:
         raise UnsafeArtifactError(
-            f"Artifact {resolved_path} is not compatible with Open-WAM's safe "
+            f"Artifact {resolved_path} is not compatible with OpenWAM's safe "
             "tensor format. Convert it to tensors and primitive containers; "
-            "Open-WAM will not retry with unrestricted pickle loading."
+            "OpenWAM will not retry with unrestricted pickle loading."
         ) from exc
 
 
@@ -64,7 +64,7 @@ def load_trusted_numpy_pickle_artifact(
 
     This boundary exists only for upstream formats that cannot be represented
     by NumPy's non-pickle loader. Callers must expose an opt-in policy and pass
-    a concrete reason; normal Open-WAM artifacts must use safe tensor formats.
+    a concrete reason; normal OpenWAM artifacts must use safe tensor formats.
     """
 
     if not trust_reason.strip():

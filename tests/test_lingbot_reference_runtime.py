@@ -762,7 +762,7 @@ def test_visual_tower_loads_exported_generalist_mode_encoder_when_preconfigured(
     probe_core = SharedVideoTransformerCore(backbone_config, action_dim=4, state_dim=8)
     probe_core.configure_generalist_mode_context_encoder(enabled=True)
     exported_state = {
-        # Marks the safetensors file as an Open-WAM exported runtime backbone.
+        # Marks the safetensors file as an OpenWAM exported runtime backbone.
         "time_conditioner.time_proj.weight": probe_core.state_dict()[
             "time_conditioner.time_proj.weight"
         ].clone(),

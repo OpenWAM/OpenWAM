@@ -5,7 +5,7 @@ from existing adapters.
 
 ## Files To Touch
 
-An external dataset does not require an Open-WAM source change. Create an
+An external dataset does not require an OpenWAM source change. Create an
 installable module containing:
 
 - a `torch.utils.data.Dataset` that returns `WAMSample`
@@ -122,7 +122,7 @@ data:
 without editing YAML:
 
 ```bash
-open-wam-train \
+openwam-train \
   --extension acme_open_wam \
   --cfg experiment.yaml \
   --set data.adapter_options.timestamp_tolerance_us=200
@@ -141,8 +141,8 @@ stable seed mixing and the task, window, and inclusive-start RNG order.
 ## Validation
 
 ```bash
-open-wam-validate-config configs/examples/<dataset_sanity>.yaml
-open-wam-sanity \
+openwam-validate-config configs/examples/<dataset_sanity>.yaml
+openwam-sanity \
   --extension acme_open_wam \
   --cfg configs/examples/<dataset_sanity>.yaml \
   --max-batches 1

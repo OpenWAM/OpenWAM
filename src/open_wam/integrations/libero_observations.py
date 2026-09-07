@@ -1,4 +1,4 @@
-"""LIBERO observation parsing into Open-WAM state contracts."""
+"""LIBERO observation parsing into OpenWAM state contracts."""
 
 from __future__ import annotations
 

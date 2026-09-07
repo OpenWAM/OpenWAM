@@ -396,7 +396,7 @@ def test_ensure_local_libero_config_writes_deterministic_checkout_paths(
         lambda: (repo_root, package_root),
     )
     monkeypatch.setenv("LIBERO_CONFIG_PATH", "original-config")
-    project_root = tmp_path / "Open-WAM"
+    project_root = tmp_path / "OpenWAM"
 
     config_path = libero_tasks.ensure_local_libero_config(project_root)
     first_bytes = config_path.read_bytes()
@@ -468,7 +468,7 @@ def test_resolve_libero_paths_uses_fallback_checkout_without_import(monkeypatch,
     monkeypatch.setattr(
         libero_tasks,
         "_project_root",
-        lambda _: tmp_path / "Open-WAM",
+        lambda _: tmp_path / "OpenWAM",
     )
 
     resolved_repo_root, resolved_package_root = (

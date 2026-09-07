@@ -78,7 +78,7 @@ REQUIRED_PROJECT_CLASSIFIERS = frozenset(
 REQUIRED_PROJECT_KEYWORDS = frozenset({"robotics", "world action models", "world models"})
 REQUIRED_ATTRIBUTION = (
     "OpenWAM Team, Stanford Vision and Learning Lab (SVL), Stanford University. "
-    "Open-WAM, version 0.1.0, 2026."
+    "OpenWAM, version 0.1.0, 2026."
 )
 _SHA256_PATTERN = re.compile(r"^(?:sha256:)?[0-9a-fA-F]{64}$")
 
@@ -88,7 +88,7 @@ def validate_project_metadata(pyproject: dict[str, Any]) -> None:
     if not isinstance(project, dict):
         raise ValueError("Project metadata must be a TOML table.")
     expected_scalars = {
-        "name": "open-wam",
+        "name": "openwam",
         "readme": "README.md",
         "license": "AGPL-3.0-only",
         "requires-python": ">=3.11,<3.13",
@@ -160,7 +160,7 @@ def validate_release_build_config(pyproject: dict[str, Any]) -> None:
     if not attribution_notice.is_file() or REQUIRED_ATTRIBUTION not in (
         attribution_notice.read_text(encoding="utf-8")
     ):
-        raise ValueError("NOTICE must contain the required Open-WAM attribution.")
+        raise ValueError("NOTICE must contain the required OpenWAM attribution.")
     validate_public_consortium_snapshot(REPO_ROOT)
 
 

@@ -66,7 +66,7 @@ from .static_validation_rules import _validate_eval_config, _validate_experiment
 
 
 def validate_config_file(path: str | Path, *, repo_root: str | Path | None = None) -> StaticConfigReport:
-    """Validate one Open-WAM YAML config without importing model/runtime code."""
+    """Validate one OpenWAM YAML config without importing model/runtime code."""
 
     source_path = resolve_config_path_alias(path).resolve()
     root = Path(repo_root).expanduser().resolve() if repo_root is not None else _find_repo_root(source_path)

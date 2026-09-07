@@ -3,7 +3,7 @@
 Status: active baseline integration under `baselines/lingbot_va`.
 
 This baseline is the upstream open-source LingBot-VA LIBERO-LONG checkpoint
-evaluated on `libero_10`. It is intentionally outside the Open-WAM method
+evaluated on `libero_10`. It is intentionally outside the OpenWAM method
 runtime.
 
 ## Contract
@@ -22,7 +22,7 @@ Default baseline scope:
 - video FPS when rendered: `60`
 
 The runner preserves the upstream LIBERO client loop while adding resumable
-Open-WAM result collection:
+OpenWAM result collection:
 
 - `benchmark_instance.get_task_init_states(task_id)` for init states
 - `model.infer(dict(reset=True, prompt=prompt))`

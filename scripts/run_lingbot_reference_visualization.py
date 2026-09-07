@@ -472,7 +472,7 @@ def _ensure_reference_transformer_dir(
     weights_path = transformer_dir / "diffusion_pytorch_model.safetensors"
     if not weights_path.is_file():
         raise FileNotFoundError(
-            f"Only unsharded Open-WAM transformer exports are supported: {weights_path}"
+            f"Only unsharded OpenWAM transformer exports are supported: {weights_path}"
         )
     digest = hashlib.sha256(str(transformer_dir.resolve()).encode("utf-8")).hexdigest()[
         :12

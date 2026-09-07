@@ -152,7 +152,7 @@ def run_simulator_rollout_command(args: argparse.Namespace) -> dict[str, Any]:
         }
     )
     summary = build_result_envelope(
-        command="open-wam-sim-rollout",
+        command="openwam-sim-rollout",
         config=str(config_path),
         metrics={
             "success": bool(result.success),

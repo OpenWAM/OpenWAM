@@ -3,7 +3,7 @@ name: causal_video_prediction_mixed_video
 data:
   # Manifest-first mixed RGB video pretraining. Add one entry per source; each
   # manifest row maps a video stream into common `observation.images.slot*`
-  # slots before the normal Open-WAM view adapter sees the batch.
+  # slots before the normal OpenWAM view adapter sees the batch.
   dataset_name: mixed_video
   dataset_type: mixed_video
   cache_dir: "${paths.datasets.mixed_video_hf_cache}"
@@ -75,7 +75,7 @@ data:
   missing_stream_policy: zero_fill
 
   # Source-balanced federated sampling, matching the nmotions mixed loader
-  # behavior while preserving Open-WAM's WAMSample contract.
+  # behavior while preserving OpenWAM's WAMSample contract.
   random_mode: within_source
   weight_mode: proportional_to_size
   sampling_seed: 0

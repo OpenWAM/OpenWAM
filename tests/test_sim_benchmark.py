@@ -263,7 +263,7 @@ def test_calvin_adapter_reports_missing_benchmark_runtime(monkeypatch, tmp_path:
 
     monkeypatch.setattr(builtins, "__import__", fail_calvin_import)
 
-    with pytest.raises(ImportError, match=r"open-wam\[calvin\].*--calvin-root"):
+    with pytest.raises(ImportError, match=r"openwam\[calvin\].*--calvin-root"):
         adapter._build_env()
 
 
@@ -312,7 +312,7 @@ def test_robotwin_adapter_reports_missing_benchmark_runtime(monkeypatch, tmp_pat
 
     monkeypatch.setattr(robotwin_env_module.importlib, "import_module", fail_task_import)
 
-    with pytest.raises(ImportError, match=r"open-wam\[robotwin\].*--robotwin-root"):
+    with pytest.raises(ImportError, match=r"openwam\[robotwin\].*--robotwin-root"):
         adapter._build_task_env("dummy_task")
 
 

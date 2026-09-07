@@ -50,7 +50,7 @@ class ConsortiumSourceSpec:
 
 
 class NoopConsortiumCache:
-    """Resolve physical source files without an Open-WAM-managed cache."""
+    """Resolve physical source files without an OpenWAM-managed cache."""
 
     def resolve(self, *, source: ConsortiumSourceSpec, relative_path: str, cache_dir: str | None) -> Path:
         if source.local_root is not None:

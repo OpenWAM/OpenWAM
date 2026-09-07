@@ -1,6 +1,6 @@
 # Testing
 
-Open-WAM uses pytest markers to make resource requirements explicit.
+OpenWAM uses pytest markers to make resource requirements explicit.
 
 ## Markers
 
@@ -27,7 +27,7 @@ references, artifact manifest shape, local path sample hygiene, duplicate
 optional dependencies, source contracts that should remain import-safe, and
 production-core Pyflakes over `src`, `scripts`, `tests`, and `baselines`.
 Pyflakes runs in an isolated `uv --no-project` environment; it
-does not install Open-WAM or its runtime dependencies.
+does not install OpenWAM or its runtime dependencies.
 
 Run that static lint locally with the pinned development dependency:
 

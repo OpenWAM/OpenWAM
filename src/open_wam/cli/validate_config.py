@@ -9,7 +9,7 @@ from open_wam.configs.static_schema import format_report, reports_to_exit_code, 
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run static Open-WAM config validation without model imports.")
+    parser = argparse.ArgumentParser(description="Run static OpenWAM config validation without model imports.")
     parser.add_argument("paths", nargs="+", help="YAML files or directories to validate.")
     parser.add_argument("--repo-root", type=str, default=None)
     parser.add_argument("--quiet", action="store_true", help="Only print failing reports.")

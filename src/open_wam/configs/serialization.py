@@ -1,4 +1,4 @@
-"""Canonical serialization for public Open-WAM configuration artifacts."""
+"""Canonical serialization for public OpenWAM configuration artifacts."""
 
 from __future__ import annotations
 

@@ -1,6 +1,6 @@
 # Benchmarks And Data
 
-Open-WAM keeps benchmark-specific loading behind adapters while exposing one
+OpenWAM keeps benchmark-specific loading behind adapters while exposing one
 uniform model-facing batch contract.
 
 ## Supported Sources
@@ -106,11 +106,11 @@ quality. It is useful for:
 Run it with:
 
 ```bash
-open-wam-validate-config \
+openwam-validate-config \
   configs/examples/public_tiny_synthetic_contract.yaml \
   configs/evals/public_tiny_synthetic_contract.yaml
 
-open-wam-eval \
+openwam-eval \
   --cfg configs/evals/public_tiny_synthetic_contract.yaml \
   --device cpu \
   --max-batches 1

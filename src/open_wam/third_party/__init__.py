@@ -1,1 +1,1 @@
-"""Vendored third-party modules required for Open-WAM runtimes."""
+"""Vendored third-party modules required for OpenWAM runtimes."""

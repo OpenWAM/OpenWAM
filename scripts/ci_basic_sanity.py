@@ -82,12 +82,12 @@ def _check_release_build_config(pyproject: dict[str, Any]) -> None:
 
 def _check_console_scripts(scripts: dict[str, str]) -> None:
     expected = {
-        "open-wam-train": "open_wam.cli.train:main",
-        "open-wam-eval": "open_wam.cli.eval:main",
-        "open-wam-inspect-config": "open_wam.cli.inspect_config:main",
-        "open-wam-validate-config": "open_wam.cli.validate_config:main",
-        "open-wam-sanity": "open_wam.cli.sanity:main",
-        "open-wam-sim-rollout": "open_wam.cli.sim_rollout:main",
+        "openwam-train": "open_wam.cli.train:main",
+        "openwam-eval": "open_wam.cli.eval:main",
+        "openwam-inspect-config": "open_wam.cli.inspect_config:main",
+        "openwam-validate-config": "open_wam.cli.validate_config:main",
+        "openwam-sanity": "open_wam.cli.sanity:main",
+        "openwam-sim-rollout": "open_wam.cli.sim_rollout:main",
     }
     if scripts != expected:
         raise SystemExit(f"Unexpected console script declarations: {scripts!r}")
@@ -318,7 +318,7 @@ def _check_static_source_contracts() -> None:
         "src/open_wam/contracts/paths.py": ("def find_repo_root", "parents[3]"),
         "src/open_wam/runtime/results.py": ("RESERVED_RESULT_KEYS", "envelope.update(extra)"),
         "src/open_wam/pipelines/registries.py": ("BuilderRegistry[ActionDecoderName", "BuilderRegistry[object"),
-        "src/open_wam/__init__.py": ("version(\"open-wam\")", "__version__ = \"0.1.0\""),
+        "src/open_wam/__init__.py": ("version(\"openwam\")", "__version__ = \"0.1.0\""),
     }
     for relative, (required, forbidden) in source_checks.items():
         source = (REPO_ROOT / relative).read_text(encoding="utf-8")

@@ -1,6 +1,6 @@
 # Architecture
 
-Open-WAM composes every maintained model through one boundary:
+OpenWAM composes every maintained model through one boundary:
 
 ```text
 ExperimentConfig
@@ -36,7 +36,7 @@ conditioning is active. Exact-runtime code consumes these read-only values;
 none is a second authored axis. For example:
 
 ```bash
-open-wam-train \
+openwam-train \
   --cfg configs/experiments/dual_expert_libero_joint.yaml \
   --set policy_variant.program=video_then_action
 ```
@@ -191,7 +191,7 @@ target-only conditional rows.
 Select architecture through the experiment config:
 
 ```bash
-open-wam-train \
+openwam-train \
   --config-name <architecture>_libero_generalist_joint_denoising \
   --set policy_variant.generalist_mode_text_token=true
 ```

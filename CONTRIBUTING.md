@@ -1,6 +1,6 @@
-# Contributing To Open-WAM
+# Contributing To OpenWAM
 
-Open-WAM is organized around this runtime boundary:
+OpenWAM is organized around this runtime boundary:
 
 ```text
 ExperimentConfig -> VariantPipeline -> VisualTower -> PolicyVariant -> ActionDecoder
@@ -80,7 +80,7 @@ For extension work, start from the cookbooks under `docs/cookbooks/` and add a
 static config validation command:
 
 ```bash
-uv run open-wam-validate-config configs/examples/<your_config>.yaml
+uv run openwam-validate-config configs/examples/<your_config>.yaml
 ```
 
 ## Pull Request Checklist

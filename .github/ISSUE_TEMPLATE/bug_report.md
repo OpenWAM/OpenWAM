@@ -1,6 +1,6 @@
 ---
 name: Bug report
-about: Report a reproducible Open-WAM failure
+about: Report a reproducible OpenWAM failure
 labels: bug
 ---
 

@@ -1,7 +1,7 @@
 # LingBot-VA LIBERO-LONG Baseline
 
 This baseline runs the upstream open-source LingBot-VA LIBERO checkpoint as an
-external reference system while keeping Open-WAM methods untouched.
+external reference system while keeping OpenWAM methods untouched.
 
 The default baseline is intentionally narrow:
 
@@ -12,7 +12,7 @@ The default baseline is intentionally narrow:
 - control loop: upstream `evaluation/libero/client.py` semantics
 - horizon: upstream `env.timestep < 800`
 
-No local checkpoint substitution, Open-WAM-exported transformer, or
+No local checkpoint substitution, OpenWAM-exported transformer, or
 action-channel compatibility override is part of this baseline.
 
 ## Download
@@ -86,7 +86,7 @@ The runner imports upstream `VA_Server` and preserves the LIBERO client loop:
 - warm the KV cache with `compute_kv_cache=True, imagine=False, state=action`
 - stop when the env reports success or reaches timestep `800`
 
-Open-WAM only provides argument parsing, resumable episode grids/manifests,
+OpenWAM only provides argument parsing, resumable episode grids/manifests,
 JSON summaries, and optional rollout video rendering.
 The suite's `runtime.renderer_profile: online_rollout` pins this online baseline
 to EGL before upstream simulator modules are imported.

@@ -1,6 +1,6 @@
 # Video-Only Training
 
-Open-WAM trains causal video prediction through the same public composition
+OpenWAM trains causal video prediction through the same public composition
 boundary as its video/action policies:
 
 ```text

@@ -139,7 +139,7 @@ class CalvinBenchmarkAdapter:
             missing = getattr(exc, "name", None) or "calvin_env"
             raise ImportError(
                 f"CALVIN runtime module {missing!r} is unavailable. Install "
-                "`open-wam[calvin]` plus the upstream CALVIN environment, or "
+                "`openwam[calvin]` plus the upstream CALVIN environment, or "
                 "pass --calvin-root pointing at a compatible checkout."
             ) from exc
         if getattr(calvin_env, "__file__", None) is None and self.root is not None:

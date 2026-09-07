@@ -265,12 +265,12 @@ def test_apple_to_apple_summary_aligns_lingbot_and_openwam_rows() -> None:
         "checkpoint_specs": [
             {
                 "key": "m1_lingbot_va_transformer",
-                "label": "Open-WAM LingBot-VA transformer",
+                "label": "OpenWAM LingBot-VA transformer",
             }
         ],
         "by_checkpoint": {
             "m1_lingbot_va_transformer": {
-                "label": "Open-WAM LingBot-VA transformer",
+                "label": "OpenWAM LingBot-VA transformer",
                 "total": 1,
                 "finished": 1,
                 "success": 0,
@@ -303,7 +303,7 @@ def test_apple_to_apple_summary_aligns_lingbot_and_openwam_rows() -> None:
         },
         {
             "key": "openwam:m1_lingbot_va_transformer",
-            "label": "Open-WAM LingBot-VA transformer",
+            "label": "OpenWAM LingBot-VA transformer",
             "source": "open_wam",
             "success": 0,
             "total": 1,
@@ -327,12 +327,12 @@ def test_apple_to_apple_summary_counts_unfinished_openwam_rows_in_denominator() 
             "checkpoint_specs": [
                 {
                     "key": "m1_lingbot_va_transformer",
-                    "label": "Open-WAM LingBot-VA transformer",
+                    "label": "OpenWAM LingBot-VA transformer",
                 }
             ],
             "by_checkpoint": {
                 "m1_lingbot_va_transformer": {
-                    "label": "Open-WAM LingBot-VA transformer",
+                    "label": "OpenWAM LingBot-VA transformer",
                     "total": 2,
                     "finished": 1,
                     "success": 1,
@@ -359,7 +359,7 @@ def test_apple_to_apple_summary_counts_unfinished_openwam_rows_in_denominator() 
     assert summary["arms"] == [
         {
             "key": "openwam:m1_lingbot_va_transformer",
-            "label": "Open-WAM LingBot-VA transformer",
+            "label": "OpenWAM LingBot-VA transformer",
             "source": "open_wam",
             "success": 1,
             "total": 2,
@@ -367,7 +367,7 @@ def test_apple_to_apple_summary_counts_unfinished_openwam_rows_in_denominator() 
         }
     ]
     assert summary["row_set_warnings"] == [
-        "Native LingBot summary is missing Open-WAM rows: libero_10:task2:init4, libero_10:task3:init5"
+        "Native LingBot summary is missing OpenWAM rows: libero_10:task2:init4, libero_10:task3:init5"
     ]
 
 

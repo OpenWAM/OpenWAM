@@ -16,7 +16,7 @@ def main(argv: list[str] | None = None) -> None:
         from open_wam.training.train import main as training_main
     except ModuleNotFoundError as exc:
         raise SystemExit(
-            "Training dependencies are not installed. Install with `pip install 'open-wam[train]'` "
+            "Training dependencies are not installed. Install with `pip install 'openwam[train]'` "
             "or `uv sync --extra train`."
         ) from exc
     training_main(argv)

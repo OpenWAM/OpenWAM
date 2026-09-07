@@ -7,7 +7,7 @@ from open_wam.runtime.provenance import ProvenanceMode
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Evaluate an Open-WAM experiment.")
+    parser = argparse.ArgumentParser(description="Evaluate an OpenWAM experiment.")
     parser.add_argument("--cfg", "--config", dest="config", type=str, required=True)
     parser.add_argument("--mode", type=str, default=None)
     parser.add_argument("--split", type=str, default=None)
@@ -40,7 +40,7 @@ def main(argv: list[str] | None = None) -> None:
         from open_wam.evals.evaluate import main as evaluate_main
     except ModuleNotFoundError as exc:
         raise SystemExit(
-            "Evaluation dependencies are not installed. Install with `pip install 'open-wam[eval]'` "
+            "Evaluation dependencies are not installed. Install with `pip install 'openwam[eval]'` "
             "or `uv sync --extra eval`."
         ) from exc
     if argv is not None:

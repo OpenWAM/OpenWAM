@@ -1,4 +1,4 @@
-"""Filesystem contracts for Open-WAM checkpoint and transformer artifacts.
+"""Filesystem contracts for OpenWAM checkpoint and transformer artifacts.
 
 This module deliberately has no tensor, model, or configuration-dataclass
 dependencies. Commands can inspect checkpoint layouts before importing a

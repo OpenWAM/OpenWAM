@@ -1,4 +1,4 @@
-"""Safe deserialization boundaries for Open-WAM artifacts."""
+"""Safe deserialization boundaries for OpenWAM artifacts."""
 
 from .serialization import (
     UnsafeArtifactError,

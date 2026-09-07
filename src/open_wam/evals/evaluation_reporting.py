@@ -19,7 +19,7 @@ def build_evaluation_result(
     """Convert an evaluation summary into the stable public result schema."""
 
     return build_result_envelope(
-        command="open-wam-eval",
+        command="openwam-eval",
         config=str(request.source_config_path or request.experiment_config_path),
         checkpoint=summary.checkpoint_path,
         benchmark=benchmark,

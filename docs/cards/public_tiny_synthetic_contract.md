@@ -22,14 +22,14 @@
 ## Resources
 
 - default static validation: CPU only, no Torch, no dataset, no simulator
-- gated smoke usage: CPU with `open-wam[train]`
+- gated smoke usage: CPU with `openwam[train]`
 - checked-in fixture checkpoint: structural placeholders only
 - quickstart training output: runnable model and full training state
 
 ## Validation
 
 ```bash
-open-wam-validate-config \
+openwam-validate-config \
   configs/examples/public_tiny_synthetic_contract.yaml \
   configs/evals/public_tiny_synthetic_contract.yaml
 ```

@@ -1,6 +1,6 @@
 # Code Of Conduct
 
-Open-WAM follows the Contributor Covenant Code of Conduct, version 2.1.
+OpenWAM follows the Contributor Covenant Code of Conduct, version 2.1.
 
 ## Expected Behavior
 

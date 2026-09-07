@@ -1,1 +1,1 @@
-"""Open-WAM test support package."""
+"""OpenWAM test support package."""

@@ -169,7 +169,7 @@ class MixedVideoDataConfig(DataConfig):
 
     This mirrors the nmotions pipeline contract at the data boundary: manifests
     enumerate video streams, the adapter decodes every source into one common
-    target size, and the rest of Open-WAM only sees the standard `views` batch.
+    target size, and the rest of OpenWAM only sees the standard `views` batch.
     """
 
     dataset_name: str = "mixed_video"

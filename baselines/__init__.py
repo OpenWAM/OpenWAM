@@ -1,1 +1,1 @@
-"""Baseline integrations that live outside the Open-WAM method stack."""
+"""Baseline integrations that live outside the OpenWAM method stack."""

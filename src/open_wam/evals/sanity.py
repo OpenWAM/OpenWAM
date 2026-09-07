@@ -49,8 +49,8 @@ def run_sanity_command(args: argparse.Namespace) -> dict[str, Any]:
 
     if args.max_batches != 1:
         raise SystemExit(
-            "open-wam-sanity inspects exactly one batch, so --max-batches must be 1. "
-            "Use open-wam-eval for multi-batch metrics."
+            "openwam-sanity inspects exactly one batch, so --max-batches must be 1. "
+            "Use openwam-eval for multi-batch metrics."
         )
     if args.batch_size is not None and args.batch_size <= 0:
         raise SystemExit("--batch-size must be positive when provided.")
@@ -70,7 +70,7 @@ def run_sanity_command(args: argparse.Namespace) -> dict[str, Any]:
     require_current_libero_policy_paradigm(
         config,
         config_path=config_path,
-        source="open-wam-sanity",
+        source="openwam-sanity",
         allow_deprecated=bool(args.allow_deprecated_libero_config),
     )
     mapping_report = validate_action_mapping_preflight(
@@ -126,7 +126,7 @@ def run_sanity_command(args: argparse.Namespace) -> dict[str, Any]:
         "rollout_style_infer": rollout_report,
     }
     summary = build_result_envelope(
-        command="open-wam-sanity",
+        command="openwam-sanity",
         config=str(config_path),
         metrics={
             "train_loss": train_report["loss"],

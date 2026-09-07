@@ -1,4 +1,4 @@
-"""Open-WAM research package.
+"""OpenWAM research package.
 
 The stable runtime boundary is:
 
@@ -16,7 +16,7 @@ except ModuleNotFoundError:  # pragma: no cover - exercised in RoboTwin's Python
 
 def _resolve_version() -> str:
     try:
-        return version("open-wam")
+        return version("openwam")
     except PackageNotFoundError:
         pass
 
@@ -29,7 +29,7 @@ def _resolve_version() -> str:
         except (OSError, tomllib.TOMLDecodeError):
             continue
         project = pyproject.get("project", {})
-        if project.get("name") == "open-wam" and isinstance(project.get("version"), str):
+        if project.get("name") == "openwam" and isinstance(project.get("version"), str):
             return project["version"]
     return "0+unknown"
 

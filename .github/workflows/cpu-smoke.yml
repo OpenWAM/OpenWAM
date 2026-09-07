@@ -18,13 +18,13 @@ jobs:
         run: uv sync --group dev --extra train
       - name: Validate public tiny configs
         run: |
-          uv run open-wam-validate-config \
+          uv run openwam-validate-config \
             configs/examples/public_tiny_synthetic_contract.yaml \
             configs/evals/public_tiny_synthetic_contract.yaml
       - name: Train and checkpoint public tiny
         run: |
           RUN_ROOT="${RUNNER_TEMP}/public-tiny"
-          uv run open-wam-train \
+          uv run openwam-train \
             --cfg configs/examples/public_tiny_synthetic_contract.yaml \
             --save-root "${RUN_ROOT}" \
             --expected-world-size 1 \
@@ -32,7 +32,7 @@ jobs:
       - name: Resume public tiny exactly
         run: |
           RUN_ROOT="${RUNNER_TEMP}/public-tiny"
-          uv run open-wam-train \
+          uv run openwam-train \
             --cfg configs/examples/public_tiny_synthetic_contract.yaml \
             --save-root "${RUN_ROOT}" \
             --resume-from "${RUN_ROOT}" \
@@ -42,14 +42,14 @@ jobs:
       - name: Evaluate the resumed checkpoint
         run: |
           RUN_ROOT="${RUNNER_TEMP}/public-tiny"
-          uv run open-wam-eval \
+          uv run openwam-eval \
             --cfg configs/evals/public_tiny_synthetic_contract.yaml \
             --checkpoint "${RUN_ROOT}/checkpoints/checkpoint_step_2/model_state.pt" \
             --device cpu \
             --max-batches 1
       - name: Run the packaged extension scaffold
         run: |
-          uv run open-wam-train \
+          uv run openwam-train \
             --cfg templates/extension_method/config.yaml \
             --extension open_wam.templates.extension_method \
             --save-root "${RUNNER_TEMP}/extension-method" \

@@ -9,10 +9,10 @@ except ModuleNotFoundError:  # pragma: no cover - exercised in RoboTwin's Python
 
 
 def find_repo_root(start: str | Path | None = None) -> Path:
-    """Find the active Open-WAM source root, falling back to the current directory.
+    """Find the active OpenWAM source root, falling back to the current directory.
 
     Source checkouts are detected by walking upward from ``start`` for an
-    Open-WAM ``pyproject.toml`` plus the expected source package layout. Wheel
+    OpenWAM ``pyproject.toml`` plus the expected source package layout. Wheel
     installs do not contain those source markers, so repo-relative paths resolve
     from the caller's working directory in that case.
     """
@@ -45,7 +45,7 @@ def _is_open_wam_root(path: Path) -> bool:
         pyproject = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
     except (OSError, tomllib.TOMLDecodeError):
         return False
-    return pyproject.get("project", {}).get("name") == "open-wam"
+    return pyproject.get("project", {}).get("name") == "openwam"
 
 
 def _has_open_wam_source_layout(path: Path) -> bool:

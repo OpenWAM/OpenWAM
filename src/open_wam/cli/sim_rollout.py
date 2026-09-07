@@ -8,7 +8,7 @@ from open_wam.runtime.provenance import ProvenanceMode
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Run one Open-WAM policy in a benchmark simulator through the shared "
+            "Run one OpenWAM policy in a benchmark simulator through the shared "
             "closed-loop realtime adapter. Supports RoboTwin and CALVIN when the "
             "external simulator packages are installed locally."
         )
@@ -82,7 +82,7 @@ def main(argv: list[str] | None = None) -> None:
         missing = error.name or "an optional runtime module"
         raise SystemExit(
             "Simulator dependencies are not installed. Install with "
-            "`pip install 'open-wam[sim]'` or `uv sync --extra sim`. "
+            "`pip install 'openwam[sim]'` or `uv sync --extra sim`. "
             f"Missing module: {missing}."
         ) from error
 

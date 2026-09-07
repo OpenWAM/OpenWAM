@@ -22,7 +22,7 @@ LIBERO_ROLLOUT_VIEW_KEYS = (
 
 
 def extract_libero_rollout_observation(observation: Mapping[str, Any]) -> dict[str, np.ndarray]:
-    """Translate one raw LIBERO observation into Open-WAM rollout fields."""
+    """Translate one raw LIBERO observation into OpenWAM rollout fields."""
 
     return {
         LIBERO_ROLLOUT_VIEW_KEYS[0]: np.ascontiguousarray(

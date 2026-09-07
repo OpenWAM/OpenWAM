@@ -45,5 +45,5 @@ def test_removed_python_entrypoint_stubs_always_fail_closed(
     result = _run_entrypoint(relative_path, allow_deprecated=allow_deprecated)
 
     assert result.returncode == 2
-    assert "was removed from the maintained Open-WAM runtime" in result.stderr
+    assert "was removed from the maintained OpenWAM runtime" in result.stderr
     assert replacement in result.stderr

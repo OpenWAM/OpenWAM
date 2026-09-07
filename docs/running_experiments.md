@@ -1,6 +1,6 @@
 # Training And Inference
 
-This is the maintained operator guide for Open-WAM training, offline
+This is the maintained operator guide for OpenWAM training, offline
 evaluation, and simulator rollout. Commands in archived engineering notes are
 historical records, not alternate launch interfaces.
 
@@ -20,14 +20,14 @@ may remain unchanged.
 Validate and inspect a config before allocating a GPU:
 
 ```bash
-uv run open-wam-validate-config configs/experiments/<experiment>.yaml
-uv run open-wam-inspect-config --cfg configs/experiments/<experiment>.yaml
+uv run openwam-validate-config configs/experiments/<experiment>.yaml
+uv run openwam-inspect-config --cfg configs/experiments/<experiment>.yaml
 ```
 
 Static validation targets authored YAML. Checkpoint-generated
 `resolved_config.yaml` files contain fully serialized typed defaults and should
 be loaded through checkpoint-aware runtime commands rather than passed to
-`open-wam-validate-config`.
+`openwam-validate-config`.
 
 ## Supported Configs
 
@@ -65,7 +65,7 @@ reports, and automation.
 All architectures and programs enter the same package-owned training runtime:
 
 ```bash
-uv run --extra train open-wam-train \
+uv run --extra train openwam-train \
   --cfg configs/experiments/<experiment>.yaml \
   --save-root runs/<run-name>
 ```
@@ -116,7 +116,7 @@ task would see `WORLD_SIZE=1` and run as an independent single-process job. A
 direct `srun` integration must map those variables inside each task, not in the
 parent allocation shell. Prefer the `torchrun` recipe above.
 
-Open-WAM never creates worker processes from config. `--expected-world-size N`
+OpenWAM never creates worker processes from config. `--expected-world-size N`
 validates the topology supplied by the launcher and fails before model
 construction when `WORLD_SIZE != N`. The legacy `--devices N` option remains a
 compatibility alias: it is still recorded as `trainer.devices`, and explicit
@@ -158,7 +158,7 @@ torchrun --standalone --nproc-per-node=5 \
 Load an external dataset or policy extension before config construction:
 
 ```bash
-uv run --extra train open-wam-train \
+uv run --extra train openwam-train \
   --extension acme_open_wam \
   --cfg /path/to/acme_experiment.yaml
 ```
@@ -168,7 +168,7 @@ only public program switch. A named config is preferred for recorded runs, but
 a one-off ablation can use:
 
 ```bash
-uv run --extra train open-wam-train \
+uv run --extra train openwam-train \
   --cfg configs/experiments/dual_expert_libero_joint.yaml \
   --set policy_variant.program=video_then_action
 ```
@@ -288,7 +288,7 @@ When only a detached transformer is available, pass it explicitly with
 files described below.
 
 ```bash
-uv run --extra train open-wam-train \
+uv run --extra train openwam-train \
   --cfg configs/experiments/<experiment>.yaml \
   --save-root runs/<run-name> \
   --initialize-weights-from runs/<parent-run>/checkpoints/checkpoint_step_N
@@ -318,7 +318,7 @@ resume support.
 
 ## Generalist Joint Denoising
 
-Installed-package GJD training uses the generic `open-wam-train` entry point.
+Installed-package GJD training uses the generic `openwam-train` entry point.
 Parallel Stream and Dual Expert are model architectures under the same GJD
 paradigm. Source checkouts also provide
 `scripts/run_gjd_libero.sh` as a convenience for expanding named ablations and
@@ -340,7 +340,7 @@ consume the same route and sequence contracts; choose the corresponding
 architecture config to change model topology.
 
 ```bash
-open-wam-train \
+openwam-train \
   --config-name dual_expert_libero_generalist_joint_denoising \
   --save-root runs/dual-expert-gjd-mode-token \
   --dataset-root /path/to/libero_10 \
@@ -360,7 +360,7 @@ pure FDM with a `3:1` real-to-counterfactual ratio is:
 
 ```bash
 FDM_ROUTES='[{"source":"real_demo","mode":"action_conditioned_video","weight":3},{"source":"counterfactual_dynamics","mode":"action_conditioned_video","weight":1}]'
-open-wam-train \
+openwam-train \
   --config-name dual_expert_libero_generalist_joint_denoising \
   --save-root runs/dual-expert-gjd-pure-fdm \
   --set policy_variant.generalist_mode_text_token=false \
@@ -394,7 +394,7 @@ Resume through the same package entry point and repeat the experiment-defining
 overrides (the checkpoint-local resolved config remains the audit record):
 
 ```bash
-open-wam-train \
+openwam-train \
   --config-name dual_expert_libero_generalist_joint_denoising \
   --save-root runs/dual-expert-gjd-mode-token \
   --resume-from runs/dual-expert-gjd-mode-token/checkpoints/checkpoint_step_N \
@@ -499,14 +499,14 @@ fail on existing outputs unless replacement is requested explicitly; use their
 
 ```bash
 # FDM defaults to a 1:1 real/counterfactual source ratio.
-uv run --extra train open-wam-train \
+uv run --extra train openwam-train \
   --cfg configs/experiments/dual_expert_libero_conditional_dynamics.yaml \
   --save-root runs/dual-expert-forward-dynamics
 
 # IDM changes both execution mode and data routes. The cross-config validator
 # rejects changing only one side.
 IDM_ROUTES='[{"source":"real_demo","mode":"video_conditioned_action","weight":1},{"source":"counterfactual_dynamics","mode":"video_conditioned_action","weight":1}]'
-uv run --extra train open-wam-train \
+uv run --extra train openwam-train \
   --cfg configs/experiments/dual_expert_libero_conditional_dynamics.yaml \
   --set policy_variant.program=inverse_dynamics \
   --set "data.dynamics_routing.routes=${IDM_ROUTES}" \
@@ -521,7 +521,7 @@ fixed program:
 ```bash
 FDM_ROUTES='[{"source":"real_demo","mode":"action_conditioned_video","weight":1},{"source":"counterfactual_dynamics","mode":"action_conditioned_video","weight":1}]'
 FIXED_VAL='[{"name":"conditional_dynamics_val","dataset_split":"val","source":"dataset","max_batches":16,"report_prefix":"val_conditional_dynamics"}]'
-uv run --extra train open-wam-train \
+uv run --extra train openwam-train \
   --cfg configs/experiments/parallel_stream_libero_generalist_joint_denoising.yaml \
   --set policy_variant.program=forward_dynamics \
   --set "data.dynamics_routing.routes=${FDM_ROUTES}" \
@@ -538,7 +538,7 @@ For a non-default ratio, replace the route list. For example, FDM `3:1` uses:
 
 ```bash
 FDM_ROUTES='[{"source":"real_demo","mode":"action_conditioned_video","weight":3},{"source":"counterfactual_dynamics","mode":"action_conditioned_video","weight":1}]'
-uv run --extra train open-wam-train \
+uv run --extra train openwam-train \
   --cfg configs/experiments/dual_expert_libero_conditional_dynamics.yaml \
   --set "data.dynamics_routing.routes=${FDM_ROUTES}" \
   --save-root runs/dual-expert-forward-dynamics-real3-cf1
@@ -569,25 +569,25 @@ not equivalent to a rollout-local causal-VAE reset at t0.
 Use eval configs for dataset-level metrics:
 
 ```bash
-uv run --extra eval open-wam-eval \
+uv run --extra eval openwam-eval \
   --cfg configs/evals/<evaluation>.yaml \
   --device cuda:0 \
   --max-batches 16 \
   --output-json outputs/evaluation.json
 ```
 
-Use `open-wam-sanity` when the goal is to verify loading, one train/eval path,
+Use `openwam-sanity` when the goal is to verify loading, one train/eval path,
 and rollout-style tensor flow without making a benchmark claim:
 
 ```bash
-uv run --extra train open-wam-sanity \
+uv run --extra train openwam-sanity \
   --cfg configs/examples/<example>.yaml \
   --device cpu \
   --max-batches 1 \
   --rollout-steps 1
 ```
 
-Sanity reports intentionally inspect exactly one batch. Use `open-wam-eval`
+Sanity reports intentionally inspect exactly one batch. Use `openwam-eval`
 for aggregated multi-batch metrics.
 
 FDM/IDM ablations and simulator counterfactual renders are checkout-only
@@ -724,7 +724,7 @@ Use the package simulator boundary for a built-in or extension-registered
 adapter:
 
 ```bash
-uv run --extra sim open-wam-sim-rollout \
+uv run --extra sim openwam-sim-rollout \
   --cfg configs/examples/<benchmark>.yaml \
   --benchmark <registered-name> \
   --target-action-hz 10

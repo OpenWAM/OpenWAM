@@ -1,7 +1,7 @@
 # Baselines
 
 This directory contains integrations for external baselines that should remain
-outside the Open-WAM method stack. Baseline runners may use Open-WAM utilities
+outside the OpenWAM method stack. Baseline runners may use OpenWAM utilities
 for datasets, simulators, local path handling, and reporting, but they should
 not add method-specific branches to `VariantPipeline`, `VisualTower`,
 `PolicyVariant`, or `ActionDecoder`.

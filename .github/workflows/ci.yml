@@ -69,19 +69,19 @@ jobs:
           assert importlib.util.find_spec("torch") is None
           assert open_wam.__version__
           PY
-          .ci-minimal/bin/open-wam-train --help
-          .ci-minimal/bin/open-wam-eval --help
-          .ci-minimal/bin/open-wam-sanity --help
-          .ci-minimal/bin/open-wam-sim-rollout --help
-          .ci-minimal/bin/open-wam-validate-config --help
+          .ci-minimal/bin/openwam-train --help
+          .ci-minimal/bin/openwam-eval --help
+          .ci-minimal/bin/openwam-sanity --help
+          .ci-minimal/bin/openwam-sim-rollout --help
+          .ci-minimal/bin/openwam-validate-config --help
       - name: Static config validation from installed package
         run: |
           VENV="$GITHUB_WORKSPACE/.ci-minimal"
           WORKDIR="$(mktemp -d)"
           cd "$WORKDIR"
           mkdir -p configs/experiments src/open_wam
-          printf '[project]\nname = "open-wam"\n' > pyproject.toml
-          printf 'not: open-wam\n' > configs/experiments/unrelated-shadow.yaml
+          printf '[project]\nname = "openwam"\n' > pyproject.toml
+          printf 'not: openwam\n' > configs/experiments/unrelated-shadow.yaml
           "$VENV/bin/python" - <<'PY'
           from open_wam.configs import (
               resolve_config_reference,
@@ -97,7 +97,7 @@ jobs:
               "templates/extension_method/config.yaml"
           ).is_file()
           PY
-          "$VENV/bin/open-wam-validate-config" \
+          "$VENV/bin/openwam-validate-config" \
             configs/experiments/dual_expert_robotwin_smoke.yaml \
             configs/evals/dual_expert_robotwin_smoke_eval.yaml \
             configs/examples/calvin_npz_raw7_sanity.yaml

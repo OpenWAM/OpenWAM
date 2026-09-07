@@ -1,4 +1,4 @@
-"""Open-WAM simulator adapter for LIBERO benchmark episodes."""
+"""OpenWAM simulator adapter for LIBERO benchmark episodes."""
 
 from __future__ import annotations
 

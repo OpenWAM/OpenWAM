@@ -12,7 +12,7 @@ Every public result should be traceable to:
 - random seed
 - result schema version
 
-`open-wam-eval`, `open-wam-sanity`, and `open-wam-sim-rollout` write the same
+`openwam-eval`, `openwam-sanity`, and `openwam-sim-rollout` write the same
 versioned envelope when a JSON output is requested. The nested
 `open_wam.provenance.v1` record contains the source commit and dirty state,
 exact argv, config and resolved-config hashes, checkpoint identity, dataset
@@ -39,7 +39,7 @@ smaller identity payload; consult that command's guide before treating a path
 suffix as reproducibility evidence.
 
 ```bash
-open-wam-eval --cfg evaluation.yaml --output-json result.json \
+openwam-eval --cfg evaluation.yaml --output-json result.json \
   --provenance-mode full
 ```
 
@@ -53,7 +53,7 @@ New structured result files should include:
 ```json
 {
   "schema_version": "open_wam.result.v1",
-  "command": "open-wam-eval",
+  "command": "openwam-eval",
   "config": "configs/evals/<evaluation>.yaml",
   "checkpoint": null,
   "benchmark": null,

@@ -1,7 +1,7 @@
 # Extension SDK
 
-Open-WAM extensions are ordinary installed Python modules. They register
-role-based components without modifying the Open-WAM source tree.
+OpenWAM extensions are ordinary installed Python modules. They register
+role-based components without modifying the OpenWAM source tree.
 
 ## Compatibility Boundary
 
@@ -30,9 +30,9 @@ typed config contracts. `load_experiment_config` and `TrainingRuntime` also
 validate cross-section runtime and data requirements; use those boundaries
 when starting an experiment rather than treating resolution as validation.
 
-The base install supports config and result tooling. Install `open-wam[torch]`
+The base install supports config and result tooling. Install `openwam[torch]`
 for dataset, policy, decoder, and attention extensions; use
-`open-wam[train]`, `open-wam[eval]`, or `open-wam[sim]` for the corresponding
+`openwam[train]`, `openwam[eval]`, or `openwam[sim]` for the corresponding
 runnable command. An extension package should declare the narrowest extra its
 runtime actually needs.
 
@@ -41,7 +41,7 @@ runtime actually needs.
 Every maintained runtime command accepts repeatable extension specs:
 
 ```bash
-open-wam-train \
+openwam-train \
   --extension acme_open_wam \
   --extension research_runtime.install:register \
   --cfg experiment.yaml
@@ -66,16 +66,16 @@ def register_open_wam() -> None:
     )
 ```
 
-The same `--extension` contract is available on `open-wam-eval`,
-`open-wam-sanity`, and `open-wam-sim-rollout`. The module must be installed in
+The same `--extension` contract is available on `openwam-eval`,
+`openwam-sanity`, and `openwam-sim-rollout`. The module must be installed in
 the active environment or otherwise importable on `PYTHONPATH`.
 
 The packaged `templates/extension_method/` example is runnable and imports
-Open-WAM only through these SDK modules. Its module and config references are
+OpenWAM only through these SDK modules. Its module and config references are
 the same from a source checkout and an installed wheel:
 
 ```bash
-uv run --extra train open-wam-train \
+uv run --extra train openwam-train \
   --cfg templates/extension_method/config.yaml \
   --extension open_wam.templates.extension_method \
   --save-root runs/extension-method-smoke
@@ -86,7 +86,7 @@ small. Use them to verify registration, gradients, inference state, and
 packaging before replacing one component at a time. The source scaffold lives
 at `src/open_wam/templates/extension_method`; copy it into an
 application-owned installable package before customization. Do not edit the
-copy inside an installed Open-WAM wheel.
+copy inside an installed OpenWAM wheel.
 
 `open_wam.templates.*` is the namespace for runnable, copyable scaffolds; it is
 not the extension API. Extension implementations depend on `open_wam.sdk.*`
@@ -396,7 +396,7 @@ both, call both registration functions from the same `register_open_wam` hook.
 
 Simulator extensions register a factory under an application-owned benchmark
 identifier. The factory receives only immutable generic options and local-path
-aliases; it does not depend on Open-WAM's CLI parser.
+aliases; it does not depend on OpenWAM's CLI parser.
 
 ```python
 from open_wam.sdk.simulator import (
@@ -418,10 +418,10 @@ def register_open_wam() -> None:
     register_simulator_adapter("acme", build_simulator)
 ```
 
-Invoke it without changing the Open-WAM repository:
+Invoke it without changing the OpenWAM repository:
 
 ```bash
-open-wam-sim-rollout \
+openwam-sim-rollout \
   --extension acme_open_wam \
   --benchmark acme \
   --sim-option endpoint=localhost:5000 \
@@ -465,7 +465,7 @@ execution. The exact parallel-stream and dual-expert backends are checkpoint
 compatibility contracts with fixed layout semantics, not general attention
 extension points.
 
-The following built-in role modules are useful when contributing to Open-WAM
+The following built-in role modules are useful when contributing to OpenWAM
 itself, but are not stable extension APIs. The built-in attention
 implementation has three parameter-free roles:
 
@@ -602,7 +602,7 @@ and recurrent-inference parity.
 ## Extension Workflow
 
 1. Copy the nearest maintained config and identify the owning boundary.
-2. Keep application code in an installable package outside Open-WAM's built-in
+2. Keep application code in an installable package outside OpenWAM's built-in
    implementation directories.
 3. Parse every open `options` mapping into a frozen application dataclass.
 4. Implement the smallest supported contract and register it from one

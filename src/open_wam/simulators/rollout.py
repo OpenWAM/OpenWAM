@@ -54,7 +54,7 @@ class SimActionCommitMode(str, Enum):
 class SimPolicyInferContext:
     """Lightweight rollout context passed to policy runners.
 
-    Full Open-WAM runners coerce this into their typed policy context. Keeping
+    Full OpenWAM runners coerce this into their typed policy context. Keeping
     the simulator loop independent from model modules lets external simulator
     envs run wiring and zero-policy checks without installing diffusion deps.
     """

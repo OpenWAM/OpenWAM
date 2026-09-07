@@ -23,7 +23,7 @@ from open_wam.data import (
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Build Open-WAM's LeRobot consortium inventory and contract catalog from a repo-id list.",
+        description="Build OpenWAM's LeRobot consortium inventory and contract catalog from a repo-id list.",
     )
     parser.add_argument(
         "--repo-list",

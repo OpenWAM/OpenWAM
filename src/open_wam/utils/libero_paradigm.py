@@ -80,7 +80,7 @@ def require_current_libero_script(
     removed_replacement = removed_libero_script_replacement(script_path)
     if removed_replacement is not None:
         raise ValueError(
-            f"{script_label} was removed from the maintained Open-WAM runtime. "
+            f"{script_label} was removed from the maintained OpenWAM runtime. "
             f"Use {removed_replacement}. Git history retains the historical implementation."
         )
 

@@ -29,7 +29,7 @@ from open_wam.configs import load_experiment_config  # noqa: E402
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
-            "Replay one Open-WAM public LIBERO trajectory in the real LIBERO "
+            "Replay one OpenWAM public LIBERO trajectory in the real LIBERO "
             "environment and save a side-by-side video of original vs env replay."
         )
     )

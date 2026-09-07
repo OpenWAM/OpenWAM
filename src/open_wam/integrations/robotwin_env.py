@@ -213,7 +213,7 @@ class RobotwinBenchmarkAdapter:
                 missing = exc.name or f"envs.{task_name}"
                 raise ImportError(
                     f"RoboTwin task {task_name!r} could not be imported because "
-                    f"module {missing!r} is unavailable. Install `open-wam[robotwin]` "
+                    f"module {missing!r} is unavailable. Install `openwam[robotwin]` "
                     "plus the upstream RoboTwin runtime and verify --robotwin-root."
                 ) from exc
             except Exception:
