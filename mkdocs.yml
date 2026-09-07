@@ -1,8 +1,8 @@
 site_name: OpenWAM
 site_description: Extensible world-action-model training and evaluation documentation
-site_url: https://daivdyuan.github.io/OpenWAM-staging-public/
-repo_url: https://github.com/DaivdYuan/OpenWAM-staging-public
-repo_name: DaivdYuan/OpenWAM-staging-public
+site_url: https://openwam.github.io/OpenWAM/
+repo_url: https://github.com/OpenWAM/OpenWAM
+repo_name: OpenWAM/OpenWAM
 docs_dir: .docs_site
 site_dir: site
 theme:

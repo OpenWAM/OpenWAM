@@ -29,9 +29,9 @@ dependencies = [
 ]
 
 [project.urls]
-Documentation = "https://daivdyuan.github.io/OpenWAM-staging-public/"
-Issues = "https://github.com/DaivdYuan/OpenWAM-staging-public/issues"
-Repository = "https://github.com/DaivdYuan/OpenWAM-staging-public"
+Documentation = "https://openwam.github.io/OpenWAM/"
+Issues = "https://github.com/OpenWAM/OpenWAM/issues"
+Repository = "https://github.com/OpenWAM/OpenWAM"
 
 [project.scripts]
 openwam-train = "open_wam.cli.train:main"

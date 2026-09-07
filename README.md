@@ -3,14 +3,14 @@
 <p align="center"><strong>An extensible framework for video-action world models in robot learning</strong></p>
 
 <p align="center">
-  <a href="https://github.com/DaivdYuan/OpenWAM-staging-public/actions/workflows/ci.yml"><img src="https://github.com/DaivdYuan/OpenWAM-staging-public/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="https://daivdyuan.github.io/OpenWAM-staging-public/"><img src="https://img.shields.io/badge/docs-online-blue.svg" alt="Documentation"></a>
+  <a href="https://github.com/OpenWAM/OpenWAM/actions/workflows/ci.yml"><img src="https://github.com/OpenWAM/OpenWAM/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://openwam.github.io/OpenWAM/"><img src="https://img.shields.io/badge/docs-online-blue.svg" alt="Documentation"></a>
   <a href="https://www.python.org/"><img src="https://img.shields.io/badge/python-3.11%20%7C%203.12-blue.svg" alt="Python 3.11 or 3.12"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-blue.svg" alt="License: AGPL v3"></a>
 </p>
 
 <p align="center">
-  <a href="https://daivdyuan.github.io/OpenWAM-staging-public/">Documentation</a> &middot;
+  <a href="https://openwam.github.io/OpenWAM/">Documentation</a> &middot;
   <a href="docs/quickstart.md">Quickstart</a> &middot;
   <a href="docs/policy_architectures.md">Methods</a> &middot;
   <a href="docs/running_experiments.md">Training and evaluation</a> &middot;
@@ -81,7 +81,7 @@ OpenWAM supports Linux with Python 3.11 or 3.12. Install
 [`uv`](https://docs.astral.sh/uv/), then run the public CPU contract:
 
 ```bash
-git clone https://github.com/DaivdYuan/OpenWAM-staging-public.git OpenWAM
+git clone https://github.com/OpenWAM/OpenWAM.git
 cd OpenWAM
 
 uv sync --frozen --group dev --extra train --extra eval
@@ -318,7 +318,7 @@ If OpenWAM supports your research, cite the software record in
   author  = {{OpenWAM Team}},
   year    = {2026},
   version = {0.1.0},
-  url     = {https://github.com/DaivdYuan/OpenWAM-staging-public}
+  url     = {https://github.com/OpenWAM/OpenWAM}
 }
 ```
 

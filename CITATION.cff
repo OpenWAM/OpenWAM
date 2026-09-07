@@ -4,7 +4,7 @@ title: "OpenWAM"
 version: "0.1.0"
 authors:
   - name: "OpenWAM Team"
-repository-code: "https://github.com/DaivdYuan/OpenWAM-staging-public"
+repository-code: "https://github.com/OpenWAM/OpenWAM"
 license: "AGPL-3.0-only"
 keywords:
   - world action models

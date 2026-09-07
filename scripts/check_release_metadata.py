@@ -59,9 +59,9 @@ PUBLIC_TEXT_SUFFIXES = frozenset(
     }
 )
 REQUIRED_PROJECT_URLS = {
-    "Documentation": "https://daivdyuan.github.io/OpenWAM-staging-public/",
-    "Issues": "https://github.com/DaivdYuan/OpenWAM-staging-public/issues",
-    "Repository": "https://github.com/DaivdYuan/OpenWAM-staging-public",
+    "Documentation": "https://openwam.github.io/OpenWAM/",
+    "Issues": "https://github.com/OpenWAM/OpenWAM/issues",
+    "Repository": "https://github.com/OpenWAM/OpenWAM",
 }
 REQUIRED_PROJECT_CLASSIFIERS = frozenset(
     {

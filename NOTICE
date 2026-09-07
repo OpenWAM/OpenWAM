@@ -4,8 +4,7 @@ OpenWAM Attribution Notice
 Copyright (c) 2026 OpenWAM Team contributors.
 
 OpenWAM is work from the OpenWAM Team in the Stanford Vision and Learning Lab
-(SVL) at Stanford University. SVL is a research group of the Stanford
-Artificial Intelligence Laboratory (SAIL).
+(SVL) at Stanford University.
 
 Required redistribution attribution
 -----------------------------------
@@ -18,7 +17,7 @@ authorship, attribution, or legal notices.
 Required software attribution:
 
     OpenWAM Team, Stanford Vision and Learning Lab (SVL), Stanford University. OpenWAM, version 0.1.0, 2026.
-    https://github.com/DaivdYuan/OpenWAM-staging-public
+    https://github.com/OpenWAM/OpenWAM
 
 This requirement governs attribution distributed with the software. It does
 not claim rights over independent output produced by running the software.

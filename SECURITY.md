@@ -19,7 +19,7 @@ Send a private report to the maintainers with:
 - suggested mitigation, if known
 
 Use the repository's
-[private vulnerability report](https://github.com/DaivdYuan/OpenWAM-staging-public/security/advisories/new)
+[private vulnerability report](https://github.com/OpenWAM/OpenWAM/security/advisories/new)
 form. If that form is unavailable, do not share sensitive reproduction
 artifacts in a public issue; wait until a private maintainer contact is listed.
 
