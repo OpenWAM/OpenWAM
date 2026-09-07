@@ -40,6 +40,13 @@ share the same trainer and visual stack.
 > benchmark runs use separately provisioned datasets and checkpoints described
 > by the [artifact contract](docs/artifacts.md).
 
+## Upcoming Research Release
+
+Detailed evaluation results, trained model checkpoints, datasets, and the
+OpenWAM research paper are being prepared for public release and will be
+available very soon. Canonical links and integrity metadata will be added to
+the [artifact documentation](docs/artifacts.md) as each resource is published.
+
 ## Research Scope
 
 OpenWAM provides:
