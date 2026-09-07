@@ -1,9 +1,11 @@
 # Open-WAM
 
-[![CI](https://github.com/DaivdYuan/Open-WAM/actions/workflows/ci.yml/badge.svg)](https://github.com/DaivdYuan/Open-WAM/actions/workflows/ci.yml)
-[![Documentation](https://img.shields.io/badge/docs-online-blue.svg)](https://daivdyuan.github.io/Open-WAM/)
+**OpenWAM Team, Stanford University**
+
+[![CI](https://github.com/DaivdYuan/OpenWAM-staging-public/actions/workflows/ci.yml/badge.svg)](https://github.com/DaivdYuan/OpenWAM-staging-public/actions/workflows/ci.yml)
+[![Documentation](https://img.shields.io/badge/docs-online-blue.svg)](https://daivdyuan.github.io/OpenWAM-staging-public/)
 [![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12-blue.svg)](https://www.python.org/)
-[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![License: AGPL v3](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
 [![Status: alpha](https://img.shields.io/badge/status-alpha-orange.svg)](CHANGELOG.md)
 
 **Open-WAM is a research framework for training, comparing, and evaluating
@@ -12,7 +14,7 @@ video/action conditioning, sequence semantics, visual execution, and action
 decoding so that controlled experiments share the same trainer and visual
 stack.
 
-[Documentation](https://daivdyuan.github.io/Open-WAM/) |
+[Documentation](https://daivdyuan.github.io/OpenWAM-staging-public/) |
 [Quickstart](docs/quickstart.md) |
 [Methods](docs/policy_architectures.md) |
 [Training and evaluation](docs/running_experiments.md) |
@@ -24,6 +26,12 @@ stack.
 > The public CPU lifecycle and synthetic artifacts are self-contained. Large
 > benchmark runs use separately provisioned datasets and checkpoints described
 > by the [artifact contract](docs/artifacts.md).
+
+Development began in March 2026. This repository preserves the original commit
+ordering, dates, and contributor attribution. Before public distribution, the
+history was rewritten once to remove private infrastructure paths, operational
+artifacts, and private run URLs; commit hashes therefore differ from the
+internal development repository. No commits were backdated.
 
 ## Research Scope
 
@@ -66,7 +74,7 @@ Open-WAM supports Linux with Python 3.11 or 3.12. Install
 [`uv`](https://docs.astral.sh/uv/), then run the public CPU contract:
 
 ```bash
-git clone https://github.com/DaivdYuan/Open-WAM.git
+git clone https://github.com/DaivdYuan/OpenWAM-staging-public.git Open-WAM
 cd Open-WAM
 
 uv sync --frozen --group dev --extra train --extra eval
@@ -287,7 +295,7 @@ docs/          public guides, experiment cards, and extension cookbooks
 scripts/       thin benchmark adapters and checkout-only research tools
 src/open_wam/  installable library and role-scoped SDK
 tests/         unit, integration, simulator, and numerical parity gates
-notes/         current engineering contracts and operational references
+notes/index/   generated public consortium metadata packaged at runtime
 ```
 
 ## Documentation
@@ -318,16 +326,21 @@ If Open-WAM supports your research, cite the software record in
 ```bibtex
 @software{open_wam_2026,
   title   = {Open-WAM},
-  author  = {{Open-WAM contributors}},
+  author  = {{OpenWAM Team, Stanford University}},
   year    = {2026},
   version = {0.1.0},
-  url     = {https://github.com/DaivdYuan/Open-WAM}
+  url     = {https://github.com/DaivdYuan/OpenWAM-staging-public}
 }
 ```
 
 ## License
 
-Open-WAM is released under the [MIT License](LICENSE). Third-party components
-retain their own terms; the adapted LingBot-VA module is distributed under
-Apache License 2.0. Full attributions and model-derived notices are listed in
+Open-WAM is released under the [GNU Affero General Public License v3.0](LICENSE)
+with the redistribution attribution described in [`NOTICE`](NOTICE). Covered
+modified versions and network services must provide corresponding source, and
+redistributed copies must preserve the Open-WAM citation notice. Academic work
+that uses Open-WAM should cite the software record in [`CITATION.cff`](CITATION.cff).
+
+Third-party components retain their own terms; the adapted LingBot-VA module
+is distributed under Apache License 2.0. Full attributions are listed in
 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) and [`LICENSES/`](LICENSES/).

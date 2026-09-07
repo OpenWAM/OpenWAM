@@ -1,7 +1,7 @@
 # HF Dataset Inventory
 
-- Total repos: `198`
-- nmotion_current: `27` repos, `6304` episodes, `36.43` hours, `27` with text annotations
+- Total repos: `194`
+- nmotion_current: `23` repos, `6184` episodes, `36.08` hours, `23` with text annotations
 - official_lerobot: `171` repos, `183823` episodes, `2063.03` hours, `167` with text annotations
 - Rows with incomplete metadata: `2`
   - `lerobot/config_examples`: missing meta/info.json
@@ -11,8 +11,6 @@ This file is a shareable summary. The complete spreadsheet-friendly output is th
 
 | Source | Repo | Domain | Size (GB) | Episodes | Hours | Obs FPS | Action FPS | Avg sec/ep | Embodiment | Action dim | Cameras | Visual dims | Text annotations |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| nmotion_current | redacted/private-dataset-1 | real | 0.29 | 30 | 0.07 | 30.0 | 30.0 | 8.2 | dexterous_hand (high) | 6 | 1 | observation.images.camera0_rgb:400x640x3 | single_task_instruction |
-| nmotion_current | redacted/private-dataset-2 | real | 0.29 | 30 | 0.15 | 30.0 | 30.0 | 17.9 | dexterous_hand (high) | 12 | 1 | observation.images.camera0_rgb:400x640x3 | single_task_instruction |
 | nmotion_current | DaivdYuan/exumi-insert-pen-lerobot | real | 0.29 | 139 | 0.96 | 30.0 | 30.0 | 24.9 | single_arm (medium) | 7 | 1 | observation.images.camera0_rgb:224x224x3 | single_task_instruction |
 | nmotion_current | DaivdYuan/exumi-open-bottle-lerobot | real | 0.29 | 270 | 1.17 | 30.0 | 30.0 | 15.6 | single_arm (medium) | 7 | 1 | observation.images.camera0_rgb:224x224x3 | single_task_instruction |
 | nmotion_current | DaivdYuan/exumi-peg-in-hole-lerobot | real | 0.29 | 256 | 0.83 | 30.0 | 30.0 | 11.7 | single_arm (medium) | 7 | 1 | observation.images.camera0_rgb:224x224x3 | single_task_instruction |
@@ -23,12 +21,10 @@ This file is a shareable summary. The complete spreadsheet-friendly output is th
 | nmotion_current | DaivdYuan/exumi-stack-cube-lerobot | real | 0.29 | 201 | 0.47 | 30.0 | 30.0 | 8.5 | single_arm (medium) | 7 | 1 | observation.images.camera0_rgb:224x224x3 | single_task_instruction |
 | nmotion_current | DaivdYuan/hub-flip-bagel-in-the-wild-lerobot | real | 0.29 | 274 | 0.85 | 30.0 | 30.0 | 11.2 | single_arm (medium) | 7 | 1 | observation.images.camera0_rgb:224x224x3 | single_task_instruction |
 | nmotion_current | DaivdYuan/hub-flip-bagel-lerobot | unknown | 0.29 | 283 | 0.91 | 30.0 | 30.0 | 11.6 | single_arm (medium) | 7 | 1 | observation.images.camera0_rgb:224x224x3 | single_task_instruction |
-| nmotion_current | redacted/private-dataset-3 | unknown | 0.29 | 30 | 0.07 | 30.0 | 30.0 | 7.8 | single_arm (medium) | 7 | 1 | observation.images.camera0_rgb:224x224x3 | single_task_instruction |
 | nmotion_current | DaivdYuan/hub-kettlebell-pushing-lerobot | unknown | 0.29 | 14 | 0.09 | 30.0 | 30.0 | 23.8 | single_arm (medium) | 7 | 1 | observation.images.camera0_rgb:224x224x3 | single_task_instruction |
 | nmotion_current | DaivdYuan/hub-pour-dice-lerobot | unknown | 0.29 | 145 | 1.03 | 30.0 | 30.0 | 25.6 | single_arm (medium) | 7 | 1 | observation.images.camera0_rgb:224x224x3 | single_task_instruction |
 | nmotion_current | DaivdYuan/hub-strap-wires-with-velcro-tape-lerobot | unknown | 0.29 | 193 | 1.40 | 30.0 | 30.0 | 26.2 | single_arm (medium) | 7 | 1 | observation.images.camera0_rgb:224x224x3 | single_task_instruction |
 | nmotion_current | DaivdYuan/hub-tennis-ball-basket-toss-lerobot | unknown | 0.29 | 165 | 1.80 | 30.0 | 30.0 | 39.2 | single_arm (medium) | 7 | 1 | observation.images.camera0_rgb:224x224x3 | single_task_instruction |
-| nmotion_current | redacted/private-dataset-4 | unknown | 0.29 | 30 | 0.07 | 30.0 | 30.0 | 8.1 | single_arm (medium) | 7 | 1 | observation.images.camera0_rgb:224x224x3 | single_task_instruction |
 | nmotion_current | DaivdYuan/hub-whiteboard-shape-wipe-lerobot | unknown | 0.29 | 119 | 0.99 | 30.0 | 30.0 | 30.0 | single_arm (medium) | 7 | 1 | observation.images.camera0_rgb:224x224x3 | single_task_instruction |
 | nmotion_current | DaivdYuan/mv-umi-bottles-rack-seg-lerobot | real | 0.29 | 199 | 1.52 | 30.0 | 30.0 | 27.6 | single_arm (medium) | 7 | 2 | observation.images.camera0_rgb:224x224x3<br>observation.images.camera1_rgb:224x224x3 | single_task_instruction |
 | nmotion_current | DaivdYuan/mv-umi-markers-placement-raw-lerobot | real | 0.29 | 453 | 1.71 | 30.0 | 30.0 | 13.6 | single_arm (medium) | 7 | 2 | observation.images.camera0_rgb:224x224x3<br>observation.images.camera1_rgb:224x224x3 | single_task_instruction |

@@ -30,6 +30,7 @@ PUBLIC_MARKDOWN_PATHS = (
     Path("extension_sdk.md"),
     Path("github_pages.md"),
     Path("index.md"),
+    Path("lingbot_va_baseline_libero10.md"),
     Path("m5_gjd_uva_libero10_comparison.md"),
     Path("policy_architectures.md"),
     Path("dual_expert_refactor_characterization.md"),
@@ -38,6 +39,7 @@ PUBLIC_MARKDOWN_PATHS = (
     Path("reproducibility.md"),
     Path("running_experiments.md"),
     Path("testing.md"),
+    Path("video_action_composition.md"),
     Path("video_only_training.md"),
 )
 _MARKDOWN_LINK = re.compile(r"!?\[[^\]]*\]\(\s*(?P<target><[^>]+>|[^)\s]+)")
@@ -55,9 +57,10 @@ GENERATED_REPOSITORY_PATHS = frozenset(
 FORBIDDEN_PUBLIC_FRAGMENTS = (
     "/simurgh",
     "/afs/",
+    "/hai/",
     "/sailhome",
-    "private-user",
-    "private-user",
+    "/scr/",
+    "/home/",
     "WANDB_API_KEY",
     "api_key:",
     "secret:",

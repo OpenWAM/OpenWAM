@@ -1,8 +1,8 @@
 site_name: Open-WAM
 site_description: Extensible world-action-model training and evaluation documentation
-site_url: https://daivdyuan.github.io/Open-WAM/
-repo_url: https://github.com/DaivdYuan/Open-WAM
-repo_name: DaivdYuan/Open-WAM
+site_url: https://daivdyuan.github.io/OpenWAM-staging-public/
+repo_url: https://github.com/DaivdYuan/OpenWAM-staging-public
+repo_name: DaivdYuan/OpenWAM-staging-public
 docs_dir: .docs_site
 site_dir: site
 theme:
@@ -19,11 +19,13 @@ nav:
   - Concepts:
       - Architecture: architecture.md
       - Policy Architectures: policy_architectures.md
+      - Video/Action Composition: video_action_composition.md
       - Benchmarks And Data: benchmarks.md
   - Reproducibility:
       - Artifacts: artifacts.md
       - Experiment Cards: experiment_cards.md
       - Reproducibility: reproducibility.md
+      - LingBot-VA LIBERO-10 Baseline: lingbot_va_baseline_libero10.md
       - M5 GJD vs UVA Results: m5_gjd_uva_libero10_comparison.md
       - Cards:
           - Card Index: cards/index.md

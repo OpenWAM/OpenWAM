@@ -8,15 +8,16 @@ version = "0.1.0"
 description = "Extensible world-action-model training and evaluation with a LingBot-compatible visual core."
 readme = "README.md"
 requires-python = ">=3.11,<3.13"
-license = "MIT"
-license-files = ["LICENSE", "LICENSES/*", "THIRD_PARTY_NOTICES.md"]
+license = "AGPL-3.0-only"
+license-files = ["LICENSE", "NOTICE", "LICENSES/*", "THIRD_PARTY_NOTICES.md"]
 authors = [
-    { name = "Open-WAM contributors" },
+    { name = "OpenWAM Team, Stanford University" },
 ]
 keywords = ["robotics", "world action models", "world models"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: GNU Affero General Public License v3",
     "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
@@ -28,9 +29,9 @@ dependencies = [
 ]
 
 [project.urls]
-Documentation = "https://daivdyuan.github.io/Open-WAM/"
-Issues = "https://github.com/DaivdYuan/Open-WAM/issues"
-Repository = "https://github.com/DaivdYuan/Open-WAM"
+Documentation = "https://daivdyuan.github.io/OpenWAM-staging-public/"
+Issues = "https://github.com/DaivdYuan/OpenWAM-staging-public/issues"
+Repository = "https://github.com/DaivdYuan/OpenWAM-staging-public"
 
 [project.scripts]
 open-wam-train = "open_wam.cli.train:main"
@@ -204,10 +205,12 @@ packages = ["src/open_wam"]
 
 [tool.hatch.build.targets.sdist]
 only-include = [
+    ".gitignore",
     "CHANGELOG.md",
     "CITATION.cff",
     "LICENSE",
     "LICENSES",
+    "NOTICE",
     "README.md",
     "SECURITY.md",
     "THIRD_PARTY_NOTICES.md",
@@ -223,9 +226,7 @@ only-include = [
 ]
 exclude = [
     "/.grimp_cache",
-    "/.gitignore",
     "/configs/local_paths.yaml",
-    "/notes/*.tmp.md",
 ]
 
 [tool.uv]

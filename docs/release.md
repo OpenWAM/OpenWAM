@@ -33,6 +33,7 @@ python scripts/validate_configs_static.py configs/experiments configs/evals conf
 python scripts/build_docs_site.py --output .docs_site
 mkdocs build --strict
 python -m build
+python scripts/check_release_metadata.py --dist-dir dist
 python -m twine check dist/*
 ```
 
@@ -52,10 +53,22 @@ public artifact, not a repository snapshot. Its allowlist contains:
 - required project metadata;
 - project and third-party license/notice files.
 
-Checkout-only research scripts, tests, baselines, engineering notes, caches,
-and machine-local config are intentionally excluded. The four
-files under `notes/index/` are the sole exception because the consortium data
-adapter consumes that bounded metadata contract at runtime. Both basic CI and
+Hatch always places the root `.gitignore` in source distributions. Open-WAM
+therefore includes that generic file explicitly in the allowlist and scans it
+with the rest of the public text surface.
+
+The release is AGPL-3.0-only. Redistributed copies also preserve the
+attribution in `NOTICE`; scholarly citation guidance is machine-readable in
+`CITATION.cff`.
+
+Packaged consortium snapshots contain public repository metadata only. The
+release check rejects private records and drift between the repo list,
+inventory, and contract catalog.
+
+Checkout-only research scripts, tests, baselines, caches, and machine-local
+config are intentionally excluded. The four generated files under
+`notes/index/` remain because the consortium data adapter consumes that
+bounded metadata contract at runtime. Both basic CI and
 `scripts/check_release_metadata.py` enforce the allowlist and reject private
 mount paths in the selected text files.
 

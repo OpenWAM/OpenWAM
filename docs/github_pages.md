@@ -2,9 +2,8 @@
 
 Open-WAM publishes documentation through a generated MkDocs source tree. The
 tracked public site source is the explicit allowlist in
-`scripts/build_docs_site.py`. Its pages live in `docs/`; internal research and
-engineering notes under `notes/` are intentionally not published to GitHub
-Pages.
+`scripts/build_docs_site.py`. Its pages live in `docs/`; generated consortium
+metadata under `notes/index/` is a package resource rather than site content.
 
 ## Local Preview
 
@@ -34,8 +33,9 @@ without deploying it.
 ## Publication Rules
 
 The Pages site is a public user and contributor manual, not a dump of internal
-engineering notes. Publish durable docs under `docs/` and keep raw notes under
-`notes/`.
+engineering notes. Publish durable guidance under `docs/`; working notes do not
+belong in the release tree. The `notes/index/` directory is reserved for the
+generated consortium metadata consumed at runtime.
 
 If a note becomes useful for outside users, distill it into a public doc page
 with stable commands, placeholders, and current repo paths. Do not publish raw

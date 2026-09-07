@@ -1,20 +1,27 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Iterable
+import csv
 from datetime import date
-from pathlib import Path
+import json
+from pathlib import Path, PurePosixPath
 import re
+import tarfile
 import tomllib
-from typing import Any
+from typing import Any, BinaryIO
+import zipfile
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PUBLIC_SDIST_ENTRIES = frozenset(
     {
+        ".gitignore",
         "CHANGELOG.md",
         "CITATION.cff",
         "LICENSE",
         "LICENSES",
+        "NOTICE",
         "README.md",
         "SECURITY.md",
         "THIRD_PARTY_NOTICES.md",
@@ -30,22 +37,37 @@ PUBLIC_SDIST_ENTRIES = frozenset(
     }
 )
 REQUIRED_SDIST_EXCLUDES = frozenset(
-    {"/.gitignore", "/.grimp_cache", "/configs/local_paths.yaml", "/notes/*.tmp.md"}
+    {"/.grimp_cache", "/configs/local_paths.yaml"}
 )
-PRIVATE_PATH_PREFIXES = ("/afs/", "/hai/", "/sailhome/", "/scr/", "/simurgh")
+PRIVATE_PATH_PREFIXES = ("/afs/", "/hai/", "/home/", "/sailhome/", "/scr/", "/simurgh")
 EXCLUDED_PUBLIC_PATHS = frozenset({"configs/local_paths.yaml"})
 PUBLIC_TEXT_SUFFIXES = frozenset(
-    {"", ".jinja", ".json", ".md", ".py", ".sh", ".toml", ".txt", ".yaml", ".yml"}
+    {
+        "",
+        ".cff",
+        ".csv",
+        ".jinja",
+        ".json",
+        ".md",
+        ".py",
+        ".sh",
+        ".toml",
+        ".txt",
+        ".typed",
+        ".yaml",
+        ".yml",
+    }
 )
 REQUIRED_PROJECT_URLS = {
-    "Documentation": "https://daivdyuan.github.io/Open-WAM/",
-    "Issues": "https://github.com/DaivdYuan/Open-WAM/issues",
-    "Repository": "https://github.com/DaivdYuan/Open-WAM",
+    "Documentation": "https://daivdyuan.github.io/OpenWAM-staging-public/",
+    "Issues": "https://github.com/DaivdYuan/OpenWAM-staging-public/issues",
+    "Repository": "https://github.com/DaivdYuan/OpenWAM-staging-public",
 }
 REQUIRED_PROJECT_CLASSIFIERS = frozenset(
     {
         "Development Status :: 3 - Alpha",
         "Intended Audience :: Science/Research",
+        "License :: OSI Approved :: GNU Affero General Public License v3",
         "Operating System :: POSIX :: Linux",
         "Programming Language :: Python :: 3",
         "Programming Language :: Python :: 3.11",
@@ -54,6 +76,9 @@ REQUIRED_PROJECT_CLASSIFIERS = frozenset(
     }
 )
 REQUIRED_PROJECT_KEYWORDS = frozenset({"robotics", "world action models", "world models"})
+REQUIRED_ATTRIBUTION = (
+    "OpenWAM Team, Stanford University. Open-WAM, version 0.1.0, 2026."
+)
 _SHA256_PATTERN = re.compile(r"^(?:sha256:)?[0-9a-fA-F]{64}$")
 
 
@@ -64,7 +89,7 @@ def validate_project_metadata(pyproject: dict[str, Any]) -> None:
     expected_scalars = {
         "name": "open-wam",
         "readme": "README.md",
-        "license": "MIT",
+        "license": "AGPL-3.0-only",
         "requires-python": ">=3.11,<3.13",
     }
     for key, expected in expected_scalars.items():
@@ -73,7 +98,12 @@ def validate_project_metadata(pyproject: dict[str, Any]) -> None:
                 f"Project metadata {key!r} must be {expected!r}, got {project.get(key)!r}."
             )
 
-    expected_license_files = ["LICENSE", "LICENSES/*", "THIRD_PARTY_NOTICES.md"]
+    expected_license_files = [
+        "LICENSE",
+        "NOTICE",
+        "LICENSES/*",
+        "THIRD_PARTY_NOTICES.md",
+    ]
     if project.get("license-files") != expected_license_files:
         raise ValueError(
             "Project metadata `license-files` must preserve project and "
@@ -113,11 +143,59 @@ def validate_release_build_config(pyproject: dict[str, Any]) -> None:
             f"Source distribution exclusions are incomplete: {sorted(missing_excludes)}"
         )
     notice = REPO_ROOT / "THIRD_PARTY_NOTICES.md"
+    attribution_notice = REPO_ROOT / "NOTICE"
+    project_license = REPO_ROOT / "LICENSE"
+    prior_mit_license = REPO_ROOT / "LICENSES" / "MIT.txt"
     apache_license = REPO_ROOT / "LICENSES" / "Apache-2.0.txt"
-    if not notice.is_file() or not apache_license.is_file():
+    required_notice_files = (notice, apache_license, prior_mit_license)
+    if not all(path.is_file() for path in required_notice_files):
         raise ValueError(
-            "LingBot third-party notice and Apache-2.0 license must be included."
+            "Project and third-party license notices must be included."
         )
+    if not project_license.is_file() or "GNU AFFERO GENERAL PUBLIC LICENSE" not in (
+        project_license.read_text(encoding="utf-8")
+    ):
+        raise ValueError("LICENSE must contain the unmodified GNU AGPL v3 text.")
+    if not attribution_notice.is_file() or REQUIRED_ATTRIBUTION not in (
+        attribution_notice.read_text(encoding="utf-8")
+    ):
+        raise ValueError("NOTICE must contain the required Open-WAM attribution.")
+    validate_public_consortium_snapshot(REPO_ROOT)
+
+
+def validate_public_consortium_snapshot(repo_root: Path) -> None:
+    snapshot_root = repo_root / "notes" / "index"
+    repo_list_path = snapshot_root / "lerobot_consortium_hf_repo_ids.txt"
+    inventory_path = snapshot_root / "lerobot_consortium_hf_dataset_inventory.csv"
+    contracts_path = snapshot_root / "lerobot_consortium_hf_dataset_contracts.json"
+
+    repo_ids = {
+        line.rsplit(",", 1)[-1].strip()
+        for line in repo_list_path.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    }
+    with inventory_path.open(encoding="utf-8", newline="") as handle:
+        inventory = tuple(csv.DictReader(handle))
+    contracts = json.loads(contracts_path.read_text(encoding="utf-8"))
+    contract_rows = tuple(contracts.get("datasets", ()))
+
+    private_ids = {
+        str(row.get("repo_id", ""))
+        for row in (*inventory, *contract_rows)
+        if str(row.get("private", "")).strip().lower() in {"1", "true", "yes"}
+    }
+    if private_ids:
+        raise ValueError(
+            "Public consortium snapshots must not disclose private repositories: "
+            f"{sorted(private_ids)!r}."
+        )
+
+    inventory_ids = {str(row.get("repo_id", "")) for row in inventory}
+    contract_ids = {str(row.get("repo_id", "")) for row in contract_rows}
+    if repo_ids != inventory_ids or inventory_ids != contract_ids:
+        raise ValueError("Public consortium repo, inventory, and contract snapshots disagree.")
+    if contracts.get("dataset_count") != len(contract_rows):
+        raise ValueError("Public consortium contract dataset_count is stale.")
 
 
 def private_sdist_path_violations(repo_root: Path) -> tuple[str, ...]:
@@ -136,6 +214,60 @@ def private_sdist_path_violations(repo_root: Path) -> tuple[str, ...]:
                 if prefix in text:
                     violations.append(f"{relative_path}: {prefix}")
     return tuple(violations)
+
+
+def private_distribution_violations(dist_dir: Path) -> tuple[str, ...]:
+    """Inspect the built release artifacts rather than trusting build declarations."""
+
+    source_archives = sorted(dist_dir.glob("*.tar.gz"))
+    wheels = sorted(dist_dir.glob("*.whl"))
+    violations: list[str] = []
+    if not source_archives:
+        violations.append(f"{dist_dir}: no source distribution found")
+    if not wheels:
+        violations.append(f"{dist_dir}: no wheel found")
+
+    for archive in (*source_archives, *wheels):
+        if archive.name.endswith(".tar.gz"):
+            with tarfile.open(archive, "r:gz") as source:
+                members = (
+                    (member.name, source.extractfile(member))
+                    for member in source.getmembers()
+                    if member.isfile()
+                )
+                violations.extend(_archive_member_violations(archive.name, members))
+        else:
+            with zipfile.ZipFile(archive) as source:
+                members = (
+                    (name, source.open(name))
+                    for name in source.namelist()
+                    if not name.endswith("/")
+                )
+                violations.extend(_archive_member_violations(archive.name, members))
+    return tuple(violations)
+
+
+def _archive_member_violations(
+    archive_name: str,
+    members: Iterable[tuple[str, BinaryIO | None]],
+) -> list[str]:
+    violations: list[str] = []
+    for member_name, stream in members:
+        member_path = PurePosixPath(member_name)
+        if member_path.is_absolute() or ".." in member_path.parts:
+            violations.append(f"{archive_name}: unsafe member path {member_name!r}")
+            continue
+        if stream is None:
+            continue
+        with stream:
+            payload = stream.read()
+        if member_path.suffix.lower() not in PUBLIC_TEXT_SUFFIXES:
+            continue
+        text = payload.decode("utf-8", errors="ignore")
+        for prefix in PRIVATE_PATH_PREFIXES:
+            if prefix in text:
+                violations.append(f"{archive_name}:{member_name}: {prefix}")
+    return violations
 
 
 def validate_version_state(
@@ -213,6 +345,11 @@ def main(argv: list[str] | None = None) -> None:
         action="store_true",
         help="Require final, mutually consistent release dates.",
     )
+    parser.add_argument(
+        "--dist-dir",
+        type=Path,
+        help="Also inspect built wheel and source-distribution contents.",
+    )
     args = parser.parse_args(argv)
     pyproject = tomllib.loads(
         (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
@@ -254,6 +391,12 @@ def main(argv: list[str] | None = None) -> None:
         raise SystemExit(
             f"Private paths found in the public sdist surface: {private_paths}"
         )
+    if args.dist_dir is not None:
+        artifact_violations = private_distribution_violations(args.dist_dir)
+        if artifact_violations:
+            raise SystemExit(
+                f"Built distribution validation failed: {artifact_violations}"
+            )
     print(f"release metadata ok for {version}")
 
 

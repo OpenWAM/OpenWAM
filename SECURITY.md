@@ -19,10 +19,9 @@ Send a private report to the maintainers with:
 - suggested mitigation, if known
 
 Use the repository's
-[private vulnerability report](https://github.com/DaivdYuan/Open-WAM/security/advisories/new)
-form. If that form is unavailable, email the repository owner at
-[47169162+DaivdYuan@users.noreply.github.com](mailto:47169162+DaivdYuan@users.noreply.github.com) before sharing reproduction
-artifacts. Do not fall back to a public issue.
+[private vulnerability report](https://github.com/DaivdYuan/OpenWAM-staging-public/security/advisories/new)
+form. If that form is unavailable, do not share sensitive reproduction
+artifacts in a public issue; wait until a private maintainer contact is listed.
 
 ## Scope
 

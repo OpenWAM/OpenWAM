@@ -1,5 +1,3 @@
-redacted/private-dataset-1
-redacted/private-dataset-2
 DaivdYuan/exumi-insert-pen-lerobot
 DaivdYuan/exumi-open-bottle-lerobot
 DaivdYuan/exumi-peg-in-hole-lerobot
@@ -10,12 +8,10 @@ DaivdYuan/exumi-pull-drawer-lerobot
 DaivdYuan/exumi-stack-cube-lerobot
 DaivdYuan/hub-flip-bagel-in-the-wild-lerobot
 DaivdYuan/hub-flip-bagel-lerobot
-redacted/private-dataset-3
 DaivdYuan/hub-kettlebell-pushing-lerobot
 DaivdYuan/hub-pour-dice-lerobot
 DaivdYuan/hub-strap-wires-with-velcro-tape-lerobot
 DaivdYuan/hub-tennis-ball-basket-toss-lerobot
-redacted/private-dataset-4
 DaivdYuan/hub-whiteboard-shape-wipe-lerobot
 DaivdYuan/mv-umi-bottles-rack-seg-lerobot
 DaivdYuan/mv-umi-markers-placement-raw-lerobot

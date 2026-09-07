@@ -39,4 +39,6 @@ jobs:
       - name: Build source and wheel distributions
         run: python -m build
       - name: Validate distributions
-        run: python -m twine check dist/*
+        run: |
+          python scripts/check_release_metadata.py --dist-dir dist
+          python -m twine check dist/*

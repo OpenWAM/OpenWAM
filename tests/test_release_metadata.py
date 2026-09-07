@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import io
 from pathlib import Path
+import tarfile
 import tomllib
 
 import pytest
 
 from scripts.check_release_metadata import (
+    private_distribution_violations,
+    validate_public_consortium_snapshot,
     validate_project_metadata,
     validate_public_model_artifacts,
 )
@@ -22,6 +26,11 @@ def _pyproject() -> dict[str, object]:
 @pytest.mark.unit
 def test_public_project_metadata_is_complete() -> None:
     validate_project_metadata(_pyproject())
+
+
+@pytest.mark.unit
+def test_public_consortium_snapshot_has_no_private_repositories() -> None:
+    validate_public_consortium_snapshot(REPO_ROOT)
 
 
 @pytest.mark.unit
@@ -106,3 +115,23 @@ def test_release_requires_a_downloadable_licensed_model() -> None:
 def test_release_rejects_incomplete_model_artifacts(artifact: dict[str, object]) -> None:
     with pytest.raises(ValueError, match="non-fixture model artifact"):
         validate_public_model_artifacts({"artifacts": [artifact]})
+
+
+@pytest.mark.unit
+def test_built_distribution_check_reads_archive_contents(tmp_path: Path) -> None:
+    import zipfile
+
+    source = tmp_path / "open_wam-0.1.0.tar.gz"
+    with tarfile.open(source, "w:gz") as archive:
+        payload = b"public source"
+        member = tarfile.TarInfo("open_wam-0.1.0/README.md")
+        member.size = len(payload)
+        archive.addfile(member, io.BytesIO(payload))
+
+    wheel = tmp_path / "open_wam-0.1.0-py3-none-any.whl"
+    with zipfile.ZipFile(wheel, "w") as archive:
+        archive.writestr("open_wam/example.py", 'root = "/home/private-user/data"')
+
+    violations = private_distribution_violations(tmp_path)
+
+    assert violations == (f"{wheel.name}:open_wam/example.py: /home/",)

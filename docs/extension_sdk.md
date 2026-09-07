@@ -337,7 +337,8 @@ If decomposition must preserve a native stochastic program exactly, declare a
 `PolicyCompositionRngPolicy` on the capability. `caller_stream` continues the
 producer stream, including across CUDA devices; `isolated_step_seed` gives the
 consumer an independent per-step stream. See
-`notes/video_action_composition.md` for the complete contract and parity gates.
+[Video/Action Composition](video_action_composition.md) for the complete
+contract and parity gates.
 
 ```python
 from open_wam.sdk.config import ExtensionPolicyConfig

@@ -673,8 +673,8 @@ producer and consumer sessions. Using the same VTA checkpoint for both roles is
 the maintained manual VTA split; using a fixed IDM or IDM-enabled GJD consumer
 keeps text-free IDM semantics with one clean history frame and the configured
 future chunk (four latent frames and sixteen actions by default). See
-`notes/video_action_composition.md` for CLI examples, extension contracts, and
-the strict parity gates.
+[Video/Action Composition](video_action_composition.md) for CLI examples,
+extension contracts, and the strict parity gates.
 
 GJD LIBERO rollout is a source-checkout integration and
 defaults to `1500/100`:

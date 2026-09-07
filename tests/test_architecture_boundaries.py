@@ -7288,8 +7288,8 @@ def test_bespoke_smoke_and_config_preset_aliases_are_retired() -> None:
     assert not any(path.exists() for path in retired_paths)
     active_guides = (
         REPO_ROOT / "README.md",
-        REPO_ROOT / "notes" / "collaboration_guide.md",
-        REPO_ROOT / "notes" / "lingbot_reference_usage.md",
+        REPO_ROOT / "docs" / "quickstart.md",
+        REPO_ROOT / "docs" / "running_experiments.md",
     )
     for guide in active_guides:
         source = guide.read_text(encoding="utf-8")
@@ -7320,7 +7320,7 @@ def test_retained_pose_and_wan_diagnostics_use_owned_portable_contracts() -> Non
     source = wan_path.read_text(encoding="utf-8")
     assert not any(
         fragment in source
-        for fragment in ("/simurgh", "/scr/", "/hai/", "private-user", "private-user")
+        for fragment in ("/simurgh", "/scr/", "/hai/", "/afs/", "/sailhome/", "/home/")
     )
     assert "DEFAULT_CHECKPOINTS" not in _top_level_definitions(wan_path)
 
@@ -7387,9 +7387,7 @@ def test_active_checkout_docs_and_tools_have_no_private_machine_defaults() -> No
         "/hai/",
         "/afs/",
         "/sailhome/",
-        "private-user",
-        "private-user",
-        "/home/private-user",
+        "/home/",
     )
     offenders: list[str] = []
     for root in roots:

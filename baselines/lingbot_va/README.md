@@ -138,7 +138,7 @@ Canonical LIBERO-10 full evaluation completed on 2026-04-30:
 | `lingbot_va_posttrain_libero_long` | 483 | 500 | 0.966 | 288.2 | 18.4 |
 
 Task-level results and the 17 horizon-timeout failures are documented in
-`notes/lingbot_va_baseline_libero10.md`.
+[`docs/lingbot_va_baseline_libero10.md`](../../docs/lingbot_va_baseline_libero10.md).
 
 ## RobotWin Evaluation
 

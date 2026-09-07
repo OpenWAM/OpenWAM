@@ -527,9 +527,10 @@ def test_public_local_paths_sample_has_no_private_roots() -> None:
 
     assert "/simurgh" not in sample
     assert "/afs/" not in sample
+    assert "/hai/" not in sample
     assert "/sailhome/" not in sample
-    assert "private-user" not in sample
-    assert "private-user" not in sample
+    assert "/scr/" not in sample
+    assert "/home/" not in sample
 
 
 @pytest.mark.unit

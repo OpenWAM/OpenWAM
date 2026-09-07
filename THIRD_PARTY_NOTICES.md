@@ -1,8 +1,16 @@
 # Third-Party Notices
 
-Open-WAM is distributed under the MIT license, except for third-party material
+Open-WAM is distributed under the GNU Affero General Public License v3.0,
+subject to the attribution notice in `NOTICE`, except for third-party material
 identified below. Those components retain their original copyright and license
 terms.
+
+## Prior Open-WAM Contributions
+
+Open-WAM development contributions were previously received and distributed
+under the MIT License. Its notice is retained in `LICENSES/MIT.txt`. The public
+release as a collective work is distributed under AGPL-3.0-only; rights already
+granted for earlier versions are not revoked.
 
 ## LingBot-VA
 

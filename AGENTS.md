@@ -91,9 +91,10 @@ below unless there is a strong repo-specific reason to do otherwise.
 
 ## Notes and Docs
 
-- Top-level `notes/` should describe the repo as it exists now.
-- Remove superseded plans and completed roadmaps; Git history is the archive.
-- When architecture changes, update beginner-facing notes, not just deep-dive
+- Put durable user and contributor guidance in `docs/`.
+- Reserve `notes/index/` for generated metadata consumed by the package; do not
+  add top-level working notes, superseded plans, or completed roadmaps.
+- When architecture changes, update beginner-facing docs, not just deep-dive
   internals.
 - Do not leave docs describing removed paths as if they are still active.
 

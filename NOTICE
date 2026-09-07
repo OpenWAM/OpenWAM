@@ -1,0 +1,24 @@
+Open-WAM Attribution Notice
+===========================
+
+Copyright (c) 2026 OpenWAM Team contributors.
+
+Open-WAM is developed by the OpenWAM Team at Stanford University.
+
+Required redistribution attribution
+-----------------------------------
+
+Under section 7(b) of the GNU Affero General Public License version 3,
+conveyed copies and modified versions of Open-WAM must preserve this notice in
+the source distribution and in accompanying documentation that presents
+authorship, attribution, or legal notices.
+
+Required citation notice:
+
+    OpenWAM Team, Stanford University. Open-WAM, version 0.1.0, 2026.
+    https://github.com/DaivdYuan/OpenWAM-staging-public
+
+This requirement governs attribution distributed with the software. It does
+not claim rights over independent output produced by running the software.
+Research publications that use Open-WAM should cite the machine-readable
+software record in CITATION.cff.

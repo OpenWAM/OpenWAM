@@ -138,7 +138,7 @@ def _dependency_name(requirement: str) -> str:
 
 def _check_public_local_paths_sample() -> None:
     sample = (REPO_ROOT / "configs" / "local_paths.sample.yaml").read_text(encoding="utf-8")
-    forbidden = ("/simurgh", "/afs/", "/sailhome/", "private-user", "private-user")
+    forbidden = ("/simurgh", "/afs/", "/hai/", "/sailhome/", "/scr/", "/home/")
     leaks = [value for value in forbidden if value in sample]
     if leaks:
         raise SystemExit(f"configs/local_paths.sample.yaml contains private path fragments: {leaks!r}")
