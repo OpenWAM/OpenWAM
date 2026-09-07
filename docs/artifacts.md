@@ -39,9 +39,10 @@ Entries with `download_url: null` are layout documentation only. They should not
 be advertised as reproducible public checkpoints until hosting, checksum, and
 license fields are filled.
 
-Final release validation fails unless at least one non-fixture model entry has
-an HTTPS download URL, SHA-256 checksum, and license. The tiny synthetic entry
-proves structure and execution only; it is not evidence of model quality.
+Final release validation rejects partially published model entries. A public
+entry must have an HTTPS download URL, SHA-256 checksum, and license; an
+unpublished entry keeps all three fields null. The tiny synthetic entry proves
+structure and execution only; it is not evidence of model quality.
 
 Checkpoint and latent tensor files are loaded through the restricted
 `weights_only=True` PyTorch path. OpenWAM does not automatically retry unsafe

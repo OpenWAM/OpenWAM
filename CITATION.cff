@@ -2,6 +2,7 @@ cff-version: 1.2.0
 message: "If you use OpenWAM in research, please cite this software record."
 title: "OpenWAM"
 version: "0.1.0"
+date-released: "2026-09-07"
 authors:
   - name: "OpenWAM Team"
 repository-code: "https://github.com/OpenWAM/OpenWAM"

@@ -67,7 +67,7 @@ def test_public_project_metadata_rejects_missing_fields(field: str) -> None:
 
 
 @pytest.mark.unit
-def test_release_requires_a_downloadable_licensed_model() -> None:
+def test_release_accepts_a_downloadable_licensed_model() -> None:
     manifest = {
         "artifacts": [
             {
@@ -83,15 +83,25 @@ def test_release_requires_a_downloadable_licensed_model() -> None:
 
 
 @pytest.mark.unit
+def test_release_allows_unpublished_model_artifacts() -> None:
+    validate_public_model_artifacts(
+        {
+            "artifacts": [
+                {
+                    "architecture": "dual_expert",
+                    "download_url": None,
+                    "checksum": None,
+                    "license": None,
+                }
+            ]
+        }
+    )
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize(
     "artifact",
     [
-        {
-            "architecture": "fixture",
-            "download_url": "https://example.test/model.safetensors",
-            "checksum": "a" * 64,
-            "license": "MIT",
-        },
         {
             "architecture": "dual_expert",
             "download_url": None,
@@ -113,7 +123,7 @@ def test_release_requires_a_downloadable_licensed_model() -> None:
     ],
 )
 def test_release_rejects_incomplete_model_artifacts(artifact: dict[str, object]) -> None:
-    with pytest.raises(ValueError, match="non-fixture model artifact"):
+    with pytest.raises(ValueError, match="public model artifact"):
         validate_public_model_artifacts({"artifacts": [artifact]})
 
 

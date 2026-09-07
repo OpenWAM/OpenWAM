@@ -43,6 +43,8 @@ openwam-sim-rollout = "open_wam.cli.sim_rollout:main"
 
 [project.optional-dependencies]
 core = []
+# Keep the characterized Transformers minor line bounded. Version 5.10 is the
+# first line containing the security fix required by the release audit.
 torch = [
     "diffusers>=0.35.0,<0.38",
     "einops>=0.8.0",
@@ -53,7 +55,7 @@ torch = [
     "safetensors>=0.4.3",
     "sentencepiece>=0.2.0",
     "torch>=2.4",
-    "transformers>=5.5.0",
+    "transformers>=5.10.0,<5.11",
 ]
 train = [
     "accelerate>=1.1.0",
@@ -70,7 +72,7 @@ train = [
     "safetensors>=0.4.3",
     "sentencepiece>=0.2.0",
     "torch>=2.4",
-    "transformers>=5.5.0",
+    "transformers>=5.10.0,<5.11",
 ]
 eval = [
     "diffusers>=0.35.0,<0.38",
@@ -87,7 +89,7 @@ eval = [
     "safetensors>=0.4.3",
     "sentencepiece>=0.2.0",
     "torch>=2.4",
-    "transformers>=5.5.0",
+    "transformers>=5.10.0,<5.11",
 ]
 tracking = [
     "wandb>=0.25.1",
@@ -143,7 +145,7 @@ sim = [
     "sentencepiece>=0.2.0",
     "termcolor>=3.3.0",
     "torch>=2.4",
-    "transformers>=5.5.0",
+    "transformers>=5.10.0,<5.11",
 ]
 docs = [
     "mkdocs==1.6.1",
@@ -175,7 +177,7 @@ full = [
     "sentencepiece>=0.2.0",
     "termcolor>=3.3.0",
     "torch>=2.4",
-    "transformers>=5.5.0",
+    "transformers>=5.10.0,<5.11",
     "wandb>=0.25.1",
 ]
 
@@ -231,3 +233,6 @@ exclude = [
 
 [tool.uv]
 package = true
+# GitPython is an indirect tracking dependency; constrain the reproducible
+# environment above the vulnerable 3.1.58 release.
+constraint-dependencies = ["gitpython>=3.1.59"]

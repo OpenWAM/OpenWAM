@@ -89,8 +89,8 @@ Before tagging:
 - The frozen full environment passes the dependency audit. Any exception is
   exact-version bound, justified in `.github/dependency-audit-exceptions.toml`,
   and unexpired.
-- At least one non-fixture model artifact has a public HTTPS URL, SHA-256, and
-  license; the synthetic fixture does not satisfy this gate.
+- Any model advertised as public has an HTTPS URL, SHA-256, and license.
+  Unpublished model entries keep all three fields null.
 
 Artifact build and Twine checks are release or manually triggered CI. The
 source-archive allowlist and private-path checks are part of the default static

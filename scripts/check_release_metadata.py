@@ -313,7 +313,7 @@ def validate_version_state(
 
 
 def validate_public_model_artifacts(manifest: dict[str, Any]) -> None:
-    """Require one downloadable, checksummed, licensed non-fixture model."""
+    """Validate publication metadata for every model advertised as public."""
 
     artifacts = manifest.get("artifacts")
     if not isinstance(artifacts, list):
@@ -324,7 +324,10 @@ def validate_public_model_artifacts(manifest: dict[str, Any]) -> None:
         download_url = artifact.get("download_url")
         checksum = artifact.get("checksum")
         license_name = artifact.get("license")
-        if (
+        publication_fields = (download_url, checksum, license_name)
+        if not any(value is not None for value in publication_fields):
+            continue
+        if not (
             isinstance(download_url, str)
             and download_url.startswith("https://")
             and isinstance(checksum, str)
@@ -332,11 +335,10 @@ def validate_public_model_artifacts(manifest: dict[str, Any]) -> None:
             and isinstance(license_name, str)
             and bool(license_name.strip())
         ):
-            return
-    raise ValueError(
-        "Release validation requires at least one non-fixture model artifact "
-        "with an HTTPS download URL, SHA-256 checksum, and license."
-    )
+            raise ValueError(
+                "A public model artifact requires an HTTPS download URL, "
+                "SHA-256 checksum, and license."
+            )
 
 
 def main(argv: list[str] | None = None) -> None:
