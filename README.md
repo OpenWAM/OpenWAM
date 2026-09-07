@@ -29,7 +29,7 @@ stack.
 
 Development began in March 2026. This repository preserves the original commit
 ordering, dates, and contributor attribution. Before public distribution, the
-history was rewritten once to remove private infrastructure paths, operational
+history was rewritten to remove private infrastructure paths, operational
 artifacts, and private run URLs; commit hashes therefore differ from the
 internal development repository. No commits were backdated.
 
@@ -338,8 +338,9 @@ If Open-WAM supports your research, cite the software record in
 Open-WAM is released under the [GNU Affero General Public License v3.0](LICENSE)
 with the redistribution attribution described in [`NOTICE`](NOTICE). Covered
 modified versions and network services must provide corresponding source, and
-redistributed copies must preserve the Open-WAM citation notice. Academic work
-that uses Open-WAM should cite the software record in [`CITATION.cff`](CITATION.cff).
+redistributed copies must preserve the Open-WAM attribution notice. Academic
+work that uses Open-WAM should cite the software record in
+[`CITATION.cff`](CITATION.cff).
 
 Third-party components retain their own terms; the adapted LingBot-VA module
 is distributed under Apache License 2.0. Full attributions are listed in
