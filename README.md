@@ -20,8 +20,7 @@
 
 <p align="center">
   Developed by the <strong>OpenWAM Team</strong> at the
-  <a href="https://svl.stanford.edu/"><strong>Stanford Vision and Learning Lab (SVL)</strong></a>.<br>
-  <sub>SVL is a research group of the <a href="https://ai.stanford.edu/">Stanford Artificial Intelligence Laboratory (SAIL)</a> at <a href="https://www.stanford.edu/">Stanford University</a>.</sub>
+  <a href="https://svl.stanford.edu/"><strong>Stanford Vision and Learning Lab (SVL)</strong></a>.
 </p>
 
 <p align="center">
@@ -316,7 +315,7 @@ If OpenWAM supports your research, cite the software record in
 ```bibtex
 @software{open_wam_2026,
   title   = {OpenWAM},
-  author  = {{OpenWAM Team, Stanford Vision and Learning Lab (SVL), Stanford University}},
+  author  = {{OpenWAM Team}},
   year    = {2026},
   version = {0.1.0},
   url     = {https://github.com/DaivdYuan/OpenWAM-staging-public}

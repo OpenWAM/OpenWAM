@@ -11,7 +11,7 @@ requires-python = ">=3.11,<3.13"
 license = "AGPL-3.0-only"
 license-files = ["LICENSE", "NOTICE", "LICENSES/*", "THIRD_PARTY_NOTICES.md"]
 authors = [
-    { name = "OpenWAM Team, Stanford Vision and Learning Lab (SVL), Stanford University" },
+    { name = "OpenWAM Team" },
 ]
 keywords = ["robotics", "world action models", "world models"]
 classifiers = [
