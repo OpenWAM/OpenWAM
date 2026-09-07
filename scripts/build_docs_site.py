@@ -42,6 +42,12 @@ PUBLIC_MARKDOWN_PATHS = (
     Path("video_action_composition.md"),
     Path("video_only_training.md"),
 )
+PUBLIC_ASSET_PATHS = (
+    Path("assets/affiliations/SOURCES.txt"),
+    Path("assets/affiliations/stanford-ai-lab.jpg"),
+    Path("assets/affiliations/stanford-svl.png"),
+    Path("assets/affiliations/stanford-wordmark.png"),
+)
 _MARKDOWN_LINK = re.compile(r"!?\[[^\]]*\]\(\s*(?P<target><[^>]+>|[^)\s]+)")
 _REPOSITORY_REFERENCE = re.compile(
     r"(?<![\w./-])(?P<target>(?:src/open_wam|scripts|configs|examples)/"
@@ -93,6 +99,7 @@ def build_docs_site(output: Path) -> dict[str, int | str | bool]:
         raise SystemExit(f"Public docs reference missing repository paths:\n{formatted}")
 
     public_pages = _stage_public_markdown(PUBLIC_DOCS, output)
+    public_assets = _stage_public_assets(PUBLIC_DOCS, output)
 
     leaks = scan_private_fragments(output)
     if leaks:
@@ -106,6 +113,7 @@ def build_docs_site(output: Path) -> dict[str, int | str | bool]:
 
     return {
         "docs_dir": str(output),
+        "public_assets": public_assets,
         "public_pages": public_pages,
         "notes_published": False,
         "private_leaks": len(leaks),
@@ -217,6 +225,31 @@ def _stage_public_markdown(source: Path, target: Path) -> int:
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_text(path.read_text(encoding="utf-8"), encoding="utf-8")
     return len(PUBLIC_MARKDOWN_PATHS)
+
+
+def _stage_public_assets(source: Path, target: Path) -> int:
+    asset_root = source / "assets"
+    expected = set(PUBLIC_ASSET_PATHS)
+    actual = {
+        path.relative_to(source)
+        for path in asset_root.rglob("*")
+        if path.is_file()
+    }
+    missing = sorted(expected - actual)
+    unclassified = sorted(actual - expected)
+    if missing or unclassified:
+        details = []
+        if missing:
+            details.append("missing=" + ", ".join(map(str, missing)))
+        if unclassified:
+            details.append("unclassified=" + ", ".join(map(str, unclassified)))
+        raise SystemExit("Public documentation asset inventory mismatch: " + "; ".join(details))
+
+    for relative in PUBLIC_ASSET_PATHS:
+        destination = target / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source / relative, destination)
+    return len(PUBLIC_ASSET_PATHS)
 
 
 def _site_relative_path(relative: Path) -> Path:

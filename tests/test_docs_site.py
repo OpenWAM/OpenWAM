@@ -26,6 +26,7 @@ def test_docs_site_stages_curated_public_docs_only(tmp_path: Path) -> None:
     summary = builder.build_docs_site(output)
 
     assert summary["public_pages"] == len(builder.PUBLIC_MARKDOWN_PATHS) == 27
+    assert summary["public_assets"] == len(builder.PUBLIC_ASSET_PATHS) == 4
     assert summary["notes_published"] is False
     assert summary["broken_local_links"] == 0
     assert summary["missing_repository_paths"] == 0
@@ -37,6 +38,9 @@ def test_docs_site_stages_curated_public_docs_only(tmp_path: Path) -> None:
     assert (output / "benchmarks.md").is_file()
     assert (output / "running_experiments.md").is_file()
     assert (output / "video_only_training.md").is_file()
+    assert (output / "assets/affiliations/stanford-wordmark.png").is_file()
+    assert (output / "assets/affiliations/stanford-ai-lab.jpg").is_file()
+    assert (output / "assets/affiliations/stanford-svl.png").is_file()
     assert not (output / "engineering-notes").exists()
     assert not (output / "CHECKPOINT.md").exists()
     assert not (output / "camera_sync_deploy_issue.md").exists()
@@ -74,6 +78,7 @@ def test_docs_site_rejects_broken_or_escaping_local_link(
     (tmp_path / "outside.md").write_text("not public\n", encoding="utf-8")
     monkeypatch.setattr(builder, "PUBLIC_DOCS", source)
     monkeypatch.setattr(builder, "PUBLIC_MARKDOWN_PATHS", (Path("index.md"),))
+    monkeypatch.setattr(builder, "PUBLIC_ASSET_PATHS", ())
 
     with pytest.raises(SystemExit, match="broken or escaping local links"):
         builder.build_docs_site(tmp_path / "output")

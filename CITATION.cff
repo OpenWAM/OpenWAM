@@ -3,7 +3,7 @@ message: "If you use Open-WAM in research, please cite this software record."
 title: "Open-WAM"
 version: "0.1.0"
 authors:
-  - name: "OpenWAM Team, Stanford University"
+  - name: "OpenWAM Team, Stanford Vision and Learning Lab (SVL), Stanford University"
 repository-code: "https://github.com/DaivdYuan/OpenWAM-staging-public"
 license: "AGPL-3.0-only"
 keywords:
