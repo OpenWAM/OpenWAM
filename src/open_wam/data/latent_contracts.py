@@ -5,6 +5,8 @@ from typing import Any
 
 import torch
 
+from open_wam.configs.enums import BatchingMode
+
 
 @dataclass
 class LatentWAMSample:
@@ -46,6 +48,9 @@ class LatentWAMBatch:
     proprio_context_frames: torch.Tensor | None = None
     proprio_context_frames_mask: torch.Tensor | None = None
     metadata: tuple[dict[str, Any], ...] = field(default_factory=tuple)
+    batching_mode: BatchingMode = BatchingMode.STRICT
+    sequence_lengths: tuple[int, ...] = ()
+    tensor_lengths: dict[str, tuple[int, ...]] = field(default_factory=dict)
 
 
 def collate_latent_wam_samples(samples: list[LatentWAMSample]) -> LatentWAMBatch:
@@ -120,6 +125,9 @@ def move_latent_wam_batch_to_device(
             batch.proprio_context_frames_mask.to(device) if batch.proprio_context_frames_mask is not None else None
         ),
         metadata=batch.metadata,
+        batching_mode=batch.batching_mode,
+        sequence_lengths=batch.sequence_lengths,
+        tensor_lengths=batch.tensor_lengths,
     )
 
 

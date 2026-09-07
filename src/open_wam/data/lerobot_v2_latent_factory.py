@@ -6,7 +6,7 @@ from dataclasses import replace
 
 from torch.utils.data import Dataset
 
-from open_wam.configs import DataConfig, DataSplit, WindowSamplingMode
+from open_wam.configs import BatchingMode, DataConfig, DataSplit, WindowSamplingMode
 
 from .latent_contracts import LatentWAMSample
 from .lerobot_v2_latent_base_dataset import FullSegmentLocalLeRobotLatentDataset
@@ -41,7 +41,7 @@ def build_local_lerobot_latent_train_val_datasets(
         segment_max_frames = int(
             data_config.sample_construction.segment_max_frames or segment_min_frames
         )
-        if segment_min_frames != segment_max_frames and (
+        if data_config.batching.mode is BatchingMode.STRICT and segment_min_frames != segment_max_frames and (
             data_config.train_batch_size != 1 or data_config.val_batch_size != 1
         ):
             raise ValueError(

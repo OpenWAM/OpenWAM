@@ -2922,6 +2922,7 @@ def test_data_configuration_contracts_have_role_specific_owners() -> None:
             "ActionNormalizationConfig",
             "ActionSchemaConfig",
             "ActionTargetConfig",
+            "BatchingConfig",
             "CausalPrefixSuffixBucketConfig",
             "DataConfig",
             "DynamicsRoutingConfig",
@@ -5496,6 +5497,7 @@ def test_shared_transformer_support_has_one_implementation_owner() -> None:
         },
         "shared_transformer_layout": {
             "models/action_decoders/video_conditioned_expert.py",
+            "models/policy_variants/dual_expert/batch_execution.py",
             "models/policy_variants/dual_expert/dual_stream_execution.py",
             "models/policy_variants/dual_expert/packed_block.py",
             "models/visual_tower/__init__.py",
@@ -5504,6 +5506,7 @@ def test_shared_transformer_support_has_one_implementation_owner() -> None:
         },
         "runtime_parameter_ops": {
             "models/action_decoders/video_conditioned_expert.py",
+            "models/policy_variants/dual_expert/batch_execution.py",
             "models/policy_variants/dual_expert/cache_execution.py",
             "models/policy_variants/dual_expert/dual_stream_execution.py",
             "models/visual_tower/__init__.py",

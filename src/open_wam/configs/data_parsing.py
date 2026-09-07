@@ -27,6 +27,7 @@ from .data_contracts import (
     ActionNormalizationConfig,
     ActionSchemaConfig,
     ActionTargetConfig,
+    BatchingConfig,
     CausalPrefixSuffixBucketConfig,
     DataConfig,
     DynamicsRoutingConfig,
@@ -42,6 +43,12 @@ from .data_mixed_video import (
 )
 
 __all__ = ["parse_data_config"]
+
+
+def _batching_mapping(raw: Any) -> dict[str, Any]:
+    if not isinstance(raw, Mapping):
+        raise TypeError("`data.batching` must be a mapping.")
+    return dict(raw)
 
 
 def _load_consortium_channel_mappings(raw_value: Any) -> tuple[ConsortiumChannelMappingConfig, ...]:
@@ -488,6 +495,7 @@ def parse_data_config(raw_value: Mapping[str, Any] | None) -> DataConfig:
         train_batch_size=data_raw.get("train_batch_size", data_defaults.train_batch_size),
         val_batch_size=data_raw.get("val_batch_size", data_defaults.val_batch_size),
         num_workers=data_raw.get("num_workers", data_defaults.num_workers),
+        batching=BatchingConfig(**_batching_mapping(data_raw.get("batching", {}))),
         action_schema=ActionSchemaConfig(
             action_dim=action_schema_raw.get("action_dim", data_defaults.action_schema.action_dim),
             action_horizon=action_schema_raw.get("action_horizon", data_defaults.action_schema.action_horizon),

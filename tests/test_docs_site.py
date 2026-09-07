@@ -25,7 +25,7 @@ def test_docs_site_stages_curated_public_docs_only(tmp_path: Path) -> None:
 
     summary = builder.build_docs_site(output)
 
-    assert summary["public_pages"] == len(builder.PUBLIC_MARKDOWN_PATHS) == 26
+    assert summary["public_pages"] == len(builder.PUBLIC_MARKDOWN_PATHS) == 27
     assert summary["public_assets"] == len(builder.PUBLIC_ASSET_PATHS) == 5
     assert summary["notes_published"] is False
     assert summary["broken_local_links"] == 0
@@ -37,6 +37,7 @@ def test_docs_site_stages_curated_public_docs_only(tmp_path: Path) -> None:
     assert (output / "policy_architectures.md").is_file()
     assert (output / "benchmarks.md").is_file()
     assert (output / "running_experiments.md").is_file()
+    assert (output / "variable_length_training_batches.md").is_file()
     assert (output / "video_only_training.md").is_file()
     assert (output / "assets/affiliations/stanford-wordmark.png").is_file()
     assert (output / "assets/affiliations/stanford-ai-lab.jpg").is_file()

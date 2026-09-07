@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 
 import torch
@@ -12,9 +12,11 @@ from open_wam.configs import (
     JointTimestepCoupling,
     TrainingConfig,
 )
+from open_wam.configs.enums import BatchingMode, VideoActionProgram
 from open_wam.configs.policy_dual_expert import DualExpertPolicyConfig
 from open_wam.contracts import (
     DYNAMICS_ROUTING_SOURCE_METADATA_KEY,
+    SampleConstructionMetadata,
 )
 from open_wam.models.common.dynamics_objectives import (
     apply_dynamics_training_plan,
@@ -40,6 +42,10 @@ from open_wam.models.visual_tower import VisualStageOutputs, VisualTower
 
 from ..contracts import DecoderArtifactEnvelope, PolicyPreparedInputs, PolicyTrainOutput
 from .attention_packed import build_dual_expert_packed_coupling_attention_profile
+from .batch_execution import (
+    DualExpertDenoiseRequest,
+    forward_dual_expert_sequence_batch,
+)
 from .conditioning import DualExpertConditioning
 from .coupling_semantics import (
     resolve_dual_expert_current_block_coupling,
@@ -58,6 +64,14 @@ from .sequence_layout import (
     DualExpertTrainingLayout,
     build_action_grid_ids_for_sequence,
 )
+
+
+@dataclass(frozen=True)
+class PreparedDualExpertTrainingSample:
+    """One sample's denoising request and light decoder-artifact continuation."""
+
+    request: DualExpertDenoiseRequest
+    finish: Callable[[torch.Tensor, torch.Tensor], PolicyTrainOutput]
 
 
 @dataclass(frozen=True)
@@ -84,6 +98,140 @@ class DualExpertPackedTrainingProgram:
         visual_outputs: VisualStageOutputs,
         prepared_inputs: PolicyPreparedInputs,
     ) -> PolicyTrainOutput:
+        sample = self.prepare_sample(visual_tower, visual_outputs, prepared_inputs)
+        result = forward_dual_expert_packed_coupling_denoise(
+            visual_tower=visual_tower,
+            action_expert=self.action_expert,
+            packed_block_stack=self.packed_block_stack,
+            use_activation_checkpointing=bool(self.config.use_activation_checkpointing),
+            **sample.request.as_kwargs(),
+        )
+        return sample.finish(*result)
+
+    def run_batch(
+        self,
+        visual_tower: VisualTower,
+        visual_outputs: Sequence[VisualStageOutputs],
+        prepared_inputs: Sequence[PolicyPreparedInputs],
+        *,
+        batching_mode: BatchingMode | str,
+    ) -> tuple[PolicyTrainOutput, ...]:
+        mode = BatchingMode(batching_mode)
+        if mode is BatchingMode.STRICT:
+            raise ValueError(
+                "The sequence-batch API requires bucket, padded, or packed mode."
+            )
+        if self.config.program not in {
+            VideoActionProgram.VIDEO_THEN_ACTION,
+            VideoActionProgram.JOINT,
+        }:
+            raise ValueError(
+                "Variable-length dual-expert training currently supports VTA and Joint only."
+            )
+        prepared_inputs = self._shared_fallback_geometry(prepared_inputs)
+        samples = [
+            self.prepare_sample(
+                visual_tower, visual, prepared, defer_attention_masks=True
+            )
+            for visual, prepared in zip(visual_outputs, prepared_inputs, strict=True)
+        ]
+        results = forward_dual_expert_sequence_batch(
+            visual_tower=visual_tower,
+            action_expert=self.action_expert,
+            requests=[sample.request for sample in samples],
+            padded=mode is not BatchingMode.PACKED,
+            use_activation_checkpointing=bool(self.config.use_activation_checkpointing),
+            packed_block_stack=self.packed_block_stack,
+        )
+        return tuple(
+            sample.finish(*result)
+            for sample, result in zip(samples, results, strict=True)
+        )
+
+    def _shared_fallback_geometry(
+        self,
+        prepared_inputs: Sequence[PolicyPreparedInputs],
+    ) -> tuple[PolicyPreparedInputs, ...]:
+        """Full segments without stamped geometry draw C/W once per microbatch.
+
+        Unlike uniform-segment metadata, the legacy full-segment fallback draws
+        history uniformly from each sample's valid chunk count. Keep that law;
+        only C/W are batch-shared, not the samples' history or position offsets.
+        """
+        if not prepared_inputs:
+            raise ValueError("Cannot prepare an empty sequence batch.")
+        metadata = [
+            SampleConstructionMetadata.from_batch_metadata(
+                prepared.batch.extra.get("metadata"),
+            )
+            for prepared in prepared_inputs
+        ]
+        has_geometry = [
+            item is not None and item.sampled_chunk_size is not None
+            for item in metadata
+        ]
+        if any(has_geometry):
+            if not all(has_geometry):
+                raise ValueError(
+                    "Sequence batches cannot mix stamped and unstamped chunk geometry."
+                )
+            return tuple(prepared_inputs)
+        first_video = prepared_inputs[0].variant_inputs["video_latents"]
+        chunk, window, first_history = (
+            self.training_layout.sample_full_segment_geometry(
+                observed_num_frames=int(first_video.shape[2]),
+                device=first_video.device,
+            )
+        )
+        min_frames = min(
+            int(item.variant_inputs["video_latents"].shape[2])
+            for item in prepared_inputs
+        )
+        shared_chunk = min(chunk, min_frames)
+        chunk_changed = shared_chunk != chunk
+        chunk = shared_chunk
+        result = []
+        for index, (prepared, item) in enumerate(
+            zip(prepared_inputs, metadata, strict=True)
+        ):
+            video = prepared.variant_inputs["video_latents"]
+            frames = int(video.shape[2])
+            if index == 0 and not chunk_changed:
+                history = first_history
+            else:
+                max_chunks = max(1, frames // chunk - 1)
+                history_chunks = int(
+                    torch.randint(1, max_chunks + 1, (1,), device=video.device).item()
+                )
+                history = max(1, min(history_chunks * chunk, frames - chunk))
+            raw = {} if item is None else dict(item.raw)
+            raw.update(
+                sampled_chunk_size=chunk,
+                sampled_window_size=window,
+                history_frames=history,
+            )
+            result.append(
+                replace(
+                    prepared,
+                    batch=replace(
+                        prepared.batch, extra={**prepared.batch.extra, "metadata": raw}
+                    ),
+                    variant_inputs={
+                        **prepared.variant_inputs,
+                        "sample_metadata": SampleConstructionMetadata.from_mapping(raw),
+                    },
+                )
+            )
+        return tuple(result)
+
+    def prepare_sample(
+        self,
+        visual_tower: VisualTower,
+        visual_outputs: VisualStageOutputs,
+        prepared_inputs: PolicyPreparedInputs,
+        *,
+        defer_attention_masks: bool = False,
+    ) -> PreparedDualExpertTrainingSample:
         # parallel-stream-style four-branch packed training for dual-expert's two-expert
         # architecture. Query/key layout is [V_noisy, V_clean, A_noisy,
         # A_clean]; the coupling mask determines current-chunk visibility for
@@ -483,6 +631,8 @@ class DualExpertPackedTrainingProgram:
             hidden_context=packed_action_hidden_context,
         )
         packed_attention_profile = build_dual_expert_packed_coupling_attention_profile(
+            build_dense_masks=False if defer_attention_masks else None,
+            build_flex_masks=False if defer_attention_masks else None,
             num_video_frames=num_video_frames,
             video_tokens_per_frame=video_tokens_per_frame,
             num_action_frames=num_action_frames,
@@ -509,122 +659,122 @@ class DualExpertPackedTrainingProgram:
                 chunk_size_frames=sampled_chunk_size,
             )
         )
-        video_flow_pred, packed_action_hidden = (
-            forward_dual_expert_packed_coupling_denoise(
-                visual_tower=visual_tower,
-                noisy_video_latents=video_artifacts.noisy_latents,
-                clean_video_latents=video_artifacts.condition_latents,
-                noisy_video_timesteps=video_artifacts.timesteps,
-                clean_video_timesteps=video_artifacts.condition_timesteps,
-                action_expert=self.action_expert,
-                packed_action_pre=packed_action_pre,
-                attention_profile=packed_attention_profile,
-                text_context=resolved_text,
-                frame_start=frame_shift - prefix_condition_frames,
-                use_activation_checkpointing=bool(
-                    self.config.use_activation_checkpointing
-                ),
-                packed_block_stack=self.packed_block_stack,
-                video_cross_attention_mask=packed_video_cross_attention_mask,
-                video_hidden_context=packed_video_hidden_context,
-            )
-        )
-        predicted_latents = denoised_video_latents_from_flow(
-            noisy_latents=video_artifacts.noisy_latents,
-            flow_pred=video_flow_pred,
-            timesteps=video_artifacts.timesteps,
-            scheduler=video_artifacts.scheduler,
-        )
-        packed_action_flow = self.action_expert.post_dit(
-            packed_action_hidden, packed_action_pre
-        )
-        # Loss from the A_noisy half only (first action_seq_len tokens).
-        action_flow_pred = packed_action_flow[:, :action_seq_len]
-        denoised_actions = denoised_actions_from_flow(
-            noisy_actions=noisy_actions,
-            flow_pred=action_flow_pred,
-            timesteps=noisy_slot_timesteps,
-            scheduler=action_artifacts.scheduler,
+        request = DualExpertDenoiseRequest(
+            noisy_video_latents=video_artifacts.noisy_latents,
+            clean_video_latents=video_artifacts.condition_latents,
+            noisy_video_timesteps=video_artifacts.timesteps,
+            clean_video_timesteps=video_artifacts.condition_timesteps,
+            packed_action_pre=packed_action_pre,
+            attention_profile=packed_attention_profile,
+            text_context=resolved_text,
+            frame_start=frame_shift - prefix_condition_frames,
+            video_cross_attention_mask=packed_video_cross_attention_mask,
+            video_hidden_context=packed_video_hidden_context,
         )
 
-        # ---- Assemble training artifacts ----
-        video_rollout: DualExpertVideoTrainArtifacts | None = None
-        if self.training_config.objective_enabled("latent"):
-            video_rollout = DualExpertVideoTrainArtifacts(
+        def finish(
+            video_flow_pred: torch.Tensor, packed_action_hidden: torch.Tensor
+        ) -> PolicyTrainOutput:
+            predicted_latents = denoised_video_latents_from_flow(
+                noisy_latents=video_artifacts.noisy_latents,
                 flow_pred=video_flow_pred,
-                targets=video_artifacts.targets,
                 timesteps=video_artifacts.timesteps,
                 scheduler=video_artifacts.scheduler,
-                predicted_latents=predicted_latents,
-                target_latents=video_latents,
-                future_loss_mask=future_loss_mask,
             )
-
-        decoder_payload = DualExpertTrainArtifacts(
-            action=DualExpertActionTrainArtifacts(
+            packed_action_flow = self.action_expert.post_dit(
+                packed_action_hidden, packed_action_pre
+            )
+            # Loss from the A_noisy half only (first action_seq_len tokens).
+            action_flow_pred = packed_action_flow[:, :action_seq_len]
+            denoised_actions = denoised_actions_from_flow(
+                noisy_actions=noisy_actions,
                 flow_pred=action_flow_pred,
-                targets=action_artifacts.targets,
                 timesteps=noisy_slot_timesteps,
                 scheduler=action_artifacts.scheduler,
-                denoised_actions=denoised_actions,
-                # Use the post-generalist mask. The flow builder retains the
-                # pre-rewrite mask, so this is the decoder-authoritative mask.
-                action_mask=effective_action_mask,
-            ),
-            video=video_rollout,
-            condition_mode=str(self.config.condition_mode),
-            program=self.config.program.value,
-            history_frames=int(history_frames),
-        )
+            )
 
-        batch_size = video_latents.shape[0]
-        return PolicyTrainOutput(
-            policy_features=video_latents.new_zeros(
-                batch_size, 0, self.action_expert.hidden_size
-            ),
-            metrics={
-                "dual_expert_history_frames": video_latents.new_tensor(
-                    float(history_frames)
+            # ---- Assemble training artifacts ----
+            video_rollout: DualExpertVideoTrainArtifacts | None = None
+            if self.training_config.objective_enabled("latent"):
+                video_rollout = DualExpertVideoTrainArtifacts(
+                    flow_pred=video_flow_pred,
+                    targets=video_artifacts.targets,
+                    timesteps=video_artifacts.timesteps,
+                    scheduler=video_artifacts.scheduler,
+                    predicted_latents=predicted_latents,
+                    target_latents=video_latents,
+                    future_loss_mask=future_loss_mask,
+                )
+
+            decoder_payload = DualExpertTrainArtifacts(
+                action=DualExpertActionTrainArtifacts(
+                    flow_pred=action_flow_pred,
+                    targets=action_artifacts.targets,
+                    timesteps=noisy_slot_timesteps,
+                    scheduler=action_artifacts.scheduler,
+                    denoised_actions=denoised_actions,
+                    # Use the post-generalist mask. The flow builder retains the
+                    # pre-rewrite mask, so this is the decoder-authoritative mask.
+                    action_mask=effective_action_mask,
                 ),
-                "dual_expert_video_prefix_frames": video_latents.new_tensor(
-                    float(history_frames)
+                video=video_rollout,
+                condition_mode=str(self.config.condition_mode),
+                program=self.config.program.value,
+                history_frames=int(history_frames),
+            )
+
+            batch_size = video_latents.shape[0]
+            return PolicyTrainOutput(
+                policy_features=video_latents.new_zeros(
+                    batch_size, 0, self.action_expert.hidden_size
                 ),
-            },
-            decoder_artifacts=DecoderArtifactEnvelope(
-                contract=DUAL_EXPERT_DECODER_ARTIFACT_CONTRACT,
-                payload=decoder_payload,
-                dynamics_objective=dynamics_objective,
-            ),
-            aux={
-                "variant": self.config.name,
-                "architecture": "dual_expert",
-                "condition_mode": str(self.config.condition_mode),
-                "program": self.config.program.value,
-                "current_block_coupling": current_block_coupling.value,
-                "sampled_chunk_size": sampled_chunk_size,
-                "sampled_window_size": sampled_window_size,
-                "chunk_origin_frame": chunk_origin_frame,
-                "singleton_chunk_frame": singleton_chunk_frame,
-                "conditional_history_policy": conditional_history_policy,
-                DYNAMICS_ROUTING_SOURCE_METADATA_KEY: dynamics_source,
-                "video_condition_source": video_condition_source,
-                "dual_expert_generalist_training_mode_override": (
-                    routed_dynamics_objective.value
-                    if routed_dynamics_objective is not None
-                    else None
+                metrics={
+                    "dual_expert_history_frames": video_latents.new_tensor(
+                        float(history_frames)
+                    ),
+                    "dual_expert_video_prefix_frames": video_latents.new_tensor(
+                        float(history_frames)
+                    ),
+                },
+                decoder_artifacts=DecoderArtifactEnvelope(
+                    contract=DUAL_EXPERT_DECODER_ARTIFACT_CONTRACT,
+                    payload=decoder_payload,
+                    dynamics_objective=dynamics_objective,
                 ),
-                "dual_expert_generalist_text_dropped": bool(text_dropped),
-                "dual_expert_generalist_training_mode": (
-                    dynamics_objective.value if dynamics_objective is not None else None
-                ),
-                "dual_expert_generalist_mode_text_token": (
-                    dynamics_objective.value
-                    if generalist_mode_text_token_count > 0
-                    and dynamics_objective is not None
-                    else None
-                ),
-                "dual_expert_generalist_mode_text_token_count": int(
-                    generalist_mode_text_token_count
-                ),
-            },
-        )
+                aux={
+                    "variant": self.config.name,
+                    "architecture": "dual_expert",
+                    "condition_mode": str(self.config.condition_mode),
+                    "program": self.config.program.value,
+                    "current_block_coupling": current_block_coupling.value,
+                    "sampled_chunk_size": sampled_chunk_size,
+                    "sampled_window_size": sampled_window_size,
+                    "chunk_origin_frame": chunk_origin_frame,
+                    "singleton_chunk_frame": singleton_chunk_frame,
+                    "conditional_history_policy": conditional_history_policy,
+                    DYNAMICS_ROUTING_SOURCE_METADATA_KEY: dynamics_source,
+                    "video_condition_source": video_condition_source,
+                    "dual_expert_generalist_training_mode_override": (
+                        routed_dynamics_objective.value
+                        if routed_dynamics_objective is not None
+                        else None
+                    ),
+                    "dual_expert_generalist_text_dropped": bool(text_dropped),
+                    "dual_expert_generalist_training_mode": (
+                        dynamics_objective.value
+                        if dynamics_objective is not None
+                        else None
+                    ),
+                    "dual_expert_generalist_mode_text_token": (
+                        dynamics_objective.value
+                        if generalist_mode_text_token_count > 0
+                        and dynamics_objective is not None
+                        else None
+                    ),
+                    "dual_expert_generalist_mode_text_token_count": int(
+                        generalist_mode_text_token_count
+                    ),
+                },
+            )
+
+        return PreparedDualExpertTrainingSample(request=request, finish=finish)
