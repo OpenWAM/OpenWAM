@@ -3,6 +3,9 @@ name: cpu-smoke
 on:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   public-tiny-smoke:
     runs-on: ubuntu-latest

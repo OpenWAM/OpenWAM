@@ -12,6 +12,9 @@ on:
     tags:
       - "v*"
 
+permissions:
+  contents: read
+
 jobs:
   package:
     runs-on: ubuntu-latest
