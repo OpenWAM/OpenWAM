@@ -24,7 +24,7 @@ jobs:
         with:
           python-version: "3.11"
       - name: Install packaging tools
-        run: python -m pip install --upgrade build twine
+        run: python -m pip install --upgrade build twine PyYAML
       - name: Check release metadata
         env:
           OPEN_WAM_FINAL_RELEASE: ${{ github.event_name == 'push' || inputs.release }}
