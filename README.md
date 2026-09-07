@@ -1,26 +1,13 @@
 <h1 align="center">OpenWAM</h1>
 
-<p align="center">
-  <a href="https://www.stanford.edu/"><img src="docs/assets/affiliations/stanford-wordmark.png" alt="Stanford University" height="45" hspace="14" valign="middle"></a>
-  <a href="https://ai.stanford.edu/"><img src="docs/assets/affiliations/stanford-ai-lab.jpg" alt="Stanford Artificial Intelligence Laboratory" height="74" hspace="14" valign="middle"></a>
-  <a href="https://svl.stanford.edu/"><img src="docs/assets/affiliations/stanford-svl.png" alt="Stanford Vision and Learning Lab" height="74" hspace="14" valign="middle"></a>
-</p>
-
-<p align="center"><strong>OpenWAM is developed by the OpenWAM Team in the <a href="https://svl.stanford.edu/">Stanford Vision and Learning Lab (SVL)</a>, a research group of the <a href="https://ai.stanford.edu/">Stanford Artificial Intelligence Laboratory (SAIL)</a> at <a href="https://www.stanford.edu/">Stanford University</a>.</strong></p>
+<p align="center"><strong>An extensible framework for video-action world models in robot learning</strong></p>
 
 <p align="center">
   <a href="https://github.com/DaivdYuan/OpenWAM-staging-public/actions/workflows/ci.yml"><img src="https://github.com/DaivdYuan/OpenWAM-staging-public/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://daivdyuan.github.io/OpenWAM-staging-public/"><img src="https://img.shields.io/badge/docs-online-blue.svg" alt="Documentation"></a>
   <a href="https://www.python.org/"><img src="https://img.shields.io/badge/python-3.11%20%7C%203.12-blue.svg" alt="Python 3.11 or 3.12"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-blue.svg" alt="License: AGPL v3"></a>
-  <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/status-alpha-orange.svg" alt="Status: alpha"></a>
 </p>
-
-**OpenWAM is a research framework for training, comparing, and evaluating
-video-action world models for robot learning.** It separates model topology,
-video/action conditioning, sequence semantics, visual execution, and action
-decoding so that controlled experiments share the same trainer and visual
-stack.
 
 <p align="center">
   <a href="https://daivdyuan.github.io/OpenWAM-staging-public/">Documentation</a> &middot;
@@ -30,6 +17,24 @@ stack.
   <a href="docs/extension_sdk.md">Extension SDK</a> &middot;
   <a href="#citation">Citation</a>
 </p>
+
+<p align="center">
+  Developed by the <strong>OpenWAM Team</strong> at the
+  <a href="https://svl.stanford.edu/"><strong>Stanford Vision and Learning Lab (SVL)</strong></a>.<br>
+  <sub>SVL is a research group of the <a href="https://ai.stanford.edu/">Stanford Artificial Intelligence Laboratory (SAIL)</a> at <a href="https://www.stanford.edu/">Stanford University</a>.</sub>
+</p>
+
+<p align="center">
+  <a href="https://svl.stanford.edu/"><img src="docs/assets/affiliations/stanford-svl.png" alt="Stanford Vision and Learning Lab" height="46" valign="middle"></a>
+  &nbsp;&nbsp;&nbsp;&nbsp;
+  <a href="https://ai.stanford.edu/"><img src="docs/assets/affiliations/stanford-ai-lab.jpg" alt="Stanford Artificial Intelligence Laboratory" height="46" valign="middle"></a>
+  &nbsp;&nbsp;&nbsp;&nbsp;
+  <a href="https://www.stanford.edu/"><img src="docs/assets/affiliations/stanford-wordmark.png" alt="Stanford University" height="28" valign="middle"></a>
+</p>
+
+OpenWAM separates model topology, video/action conditioning, sequence
+semantics, visual execution, and action decoding so that controlled experiments
+share the same trainer and visual stack.
 
 > **Release status:** OpenWAM 0.1.0 is pre-release Linux research software.
 > The public CPU lifecycle and synthetic artifacts are self-contained. Large
