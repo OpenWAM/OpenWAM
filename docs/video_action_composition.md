@@ -303,11 +303,10 @@ uv run pytest -q \
   tests/test_policy_video_action_golden.py::test_real_vta_native_and_two_model_rollouts_are_bitwise_equal
 ```
 
-The historical VTA-to-strict-IDM route remains frozen by
-`tests/characterization/goldens/vta_external_idm_48of50_task0_ep0_seed0.json`.
-It records the successful Task 0 / episode 0 / seed 0 member of a 48/50 run,
-including the exact first-chunk action trace and full-rollout result at 21
-chunks, 336 simulator steps, and 331 executed actions.
+The VTA-to-strict-IDM route is protected by a deterministic Task 0 / episode 0
+/ seed 0 golden at
+`tests/characterization/goldens/vta_external_idm_task0_ep0_seed0.json`. It
+checks the exact first-chunk action trace and complete rollout contract.
 
 ```bash
 export OPEN_WAM_RUN_VTA_IDM_GOLDEN=1
@@ -325,7 +324,7 @@ export OPEN_WAM_VTA_IDM_BASE_MODEL_ROOT=/path/to/lingbot-va-base
 export OPEN_WAM_LIBERO_REPO_ROOT=/path/to/LIBERO
 
 uv run pytest -q \
-  tests/test_policy_video_action_golden.py::test_real_vta_external_idm_rollout_matches_48of50_golden
+  tests/test_policy_video_action_golden.py::test_real_vta_external_idm_rollout_matches_golden
 ```
 
 These gates protect inference only. Training programs, losses, data sampling,

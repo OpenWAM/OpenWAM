@@ -248,16 +248,6 @@ condition latent, video-only history visibility, per-chunk additive proprio,
 and prefix alignment. Do not repeat those owned fields as individual YAML or
 CLI overrides; the config loader rejects ambiguous combinations.
 
-This default follows a matched 10,000-step VTA study. On the common task subset
-`{2,3,6,7,8,9}`, the full-trajectory bundle scored 94.1%, compared with
-68.0-86.0% for three fixed-128 controls; its all-task score was 95.0% over 282
-rollouts. The study used one training seed and changed the sampler/replay
-bundle together, so it establishes the default recipe, not a causal claim for
-any one field. Historical Parallel Stream checkpoints remain loadable through
-the checkpoint compatibility boundary; their backend/profile metadata is
-validated against the canonical program rather than exposed as another
-authored semantic choice.
-
 These are YAML defaults, not runtime invariants. The generic config, data, and
 policy layers neither recognize this recipe by name nor reject another
 structurally valid combination. Override individual fields with `--set` or

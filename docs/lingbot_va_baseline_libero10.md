@@ -104,8 +104,8 @@ PYTHONPATH=src:outputs/lingbot_va_pydeps \
   "$LINGBOT_BASELINE_PYTHON" \
   -m baselines.lingbot_va.summarize_results \
     --results-jsonl \
-      outputs/lingbot_va_posttrain_libero_long_libero10_full_20260429/gpu0_tasks0_4/results.jsonl \
-      outputs/lingbot_va_posttrain_libero_long_libero10_full_20260429/gpu1_tasks5_9/results.jsonl \
+      outputs/lingbot_va_libero10/gpu0_tasks0_4/results.jsonl \
+      outputs/lingbot_va_libero10/gpu1_tasks5_9/results.jsonl \
     --expect-count 500 \
     --expect-benchmark libero_10 \
     --expect-task-ids 0:10 \
@@ -114,7 +114,7 @@ PYTHONPATH=src:outputs/lingbot_va_pydeps \
     --require-unique \
     --require-hf-revision 0e89d1e753019988aba484e8da2dc0810e264d9f \
     --require-model-root "$LINGBOT_VA_MODEL_ROOT" \
-    --output-dir outputs/lingbot_va_posttrain_libero_long_libero10_full_20260429/combined
+    --output-dir outputs/lingbot_va_libero10/combined
 ```
 
 The suite writes:
@@ -125,69 +125,3 @@ The suite writes:
 - `load_reports/*.json`
 - per-rollout chunk traces under `rollouts/`
 - optional chunk-colored rollout videos under `rollouts/`
-
-## Current Results
-
-Validation date: 2026-04-30.
-
-Canonical full-run artifacts:
-
-- shard outputs:
-  `outputs/lingbot_va_posttrain_libero_long_libero10_full_20260429/gpu0_tasks0_4`
-  and
-  `outputs/lingbot_va_posttrain_libero_long_libero10_full_20260429/gpu1_tasks5_9`
-- validated merged summary:
-  `outputs/lingbot_va_posttrain_libero_long_libero10_full_20260429/combined`
-
-Aggregate result:
-
-| Checkpoint | Successes | Episodes | Success rate | Mean env timestep | Mean chunks |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| `lingbot_va_posttrain_libero_long` | 483 | 500 | 0.966 | 288.2 | 18.4 |
-
-Per-task result:
-
-| Task | Successes | Episodes | Success rate | Mean env timestep | Mean chunks |
-| ---: | ---: | ---: | ---: | ---: | ---: |
-| 0 | 49 | 50 | 0.980 | 301.9 | 19.3 |
-| 1 | 48 | 50 | 0.960 | 296.2 | 18.9 |
-| 2 | 48 | 50 | 0.960 | 274.5 | 17.5 |
-| 3 | 49 | 50 | 0.980 | 255.1 | 16.3 |
-| 4 | 48 | 50 | 0.960 | 266.4 | 17.2 |
-| 5 | 50 | 50 | 1.000 | 187.8 | 12.1 |
-| 6 | 48 | 50 | 0.960 | 263.4 | 16.8 |
-| 7 | 50 | 50 | 1.000 | 273.4 | 17.5 |
-| 8 | 49 | 50 | 0.980 | 420.3 | 26.6 |
-| 9 | 44 | 50 | 0.880 | 342.6 | 21.8 |
-
-Failures:
-
-| Task | Episode | Env timestep | Chunks | Prompt |
-| ---: | ---: | ---: | ---: | --- |
-| 0 | 4 | 801 | 50 | put both the alphabet soup and the tomato sauce in the basket |
-| 1 | 19 | 801 | 50 | put both the cream cheese box and the butter in the basket |
-| 1 | 41 | 801 | 50 | put both the cream cheese box and the butter in the basket |
-| 2 | 14 | 801 | 50 | turn on the stove and put the moka pot on it |
-| 2 | 39 | 801 | 50 | turn on the stove and put the moka pot on it |
-| 3 | 36 | 801 | 50 | put the black bowl in the bottom drawer of the cabinet and close it |
-| 4 | 1 | 801 | 50 | put the white mug on the left plate and put the yellow and white mug on the right plate |
-| 4 | 26 | 801 | 50 | put the white mug on the left plate and put the yellow and white mug on the right plate |
-| 6 | 10 | 801 | 50 | put the white mug on the plate and put the chocolate pudding to the right of the plate |
-| 6 | 30 | 801 | 50 | put the white mug on the plate and put the chocolate pudding to the right of the plate |
-| 8 | 21 | 801 | 50 | put both moka pots on the stove |
-| 9 | 2 | 801 | 50 | put the yellow and white mug in the microwave and close it |
-| 9 | 10 | 801 | 50 | put the yellow and white mug in the microwave and close it |
-| 9 | 19 | 801 | 50 | put the yellow and white mug in the microwave and close it |
-| 9 | 29 | 801 | 50 | put the yellow and white mug in the microwave and close it |
-| 9 | 38 | 801 | 50 | put the yellow and white mug in the microwave and close it |
-| 9 | 45 | 801 | 50 | put the yellow and white mug in the microwave and close it |
-
-All failures above are horizon timeouts at `env.timestep == 801`; the merged
-run had zero runtime errors.
-
-Report only this canonical no-seed full run. Exclude
-`outputs/lingbot_va_posttrain_libero_long_libero10_full_20260429_invalid_seeded_per_chunk`,
-which was an invalid probe that used wrapper-level per-chunk reseeding.
-
-Prior local-checkpoint probes are no longer treated as the LingBot-VA baseline
-and should not be used in baseline tables.

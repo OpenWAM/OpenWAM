@@ -1,37 +1,20 @@
-# Open-WAM
+<h1 align="center">Open-WAM</h1>
 
-**OpenWAM Team, Stanford Vision and Learning Lab (SVL), Stanford University**
+<p align="center">
+  <a href="https://www.stanford.edu/"><img src="docs/assets/affiliations/stanford-wordmark.png" alt="Stanford University" height="45" hspace="14" valign="middle"></a>
+  <a href="https://ai.stanford.edu/"><img src="docs/assets/affiliations/stanford-ai-lab.jpg" alt="Stanford Artificial Intelligence Laboratory" height="74" hspace="14" valign="middle"></a>
+  <a href="https://svl.stanford.edu/"><img src="docs/assets/affiliations/stanford-svl.png" alt="Stanford Vision and Learning Lab" height="74" hspace="14" valign="middle"></a>
+</p>
 
-[![CI](https://github.com/DaivdYuan/OpenWAM-staging-public/actions/workflows/ci.yml/badge.svg)](https://github.com/DaivdYuan/OpenWAM-staging-public/actions/workflows/ci.yml)
-[![Documentation](https://img.shields.io/badge/docs-online-blue.svg)](https://daivdyuan.github.io/OpenWAM-staging-public/)
-[![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12-blue.svg)](https://www.python.org/)
-[![License: AGPL v3](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
-[![Status: alpha](https://img.shields.io/badge/status-alpha-orange.svg)](CHANGELOG.md)
+<p align="center"><strong>Open-WAM is developed by the OpenWAM Team in the <a href="https://svl.stanford.edu/">Stanford Vision and Learning Lab (SVL)</a>, a research group of the <a href="https://ai.stanford.edu/">Stanford Artificial Intelligence Laboratory (SAIL)</a> at <a href="https://www.stanford.edu/">Stanford University</a>.</strong></p>
 
-**Open-WAM is work from the
-[Stanford Vision and Learning Lab (SVL)](https://svl.stanford.edu/) at
-[Stanford University](https://www.stanford.edu/).** SVL is a research group of
-the [Stanford Artificial Intelligence Laboratory (SAIL)](https://ai.stanford.edu/).
-
-<table>
-  <tr>
-    <td align="center" width="34%">
-      <a href="https://www.stanford.edu/">
-        <img src="docs/assets/affiliations/stanford-wordmark.png" alt="Stanford University" width="210">
-      </a>
-    </td>
-    <td align="center" width="33%">
-      <a href="https://ai.stanford.edu/">
-        <img src="docs/assets/affiliations/stanford-ai-lab.jpg" alt="Stanford Artificial Intelligence Laboratory" width="230">
-      </a>
-    </td>
-    <td align="center" width="33%">
-      <a href="https://svl.stanford.edu/">
-        <img src="docs/assets/affiliations/stanford-svl.png" alt="Stanford Vision and Learning Lab" width="118">
-      </a>
-    </td>
-  </tr>
-</table>
+<p align="center">
+  <a href="https://github.com/DaivdYuan/OpenWAM-staging-public/actions/workflows/ci.yml"><img src="https://github.com/DaivdYuan/OpenWAM-staging-public/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://daivdyuan.github.io/OpenWAM-staging-public/"><img src="https://img.shields.io/badge/docs-online-blue.svg" alt="Documentation"></a>
+  <a href="https://www.python.org/"><img src="https://img.shields.io/badge/python-3.11%20%7C%203.12-blue.svg" alt="Python 3.11 or 3.12"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-blue.svg" alt="License: AGPL v3"></a>
+  <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/status-alpha-orange.svg" alt="Status: alpha"></a>
+</p>
 
 **Open-WAM is a research framework for training, comparing, and evaluating
 video-action world models for robot learning.** It separates model topology,
@@ -39,24 +22,19 @@ video/action conditioning, sequence semantics, visual execution, and action
 decoding so that controlled experiments share the same trainer and visual
 stack.
 
-[Documentation](https://daivdyuan.github.io/OpenWAM-staging-public/) |
-[Quickstart](docs/quickstart.md) |
-[Methods](docs/policy_architectures.md) |
-[Training and evaluation](docs/running_experiments.md) |
-[Extension SDK](docs/extension_sdk.md) |
-[Results](docs/m5_gjd_uva_libero10_comparison.md) |
-[Citation](#citation)
+<p align="center">
+  <a href="https://daivdyuan.github.io/OpenWAM-staging-public/">Documentation</a> &middot;
+  <a href="docs/quickstart.md">Quickstart</a> &middot;
+  <a href="docs/policy_architectures.md">Methods</a> &middot;
+  <a href="docs/running_experiments.md">Training and evaluation</a> &middot;
+  <a href="docs/extension_sdk.md">Extension SDK</a> &middot;
+  <a href="#citation">Citation</a>
+</p>
 
 > **Release status:** Open-WAM 0.1.0 is pre-release Linux research software.
 > The public CPU lifecycle and synthetic artifacts are self-contained. Large
 > benchmark runs use separately provisioned datasets and checkpoints described
 > by the [artifact contract](docs/artifacts.md).
-
-Development began in March 2026. This repository preserves the original commit
-ordering, dates, and contributor attribution. Before public distribution, the
-history was rewritten to remove private infrastructure paths, operational
-artifacts, and private run URLs; commit hashes therefore differ from the
-internal development repository. No commits were backdated.
 
 ## Research Scope
 
@@ -226,24 +204,6 @@ Benchmark adapters translate observations and actions. Sequence, attention,
 cache, and denoising semantics remain owned by the selected policy. Maintained
 LIBERO and GJD commands are listed in
 [Training and Inference](docs/running_experiments.md).
-
-## Recorded Results
-
-The repository records the following LIBERO-10 rollout result for a historical
-M5-labelled, canonical `dual_expert` GJD mode-token checkpoint at step 40,000:
-
-| System | Task-aligned episodes 0-4 | Full success@1 run |
-| --- | ---: | ---: |
-| Open-WAM dual-expert GJD | 45/50 (90.0%) | 461/500 (92.2%) |
-| Released UVA LIBERO baseline | 38/50 (76.0%) | not run |
-
-The 50-rollout comparison is task-aligned. Offline FDM/IDM measurements use
-each system's native image, target, action, and controller contracts and are
-not direct scalar rankings. Read the
-[result card](docs/m5_gjd_uva_libero10_comparison.md) for protocol details and
-limitations. Until the real Open-WAM checkpoint entry has a public URL,
-checksum, and license, these numbers are a recorded result rather than a
-turnkey public reproduction claim.
 
 ## Architecture
 

@@ -116,8 +116,8 @@ PYTHONPATH=src:outputs/lingbot_va_pydeps \
   "$LINGBOT_BASELINE_PYTHON" \
   -m baselines.lingbot_va.summarize_results \
   --results-jsonl \
-    outputs/lingbot_va_posttrain_libero_long_libero10_full_20260429/gpu0_tasks0_4/results.jsonl \
-    outputs/lingbot_va_posttrain_libero_long_libero10_full_20260429/gpu1_tasks5_9/results.jsonl \
+    outputs/lingbot_va_libero10/gpu0_tasks0_4/results.jsonl \
+    outputs/lingbot_va_libero10/gpu1_tasks5_9/results.jsonl \
   --expect-count 500 \
   --expect-benchmark libero_10 \
   --expect-task-ids 0:10 \
@@ -126,19 +126,8 @@ PYTHONPATH=src:outputs/lingbot_va_pydeps \
   --require-unique \
   --require-hf-revision 0e89d1e753019988aba484e8da2dc0810e264d9f \
   --require-model-root "$LINGBOT_VA_MODEL_ROOT" \
-  --output-dir outputs/lingbot_va_posttrain_libero_long_libero10_full_20260429/combined
+  --output-dir outputs/lingbot_va_libero10/combined
 ```
-
-## Result
-
-Canonical LIBERO-10 full evaluation completed on 2026-04-30:
-
-| Checkpoint | Successes | Episodes | Success rate | Mean env timestep | Mean chunks |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| `lingbot_va_posttrain_libero_long` | 483 | 500 | 0.966 | 288.2 | 18.4 |
-
-Task-level results and the 17 horizon-timeout failures are documented in
-[`docs/lingbot_va_baseline_libero10.md`](../../docs/lingbot_va_baseline_libero10.md).
 
 ## RobotWin Evaluation
 
@@ -185,14 +174,3 @@ Artifacts are written under the client `--save-root`:
 - `stseed-10000/visualization/<task>/*.mp4`: per-episode comparison videos
 - `eval_result/<task>/ACT/demo_clean/0/<timestamp>/_result.txt`: upstream result
   file
-
-Local 100-episode RobotWin validation completed on 2026-04-30:
-
-| Task | Successes | Episodes | Success rate |
-| --- | ---: | ---: | ---: |
-| `adjust_bottle` | 98 | 100 | 0.98 |
-| `place_mouse_pad` | 94 | 100 | 0.94 |
-
-These two tasks validate the wrapper path. They are not a full RobotWin suite
-run; the upstream multi-GPU launcher enumerates 50 unique tasks at 100 episodes
-per task.

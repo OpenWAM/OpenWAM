@@ -19,19 +19,15 @@ GOLDEN_PATH = (
     / "tests"
     / "characterization"
     / "goldens"
-    / "vta_external_idm_48of50_task0_ep0_seed0.json"
+    / "vta_external_idm_task0_ep0_seed0.json"
 )
 
 
 def test_vta_external_idm_golden_fixture_is_self_consistent() -> None:
     verify_checked_in_trace_fixture(GOLDEN_PATH)
     golden = json.loads(GOLDEN_PATH.read_text(encoding="utf-8"))
-    assert golden["source_evaluation"] == {
-        "successes": 48,
-        "episodes": 50,
-        "video_producer": "M5 VTA step 9700",
-        "action_consumer": "M5 GJD pure IDM CF60/real40 step 20000",
-    }
+    assert golden["golden_id"] == "vta_external_idm_task0_ep0_seed0"
+    assert golden["rollout_contract"]["action_route"] == "generated_video_then_action"
 
 
 def test_rollout_golden_rejects_action_drift(tmp_path: Path) -> None:
@@ -98,10 +94,10 @@ def test_transformer_dir_override_prefers_explicit_path(
 @pytest.mark.sim
 @pytest.mark.slow
 @pytest.mark.integration
-def test_real_vta_external_idm_rollout_matches_48of50_golden(
+def test_real_vta_external_idm_rollout_matches_golden(
     tmp_path: Path,
 ) -> None:
-    """Opt-in exact rollout gate for the frozen 48/50 composition route."""
+    """Opt-in exact rollout gate for the frozen VTA-to-IDM composition route."""
 
     if os.getenv("OPEN_WAM_RUN_VTA_IDM_GOLDEN") != "1":
         pytest.skip("Set OPEN_WAM_RUN_VTA_IDM_GOLDEN=1 to run.")

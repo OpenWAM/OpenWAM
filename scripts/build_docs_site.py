@@ -31,7 +31,6 @@ PUBLIC_MARKDOWN_PATHS = (
     Path("github_pages.md"),
     Path("index.md"),
     Path("lingbot_va_baseline_libero10.md"),
-    Path("m5_gjd_uva_libero10_comparison.md"),
     Path("policy_architectures.md"),
     Path("dual_expert_refactor_characterization.md"),
     Path("quickstart.md"),

@@ -1,13 +1,7 @@
 {
   "schema_version": 1,
-  "golden_id": "vta_external_idm_48of50_task0_ep0_seed0",
-  "description": "One successful OSMesa episode from the 48/50 LIBERO-10 VTA plus mixed CF60/real40 IDM evaluation.",
-  "source_evaluation": {
-    "successes": 48,
-    "episodes": 50,
-    "video_producer": "M5 VTA step 9700",
-    "action_consumer": "M5 GJD pure IDM CF60/real40 step 20000"
-  },
+  "golden_id": "vta_external_idm_task0_ep0_seed0",
+  "description": "One deterministic OSMesa episode for the LIBERO-10 VTA-to-IDM composition route.",
   "episode": {
     "benchmark": "libero_10",
     "task_id": 0,
@@ -92,7 +86,7 @@
         "count": 16,
         "dimension": 7,
         "sha256": "136382b499c41b2eaeed07b0b4b2e7d84bc36dd4f756b22d711a00ae7d3521a7",
-        "fixture": "vta_external_idm_48of50_task0_ep0_seed0.actions.jsonl"
+        "fixture": "vta_external_idm_task0_ep0_seed0.actions.jsonl"
       }
     },
     "full_rollout": {

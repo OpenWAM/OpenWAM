@@ -116,6 +116,5 @@ open-wam-eval \
   --max-batches 1
 ```
 
-Use real benchmark cards and experiment cards for claims about policy quality.
-For the June 2026 LIBERO-10 M5 GJD comparison against UVA, see
-[M5 GJD vs UVA LIBERO-10](m5_gjd_uva_libero10_comparison.md).
+Publish policy-quality claims through versioned experiment cards with current
+artifacts and complete evaluation contracts.

@@ -1,34 +1,16 @@
 # Open-WAM Documentation
 
-**Open-WAM is work from the
-[Stanford Vision and Learning Lab (SVL)](https://svl.stanford.edu/) at
-[Stanford University](https://www.stanford.edu/).** SVL is a research group of
-the [Stanford Artificial Intelligence Laboratory (SAIL)](https://ai.stanford.edu/).
+<p align="center">
+  <a href="https://www.stanford.edu/"><img src="assets/affiliations/stanford-wordmark.png" alt="Stanford University" height="45" hspace="14" valign="middle"></a>
+  <a href="https://ai.stanford.edu/"><img src="assets/affiliations/stanford-ai-lab.jpg" alt="Stanford Artificial Intelligence Laboratory" height="74" hspace="14" valign="middle"></a>
+  <a href="https://svl.stanford.edu/"><img src="assets/affiliations/stanford-svl.png" alt="Stanford Vision and Learning Lab" height="74" hspace="14" valign="middle"></a>
+</p>
 
-<table>
-  <tr>
-    <td align="center" width="34%">
-      <a href="https://www.stanford.edu/">
-        <img src="assets/affiliations/stanford-wordmark.png" alt="Stanford University" width="210">
-      </a>
-    </td>
-    <td align="center" width="33%">
-      <a href="https://ai.stanford.edu/">
-        <img src="assets/affiliations/stanford-ai-lab.jpg" alt="Stanford Artificial Intelligence Laboratory" width="230">
-      </a>
-    </td>
-    <td align="center" width="33%">
-      <a href="https://svl.stanford.edu/">
-        <img src="assets/affiliations/stanford-svl.png" alt="Stanford Vision and Learning Lab" width="118">
-      </a>
-    </td>
-  </tr>
-</table>
+<p align="center"><strong>Open-WAM is developed by the OpenWAM Team in the <a href="https://svl.stanford.edu/">Stanford Vision and Learning Lab (SVL)</a>, a research group of the <a href="https://ai.stanford.edu/">Stanford Artificial Intelligence Laboratory (SAIL)</a> at <a href="https://www.stanford.edu/">Stanford University</a>.</strong></p>
 
 Open-WAM is an extensible library for training and evaluating world action
 models while keeping the shared visual backbone stable. The public docs focus
 on reproducible usage, typed extension points, and benchmark contracts.
-Internal engineering notes are not published as part of this site.
 
 ## Start Here
 
@@ -47,7 +29,6 @@ Internal engineering notes are not published as part of this site.
 - [Cookbooks](cookbooks/new_policy_architecture.md): concrete recipes for adding new research components.
 - [Artifacts](artifacts.md): checkpoint manifests, local path aliases, and artifact cards.
 - [Reproducibility](reproducibility.md): result envelopes, experiment cards, and tracking policy.
-- [M5 GJD vs UVA LIBERO-10](m5_gjd_uva_libero10_comparison.md): task-aligned rollout comparison and route smoke.
 
 ## Contributor Operations
 

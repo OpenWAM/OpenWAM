@@ -26,7 +26,6 @@ nav:
       - Experiment Cards: experiment_cards.md
       - Reproducibility: reproducibility.md
       - LingBot-VA LIBERO-10 Baseline: lingbot_va_baseline_libero10.md
-      - M5 GJD vs UVA Results: m5_gjd_uva_libero10_comparison.md
       - Cards:
           - Card Index: cards/index.md
           - Public Tiny Synthetic: cards/public_tiny_synthetic_contract.md

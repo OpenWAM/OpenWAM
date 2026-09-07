@@ -81,7 +81,7 @@ uv run --extra train open-wam-sanity \
 | Train, resume, or evaluate a maintained model | [Training And Inference](running_experiments.md) |
 | Prepare benchmark data or simulator dependencies | [Benchmarks And Data](benchmarks.md) |
 | Add a dataset, policy, decoder, or simulator | [Extension SDK](extension_sdk.md) |
-| Reproduce a published result | [Experiment Cards](experiment_cards.md) and [Artifacts](artifacts.md) |
+| Record or reproduce an experiment | [Experiment Cards](experiment_cards.md) and [Artifacts](artifacts.md) |
 
 Inspect a resolved typed config without launching training:
 
