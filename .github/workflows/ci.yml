@@ -6,6 +6,9 @@ on:
     branches:
       - main
 
+permissions:
+  contents: read
+
 jobs:
   basic-pathways:
     runs-on: ubuntu-latest
