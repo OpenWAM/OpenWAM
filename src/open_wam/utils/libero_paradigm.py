@@ -23,15 +23,6 @@ _REMOVED_LIBERO_POLICY_CONFIG_REASONS = {
     "parallel_stream_libero_fastwam_first_frame": (
         "retired first-frame FastWAM experiment"
     ),
-    "parallel_stream_libero_joint_denoise_heng_compatible_contextual_fixed_geometry": (
-        "legacy contextual-subwindow parallel-stream joint config"
-    ),
-    "parallel_stream_libero_joint_denoise_heng_compatible_contextual_subwindow": (
-        "legacy contextual-subwindow parallel-stream joint config"
-    ),
-    "parallel_stream_libero_joint_denoise_heng_compatible_random_subwindow": (
-        "legacy random-subwindow parallel-stream joint config"
-    ),
 }
 
 _REMOVED_LIBERO_SCRIPT_REPLACEMENTS = {

@@ -1,0 +1,34 @@
+.openwam-affiliations {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  justify-content: center;
+  margin: 0.75rem auto 1.5rem;
+}
+
+.openwam-affiliations a {
+  align-items: center;
+  display: inline-flex;
+  line-height: 0;
+}
+
+.rst-content .openwam-affiliations img {
+  display: block;
+  height: auto;
+  margin: 0;
+  max-width: none;
+  object-fit: contain;
+}
+
+.rst-content .openwam-affiliation-wordmark {
+  width: 94px;
+}
+
+.rst-content .openwam-affiliation-sail {
+  width: 61px;
+}
+
+.rst-content .openwam-affiliation-svl {
+  width: 28px;
+}

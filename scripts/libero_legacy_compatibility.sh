@@ -7,14 +7,6 @@ open_wam_normalize_config_name() {
   config_name="${config_name%.yaml}"
   config_name="${config_name%.yml}"
   case "${config_name}" in
-    mot_libero_latent_local_*_heng_compatible)
-      config_name="${config_name#mot_libero_latent_local_}"
-      config_name="dual_expert_libero_${config_name%_heng_compatible}"
-      ;;
-    dual_expert_libero_latent_local_*_heng_compatible)
-      config_name="${config_name#dual_expert_libero_latent_local_}"
-      config_name="dual_expert_libero_${config_name%_heng_compatible}"
-      ;;
     mot_libero_latent_local*)
       config_name="dual_expert_libero_${config_name#mot_libero_}"
       ;;
@@ -26,17 +18,14 @@ open_wam_normalize_config_name() {
       ;;
     parallel_stream_libero_lingbot_m1_*)
       config_name="${config_name#parallel_stream_libero_lingbot_m1_}"
-      config_name="parallel_stream_libero_${config_name%_heng_compatible}"
+      config_name="parallel_stream_libero_${config_name}"
       ;;
     parallel_stream_robotwin_lingbot_m1_*)
       config_name="${config_name#parallel_stream_robotwin_lingbot_m1_}"
-      config_name="parallel_stream_robotwin_${config_name%_heng_compatible}"
+      config_name="parallel_stream_robotwin_${config_name}"
       ;;
-    parallel_stream_libero_lingbot_joint_denoise|parallel_stream_libero_lingbot_joint_denoise_heng_compatible)
+    parallel_stream_libero_lingbot_joint_denoise)
       config_name="parallel_stream_libero_joint"
-      ;;
-    parallel_stream_libero_lingbot_exact_heng_compatible)
-      config_name="parallel_stream_libero_video_then_action"
       ;;
   esac
   printf '%s\n' "${config_name}"
@@ -56,9 +45,6 @@ open_wam_removed_libero_policy_config_reason() {
     parallel_stream_libero_lingbot_exact_local) echo "retired local parallel-stream config" ;;
     parallel_stream_libero_current_frame_action_chunk) echo "retired current-frame action-chunk experiment" ;;
     parallel_stream_libero_fastwam_first_frame) echo "retired first-frame FastWAM experiment" ;;
-    parallel_stream_libero_joint_denoise_heng_compatible_contextual_fixed_geometry) echo "retired contextual-subwindow config" ;;
-    parallel_stream_libero_joint_denoise_heng_compatible_contextual_subwindow) echo "retired contextual-subwindow config" ;;
-    parallel_stream_libero_joint_denoise_heng_compatible_random_subwindow) echo "retired random-subwindow config" ;;
     *) return 1 ;;
   esac
 }

@@ -109,7 +109,7 @@ def build_all_characterization_fixtures(
             provenance={
                 "seed": seed,
                 "sample_index": sample_index,
-                "config_name": method.artifact_config_name,
+                "config_name": method.config_name,
                 "training_profile": profile.value,
                 "resolved_contract": _resolved_training_contract(config),
                 "source_metadata": sample.metadata,
@@ -225,7 +225,7 @@ def _build_gjd_fixtures(
             provenance={
                 "seed": seed + fixture_offset,
                 "sample_index": sample_index,
-                "config_name": method.artifact_config_name,
+                "config_name": method.config_name,
                 "source": source.value,
                 "mode": mode.value,
                 "drop_text": mode.is_conditional,

@@ -8,6 +8,8 @@ site_dir: site
 theme:
   name: readthedocs
   highlightjs: true
+extra_css:
+  - assets/stylesheets/openwam.css
 nav:
   - Home: index.md
   - Getting Started:

@@ -2532,13 +2532,13 @@ def test_parallel_generalist_joint_denoising_rejects_multi_sample_batches(
         load_experiment_config(config_path)
 
 
-def test_local_path_registry_overrides_sample_aliases(monkeypatch, tmp_path: Path) -> None:
+def test_local_path_registry_overrides_sample_values(monkeypatch, tmp_path: Path) -> None:
     local_paths_path = tmp_path / "local_paths.yaml"
     with local_paths_path.open("w", encoding="utf-8") as handle:
         yaml.safe_dump(
             {
                     "paths": {
-                        "datasets": {"libero_heng_root": "/tmp/custom_libero_root"},
+                        "datasets": {"libero_root": "/tmp/custom_libero_root"},
                         "models": {"lingbot_va_base": "/tmp/custom_model_root"},
                     }
             },
@@ -2555,7 +2555,7 @@ def test_local_path_registry_overrides_sample_aliases(monkeypatch, tmp_path: Pat
     assert config.backbone.transformer_subdir == "transformer"
 
 
-def test_local_path_registry_override_can_reference_sample_aliases(monkeypatch, tmp_path: Path) -> None:
+def test_local_path_registry_override_can_reference_sample_values(monkeypatch, tmp_path: Path) -> None:
     local_paths_path = tmp_path / "local_paths.yaml"
     with local_paths_path.open("w", encoding="utf-8") as handle:
         yaml.safe_dump(
@@ -2563,7 +2563,7 @@ def test_local_path_registry_override_can_reference_sample_aliases(monkeypatch, 
                 "paths": {
                     "datasets": {"libero_root": "/tmp/canonical_libero_root"},
                     "tests": {
-                        "derived_checkpoint": "${paths.datasets.libero_heng_root}/derived/checkpoint_step_1/transformer"
+                        "derived_checkpoint": "${paths.datasets.libero_root}/derived/checkpoint_step_1/transformer"
                     }
                 }
             },
@@ -2579,7 +2579,7 @@ def test_local_path_registry_override_can_reference_sample_aliases(monkeypatch, 
                 "name": "alias_reference_demo",
                 "data": {
                     "dataset_name": "robotwin",
-                    "local_root": "${paths.datasets.libero_heng_root}",
+                    "local_root": "${paths.datasets.libero_root}",
                 },
                 "backbone": {
                     "pretrained_model_name_or_path": "${paths.models.lingbot_va_base}",

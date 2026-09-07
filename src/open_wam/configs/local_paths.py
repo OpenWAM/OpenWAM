@@ -16,9 +16,6 @@ LOCAL_PATHS_ENV_VAR = "OPEN_WAM_LOCAL_PATHS"
 LOCAL_PATHS_SAMPLE_PATH = CONFIG_ROOT / "local_paths.sample.yaml"
 LOCAL_PATHS_PATH = REPO_ROOT / "configs" / "local_paths.yaml"
 _LOCAL_PATH_PATTERN = re.compile(r"\$\{paths\.([A-Za-z0-9_.-]+)\}")
-_LOCAL_PATH_KEY_ALIASES = {
-    "datasets.libero_heng_root": "datasets.libero_root",
-}
 
 
 def read_yaml_with_local_paths(path: str | Path, *, env: Mapping[str, str] | None = None) -> dict[str, Any]:
@@ -41,13 +38,7 @@ def load_local_path_registry(*, env: Mapping[str, str] | None = None) -> dict[st
     for path in _iter_local_path_files(resolved_env):
         raw = _read_registry_yaml(path)
         flattened = _flatten_registry(raw)
-        for old_key, canonical_key in _LOCAL_PATH_KEY_ALIASES.items():
-            if old_key in flattened and canonical_key not in flattened:
-                flattened[canonical_key] = flattened[old_key]
         raw_registry.update(flattened)
-    for old_key, canonical_key in _LOCAL_PATH_KEY_ALIASES.items():
-        if canonical_key in raw_registry:
-            raw_registry[old_key] = raw_registry[canonical_key]
     return _resolve_registry_aliases(raw_registry, source_path=LOCAL_PATHS_PATH)
 
 

@@ -7,7 +7,6 @@ import json
 import os
 import sys
 import time
-import warnings
 from pathlib import Path
 from typing import Any
 
@@ -46,15 +45,6 @@ LIBERO_OBS_KEYS = (
 
 
 def main() -> None:
-    if any(
-        argument == "--heng-repo-root" or argument.startswith("--heng-repo-root=")
-        for argument in sys.argv[1:]
-    ):
-        warnings.warn(
-            "--heng-repo-root is deprecated; use --reference-repo-root instead.",
-            FutureWarning,
-            stacklevel=2,
-        )
     parser = argparse.ArgumentParser(
         description=(
             "Run the LingBot reference LIBERO exact pipeline for one or more "
@@ -63,14 +53,9 @@ def main() -> None:
     )
     parser.add_argument(
         "--reference-repo-root",
-        "--heng-repo-root",
-        dest="reference_repo_root",
         type=Path,
         required=True,
-        help=(
-            "Source checkout containing the upstream wan_va package. "
-            "--heng-repo-root is a deprecated alias."
-        ),
+        help="Source checkout containing the upstream wan_va package.",
     )
     parser.add_argument("--benchmark", type=str, default="libero_10")
     parser.add_argument("--task-id", type=int, default=8)

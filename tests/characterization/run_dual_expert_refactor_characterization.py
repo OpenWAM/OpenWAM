@@ -14,7 +14,6 @@ from pathlib import Path
 from typing import Any
 
 import open_wam
-from open_wam.configs import canonical_config_stem
 
 from .dual_expert_refactor_artifacts import (
     EXACT_COMPARISON_TOLERANCE,
@@ -51,6 +50,9 @@ ALL_PHASES = DEFAULT_PHASES + INFRASTRUCTURE_PHASES
 VOLATILE_REPORT_KEYS = frozenset(
     {
         "checkpoint",
+        # Config display names changed during the architecture cleanup. The
+        # resolved semantic contract is compared separately and remains strict.
+        "config_name",
         "resolved_config_path",
         "cuda_peak_memory_bytes",
     }
@@ -1010,8 +1012,6 @@ def _comparison_projection(
             and _path[-2] in {"actual", "expected"}
         ):
             return canonical_checkpoint_contract_value(_path[-1], value)
-        if _path and _path[-1] == "config_name":
-            return canonical_config_stem(value)
         if (
             _path
             and _path[-1] in {"architecture", "policy_variant", "variant"}

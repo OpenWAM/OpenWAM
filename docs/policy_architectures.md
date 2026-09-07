@@ -155,12 +155,10 @@ Historical naming aliases are accepted at explicit compatibility boundaries:
 | --- | --- |
 | M1 / Method 1 | `parallel_stream` |
 | M5 / Method 5 / `mot` / MoT | `dual_expert` |
-| `*_heng_compatible` config | canonical architecture/program config alias |
 | `mot_decoder` | `dual_expert_decoder` |
 | `lingbot_parallel_decoder` | `parallel_stream_decoder` |
 
-Old config names and import paths continue to resolve with deprecation warnings.
-Checkpoint-local resolved configs can migrate the retired semantic fields that
+Checkpoint-local resolved configs can migrate retired semantic fields that
 map unambiguously onto the current contract through
 `checkpoint_runtime_compat=True`. This is not a guarantee that arbitrary
 historical M1 configs remain executable. New YAML, CLI overrides, and Python

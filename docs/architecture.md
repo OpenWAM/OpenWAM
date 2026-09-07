@@ -255,11 +255,11 @@ the cookbooks under `docs/cookbooks/`.
 
 ## Compatibility Policy
 
-Historical `mot`, `MoT*`, `M1`, `M5`, and `*_heng_compatible` names are input
-compatibility labels only. They resolve to canonical architecture names at the
-config, import, or launcher boundary. Maintained implementation code, new
-configs, run metadata, artifact manifests, and documentation use
-`parallel_stream`, `dual_expert`, and explicit program names.
+Historical `mot`, `MoT*`, `M1`, and `M5` names are input compatibility labels
+only. They resolve to canonical architecture names at explicit import or
+launcher boundaries. Maintained implementation code, configs, run metadata,
+artifact manifests, and documentation use `parallel_stream`, `dual_expert`, and
+explicit program names.
 
 Compatibility may change labels and metadata, but it must not change model
 numerics. The strict characterization suite compares outputs, losses,

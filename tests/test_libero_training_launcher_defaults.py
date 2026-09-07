@@ -790,16 +790,14 @@ def test_m5_gjd_mode_token_launcher_keeps_fullseg_w64_sampler() -> None:
 
 def test_legacy_config_name_normalization_is_isolated_from_training_launcher() -> None:
     assert _normalized_legacy_config_name(
-        "parallel_stream_libero_lingbot_exact_heng_compatible.yaml"
+        "parallel_stream_libero_lingbot_m1_video_then_action.yaml"
     ) == "parallel_stream_libero_video_then_action"
 
 
 def test_policy_program_aliases_only_normalize_identity() -> None:
     aliases = {
-        "mot_libero_latent_local_video_then_action_heng_compatible.yaml": (
-            "dual_expert_libero_video_then_action"
-        ),
-        "parallel_stream_libero_lingbot_m1_video_then_action_heng_compatible.yaml": (
+        "mot_libero_video_then_action.yaml": "dual_expert_libero_video_then_action",
+        "parallel_stream_libero_lingbot_m1_video_then_action.yaml": (
             "parallel_stream_libero_video_then_action"
         ),
         "/tmp/configs/experiments/parallel_stream_libero_joint.yml": (

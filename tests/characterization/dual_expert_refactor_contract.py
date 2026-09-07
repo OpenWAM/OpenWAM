@@ -29,18 +29,15 @@ class GJDTrainingMode(StrEnum):
 
 @dataclass(frozen=True)
 class DualExpertMethodSpec:
-    """Canonical runtime identity plus immutable schema-v1 oracle labels.
+    """Canonical runtime identity plus immutable artifact identifiers.
 
-    ``asset_id`` and ``artifact_config_name`` are persisted in the private
-    characterization manifests and goldens. They intentionally retain the
-    pre-release labels so architecture renames cannot rewrite the oracle.
+    ``asset_id`` is persisted in characterization manifests and goldens.
     ``public_id`` and ``config_name`` identify the maintained runtime surface.
     """
 
     asset_id: str
     public_id: str
     config_name: str
-    artifact_config_name: str
     coupling: str
     gjd_ablation: str | None = None
     mode_token: bool = False
@@ -83,48 +80,36 @@ NON_GJD_METHODS: tuple[DualExpertMethodSpec, ...] = (
         asset_id="mot_video_then_action",
         public_id="dual_expert_video_then_action",
         config_name="dual_expert_libero_video_then_action",
-        artifact_config_name="mot_libero_latent_local_video_then_action_heng_compatible",
         coupling="video_then_action",
     ),
     DualExpertMethodSpec(
         asset_id="mot_action_then_video",
         public_id="dual_expert_action_then_video",
         config_name="dual_expert_libero_action_then_video",
-        artifact_config_name="mot_libero_latent_local_action_then_video_heng_compatible",
         coupling="action_then_video",
     ),
     DualExpertMethodSpec(
         asset_id="mot_joint",
         public_id="dual_expert_joint",
         config_name="dual_expert_libero_joint",
-        artifact_config_name="mot_libero_latent_local_joint_heng_compatible",
         coupling="joint",
     ),
     DualExpertMethodSpec(
         asset_id="mot_decoupled_same_step",
         public_id="dual_expert_decoupled_same_step",
         config_name="dual_expert_libero_decoupled_same_step",
-        artifact_config_name=(
-            "mot_libero_latent_local_decoupled_same_step_heng_compatible"
-        ),
         coupling="decoupled_same_step",
     ),
     DualExpertMethodSpec(
         asset_id="mot_video_noisy_to_action",
         public_id="dual_expert_video_noisy_to_action",
         config_name="dual_expert_libero_video_noisy_to_action",
-        artifact_config_name=(
-            "mot_libero_latent_local_video_noisy_to_action_heng_compatible"
-        ),
         coupling="video_noisy_to_action",
     ),
     DualExpertMethodSpec(
         asset_id="mot_action_noisy_to_video",
         public_id="dual_expert_action_noisy_to_video",
         config_name="dual_expert_libero_action_noisy_to_video",
-        artifact_config_name=(
-            "mot_libero_latent_local_action_noisy_to_video_heng_compatible"
-        ),
         coupling="action_noisy_to_video",
     ),
 )
@@ -134,9 +119,6 @@ GJD_METHODS: tuple[DualExpertMethodSpec, ...] = (
         asset_id="gjd_vanilla",
         public_id="gjd_vanilla",
         config_name="dual_expert_libero_generalist_joint_denoising",
-        artifact_config_name=(
-            "mot_libero_latent_local_generalist_joint_denoising_heng_compatible"
-        ),
         coupling="joint",
         gjd_ablation="vanilla",
     ),
@@ -144,9 +126,6 @@ GJD_METHODS: tuple[DualExpertMethodSpec, ...] = (
         asset_id="gjd_pure_joint",
         public_id="gjd_pure_joint",
         config_name="dual_expert_libero_generalist_joint_denoising",
-        artifact_config_name=(
-            "mot_libero_latent_local_generalist_joint_denoising_heng_compatible"
-        ),
         coupling="joint",
         gjd_ablation="pure_joint",
     ),
@@ -154,9 +133,6 @@ GJD_METHODS: tuple[DualExpertMethodSpec, ...] = (
         asset_id="gjd_mode_token",
         public_id="gjd_mode_token",
         config_name="dual_expert_libero_generalist_joint_denoising",
-        artifact_config_name=(
-            "mot_libero_latent_local_generalist_joint_denoising_heng_compatible"
-        ),
         coupling="joint",
         gjd_ablation="mode_token",
         mode_token=True,

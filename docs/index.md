@@ -5,13 +5,11 @@
   <a href="https://svl.stanford.edu/"><strong>Stanford Vision and Learning Lab (SVL)</strong></a>.
 </p>
 
-<p align="center">
-  <a href="https://svl.stanford.edu/"><img src="assets/affiliations/stanford-svl.png" alt="Stanford Vision and Learning Lab" height="46" valign="middle"></a>
-  &nbsp;&nbsp;&nbsp;&nbsp;
-  <a href="https://ai.stanford.edu/"><img src="assets/affiliations/stanford-ai-lab.jpg" alt="Stanford Artificial Intelligence Laboratory" height="46" valign="middle"></a>
-  &nbsp;&nbsp;&nbsp;&nbsp;
-  <a href="https://www.stanford.edu/"><img src="assets/affiliations/stanford-wordmark.png" alt="Stanford University" height="28" valign="middle"></a>
-</p>
+<div class="openwam-affiliations" aria-label="Stanford affiliations">
+  <a href="https://www.stanford.edu/"><img class="openwam-affiliation-wordmark" src="assets/affiliations/stanford-wordmark.png" alt="Stanford University" height="20"></a>
+  <a href="https://ai.stanford.edu/"><img class="openwam-affiliation-sail" src="assets/affiliations/stanford-ai-lab.jpg" alt="Stanford Artificial Intelligence Laboratory" height="28"></a>
+  <a href="https://svl.stanford.edu/"><img class="openwam-affiliation-svl" src="assets/affiliations/stanford-svl.png" alt="Stanford Vision and Learning Lab" height="28"></a>
+</div>
 
 OpenWAM is an extensible library for training and evaluating world action
 models while keeping the shared visual backbone stable. The public docs focus

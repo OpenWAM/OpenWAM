@@ -24,11 +24,11 @@
 </p>
 
 <p align="center">
-  <a href="https://svl.stanford.edu/"><img src="docs/assets/affiliations/stanford-svl.png" alt="Stanford Vision and Learning Lab" height="46" valign="middle"></a>
-  &nbsp;&nbsp;&nbsp;&nbsp;
-  <a href="https://ai.stanford.edu/"><img src="docs/assets/affiliations/stanford-ai-lab.jpg" alt="Stanford Artificial Intelligence Laboratory" height="46" valign="middle"></a>
-  &nbsp;&nbsp;&nbsp;&nbsp;
-  <a href="https://www.stanford.edu/"><img src="docs/assets/affiliations/stanford-wordmark.png" alt="Stanford University" height="28" valign="middle"></a>
+  <a href="https://www.stanford.edu/"><img src="docs/assets/affiliations/stanford-wordmark.png" alt="Stanford University" height="20" valign="middle"></a>
+  &nbsp;&nbsp;&nbsp;
+  <a href="https://ai.stanford.edu/"><img src="docs/assets/affiliations/stanford-ai-lab.jpg" alt="Stanford Artificial Intelligence Laboratory" height="28" valign="middle"></a>
+  &nbsp;&nbsp;&nbsp;
+  <a href="https://svl.stanford.edu/"><img src="docs/assets/affiliations/stanford-svl.png" alt="Stanford Vision and Learning Lab" height="28" valign="middle"></a>
 </p>
 
 OpenWAM separates model topology, video/action conditioning, sequence
@@ -71,9 +71,8 @@ Standalone `forward_dynamics` and `inverse_dynamics` preserve the strict GJD
 conditional contract: one clean t0 latent in a singleton chunk, one-frame
 conditional history, no task text, and only the matching prediction loss.
 
-Historical M1, M5, MoT, `mot`, and `*_heng_compatible` names remain accepted
-at compatibility boundaries. New experiments use architecture and program
-names.
+Experiment configs and public commands use architecture and program names
+directly.
 
 ## Quick Start
 

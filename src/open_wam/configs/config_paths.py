@@ -43,74 +43,28 @@ EXPERIMENT_CONFIG_ALIASES = MappingProxyType(
         "mot_libero_video_noisy_to_action": "dual_expert_libero_video_noisy_to_action",
         "mot_libero_video_then_action": "dual_expert_libero_video_then_action",
         "mot_robotwin_smoke": "dual_expert_robotwin_smoke",
-        "mot_libero_latent_local_action_noisy_to_video_heng_compatible": (
-            "dual_expert_libero_action_noisy_to_video"
-        ),
-        "mot_libero_latent_local_action_then_video_heng_compatible": (
-            "dual_expert_libero_action_then_video"
-        ),
-        "mot_libero_latent_local_decoupled_same_step_heng_compatible": (
-            "dual_expert_libero_decoupled_same_step"
-        ),
-        "mot_libero_latent_local_generalist_joint_denoising_heng_compatible": (
-            "dual_expert_libero_generalist_joint_denoising"
-        ),
-        "mot_libero_latent_local_joint_heng_compatible": "dual_expert_libero_joint",
-        "mot_libero_latent_local_video_noisy_to_action_heng_compatible": (
-            "dual_expert_libero_video_noisy_to_action"
-        ),
-        "mot_libero_latent_local_video_then_action_heng_compatible": (
-            "dual_expert_libero_video_then_action"
-        ),
-        "parallel_stream_libero_lingbot_exact_heng_compatible": (
-            "parallel_stream_libero_video_then_action"
-        ),
         "parallel_stream_libero_lingbot_joint_denoise": (
-            "parallel_stream_libero_joint"
-        ),
-        "parallel_stream_libero_lingbot_joint_denoise_heng_compatible": (
             "parallel_stream_libero_joint"
         ),
         "parallel_stream_libero_lingbot_m1_action_noisy_to_video": (
             "parallel_stream_libero_action_noisy_to_video"
         ),
-        "parallel_stream_libero_lingbot_m1_action_noisy_to_video_heng_compatible": (
-            "parallel_stream_libero_action_noisy_to_video"
-        ),
         "parallel_stream_libero_lingbot_m1_action_then_video": (
-            "parallel_stream_libero_action_then_video"
-        ),
-        "parallel_stream_libero_lingbot_m1_action_then_video_heng_compatible": (
             "parallel_stream_libero_action_then_video"
         ),
         "parallel_stream_libero_lingbot_m1_decoupled_same_step": (
             "parallel_stream_libero_decoupled_same_step"
         ),
-        "parallel_stream_libero_lingbot_m1_decoupled_same_step_heng_compatible": (
-            "parallel_stream_libero_decoupled_same_step"
-        ),
         "parallel_stream_libero_lingbot_m1_generalist_joint_denoising": (
-            "parallel_stream_libero_generalist_joint_denoising"
-        ),
-        "parallel_stream_libero_lingbot_m1_generalist_joint_denoising_heng_compatible": (
             "parallel_stream_libero_generalist_joint_denoising"
         ),
         "parallel_stream_libero_lingbot_m1_joint": (
             "parallel_stream_libero_joint"
         ),
-        "parallel_stream_libero_lingbot_m1_joint_heng_compatible": (
-            "parallel_stream_libero_joint"
-        ),
         "parallel_stream_libero_lingbot_m1_video_noisy_to_action": (
             "parallel_stream_libero_video_noisy_to_action"
         ),
-        "parallel_stream_libero_lingbot_m1_video_noisy_to_action_heng_compatible": (
-            "parallel_stream_libero_video_noisy_to_action"
-        ),
         "parallel_stream_libero_lingbot_m1_video_then_action": (
-            "parallel_stream_libero_video_then_action"
-        ),
-        "parallel_stream_libero_lingbot_m1_video_then_action_heng_compatible": (
             "parallel_stream_libero_video_then_action"
         ),
     }

@@ -7362,12 +7362,6 @@ def test_retained_checkout_commands_require_machine_local_roots() -> None:
         "VA_Server",
     }.isdisjoint(_top_level_import_names(reference_runner))
 
-    legacy_runner = REPO_ROOT / "scripts/run_heng_libero_exact_visualization.py"
-    legacy_source = legacy_runner.read_text(encoding="utf-8")
-    assert "run_lingbot_reference_visualization.py" in legacy_source
-    assert "deprecated" in legacy_source
-
-
 def test_active_checkout_docs_and_tools_have_no_private_machine_defaults() -> None:
     excluded = {
         REPO_ROOT / "scripts/build_docs_site.py",

@@ -46,6 +46,7 @@ PUBLIC_ASSET_PATHS = (
     Path("assets/affiliations/stanford-ai-lab.jpg"),
     Path("assets/affiliations/stanford-svl.png"),
     Path("assets/affiliations/stanford-wordmark.png"),
+    Path("assets/stylesheets/openwam.css"),
 )
 _MARKDOWN_LINK = re.compile(r"!?\[[^\]]*\]\(\s*(?P<target><[^>]+>|[^)\s]+)")
 _REPOSITORY_REFERENCE = re.compile(

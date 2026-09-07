@@ -32,7 +32,7 @@ def test_canonical_config_alias_targets_exist_without_duplicate_legacy_yaml() ->
             yaml.safe_load(canonical_path.read_text(encoding="utf-8"))["name"]
             == canonical_stem
         )
-        assert "heng_compatible" not in canonical_stem
+        assert canonical_stem not in EXPERIMENT_CONFIG_ALIASES
 
     for old_stem, canonical_stem in EVALUATION_CONFIG_ALIASES.items():
         assert not (EVALUATION_ROOT / f"{old_stem}.yaml").exists()
@@ -42,11 +42,11 @@ def test_canonical_config_alias_targets_exist_without_duplicate_legacy_yaml() ->
             yaml.safe_load(canonical_path.read_text(encoding="utf-8"))["name"]
             == canonical_stem
         )
-        assert "heng_eval" not in canonical_stem
+        assert canonical_stem not in EVALUATION_CONFIG_ALIASES
 
 
 def test_retired_experiment_name_resolves_to_canonical_owner() -> None:
-    old_path = EXPERIMENT_ROOT / "mot_libero_latent_local_joint_heng_compatible.yaml"
+    old_path = EXPERIMENT_ROOT / "mot_libero_joint.yaml"
 
     with pytest.warns(DeprecatedConfigNameWarning, match="dual_expert_libero_joint"):
         resolved = resolve_config_path_alias(old_path)
@@ -59,7 +59,7 @@ def test_retired_experiment_name_resolves_to_canonical_owner() -> None:
 
 def test_retired_bare_config_name_resolves_through_training_cli() -> None:
     overrides = TrainCliOverrides(
-        config_name="mot_libero_latent_local_video_then_action_heng_compatible"
+        config_name="mot_libero_video_then_action"
     )
 
     with pytest.warns(
@@ -84,24 +84,22 @@ def test_overlapping_robotwin_alias_resolves_by_config_directory() -> None:
 
 
 def test_static_validation_accepts_retired_name_through_alias() -> None:
-    old_path = (
-        EXPERIMENT_ROOT / "parallel_stream_libero_lingbot_exact_heng_compatible.yaml"
-    )
+    old_path = EXPERIMENT_ROOT / "mot_libero_action_then_video.yaml"
 
     with pytest.warns(
-        DeprecatedConfigNameWarning, match="parallel_stream_libero_video_then_action"
+        DeprecatedConfigNameWarning, match="dual_expert_libero_action_then_video"
     ):
         report = validate_config_file(old_path, repo_root=REPO_ROOT)
 
     assert report.ok
     assert (
         report.source_path
-        == EXPERIMENT_ROOT / "parallel_stream_libero_video_then_action.yaml"
+        == EXPERIMENT_ROOT / "dual_expert_libero_action_then_video.yaml"
     )
 
 
 def test_existing_historical_copy_wins_over_alias(tmp_path: Path) -> None:
-    copied_path = tmp_path / "mot_libero_latent_local_joint_heng_compatible.yaml"
+    copied_path = tmp_path / "mot_libero_joint.yaml"
     copied_path.write_text("name: historical_copy\n", encoding="utf-8")
 
     assert resolve_config_path_alias(copied_path) == copied_path

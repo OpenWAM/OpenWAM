@@ -2038,7 +2038,6 @@ def test_comparison_projection_keeps_non_fingerprint_metrics_exact() -> None:
 
 def test_comparison_projection_normalizes_only_schema_v1_metadata() -> None:
     legacy = {
-        "config_name": "mot_libero_latent_local_joint_heng_compatible",
         "backend": {"policy_variant": "mot"},
         "checkpoint_provenance": {
             "contract_fields": [
@@ -2055,7 +2054,6 @@ def test_comparison_projection_normalizes_only_schema_v1_metadata() -> None:
         "loss": 1.25,
     }
     canonical = {
-        "config_name": "dual_expert_libero_joint",
         "backend": {"policy_variant": "dual_expert"},
         "checkpoint_provenance": {
             "contract_fields": [

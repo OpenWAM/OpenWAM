@@ -52,13 +52,9 @@ settings in YAML; for example, the 30-layer dual-expert LIBERO references are
 FSDP workloads characterized with four 48 GB GPUs. The process launcher, not
 `trainer.devices`, creates the distributed workers.
 
-Maintained config names describe the architecture and program and do not carry a
-contributor-specific compatibility suffix. Retired `*_heng_compatible` and
-`*_heng_eval` names still resolve to these canonical files with a deprecation
-warning, so old commands remain usable during migration. Existing copied YAMLs
-and checkpoint-local `resolved_config.yaml` files are loaded as written and are
-never redirected by the alias resolver. Use canonical names for all new runs,
-reports, and automation.
+Config names describe the architecture and program directly. Existing copied
+YAMLs and checkpoint-local `resolved_config.yaml` files are loaded as written;
+new runs, reports, and automation should use the canonical names above.
 
 ## Training
 
