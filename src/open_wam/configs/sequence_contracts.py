@@ -165,10 +165,35 @@ def validate_policy_data_sequence_contract(
         )
 
 
+def validate_variable_batching_source(config: ExperimentConfig) -> None:
+    if config.data.batching.mode is enums.BatchingMode.STRICT:
+        return
+    if config.trainer.batch_adapter is not enums.BatchAdapterName.LATENTS:
+        raise ValueError(
+            "Non-strict data.batching requires batch_adapter=latents."
+        )
+
+
 def validate_experiment_config_runtime_contract(
     config: ExperimentConfig,
 ) -> ExperimentConfig:
     """Validate cross-section runtime contracts after YAML and CLI overrides."""
+
+    batching = config.data.batching.mode
+    if batching.execution_mode not in config.policy_variant.supported_batching_modes:
+        raise ValueError(
+            f"policy_variant {config.policy_variant.name} does not support "
+            f"data.batching.mode={batching.value} for the configured program."
+        )
+    if batching is not enums.BatchingMode.STRICT:
+        validate_variable_batching_source(config)
+        if (
+            config.training.sample_loss_weight_mode
+            is not enums.SampleLossWeightMode.NONE
+        ):
+            raise ValueError(
+                "Variable-length batches require training.sample_loss_weight_mode=none."
+            )
 
     if isinstance(config.policy_variant, CausalVideoPredictionPolicyConfig):
         if config.action_decoder.name != enums.ActionDecoderName.VIDEO_ONLY:
@@ -295,12 +320,13 @@ def validate_experiment_config_runtime_contract(
         if isinstance(config.policy_variant, VideoActionPolicyConfig)
         else None
     )
-    if supports_dynamics_routing(policy_program) and (
-        int(config.data.train_batch_size) != 1
-        or int(config.data.val_batch_size) != 1
+    if (
+        config.data.batching.mode is enums.BatchingMode.STRICT
+        and supports_dynamics_routing(policy_program)
+        and (int(config.data.train_batch_size) != 1 or int(config.data.val_batch_size) != 1)
     ):
         raise ValueError(
-            "Generalist and conditional-dynamics programs currently require "
+            "Generalist and conditional-dynamics programs with strict batching require "
             "`data.train_batch_size = data.val_batch_size = 1` because one mode is applied per "
             "segment/forward pass and routed metadata is only unambiguous for rank-local batch size 1."
         )

@@ -250,44 +250,32 @@ def _build_chunked_temporal_attention_profile(
         .flatten()
     )
 
-    self_attention_mask = None
-    cross_attention_mask = None
-    if build_dense_masks:
-        q_seq = seq_ids[:, None]
-        kv_seq = seq_ids[None, :]
-        q_block_id = block_ids[:, None]
-        kv_block_id = block_ids[None, :]
-        q_noise = noise_ids[:, None]
-        kv_noise = noise_ids[None, :]
-        q_stream = stream_ids[:, None]
-        kv_stream = stream_ids[None, :]
-        q_chunk = chunk_ids[:, None]
-        kv_chunk = chunk_ids[None, :]
-        q_valid = token_valid_as_query[:, None]
-        kv_valid = token_valid_as_kv[None, :]
-        effective_frame_ids = _effective_frame_ids_for_singleton_cutoff(
-            layout.frame_id,
-            stream_ids,
-            prefix_condition_frames=prefix_condition_frames,
-            singleton_chunk_frame=singleton_chunk_frame,
-        )
-        q_effective_frame = effective_frame_ids[:, None]
-        kv_effective_frame = effective_frame_ids[None, :]
-        self_attention_mask = _build_chunked_self_attention_visibility(
-            q_seq=q_seq,
-            kv_seq=kv_seq,
-            q_block_id=q_block_id,
-            kv_block_id=kv_block_id,
-            q_chunk=q_chunk,
-            kv_chunk=kv_chunk,
-            q_noise=q_noise,
-            kv_noise=kv_noise,
-            q_stream=q_stream,
-            kv_stream=kv_stream,
-            q_effective_frame=q_effective_frame,
-            kv_effective_frame=kv_effective_frame,
-            q_valid=q_valid,
-            kv_valid=kv_valid,
+    effective_frame_ids = _effective_frame_ids_for_singleton_cutoff(
+        layout.frame_id,
+        stream_ids,
+        prefix_condition_frames=prefix_condition_frames,
+        singleton_chunk_frame=singleton_chunk_frame,
+    )
+
+    def self_visibility(
+        q_idx: torch.Tensor,
+        kv_idx: torch.Tensor,
+    ) -> torch.Tensor:
+        return _build_chunked_self_attention_visibility(
+            q_seq=seq_ids[q_idx],
+            kv_seq=seq_ids[kv_idx],
+            q_block_id=block_ids[q_idx],
+            kv_block_id=block_ids[kv_idx],
+            q_chunk=chunk_ids[q_idx],
+            kv_chunk=chunk_ids[kv_idx],
+            q_noise=noise_ids[q_idx],
+            kv_noise=noise_ids[kv_idx],
+            q_stream=stream_ids[q_idx],
+            kv_stream=stream_ids[kv_idx],
+            q_effective_frame=effective_frame_ids[q_idx],
+            kv_effective_frame=effective_frame_ids[kv_idx],
+            q_valid=token_valid_as_query[q_idx],
+            kv_valid=token_valid_as_kv[kv_idx],
             window_size=window_size,
             chunk_size=chunk_size,
             chunk_origin_frame=chunk_origin_frame,
@@ -297,10 +285,16 @@ def _build_chunked_temporal_attention_profile(
             history_stream_visibility=resolved_history_stream_visibility,
             conditional_history_policy=resolved_conditional_history_policy,
         )
+
+    self_attention_mask = None
+    cross_attention_mask = None
+    if build_dense_masks:
+        indices = torch.arange(layout.token_count, device=device)
+        self_attention_mask = self_visibility(indices[:, None], indices[None, :])
         cross_attention_mask = _build_chunked_cross_attention_visibility(
             q_seq=seq_ids[:, None],
             text_seq=text_seq_ids[None, :],
-            q_chunk=q_chunk,
+            q_chunk=chunk_ids[:, None],
             text_position=text_context_positions[None, :],
             q_valid=token_valid_as_query[:, None],
             base_text_token_count=resolved_base_text_token_count,
@@ -311,56 +305,18 @@ def _build_chunked_temporal_attention_profile(
     cross_attention_block_mask = None
     if build_flex_masks and create_block_mask is not None:
         seq_ids_flex = seq_ids.to(device=device, dtype=torch.long)
-        block_ids_flex = block_ids.to(device=device, dtype=torch.long)
         chunk_ids_flex = chunk_ids.to(device=device, dtype=torch.long)
-        noise_ids_flex = noise_ids.to(device=device, dtype=torch.long)
-        stream_ids_flex = stream_ids.to(device=device, dtype=torch.long)
-        effective_frame_ids_flex = _effective_frame_ids_for_singleton_cutoff(
-            layout.frame_id,
-            stream_ids,
-            prefix_condition_frames=prefix_condition_frames,
-            singleton_chunk_frame=singleton_chunk_frame,
-        ).to(device=device, dtype=torch.long)
         token_valid_as_query_flex = token_valid_as_query.to(
             device=device, dtype=torch.bool
         )
-        token_valid_as_kv_flex = token_valid_as_kv.to(device=device, dtype=torch.bool)
         text_seq_ids_flex = text_seq_ids.to(device=device, dtype=torch.long)
         text_context_positions_flex = text_context_positions.to(
             device=device, dtype=torch.long
         )
 
-        def self_mask_mod(
-            b: torch.Tensor,
-            h: torch.Tensor,
-            q_idx: torch.Tensor,
-            kv_idx: torch.Tensor,
-        ) -> torch.Tensor:
+        def self_mask_mod(b, h, q_idx, kv_idx):
             del b, h
-            return _build_chunked_self_attention_visibility(
-                q_seq=seq_ids_flex[q_idx],
-                kv_seq=seq_ids_flex[kv_idx],
-                q_block_id=block_ids_flex[q_idx],
-                kv_block_id=block_ids_flex[kv_idx],
-                q_chunk=chunk_ids_flex[q_idx],
-                kv_chunk=chunk_ids_flex[kv_idx],
-                q_noise=noise_ids_flex[q_idx],
-                kv_noise=noise_ids_flex[kv_idx],
-                q_stream=stream_ids_flex[q_idx],
-                kv_stream=stream_ids_flex[kv_idx],
-                q_effective_frame=effective_frame_ids_flex[q_idx],
-                kv_effective_frame=effective_frame_ids_flex[kv_idx],
-                q_valid=token_valid_as_query_flex[q_idx],
-                kv_valid=token_valid_as_kv_flex[kv_idx],
-                window_size=window_size,
-                chunk_size=chunk_size,
-                chunk_origin_frame=chunk_origin_frame,
-                prefix_condition_frames=prefix_condition_frames,
-                singleton_chunk_frame=singleton_chunk_frame,
-                current_block_coupling=current_block_coupling,
-                history_stream_visibility=resolved_history_stream_visibility,
-                conditional_history_policy=resolved_conditional_history_policy,
-            )
+            return self_visibility(q_idx, kv_idx)
 
         def cross_mask_mod(
             b: torch.Tensor,
@@ -414,6 +370,8 @@ def _build_chunked_temporal_attention_profile(
         cross_attention_mask=cross_attention_mask,
         self_attention_block_mask=self_attention_block_mask,
         cross_attention_block_mask=cross_attention_block_mask,
+        token_layout=layout,
+        self_attention_visibility=self_visibility,
         metadata={
             "batch_size": int(batch_size),
             "chunk_size": int(chunk_size),

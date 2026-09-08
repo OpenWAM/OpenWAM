@@ -2922,6 +2922,7 @@ def test_data_configuration_contracts_have_role_specific_owners() -> None:
             "ActionNormalizationConfig",
             "ActionSchemaConfig",
             "ActionTargetConfig",
+            "BatchingConfig",
             "CausalPrefixSuffixBucketConfig",
             "DataConfig",
             "DynamicsRoutingConfig",

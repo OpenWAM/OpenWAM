@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import replace
 
 import torch
@@ -11,6 +12,7 @@ from open_wam.configs import (
     TrainingConfig,
 )
 from open_wam.configs.backbone import SharedVideoTransformerConfig
+from open_wam.configs.enums import BatchingMode
 from open_wam.configs.policy_dual_expert import DualExpertPolicyConfig
 from open_wam.configs.policy_video_action import supports_video_conditioned_action
 from open_wam.contracts import SampleConstructionMetadata
@@ -440,6 +442,30 @@ class DualExpertPolicyVariant(VideoActionPolicyVariant):
             visual_tower=visual_tower,
             visual_outputs=visual_outputs,
             prepared_inputs=prepared_inputs,
+        )
+
+    def forward_train_batch(
+        self,
+        visual_tower: VisualTower,
+        visual_outputs: Sequence[VisualStageOutputs],
+        prepared_inputs: Sequence[PolicyPreparedInputs],
+        *,
+        batching_mode: BatchingMode | str,
+    ) -> tuple[PolicyTrainOutput, ...]:
+        """Keep per-sample preparation/loss semantics, sharing heavy token execution."""
+        return DualExpertPackedTrainingProgram(
+            config=self.config,
+            training_config=self.training_config,
+            conditioning=self.conditioning,
+            training_layout=self.training_layout,
+            action_expert=self.action_expert,
+            packed_block_stack=self.packed_block_stack,
+            initialize_action_expert=self._maybe_initialize_action_expert,
+        ).run_batch(
+            visual_tower=visual_tower,
+            visual_outputs=visual_outputs,
+            prepared_inputs=prepared_inputs,
+            batching_mode=batching_mode,
         )
 
     def _forward_infer_packed_coupling(

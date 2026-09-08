@@ -569,6 +569,29 @@ class ContextConditionLatentSource(StrEnum):
     SINGLE_FRAME_CONDITION_LATENT = "single_frame_condition_latent"
 
 
+class BatchingMode(StrEnum):
+    """Rank-local latent batching; bucket sorts nearby lengths then pads.
+
+    Bucket mode preserves the selected sampler indices, including replacement
+    multiplicity. It does not require identical lengths or discard rare lengths.
+    Packed mode additionally removes padding inside the transformer runtime.
+    """
+
+    STRICT = "strict"
+    BUCKET = "bucket"
+    PADDED = "padded"
+    PACKED = "packed"
+
+    @property
+    def execution_mode(self) -> BatchingMode:
+        """Resolve transport/execution independently of sample grouping."""
+        return BatchingMode.PADDED if self is BatchingMode.BUCKET else self
+
+    @property
+    def groups_by_length(self) -> bool:
+        return self is BatchingMode.BUCKET
+
+
 class HistoryStreamVisibility(StrEnum):
     """Which clean video/action history streams a query may attend."""
 

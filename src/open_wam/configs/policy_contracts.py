@@ -10,6 +10,7 @@ from .enums import (
     ActionDecoderName,
     AttachSite,
     BackboneImplementation,
+    BatchingMode,
     CausalVideoProgram,
     DynamicsObjective,
     PolicyVariantName,
@@ -47,6 +48,11 @@ class PolicyVariantConfig:
     name: PolicyVariantName
     hidden_size: int
     attach_site: AttachSite
+
+    @property
+    def supported_batching_modes(self) -> tuple[BatchingMode, ...]:
+        """Execution capabilities, available before model allocation."""
+        return (BatchingMode.STRICT,)
 
     @property
     def supported_backbone_implementations(

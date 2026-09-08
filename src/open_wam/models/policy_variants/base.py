@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Sequence
 
 import torch
 from torch import nn
 
 from open_wam.configs.policy_video_action import VideoActionPolicyConfig
+from open_wam.configs.enums import BatchingMode
 from open_wam.models.visual_tower import VisualStageOutputs, VisualTower
 
 from .contracts import (
@@ -209,6 +211,23 @@ class PolicyVariant(nn.Module, ABC):
         prepared_inputs: PolicyPreparedInputs,
     ) -> PolicyTrainOutput:
         """Run the train-time policy forward pass."""
+
+    def forward_train_batch(
+        self,
+        visual_tower: VisualTower,
+        visual_outputs: Sequence[VisualStageOutputs],
+        prepared_inputs: Sequence[PolicyPreparedInputs],
+        *,
+        batching_mode: BatchingMode,
+    ) -> tuple[PolicyTrainOutput, ...]:
+        """Execute isolated sequences together, returning one output per sample.
+
+        Consumers opt in explicitly; a loop of full-model forwards is not a
+        substitute for shared heavy-layer execution.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support variable-length batch execution."
+        )
 
     @abstractmethod
     def prepare_infer_state(

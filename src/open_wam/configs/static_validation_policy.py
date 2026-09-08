@@ -8,6 +8,7 @@ from typing import Any
 from .coercion import raw_enum_value
 from .enums import (
     ActionDecoderName,
+    BatchingMode,
     ContextConditionLatentSource,
     JointTimestepCoupling,
     PolicyVariantName,
@@ -272,7 +273,11 @@ def _validate_dynamics_route_contract(
             f"`program: {program.value}` requires at least one positive route so "
             "every sample uses the target-only t0 contract.",
         )
-    if supports_dynamics_routing(program):
+    batching = data.get("batching", {})
+    strict_batching = not isinstance(batching, Mapping) or raw_enum_value(
+        batching.get("mode", BatchingMode.STRICT.value)
+    ) == BatchingMode.STRICT.value
+    if supports_dynamics_routing(program) and strict_batching:
         for key in ("train_batch_size", "val_batch_size"):
             raw_batch_size = data.get(key, 2)
             try:

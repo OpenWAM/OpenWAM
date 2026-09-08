@@ -1,9 +1,13 @@
 from __future__ import annotations
 
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, RandomSampler, SequentialSampler
 from torch.utils.data.distributed import DistributedSampler
 
-from open_wam.configs import BatchAdapterName, ExperimentConfig
+from open_wam.configs import (
+    BatchAdapterName,
+    BatchingMode,
+    ExperimentConfig,
+)
 from open_wam.configs.enums import SampleOrderMode, SampleWeightMode
 from open_wam.configs.policy_video_action import resolve_fixed_conditioning_mode
 from open_wam.data import (
@@ -17,6 +21,7 @@ from open_wam.data import (
     resolve_dynamics_dataset_plan,
 )
 from open_wam.data.artifacts import DatasetArtifactStatus
+from open_wam.data.latent_batching import LatentBatchCollator, LengthBucketSampler
 from open_wam.data.registries import preflight_dataset_artifacts
 
 
@@ -25,9 +30,11 @@ def build_runtime_dataloaders(config: ExperimentConfig, strategy) -> tuple[DataL
         _validate_dynamics_source_sampling(config)
     if config.trainer.batch_adapter == BatchAdapterName.LATENTS:
         if _uses_dynamics_routing(config):
-            if config.data.train_batch_size != 1 or config.data.val_batch_size != 1:
+            if config.data.batching.mode is BatchingMode.STRICT and (
+                config.data.train_batch_size != 1 or config.data.val_batch_size != 1
+            ):
                 raise ValueError(
-                    "Active `data.dynamics_routing.routes` currently require "
+                    "Active `data.dynamics_routing.routes` with strict batching require "
                     "`data.train_batch_size = data.val_batch_size = 1` because routed sources may have "
                     "different temporal lengths and dynamics-routed runtimes use one objective per segment."
                 )
@@ -77,6 +84,21 @@ def build_runtime_dataloaders(config: ExperimentConfig, strategy) -> tuple[DataL
                 shuffle=False,
                 num_replicas=strategy.world_size,
                 rank=strategy.rank,
+            )
+        if config.data.batching.mode is not BatchingMode.STRICT:
+            return (
+                _build_variable_length_loader(
+                    config, train_dataset, train_sampler,
+                    batch_size=config.data.train_batch_size,
+                    shuffle=train_loader_spec.shuffle,
+                    train=True,
+                ),
+                _build_variable_length_loader(
+                    config, val_dataset, val_sampler,
+                    batch_size=config.data.val_batch_size,
+                    shuffle=val_loader_spec.shuffle,
+                    train=False,
+                ),
             )
         return (
             DataLoader(
@@ -132,6 +154,49 @@ def build_runtime_dataloaders(config: ExperimentConfig, strategy) -> tuple[DataL
             sampler=val_sampler,
             collate_fn=collate_wam_samples,
         ),
+    )
+
+
+
+
+def _build_variable_length_loader(
+    config: ExperimentConfig, dataset, sampler, *, batch_size: int, shuffle: bool, train: bool,
+) -> DataLoader:
+    batching = config.data.batching
+    drop_last = bool(train and batching.drop_last_train)
+    if batch_size <= 0:
+        raise ValueError("Latent batching requires a positive rank-local batch size.")
+    if sampler is None:
+        sampler = RandomSampler(dataset) if shuffle else SequentialSampler(dataset)
+    if drop_last and len(sampler) < batch_size:
+        raise ValueError("Rank-local sample count is smaller than one full training batch.")
+    if train and not drop_last and len(sampler) % batch_size:
+        raise ValueError(
+            "Variable-length training requires fixed rank-local sample counts; "
+            "enable data.batching.drop_last_train for an incomplete final batch."
+        )
+    if batching.mode.groups_by_length:
+        if not getattr(sampler, "supports_reordering", True):
+            raise ValueError(
+                "Bucket batching cannot reorder this source sampler; use padded or packed."
+            )
+        length_hint = getattr(dataset, "batching_length_hint", None)
+        if not callable(length_hint):
+            raise ValueError("Bucket batching requires a dataset batching_length_hint(index).")
+        sampler = LengthBucketSampler(
+            sampler,
+            length_for_index=length_hint,
+            batch_size=batch_size,
+            pool_size=batching.bucket_pool_size,
+            drop_last=drop_last,
+        )
+    return DataLoader(
+        dataset,
+        batch_size=batch_size,
+        sampler=sampler,
+        num_workers=config.data.num_workers,
+        collate_fn=LatentBatchCollator(batching),
+        drop_last=drop_last,
     )
 
 

@@ -6,6 +6,7 @@ from dataclasses import dataclass, replace
 import torch
 from torch import nn
 
+from open_wam.configs.enums import BatchingMode
 from open_wam.data import (
     CanonicalVideoBatch,
     ConfiguredCanonicalVideoPreprocessor,
@@ -38,6 +39,7 @@ class VariantPipelineTrainOutput:
     visual_outputs: VisualStageOutputs | None
     policy_output: PolicyTrainOutput
     decoder_output: ActionDecoderTrainOutput
+    sample_outputs: tuple[VariantPipelineTrainOutput, ...] = ()
 
 
 @dataclass
@@ -323,6 +325,21 @@ class VariantPipeline(nn.Module):
         text_context: torch.Tensor | None = None,
         negative_text_context: torch.Tensor | None = None,
     ) -> VariantPipelineTrainOutput:
+        batching_mode = BatchingMode(
+            batch.extra.get("batching_mode", BatchingMode.STRICT)
+        )
+        if batching_mode is not BatchingMode.STRICT:
+            from .variable_batching import forward_variable_latent_batch
+
+            return forward_variable_latent_batch(
+                self,
+                video_latents,
+                batch,
+                batching_mode=batching_mode,
+                canonical_video=canonical_video,
+                text_context=text_context,
+                negative_text_context=negative_text_context,
+            )
         visual_outputs = self.prepare_visual_outputs_from_latents(
             video_latents,
             task_text=batch.extra.get("task_text"),

@@ -39,39 +39,24 @@ def _video_token_grid_for_latents(visual_tower, video_latents: torch.Tensor):
     )
 
 
-def forward_dual_expert_packed_coupling_denoise(
+def prepare_packed_video_inputs(
     *,
     visual_tower,
     noisy_video_latents: torch.Tensor,
     clean_video_latents: torch.Tensor,
     noisy_video_timesteps: torch.Tensor,
     clean_video_timesteps: torch.Tensor | None,
-    action_expert: DualExpertActionExpert,
-    packed_action_pre: DualExpertActionPreprocessOutput,
-    attention_profile: PreparedAttentionProfile,
     text_context: torch.Tensor | None,
     frame_start: int = 0,
-    use_activation_checkpointing: bool = False,
-    packed_block_stack=None,
-    prefer_flex_attention: bool = True,
-    video_cross_attention_mask: torch.Tensor | None = None,
     video_hidden_context: torch.Tensor | None = None,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """Run dual-expert's native four-stream packed coupling forward.
-
-    Video/action experts execute separate blocks, but every block attends over
-    concatenated K/V from ``[V_noisy, V_clean, A_noisy, A_clean]`` using the
-    supplied coupling mask. Returns the V_noisy flow and packed action hidden
-    states; callers take loss on the first action half.
-    """
-
+) -> dict[str, torch.Tensor]:
+    """Prepare the same visual stream for single-sequence and batched execution."""
     if noisy_video_latents.shape != clean_video_latents.shape:
         raise ValueError(
             "dual-expert packed coupling expects matching noisy/clean video shapes, "
             f"got noisy={tuple(noisy_video_latents.shape)}, clean={tuple(clean_video_latents.shape)}."
         )
     batch_size = noisy_video_latents.shape[0]
-    _, _, num_frames, latent_height, latent_width = noisy_video_latents.shape
     effective_clean_video_timesteps = (
         torch.zeros_like(noisy_video_timesteps) if clean_video_timesteps is None else clean_video_timesteps
     )
@@ -129,6 +114,84 @@ def forward_dual_expert_packed_coupling_denoise(
             device=video_hidden_states.device,
             dtype=video_hidden_states.dtype,
         )
+    video_prepared["hidden_states"] = video_hidden_states
+    return video_prepared
+
+
+def finish_packed_video(
+    visual_tower,
+    video_hidden_states: torch.Tensor,
+    video_temb: torch.Tensor,
+    latent_shape: tuple[int, ...],
+) -> torch.Tensor:
+    """Project transformer outputs into the original noisy-video latent extent."""
+    batch_size, _, num_frames, latent_height, latent_width = latent_shape
+    shift, scale = select_chunk_slices(
+        materialize_runtime_parameter(
+            visual_tower.core.scale_shift_table,
+            device=video_temb.device,
+            dtype=video_temb.dtype,
+        )[None]
+        + video_temb[:, :, None, ...],
+        2,
+    )
+    shift = shift.to(video_hidden_states.device)
+    scale = scale.to(video_hidden_states.device)
+    video_hidden_states = (
+        layer_norm_with_materialized_params(visual_tower.core.norm_out, video_hidden_states.float())
+        * (1.0 + scale)
+        + shift
+    ).type_as(video_hidden_states)
+    packed_video_flow = linear_with_materialized_params(visual_tower.core.proj_out, video_hidden_states)
+    packed_video_flow = unpatchify_video_sequence(
+        visual_tower.core.patch_size,
+        packed_video_flow,
+        num_frames * 2,
+        latent_height,
+        latent_width,
+        batch_size=batch_size,
+    )
+    video_flow = packed_video_flow[:, :, :num_frames].contiguous()
+    return video_flow
+
+
+def forward_dual_expert_packed_coupling_denoise(
+    *,
+    visual_tower,
+    noisy_video_latents: torch.Tensor,
+    clean_video_latents: torch.Tensor,
+    noisy_video_timesteps: torch.Tensor,
+    clean_video_timesteps: torch.Tensor | None,
+    action_expert: DualExpertActionExpert,
+    packed_action_pre: DualExpertActionPreprocessOutput,
+    attention_profile: PreparedAttentionProfile,
+    text_context: torch.Tensor | None,
+    frame_start: int = 0,
+    use_activation_checkpointing: bool = False,
+    packed_block_stack=None,
+    prefer_flex_attention: bool = True,
+    video_cross_attention_mask: torch.Tensor | None = None,
+    video_hidden_context: torch.Tensor | None = None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Run dual-expert's native four-stream packed coupling forward.
+
+    Video/action experts execute separate blocks, but every block attends over
+    concatenated K/V from ``[V_noisy, V_clean, A_noisy, A_clean]`` using the
+    supplied coupling mask. Returns the V_noisy flow and packed action hidden
+    states; callers take loss on the first action half.
+    """
+
+    video_prepared = prepare_packed_video_inputs(
+        visual_tower=visual_tower,
+        noisy_video_latents=noisy_video_latents,
+        clean_video_latents=clean_video_latents,
+        noisy_video_timesteps=noisy_video_timesteps,
+        clean_video_timesteps=clean_video_timesteps,
+        text_context=text_context,
+        frame_start=frame_start,
+        video_hidden_context=video_hidden_context,
+    )
+    video_hidden_states = video_prepared["hidden_states"]
     video_text_hidden_states = video_prepared["text_hidden_states"]
     video_rotary_emb = video_prepared["rotary_emb"]
     video_temb = video_prepared["temb"]
@@ -310,32 +373,9 @@ def forward_dual_expert_packed_coupling_denoise(
                         action_block,
                     )
 
-    shift, scale = select_chunk_slices(
-        materialize_runtime_parameter(
-            visual_tower.core.scale_shift_table,
-            device=video_temb.device,
-            dtype=video_temb.dtype,
-        )[None]
-        + video_temb[:, :, None, ...],
-        2,
+    video_flow = finish_packed_video(
+        visual_tower, video_hidden_states, video_temb, tuple(noisy_video_latents.shape)
     )
-    shift = shift.to(video_hidden_states.device)
-    scale = scale.to(video_hidden_states.device)
-    video_hidden_states = (
-        layer_norm_with_materialized_params(visual_tower.core.norm_out, video_hidden_states.float())
-        * (1.0 + scale)
-        + shift
-    ).type_as(video_hidden_states)
-    packed_video_flow = linear_with_materialized_params(visual_tower.core.proj_out, video_hidden_states)
-    packed_video_flow = unpatchify_video_sequence(
-        visual_tower.core.patch_size,
-        packed_video_flow,
-        num_frames * 2,
-        latent_height,
-        latent_width,
-        batch_size=batch_size,
-    )
-    video_flow = packed_video_flow[:, :, :num_frames].contiguous()
     return video_flow, action_hidden_states
 
 

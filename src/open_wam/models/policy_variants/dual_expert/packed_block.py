@@ -43,6 +43,7 @@ def _native_attention(
     *,
     rotary_emb: torch.Tensor | None = None,
     attention_mask: torch.Tensor | None = None,
+    block_mask: Any | None = None,
 ) -> torch.Tensor:
     query = attn.norm_q(attn.to_q(q.contiguous())).unflatten(2, (attn.heads, -1))
     key = attn.norm_k(attn.to_k(k.contiguous())).unflatten(2, (attn.heads, -1))
@@ -58,14 +59,22 @@ def _native_attention(
                 "DualExpert packed block cross-attention mask must have shape [B, Q, K] or [B, H, Q, K], "
                 f"got {tuple(attention_mask.shape)}."
             )
-    hidden_states = F.scaled_dot_product_attention(
-        query.transpose(1, 2).contiguous(),
-        key.transpose(1, 2).contiguous(),
-        value.transpose(1, 2).contiguous(),
-        attn_mask=attention_mask,
-        dropout_p=0.0,
-        is_causal=False,
-    )
+    if block_mask is not None:
+        hidden_states = apply_attention_backend(
+            query=query.transpose(1, 2).contiguous(),
+            key=key.transpose(1, 2).contiguous(),
+            value=value.transpose(1, 2).contiguous(),
+            block_mask=block_mask,
+        )
+    else:
+        hidden_states = F.scaled_dot_product_attention(
+            query.transpose(1, 2).contiguous(),
+            key.transpose(1, 2).contiguous(),
+            value.transpose(1, 2).contiguous(),
+            attn_mask=attention_mask,
+            dropout_p=0.0,
+            is_causal=False,
+        )
     hidden_states = hidden_states.transpose(1, 2).flatten(2, 3)
     return attn.to_out[1](attn.to_out[0](hidden_states))
 
@@ -112,6 +121,7 @@ def _apply_post_attention_native(
     c_scale_msa: torch.Tensor,
     c_gate_msa: torch.Tensor,
     cross_attention_mask: torch.Tensor | None = None,
+    cross_attention_block_mask: Any | None = None,
 ) -> torch.Tensor:
     hidden_states = (hidden_states.float() + mixed_attn_output.float() * gate_msa).type_as(hidden_states)
     norm_hidden_states = block.norm2(hidden_states.float()).type_as(hidden_states)
@@ -121,6 +131,7 @@ def _apply_post_attention_native(
         encoder_hidden_states,
         encoder_hidden_states,
         attention_mask=cross_attention_mask,
+        block_mask=cross_attention_block_mask,
     )
     norm_hidden_states = (block.norm3(hidden_states.float()) * (1.0 + c_scale_msa) + c_shift_msa).type_as(hidden_states)
     ff_output = block.ffn(norm_hidden_states)
@@ -156,6 +167,8 @@ class DualExpertPackedBlock(nn.Module):
         action_text_hidden_states: torch.Tensor,
         video_cross_attention_mask: torch.Tensor | None = None,
         action_cross_attention_mask: torch.Tensor | None = None,
+        video_cross_attention_block_mask: Any | None = None,
+        action_cross_attention_block_mask: Any | None = None,
         block_mask: Any | None = None,
         flex_kernel_options: dict[str, Any] | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
@@ -239,6 +252,7 @@ class DualExpertPackedBlock(nn.Module):
             c_scale_msa=video_attn_inputs["c_scale_msa"],
             c_gate_msa=video_attn_inputs["c_gate_msa"],
             cross_attention_mask=video_cross_attention_mask,
+            cross_attention_block_mask=video_cross_attention_block_mask,
         )
         new_action = _apply_post_attention_native(
             self.action_block,
@@ -250,6 +264,7 @@ class DualExpertPackedBlock(nn.Module):
             c_scale_msa=action_attn_inputs["c_scale_msa"],
             c_gate_msa=action_attn_inputs["c_gate_msa"],
             cross_attention_mask=action_cross_attention_mask,
+            cross_attention_block_mask=action_cross_attention_block_mask,
         )
         return new_video, new_action
 

@@ -1693,6 +1693,16 @@ def test_hierarchical_fixed_segment_rejects_multi_sample_compact_batches(tmp_pat
     with pytest.raises(ValueError, match="compact boundary sampling"):
         build_train_val_latent_datasets(config.data)
 
+    from open_wam.configs import BatchingConfig
+    from open_wam.data.latent_batching import LatentBatchCollator
+
+    train, _ = build_train_val_latent_datasets(replace(
+        config.data, batching=BatchingConfig(mode="padded"),
+    ))
+    batch = LatentBatchCollator(BatchingConfig(mode="padded"))([train[0], train[1]])
+    assert len(batch.sequence_lengths) == 2
+    assert train.batching_length_hint(0) == 4
+
 
 def test_hierarchical_fixed_segment_randomizes_chunk_geometry(tmp_path: Path) -> None:
     repo_root = tmp_path / "robotwin_local_latent_hierarchical_fixed_segment_random_chunk"

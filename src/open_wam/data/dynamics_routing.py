@@ -374,6 +374,9 @@ class DynamicsSourceViewDataset(Dataset[LatentWAMSample]):
 class DynamicsRoutingDistributedSampler(PaddedEpochOffsetDistributedSampler):
     """Epoch-offset sampler for coordinated source/objective route draws."""
 
+    # Reordering rank-local draws would break per-position objective coordination.
+    supports_reordering = False
+
     def __init__(
         self,
         dataset: DynamicsRoutingDataset,

@@ -108,6 +108,35 @@ class _BalancedDrawKeyDataset(_RecordingDrawKeyDataset):
         return self._balanced_indices
 
 
+def test_microbatches_preserve_per_position_distributed_routes():
+    from open_wam.configs import BatchingConfig
+    from open_wam.data.latent_batching import LatentBatchCollator
+    from torch.utils.data import DataLoader
+
+    source = _RecordingDrawKeyDataset(length=5)
+    per_rank = []
+    for rank in range(4):
+        dataset = _routing_dataset(
+            real_dataset=source, counterfactual_dataset=source,
+            routing_config=_routing_config(length_multiplier=3), split="train",
+        )
+        sampler = dataset.build_train_sampler(world_size=4, rank=rank)
+        sampler.set_epoch(1)
+        expected = [dataset[index].metadata[DYNAMICS_ROUTING_BUCKET_METADATA_KEY] for index in sampler]
+        loader = DataLoader(
+            dataset, batch_size=2, sampler=sampler,
+            collate_fn=LatentBatchCollator(BatchingConfig(mode="packed")),
+        )
+        actual = [
+            [item[DYNAMICS_ROUTING_BUCKET_METADATA_KEY] for item in batch.metadata]
+            for batch in loader
+        ]
+        assert [value for batch in actual for value in batch] == expected
+        assert not sampler.supports_reordering
+        per_rank.append(actual)
+    assert all(value == per_rank[0] for value in per_rank)
+
+
 def _routing_dataset(
     *,
     real_dataset: Dataset[LatentWAMSample],

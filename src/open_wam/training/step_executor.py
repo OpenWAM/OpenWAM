@@ -7,6 +7,7 @@ from typing import Protocol
 import torch
 
 from open_wam.configs import BatchAdapterName, SampleLossWeightMode, TrainingConfig
+from open_wam.configs.enums import BatchingMode
 from open_wam.data import (
     LatentWAMBatch,
     WAMBatch,
@@ -136,12 +137,16 @@ def repeat_invalid_tail_view_frames(
             if valid_count <= 0 or valid_count >= num_frames:
                 continue
             tail = repaired[batch_index, valid_count - 1 : valid_count]
-            repaired[batch_index, valid_count:] = tail.expand_as(repaired[batch_index, valid_count:])
+            repaired[batch_index, valid_count:] = tail.expand_as(
+                repaired[batch_index, valid_count:]
+            )
         repaired_views[name] = repaired
     return repaired_views
 
 
-def _valid_video_frame_counts(metadata: tuple[dict[str, object], ...]) -> tuple[int, ...] | None:
+def _valid_video_frame_counts(
+    metadata: tuple[dict[str, object], ...],
+) -> tuple[int, ...] | None:
     if not metadata:
         return None
     counts: list[int] = []
@@ -155,11 +160,13 @@ def _valid_video_frame_counts(metadata: tuple[dict[str, object], ...]) -> tuple[
 class LatentBatchAdapter:
     """Prepare latent-first batches for the shared pipeline."""
 
-    def move_to_device(self, batch: LatentWAMBatch, device: torch.device) -> LatentWAMBatch:
+    def move_to_device(
+        self, batch: LatentWAMBatch, device: torch.device
+    ) -> LatentWAMBatch:
         return move_latent_wam_batch_to_device(batch, device)
 
     def prepare(self, batch: LatentWAMBatch) -> PreparedTrainInput:
-        return PreparedTrainInput(
+        prepared = PreparedTrainInput(
             video_latents=batch.video_latents,
             canonical_video=batch.canonical_video,
             text_context=batch.text_context,
@@ -178,6 +185,14 @@ class LatentBatchAdapter:
                 proprio_context_frames_mask=batch.proprio_context_frames_mask,
             ),
         )
+        mode = BatchingMode(batch.batching_mode)
+        if mode is not BatchingMode.STRICT:
+            prepared.policy_batch.extra.update(
+                batching_mode=mode,
+                sequence_lengths=batch.sequence_lengths,
+                tensor_lengths=batch.tensor_lengths,
+            )
+        return prepared
 
 
 def build_batch_adapter(name: BatchAdapterName | str) -> BatchAdapter:
@@ -204,6 +219,18 @@ class PipelineTrainStepExecutor:
 
     def forward_train(self, batch) -> TrainStepResult:
         prepared = self.batch_adapter.prepare(batch)
+        batching_mode = BatchingMode(
+            prepared.policy_batch.extra.get("batching_mode", BatchingMode.STRICT)
+        )
+        if (
+            batching_mode is not BatchingMode.STRICT
+            and self.training_config.sample_loss_weight_mode
+            is not SampleLossWeightMode.NONE
+        ):
+            raise ValueError(
+                "Variable-length batching currently preserves equal per-sample loss weighting; "
+                "set training.sample_loss_weight_mode=none."
+            )
         prepared = self._apply_text_condition_dropout(prepared)
         if prepared.views is not None:
             output = self.pipeline(
@@ -226,7 +253,10 @@ class PipelineTrainStepExecutor:
         loss = output.decoder_output.loss * sample_loss_weight
         metrics = {
             "loss": loss.detach(),
-            **{name: value.detach() for name, value in output.decoder_output.metrics.items()},
+            **{
+                name: value.detach()
+                for name, value in output.decoder_output.metrics.items()
+            },
         }
         if self.training_config.sample_loss_weight_mode != SampleLossWeightMode.NONE:
             metrics["unweighted_loss"] = output.decoder_output.loss.detach()
@@ -282,7 +312,9 @@ def resolve_sample_loss_weight(
             "dataset_mean_valid_action_steps",
         )
     if reference_steps is None:
-        reference_steps = float(valid_action_steps.detach().mean().clamp_min(1.0).item())
+        reference_steps = float(
+            valid_action_steps.detach().mean().clamp_min(1.0).item()
+        )
     reference = torch.tensor(
         float(reference_steps),
         dtype=torch.float32,
