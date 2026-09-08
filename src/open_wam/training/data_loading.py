@@ -10,6 +10,7 @@ from open_wam.configs import (
 )
 from open_wam.configs.enums import SampleOrderMode, SampleWeightMode
 from open_wam.configs.policy_video_action import resolve_fixed_conditioning_mode
+from open_wam.configs.sequence_contracts import validate_variable_batching_source
 from open_wam.data import (
     build_dynamics_routing_datasets,
     build_train_val_datasets,
@@ -26,6 +27,7 @@ from open_wam.data.registries import preflight_dataset_artifacts
 
 
 def build_runtime_dataloaders(config: ExperimentConfig, strategy) -> tuple[DataLoader, DataLoader]:
+    validate_variable_batching_source(config)
     if _uses_dynamics_routing(config):
         _validate_dynamics_source_sampling(config)
     if config.trainer.batch_adapter == BatchAdapterName.LATENTS:

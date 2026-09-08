@@ -275,6 +275,14 @@ class ActionTargetConfig:
     joint_position_source_key: str = "robot0_joint_pos"
     joint_position_normalization: ActionNormalizationConfig = field(default_factory=ActionNormalizationConfig)
     normalization: ActionNormalizationConfig = field(default_factory=ActionNormalizationConfig)
+    # Optional raw [xyz(3), rot6(6), passthrough] blocks, expressed in the
+    # observation anchor's frame. None preserves absolute raw targets.
+    relative_pose_block_dims: int | None = None
+    # Proprio context may encode inv(T_now) @ T_history. Pose and passthrough
+    # channels can use different history offsets; None inherits the base lag.
+    proprio_history_lag: int = 0
+    proprio_history_lag_pose: int | None = None
+    proprio_history_lag_gripper: int | None = None
 
     def __post_init__(self) -> None:
         coerce_fields(
@@ -291,6 +299,20 @@ class ActionTargetConfig:
                 "normalization": _coerce_action_normalization_config,
             },
         )
+        if self.relative_pose_block_dims is not None and (
+            isinstance(self.relative_pose_block_dims, bool)
+            or not isinstance(self.relative_pose_block_dims, Integral)
+            or self.relative_pose_block_dims < 9
+        ):
+            raise ValueError("`relative_pose_block_dims` must be an integer >= 9 or null.")
+        for name in (
+            "proprio_history_lag", "proprio_history_lag_pose", "proprio_history_lag_gripper"
+        ):
+            value = getattr(self, name)
+            if value is None and name != "proprio_history_lag":
+                continue
+            if isinstance(value, bool) or not isinstance(value, Integral) or value < 0:
+                raise ValueError(f"`{name}` must be a nonnegative integer.")
 
 
 @dataclass(frozen=True)
@@ -644,7 +666,7 @@ class DynamicsRoutingConfig:
 
 @dataclass(frozen=True)
 class BatchingConfig:
-    """Opt-in fixed-size batches of variable-length latent sequences.
+    """Opt-in logical batches of variable-length latent sequences.
 
     Bucket mode sorts finite pools of the existing sampler stream by estimated
     length and dynamically pads each batch. Train tail dropping is decided
@@ -656,6 +678,9 @@ class BatchingConfig:
     bucket_pool_size: int = 128
     pad_to_multiple_of: int = 1
     drop_last_train: bool = True
+    # Packed training can split a logical loader batch into token-bounded
+    # physical microbatches. This does not truncate individual sequences.
+    max_tokens: int | None = None
 
     def __post_init__(self) -> None:
         coerce_fields(self, enum_fields={"mode": BatchingMode})
@@ -665,6 +690,16 @@ class BatchingConfig:
                 raise ValueError(f"`data.batching.{name}` must be a positive integer.")
         if not isinstance(self.drop_last_train, bool):
             raise TypeError("`data.batching.drop_last_train` must be boolean.")
+        if self.max_tokens is not None:
+            if (
+                isinstance(self.max_tokens, bool)
+                or not isinstance(self.max_tokens, Integral)
+                or self.max_tokens <= 0
+            ):
+                raise ValueError("`data.batching.max_tokens` must be a positive integer.")
+            if self.mode is not BatchingMode.PACKED:
+                raise ValueError("`data.batching.max_tokens` currently requires mode=packed.")
+            object.__setattr__(self, "max_tokens", int(self.max_tokens))
 
 
 def _coerce_batching_config(value: BatchingConfig | Mapping[str, Any]) -> BatchingConfig:

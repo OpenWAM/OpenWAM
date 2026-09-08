@@ -17,7 +17,11 @@ from open_wam.configs import (
     parse_data_config,
 )
 from open_wam.data.distributed_sampling import WeightedReplacementDistributedSampler
-from open_wam.data.latent_batching import LatentBatchCollator, LengthBucketSampler
+from open_wam.data.latent_batching import (
+    LatentBatchCollator,
+    LengthBucketSampler,
+    select_latent_batch_samples,
+)
 from open_wam.data.latent_contracts import (
     LatentWAMSample,
     collate_latent_wam_samples,
@@ -94,6 +98,67 @@ def test_strict_collation_is_unchanged():
     assert batch.tensor_lengths == {}
     with pytest.raises(RuntimeError, match="stack"):
         LatentBatchCollator(BatchingConfig())([_sample(4), _sample(6)])
+
+
+def test_token_budget_config_is_explicit_packed_only_and_round_trips():
+    config = parse_data_config({"batching": {"mode": "packed", "max_tokens": 100}})
+    assert config.batching.max_tokens == 100
+    assert parse_data_config(asdict(config)).batching == config.batching
+    assert BatchingConfig().max_tokens is None
+    for invalid in (0, -1, True, 1.5, "100"):
+        with pytest.raises(ValueError, match="positive integer"):
+            BatchingConfig(mode="packed", max_tokens=invalid)
+    for mode in ("strict", "bucket", "padded"):
+        with pytest.raises(ValueError, match="requires mode=packed"):
+            BatchingConfig(mode=mode, max_tokens=100)
+
+
+def test_token_selection_trims_padding_and_preserves_per_sample_geometry():
+    samples = [_sample(4), _sample(6, chunk=3, window=8, text_length=5), _sample(10)]
+    batch = LatentBatchCollator(BatchingConfig(mode="packed", pad_to_multiple_of=8))(samples)
+    physical = select_latent_batch_samples(batch, (0, 1))
+    assert physical.video_latents.shape == (2, 2, 6, 2, 2)
+    assert physical.actions.shape == (2, 12, 3)
+    assert physical.text_context.shape == (2, 5, 5)
+    assert physical.sequence_lengths == (4, 6)
+    assert physical.metadata == batch.metadata[:2]
+    assert physical.metadata[1]["sampled_chunk_size"] == 3
+    assert physical.metadata[1]["sampled_window_size"] == 8
+    assert torch.count_nonzero(physical.action_mask[0, 8:]) == 0
+    assert batch.video_latents.shape[2] == 16
+    single = select_latent_batch_samples(batch, (1,))
+    assert single.metadata[0] == batch.metadata[1]
+    assert single.tensor_lengths["text_context"] == (5,)
+
+
+def test_token_selection_preserves_missing_and_empty_optional_tensors():
+    samples = [
+        _sample(4),
+        replace(_sample(6), condition_latents=None, state=torch.empty(0, 3)),
+    ]
+    batch = LatentBatchCollator(BatchingConfig(mode="packed"))(samples)
+    single = select_latent_batch_samples(batch, (1,))
+    assert single.condition_latents is None
+    assert single.tensor_lengths["condition_latents"] == (None,)
+    assert single.state.shape == (1, 0, 3)
+    assert single.tensor_lengths["state"] == (0,)
+    mixed = select_latent_batch_samples(batch, (1, 0))
+    assert mixed.tensor_lengths["condition_latents"] == (None, 1)
+    assert mixed.tensor_lengths["state"] == (0, 1)
+
+
+@pytest.mark.parametrize("indices", [(), (0, 0), (-1,), (2,), (True,), (1.5,)])
+def test_token_selection_rejects_invalid_indices(indices):
+    batch = LatentBatchCollator(BatchingConfig(mode="packed"))([_sample(4), _sample(6)])
+    with pytest.raises(ValueError, match="indices"):
+        select_latent_batch_samples(batch, indices)
+
+
+def test_token_selection_rejects_invalid_extent_before_device_transfer():
+    batch = LatentBatchCollator(BatchingConfig(mode="packed"))([_sample(4), _sample(6)])
+    batch.tensor_lengths["actions"] = (99, 12)
+    with pytest.raises(ValueError, match="actions"):
+        select_latent_batch_samples(batch, (1,))
 
 
 @pytest.mark.parametrize(

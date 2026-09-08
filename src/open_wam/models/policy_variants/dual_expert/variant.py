@@ -79,6 +79,7 @@ class DualExpertPolicyVariant(VideoActionPolicyVariant):
         action_horizon: int,
     ) -> None:
         super().__init__()
+        config.validate_backbone_config(backbone_config)
         self.config = config
         self.backbone_config = backbone_config
         self.training_config = training_config

@@ -14,6 +14,7 @@ from .enums import (
     HistoryStreamVisibility,
     JointTimestepCoupling,
     ProprioContextMode,
+    TextConditioningMode,
     VideoActionProgram,
     VideoActionSequenceContract,
     coerce_fields,
@@ -168,6 +169,7 @@ class VideoActionPolicyConfig(PolicyVariantConfig):
     program: VideoActionProgram | None = None
     joint_timestep_coupling: JointTimestepCoupling = _DEFAULT_JOINT_TIMESTEP_COUPLING
     generalist_mode_text_token: bool = False
+    text_conditioning_mode: TextConditioningMode = TextConditioningMode.TASK_PROMPT
     proprio_context_mode: ProprioContextMode = ProprioContextMode.NONE
     # Historical action K/V is opt-in for every video/action program.
     history_stream_visibility: HistoryStreamVisibility = (
@@ -195,6 +197,7 @@ class VideoActionPolicyConfig(PolicyVariantConfig):
     @property
     def conditioning_requirements(self) -> PolicyConditioningRequirements:
         return PolicyConditioningRequirements(
+            text_conditioning_mode=self.text_conditioning_mode,
             proprio_context_mode=self.proprio_context_mode,
             dynamics_mode_context_enabled=bool(self.generalist_mode_text_token),
         )
@@ -235,6 +238,7 @@ class VideoActionPolicyConfig(PolicyVariantConfig):
         coerce_fields(
             self,
             enum_fields={
+                "text_conditioning_mode": TextConditioningMode,
                 "proprio_context_mode": ProprioContextMode,
                 "history_stream_visibility": HistoryStreamVisibility,
                 "context_condition_latent_source": ContextConditionLatentSource,

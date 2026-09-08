@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from numbers import Integral
 from typing import Any
 
 import torch
@@ -72,6 +73,49 @@ def _align_eval_action_tensors(
         aligned_mask = None if action_mask is None else action_mask[:, target_start:]
         return EvalPredictionSource.RAW_CHUNK_ACTION_PRED_TAIL_ALIGNED, prediction, aligned_target, aligned_mask
     return source, prediction, target_actions, action_mask
+
+
+def _align_eval_action_tensors_by_generation_frame(
+    *,
+    prediction: torch.Tensor,
+    target_actions: torch.Tensor,
+    action_mask: torch.Tensor | None,
+    generation_frame_start: int | None,
+    action_tokens_per_frame: int,
+) -> tuple[EvalPredictionSource, torch.Tensor, torch.Tensor, torch.Tensor | None] | None:
+    """Score the generated chunk at its reported frame, never a guessed tail.
+
+    The target slice starts at frame_start * tokens_per_frame. A window can
+    contain an incomplete trailing chunk, so its tail is not that same slice.
+    Unsupported geometry returns None rather than inventing a valid target.
+    """
+    if (
+        isinstance(generation_frame_start, bool)
+        or not isinstance(generation_frame_start, Integral)
+        or isinstance(action_tokens_per_frame, bool)
+        or not isinstance(action_tokens_per_frame, Integral)
+        or action_tokens_per_frame <= 0
+        or generation_frame_start < 0
+        or prediction.ndim != 3
+        or target_actions.ndim != 3
+        or prediction.shape[0] != target_actions.shape[0]
+        or prediction.shape[2] != target_actions.shape[2]
+    ):
+        return None
+    start = int(generation_frame_start) * int(action_tokens_per_frame)
+    horizon = int(prediction.shape[1])
+    if horizon <= 0 or start + horizon > int(target_actions.shape[1]):
+        return None
+    # The metric denominator counts mask elements; accepting a broadcast-only
+    # channel mask would multiply the MSE by the number of action channels.
+    if action_mask is not None and action_mask.shape != target_actions.shape:
+        return None
+    return (
+        EvalPredictionSource.GENERATED_CHUNK_FRAME_ALIGNED,
+        prediction,
+        target_actions[:, start : start + horizon],
+        None if action_mask is None else action_mask[:, start : start + horizon],
+    )
 
 
 def _select_rollout_previous_action(

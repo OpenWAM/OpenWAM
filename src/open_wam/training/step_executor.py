@@ -103,6 +103,10 @@ class ViewBatchAdapter:
                 metadata=batch.metadata,
                 condition_latents=getattr(batch, "condition_latents", None),
                 video_latents=video_latents,
+                # Preserve RGB chunk-level proprio; this does not synthesize
+                # frame-aligned context required by stricter policy modes.
+                proprio_context_state=batch.state,
+                proprio_context_state_mask=batch.state_mask,
             ),
         )
 

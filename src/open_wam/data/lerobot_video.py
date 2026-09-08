@@ -14,6 +14,7 @@ from torch.utils.data import Dataset
 from open_wam.configs import ActionTargetRepresentation, DataConfig
 
 from .action_mapping import apply_action_mapping, resolve_action_source_dim
+from .action_pose import pose_blocks_relative_to_anchor
 from .contracts import WAMSample
 from .lerobot_v2 import EpisodeWindow, LeRobotEpisodeRecord
 from .row_action_targets import resolve_row_key
@@ -89,7 +90,9 @@ class LeRobotV2VideoWindowDataset(Dataset[WAMSample]):
             )
             for camera_name in self.data_config.camera_names
         }
-        actions, action_mask, action_metadata = self._build_action_targets(action_rows)
+        actions, action_mask, action_metadata = self._build_action_targets(
+            action_rows, anchor_state_row=state_rows[-1] if state_rows else None
+        )
         state_source_key = self.data_config.action_target.pose_source_key
         state, state_mask = self._extract_sequence(
             rows=state_rows,
@@ -124,6 +127,7 @@ class LeRobotV2VideoWindowDataset(Dataset[WAMSample]):
     def _build_action_targets(
         self,
         action_rows: list[dict[str, Any]],
+        anchor_state_row: dict[str, Any] | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, dict[str, Any]]:
         action_target = self.data_config.action_target
         if action_target.representation != ActionTargetRepresentation.RAW:
@@ -139,13 +143,29 @@ class LeRobotV2VideoWindowDataset(Dataset[WAMSample]):
             target_dim=source_dim,
             target_length=self.data_config.action_schema.action_horizon,
         )
+        block = action_target.relative_pose_block_dims
+        if block:
+            if anchor_state_row is None:
+                raise ValueError(
+                    "`relative_pose_block_dims` needs the anchor state row to define the "
+                    "reference frame, but none was supplied."
+                )
+            anchor = torch.tensor(
+                anchor_state_row[resolve_row_key(anchor_state_row, action_target.pose_source_key)],
+                dtype=torch.float32,
+            )
+            source_actions = pose_blocks_relative_to_anchor(
+                source_actions, anchor=anchor, block_dims=int(block)
+            )
         mapped = apply_action_mapping(
             source_actions,
             source_mask,
             self.data_config.action_mapping,
             target_dim=target_dim,
         )
-        return mapped.actions, mapped.action_mask, mapped.metadata
+        metadata = dict(mapped.metadata)
+        metadata["relative_pose_block_dims"] = block
+        return mapped.actions, mapped.action_mask, metadata
 
     def _decode_video_sequence(
         self,

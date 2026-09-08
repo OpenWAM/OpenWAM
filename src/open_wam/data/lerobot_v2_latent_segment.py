@@ -110,6 +110,12 @@ class LocalLatentSegmentAssembler:
             rollout_parity_target_alignment=rollout_parity_target_alignment,
         )
         observed_frame_ids = list(materialization.observed_frame_ids)
+        # Action anchors and proprio context must use the same chunk geometry.
+        proprio_chunk_size = (
+            int(materialization.chunk_size_for_boundary)
+            if compact_boundary_padding and materialization.chunk_size_for_boundary is not None
+            else max(1, int(self.data_config.sample_construction.chunk_size))
+        )
         sampled_window = LocalEpisodeWindow(
             repo_root=window.repo_root,
             episode_index=window.episode_index,
@@ -133,6 +139,8 @@ class LocalLatentSegmentAssembler:
                     or rollout_parity_target_alignment
                     else 1.0
                 ),
+                proprio_chunk_size=proprio_chunk_size,
+                proprio_loss_frame_start=int(materialization.loss_frame_start),
             )
         )
         proprio_context_local_frame = max(
@@ -161,15 +169,7 @@ class LocalLatentSegmentAssembler:
             self.supervision_assembler.extract_proprio_context_state_sequence(
                 rows=rows,
                 observed_frame_ids=observed_frame_ids,
-                chunk_size=(
-                    int(materialization.chunk_size_for_boundary)
-                    if compact_boundary_padding
-                    and materialization.chunk_size_for_boundary is not None
-                    else max(
-                        1,
-                        int(self.data_config.sample_construction.chunk_size),
-                    )
-                ),
+                chunk_size=proprio_chunk_size,
                 loss_frame_start=materialization.loss_frame_start,
             )
         )

@@ -213,6 +213,43 @@ def rotation_matrix_to_quaternion(matrix: torch.Tensor) -> torch.Tensor:
     return normalize_quaternion(torch.stack([qx, qy, qz, qw], dim=-1))
 
 
+def pose_blocks_relative_to_anchor(
+    actions: torch.Tensor,
+    *,
+    anchor: torch.Tensor,
+    block_dims: int,
+) -> torch.Tensor:
+    """Express repeated [xyz, rot6, passthrough] blocks in their anchor frames.
+
+    For each block, dp = R_anchor.T @ (p - p_anchor) and
+    dR = R_anchor.T @ R. Channels after rot6 are copied, not differenced.
+    """
+
+    if block_dims < 9:
+        raise ValueError(f"Pose blocks need at least 9 dims for `[xyz, rot6]`, got {block_dims}.")
+    if actions.ndim != 2:
+        raise ValueError(f"Expected actions with shape [T, D], got {tuple(actions.shape)}.")
+    total = actions.shape[-1]
+    if total % block_dims:
+        raise ValueError(f"Action dim {total} is not a whole number of {block_dims}-wide pose blocks.")
+    if anchor.shape[-1] != total:
+        raise ValueError(
+            f"Anchor dim {anchor.shape[-1]} must match the action dim {total} so blocks correspond."
+        )
+
+    out = actions.clone()
+    for start in range(0, total, block_dims):
+        a_pos = anchor[start : start + 3]
+        a_rot = continuous_6d_to_rotation_matrix(anchor[start + 3 : start + 9])
+        a_rot_t = a_rot.transpose(-1, -2)
+        pos = actions[:, start : start + 3]
+        rot = continuous_6d_to_rotation_matrix(actions[:, start + 3 : start + 9])
+        out[:, start : start + 3] = (pos - a_pos) @ a_rot_t.transpose(-1, -2)
+        rel = a_rot_t @ rot
+        out[:, start + 3 : start + 9] = torch.cat([rel[..., :, 0], rel[..., :, 1]], dim=-1)
+    return out
+
+
 def _normalize_vectors(vector: torch.Tensor) -> torch.Tensor:
     return vector / torch.linalg.vector_norm(vector, dim=-1, keepdim=True).clamp_min(1e-8)
 
@@ -273,6 +310,7 @@ __all__ = [
     "axis_angle_to_quaternion",
     "continuous_6d_to_rotation_matrix",
     "normalize_quaternion",
+    "pose_blocks_relative_to_anchor",
     "quaternion_inverse",
     "quaternion_multiply",
     "quaternion_to_axis_angle",

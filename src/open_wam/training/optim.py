@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 from collections.abc import Iterable
 
 import torch
@@ -47,6 +49,23 @@ def warmup_constant_lambda(step: int, *, warmup_steps: int) -> float:
     return float(step + 1) / float(max(1, warmup_steps))
 
 
+def warmup_cosine_lambda(
+    step: int, *, warmup_steps: int, total_steps: int, min_ratio: float = 0.0
+) -> float:
+    """Linear warmup followed by cosine decay to an optional floor.
+
+    The schedule retains explicit
+    step indexing, clamping, and minimum-ratio behavior.
+    """
+
+    if warmup_steps > 0 and step < warmup_steps:
+        return float(step + 1) / float(max(1, warmup_steps))
+    span = max(1, int(total_steps) - int(warmup_steps))
+    progress = min(1.0, max(0.0, (int(step) - int(warmup_steps)) / span))
+    cosine = 0.5 * (1.0 + math.cos(math.pi * progress))
+    return float(min_ratio + (1.0 - min_ratio) * cosine)
+
+
 def collect_trainable_parameters(module: nn.Module) -> list[nn.Parameter]:
     return [parameter for parameter in module.parameters() if parameter.requires_grad]
 
@@ -87,5 +106,19 @@ def build_scheduler(
         return torch.optim.lr_scheduler.LambdaLR(
             optimizer,
             lr_lambda=lambda step: warmup_constant_lambda(step, warmup_steps=training_config.warmup_steps),
+        )
+    if scheduler_name == SchedulerName.WARMUP_COSINE:
+        total = int(getattr(training_config, "num_steps", 0) or 0)
+        if total <= 0:
+            raise ValueError(
+                "`warmup_cosine` needs `training.num_steps` to know the decay horizon."
+            )
+        return torch.optim.lr_scheduler.LambdaLR(
+            optimizer,
+            lr_lambda=lambda step: warmup_cosine_lambda(
+                step,
+                warmup_steps=training_config.warmup_steps,
+                total_steps=total,
+            ),
         )
     raise ValueError(f"Unsupported scheduler {training_config.scheduler_name!r}.")

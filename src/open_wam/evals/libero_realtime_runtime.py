@@ -165,23 +165,34 @@ def apply_inference_overrides(
         "action_num_inference_steps",
         action_num_inference_steps,
     )
+    variant = getattr(runner, "policy_variant", None)
+    if variant is None:
+        variant = getattr(getattr(runner, "pipeline", None), "policy_variant", None)
+    if variant is None and any(
+        value is not None
+        for value in (video_steps, action_steps, guidance_scale, action_guidance_scale)
+    ):
+        raise AttributeError(
+            f"{type(runner).__name__} exposes neither `policy_variant` nor "
+            "`pipeline.policy_variant`, so inference overrides cannot be applied"
+        )
     if video_steps is not None:
         object.__setattr__(
-            runner.policy_variant.inference_config,
+            variant.inference_config,
             "video_num_inference_steps",
             video_steps,
         )
     if action_steps is not None:
         object.__setattr__(
-            runner.policy_variant.inference_config,
+            variant.inference_config,
             "action_num_inference_steps",
             action_steps,
         )
     if guidance_scale is not None:
-        object.__setattr__(runner.policy_variant.inference_config, "guidance_scale", float(guidance_scale))
+        object.__setattr__(variant.inference_config, "guidance_scale", float(guidance_scale))
     if action_guidance_scale is not None:
         object.__setattr__(
-            runner.policy_variant.inference_config,
+            variant.inference_config,
             "action_guidance_scale",
             float(action_guidance_scale),
         )

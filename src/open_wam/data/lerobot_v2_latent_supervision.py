@@ -13,6 +13,7 @@ from open_wam.configs import (
 )
 
 from .action_normalization import normalize_action_targets
+from .action_pose import pose_blocks_relative_to_anchor
 from .action_target_builders import (
     build_absolute_joint_position_targets,
     expected_joint_position_target_dim,
@@ -26,6 +27,8 @@ _TRUNCATING_SEQUENCE_PACKER = partial(
     pack_temporal_sequence,
     truncate_to_target_length=True,
 )
+
+_POSE_BLOCK_DIMS = 10  # [xyz(3), rot6(6), gripper(1)] per arm.
 
 
 class LocalLatentSupervisionAssembler:
@@ -60,6 +63,8 @@ class LocalLatentSupervisionAssembler:
         latent_num_frames: int,
         leading_zero_action_frames: int = 1,
         leading_zero_action_mask: float = 1.0,
+        proprio_chunk_size: int = 1,
+        proprio_loss_frame_start: int = 0,
     ) -> tuple[torch.Tensor, torch.Tensor, dict[str, Any]]:
         action_target = self.data_config.action_target
         if action_target.representation not in {
@@ -104,6 +109,20 @@ class LocalLatentSupervisionAssembler:
             target_family_metadata: dict[str, Any] = {
                 "action_target_normalization_mode": str(action_target.normalization.mode),
             }
+            block_dims = action_target.relative_pose_block_dims
+            if block_dims:
+                source_actions = self._anchor_relative_chunk_targets(
+                    source_actions,
+                    rows=rows,
+                    observed_frame_ids=observed_frame_ids,
+                    latent_num_frames=latent_num_frames,
+                    prefix_actions=prefix_actions,
+                    leading_action_steps=leading_action_steps,
+                    block_dims=int(block_dims),
+                    proprio_chunk_size=int(proprio_chunk_size),
+                    proprio_loss_frame_start=int(proprio_loss_frame_start),
+                )
+            target_family_metadata["relative_pose_block_dims"] = int(block_dims) if block_dims else None
         else:
             joint_position_source = torch.stack(
                 [
@@ -211,6 +230,66 @@ class LocalLatentSupervisionAssembler:
             **target_family_metadata,
         }
 
+    def _anchor_relative_chunk_targets(
+        self,
+        source_actions: torch.Tensor,
+        *,
+        rows: list[dict[str, Any]],
+        observed_frame_ids: list[int],
+        latent_num_frames: int,
+        prefix_actions: int,
+        leading_action_steps: int,
+        block_dims: int,
+        proprio_chunk_size: int,
+        proprio_loss_frame_start: int,
+    ) -> torch.Tensor:
+        """Use each chunk's absolute observation state as its action anchor.
+
+        Chunk size and loss origin must match the dataset's proprio context
+        geometry. The context may be lagged motion, but the anchor must remain
+        an absolute pose or the action transform silently uses the wrong frame.
+        """
+
+        if prefix_actions <= 0:
+            raise ValueError("Anchor-relative action targets need a positive per-frame action count.")
+        if leading_action_steps % prefix_actions:
+            raise ValueError(
+                "Anchor-relative action targets need the leading zero pad to land on a chunk "
+                f"boundary, got leading_action_steps={leading_action_steps} with "
+                f"prefix_actions={prefix_actions}."
+            )
+        chunk_size = max(1, int(proprio_chunk_size))
+        anchors, _ = self.extract_proprio_context_state_sequence(
+            rows=rows,
+            observed_frame_ids=observed_frame_ids,
+            chunk_size=chunk_size,
+            loss_frame_start=int(proprio_loss_frame_start),
+            apply_history_lag=False,
+        )
+        chunk_count = int(anchors.shape[0])
+        if chunk_count <= 0:
+            raise ValueError("Anchor-relative action targets need at least one proprio anchor.")
+        if int(anchors.shape[-1]) != int(source_actions.shape[-1]):
+            raise ValueError(
+                "`relative_pose_block_dims` needs the anchor state and the action target to share "
+                f"a channel layout, got state_dim={int(anchors.shape[-1])} and "
+                f"action_dim={int(source_actions.shape[-1])}."
+            )
+        relative = source_actions.clone()
+        leading_frames = leading_action_steps // prefix_actions
+        total_steps = int(source_actions.shape[0])
+        for offset in range(0, total_steps, prefix_actions):
+            frame_index = leading_frames + offset // prefix_actions
+            if frame_index >= int(latent_num_frames):
+                break  # These excess source steps are dropped by required_action_num.
+            chunk_index = (frame_index - int(proprio_loss_frame_start)) // chunk_size
+            chunk_index = max(0, min(chunk_count - 1, chunk_index))
+            stop = min(offset + prefix_actions, total_steps)
+            relative[offset:stop] = pose_blocks_relative_to_anchor(
+                source_actions[offset:stop], anchor=anchors[chunk_index], block_dims=block_dims
+            )
+        return relative
+
     def build_action_targets(
         self,
         *,
@@ -278,13 +357,67 @@ class LocalLatentSupervisionAssembler:
         *,
         rows: list[dict[str, Any]],
         frame_index: int,
+        apply_history_lag: bool = True,
     ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Return absolute state, or inv(T_now) @ T_history for proprio context.
+
+        Action-target anchors opt out of history encoding. Pose and passthrough
+        channels may use separate lags without mixing frames within a pose.
+        """
         state, state_mask = self.extract_state_history_at_frame(
             rows=rows,
             anchor_frame_index=frame_index,
             state_horizon=1,
         )
-        return state[0], state_mask[0]
+        state, state_mask = state[0], state_mask[0]
+        if not apply_history_lag:
+            return state, state_mask
+        target = self.data_config.action_target
+        base_lag = int(target.proprio_history_lag or 0)
+        pose_lag = target.proprio_history_lag_pose
+        grip_lag = target.proprio_history_lag_gripper
+        pose_lag = base_lag if pose_lag is None else int(pose_lag)
+        grip_lag = base_lag if grip_lag is None else int(grip_lag)
+        if pose_lag <= 0 and grip_lag <= 0:
+            return state, state_mask
+
+        # Absolute-action configurations still need the state's pose-block
+        # layout for history encoding; null relative targets do not disable it.
+        block = target.relative_pose_block_dims
+        if not block:
+            state_dim = int(self.data_config.action_schema.state_dim)
+            if state_dim <= 0 or state_dim % _POSE_BLOCK_DIMS:
+                raise ValueError(
+                    f"`proprio_history_lag` needs a pose-block width. state_dim="
+                    f"{state_dim} is not a whole number of {_POSE_BLOCK_DIMS}-wide "
+                    "blocks, so set `relative_pose_block_dims` explicitly."
+                )
+            block = _POSE_BLOCK_DIMS
+        block = int(block)
+
+        def _relative_at(lag: int) -> tuple[torch.Tensor, torch.Tensor]:
+            if lag <= 0:
+                return state, state_mask
+            earlier, earlier_mask = self.extract_state_history_at_frame(
+                rows=rows, anchor_frame_index=max(0, int(frame_index) - lag), state_horizon=1
+            )
+            relative = pose_blocks_relative_to_anchor(
+                earlier[0].unsqueeze(0), anchor=state, block_dims=block
+            )[0]
+            return relative, torch.minimum(state_mask, earlier_mask[0])
+
+        pose_rel, pose_mask = _relative_at(pose_lag)
+        if grip_lag == pose_lag:
+            return pose_rel, pose_mask
+        grip_rel, grip_mask = _relative_at(grip_lag)
+        merged = pose_rel.clone()
+        merged_mask = pose_mask.clone()
+        for start in range(0, merged.shape[-1], block):
+            passthrough = slice(start + 9, min(start + block, merged.shape[-1]))
+            if passthrough.start < passthrough.stop:
+                merged[passthrough] = grip_rel[passthrough]
+                merged_mask[passthrough] = grip_mask[passthrough]
+        return merged, merged_mask
 
     def extract_proprio_context_state_sequence(
         self,
@@ -293,6 +426,7 @@ class LocalLatentSupervisionAssembler:
         observed_frame_ids: list[int],
         chunk_size: int,
         loss_frame_start: int = 0,
+        apply_history_lag: bool = True,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         if not observed_frame_ids:
             raise ValueError("Per-chunk proprio context requires non-empty observed_frame_ids.")
@@ -309,7 +443,9 @@ class LocalLatentSupervisionAssembler:
                 ),
             )
             frame_index = int(observed_frame_ids[local_context_index])
-            state, state_mask = self.extract_state_at_frame(rows=rows, frame_index=frame_index)
+            state, state_mask = self.extract_state_at_frame(
+                rows=rows, frame_index=frame_index, apply_history_lag=apply_history_lag
+            )
             states.append(state)
             masks.append(state_mask)
         return torch.stack(states, dim=0), torch.stack(masks, dim=0)

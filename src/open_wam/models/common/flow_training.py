@@ -148,13 +148,17 @@ def build_video_flow_match_train_artifacts(
     condition_latents: torch.Tensor | None = None,
     timestep_ids: torch.Tensor | None = None,
     clean_prefix_frames: int = 0,
+    synchronize_noisy_condition_decision: bool = True,
 ) -> VideoFlowMatchTrainArtifacts:
     """Create LingBot-style noisy video latents with one timestep per frame.
 
     The sampled timestep is broadcast across channels and spatial positions of
     each frame, matching LingBot's frame-wise latent diffusion semantics. When
     ``clean_prefix_frames`` is nonzero, those frames remain clean in both video
-    streams and are excluded from flow supervision.
+    streams and are excluded from flow supervision. By default the condition
+    augmentation decision is broadcast from rank 0 when distributed training is
+    initialized. Sequence-batch callers disable that synchronization because
+    their per-rank sample counts may differ within one model forward.
     """
 
     if video_latents.ndim != 5:
@@ -216,12 +220,15 @@ def build_video_flow_match_train_artifacts(
     original_condition_latents = clean_condition_latents
     condition_timesteps = torch.zeros_like(timesteps)
     if noisy_condition_prob > 0.0:
-        # Augmentation decision must be identical across ranks under FSDP:
-        # different branches produce different autograd-graph shapes, which
-        # desynchronizes FSDP's per-rank backward all_gather schedule and
-        # triggers NCCL watchdog timeouts. Sample on rank 0 and broadcast.
+        # Preserve the legacy rank-0 decision by default. Batched preparation
+        # uses local decisions: a per-sample collective would mismatch when
+        # ranks prepare different sample counts before the same FSDP forward.
         decision = torch.rand(1, device=video_latents.device)
-        if torch.distributed.is_available() and torch.distributed.is_initialized():
+        if (
+            synchronize_noisy_condition_decision
+            and torch.distributed.is_available()
+            and torch.distributed.is_initialized()
+        ):
             torch.distributed.broadcast(decision, src=0)
         if decision.item() < noisy_condition_prob:
             condition_timestep_ids = sample_timestep_id(

@@ -1,20 +1,18 @@
 # Heterogeneous real-HF consortium template: `multicam_as_slots`.
 #
-# This companion file shows the same five-repo sanity-check set as the
+# This companion file shows the same three-repo sanity-check set as the
 # single-slot camera-major example, but keeps the traditional multi-slot
 # semantics:
 # - one dataset timestep -> one model timestep
 # - multiple source cameras -> multiple canonical slots
 #
 # Sanity-check set:
-# - DaivdYuan/exumi-insert-pen-lerobot
-# - DaivdYuan/umi-bimanual-dish-washing-lerobot
 # - lerobot/aloha_static_towel
 # - lerobot/aloha_sim_insertion_human
 # - physical-intelligence/libero
 #
 # Important:
-# - This is still not a directly trainable recipe across all five repos.
+# - This is still not a directly trainable recipe across all three repos.
 # - They disagree on:
 #   - metadata layout (`v3.0` parquet meta vs `v2.0` jsonl meta)
 #   - action/state keys (`action` + `observation.state` vs `actions` + `state`)
@@ -114,30 +112,6 @@ data:
   frame_packing_order: camera_major
 
   consortium_members:
-    - member_id: exumi_insert_pen
-      repo_id: DaivdYuan/exumi-insert-pen-lerobot
-      local_root: null
-      enabled: true
-      source_group: nmotion_current
-      include_channels: []
-      channel_mappings:
-        - source_name: observation.images.camera0_rgb
-          target_slot: observation.images.slot0
-      sampling_weight: 1.0
-
-    - member_id: umi_bimanual_dish_washing
-      repo_id: DaivdYuan/umi-bimanual-dish-washing-lerobot
-      local_root: null
-      enabled: true
-      source_group: nmotion_current
-      include_channels: []
-      channel_mappings:
-        - source_name: observation.images.camera0_rgb
-          target_slot: observation.images.slot0
-        - source_name: observation.images.camera1_rgb
-          target_slot: observation.images.slot1
-      sampling_weight: 1.0
-
     - member_id: aloha_static_towel
       repo_id: lerobot/aloha_static_towel
       local_root: null

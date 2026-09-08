@@ -86,6 +86,13 @@ def _parse_video_action_policy_fields(
             raw.get("generalist_mode_text_token", False),
             field_name="policy_variant.generalist_mode_text_token",
         ),
+        "text_conditioning_mode": _coerce_enum(
+            config_enums.TextConditioningMode,
+            raw.get(
+                "text_conditioning_mode",
+                config_enums.TextConditioningMode.TASK_PROMPT,
+            ),
+        ),
         "proprio_context_mode": _coerce_enum(
             config_enums.ProprioContextMode,
             raw.get("proprio_context_mode", config_enums.ProprioContextMode.NONE),
@@ -273,6 +280,12 @@ def parse_policy_variant_config(
                 ),
             ),
             preset=preset,
+            action_expert_size=_coerce_enum(
+                config_enums.DualExpertActionExpertSize,
+                resolved_raw.get(
+                    "action_expert_size", config_enums.DualExpertActionExpertSize.CONFIGURED
+                ),
+            ),
             condition_mode=_coerce_enum(
                 config_enums.DualExpertConditionMode,
                 resolved_raw.get(

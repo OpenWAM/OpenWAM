@@ -516,7 +516,11 @@ class SharedTransformerBlock(nn.Module):
         self_attention_cache_update_mode: int = 0,
         self_attention_cache_stream_ids: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, AttentionCacheEntry | None, AttentionCacheEntry | None]:
-        temb_scale_shift_table = self.scale_shift_table[None] + temb.float()
+        # This explicit read bypasses parameter-owning forward hooks. Preserve
+        # the table's precision while materializing it on the activation device.
+        temb_scale_shift_table = _materialize_runtime_parameter(
+            self.scale_shift_table, device=temb.device, dtype=self.scale_shift_table.dtype
+        )[None] + temb.float()
         shift_msa, scale_msa, gate_msa, c_shift_msa, c_scale_msa, c_gate_msa = _select_chunk_slices(
             temb_scale_shift_table,
             6,

@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
+from .backbone import SharedVideoTransformerConfig
 from .enums import (
     ActionDecoderName,
     AttachSite,
@@ -79,6 +80,9 @@ class PolicyVariantConfig:
         """Declare shared visual adapters before policy modules are allocated."""
 
         return PolicyConditioningRequirements()
+
+    def validate_backbone_config(self, backbone: SharedVideoTransformerConfig) -> None:
+        """Validate optional policy-owned topology constraints before allocation."""
 
     def __post_init__(self) -> None:
         coerce_fields(

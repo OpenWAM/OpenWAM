@@ -124,7 +124,11 @@ class DualExpertPackedTrainingProgram:
             raise ValueError(f"Unsupported sequence execution mode: {mode.value}.")
         samples = [
             self.prepare_sample(
-                visual_tower, visual, prepared, defer_attention_masks=True
+                visual_tower,
+                visual,
+                prepared,
+                defer_attention_masks=True,
+                synchronize_noisy_condition_decision=False,
             )
             for visual, prepared in zip(visual_outputs, prepared_inputs, strict=True)
         ]
@@ -149,6 +153,7 @@ class DualExpertPackedTrainingProgram:
         prepared_inputs: PolicyPreparedInputs,
         *,
         defer_attention_masks: bool = False,
+        synchronize_noisy_condition_decision: bool = True,
     ) -> PreparedDualExpertTrainingSample:
         # parallel-stream-style four-branch packed training for dual-expert's two-expert
         # architecture. Query/key layout is [V_noisy, V_clean, A_noisy,
@@ -332,6 +337,7 @@ class DualExpertPackedTrainingProgram:
             and dynamics_plan.semantics.force_clean_video_condition
             else float(self.config.noisy_video_condition_prob),
             clean_prefix_frames=prefix_condition_frames,
+            synchronize_noisy_condition_decision=synchronize_noisy_condition_decision,
         )
         coupled_action_sigma_values = (
             frame_sigmas_for_timesteps(

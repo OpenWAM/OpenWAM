@@ -254,7 +254,7 @@ def _infer_domain_type(repo_id: str, readme_text: str | None) -> str:
         return "real"
     if any(
         token in repo_lower
-        for token in ("umi", "exumi", "dexumi", "touchwild", "dexwild")
+        for token in ("touchwild", "dexwild")
     ):
         return "real"
     return "unknown"
@@ -275,7 +275,7 @@ def _infer_embodiment(
 
     if any(
         token in joined
-        for token in ("dexumi", "dexterous", "xhand", "inspire hand", "inspire_hand")
+        for token in ("dexterous", "xhand", "inspire hand", "inspire_hand")
     ):
         return (
             "dexterous_hand",

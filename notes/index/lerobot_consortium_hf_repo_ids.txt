@@ -1,11 +1,3 @@
-DaivdYuan/exumi-insert-pen-lerobot
-DaivdYuan/exumi-open-bottle-lerobot
-DaivdYuan/exumi-peg-in-hole-lerobot
-DaivdYuan/exumi-pick-brocolli-lerobot
-DaivdYuan/exumi-pick-carrot-lerobot
-DaivdYuan/exumi-pick-cube-lerobot
-DaivdYuan/exumi-pull-drawer-lerobot
-DaivdYuan/exumi-stack-cube-lerobot
 DaivdYuan/hub-flip-bagel-in-the-wild-lerobot
 DaivdYuan/hub-flip-bagel-lerobot
 DaivdYuan/hub-kettlebell-pushing-lerobot
@@ -13,14 +5,6 @@ DaivdYuan/hub-pour-dice-lerobot
 DaivdYuan/hub-strap-wires-with-velcro-tape-lerobot
 DaivdYuan/hub-tennis-ball-basket-toss-lerobot
 DaivdYuan/hub-whiteboard-shape-wipe-lerobot
-DaivdYuan/mv-umi-bottles-rack-seg-lerobot
-DaivdYuan/mv-umi-markers-placement-raw-lerobot
-DaivdYuan/mv-umi-markers-placement-seg-lerobot
-DaivdYuan/umi-bimanual-cloth-folding-lerobot
-DaivdYuan/umi-bimanual-dish-washing-lerobot
-DaivdYuan/umi-cup-arrangement-lab-lerobot
-DaivdYuan/umi-cup-arrangement-wild-lerobot
-DaivdYuan/umi-dynamic-tossing-lerobot
 lerobot/aloha_mobile_cabinet
 lerobot/aloha_mobile_chair
 lerobot/aloha_mobile_elevator
@@ -171,7 +155,6 @@ lerobot/toto
 lerobot/ucsd_kitchen_dataset
 lerobot/ucsd_pick_and_place_dataset
 lerobot/uiuc_d3field
-lerobot/umi_cup_in_the_wild
 lerobot/unitreeh1_fold_clothes
 lerobot/unitreeh1_rearrange_objects
 lerobot/unitreeh1_two_robot_greeting
