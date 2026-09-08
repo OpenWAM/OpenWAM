@@ -8,6 +8,7 @@ from typing import Any
 from torch.utils.data import Sampler
 
 from open_wam.configs import (
+    BatchingMode,
     DataConfig,
     PaddedTargetPolicy,
     SampleTargetAlignment,
@@ -52,7 +53,9 @@ class HierarchicalFixedSegmentLocalLeRobotLatentDataset(
             raise ValueError(
                 "Hierarchical fixed-segment sampling requires `sample_construction.segment_frames`."
             )
-        if max(int(data_config.train_batch_size), int(data_config.val_batch_size)) > 1:
+        if data_config.batching.mode is BatchingMode.STRICT and max(
+            int(data_config.train_batch_size), int(data_config.val_batch_size)
+        ) > 1:
             raise ValueError(
                 "Hierarchical fixed-segment compact boundary sampling currently requires "
                 "`data.train_batch_size <= 1` and `data.val_batch_size <= 1` because the latent collate "
@@ -79,6 +82,10 @@ class HierarchicalFixedSegmentLocalLeRobotLatentDataset(
 
     def __len__(self) -> int:
         return self._epoch_sample_count
+
+    def batching_length_hint(self, index: int) -> int:
+        """Compact samples fit within the configured fixed segment."""
+        return self.segment_frames
 
     def build_train_sampler(
         self, *, world_size: int = 1, rank: int = 0

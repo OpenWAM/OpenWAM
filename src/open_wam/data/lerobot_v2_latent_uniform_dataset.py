@@ -51,6 +51,18 @@ class UniformSegmentLocalLeRobotLatentDataset(LocalLeRobotLatentWindowDataset):
     def __len__(self) -> int:
         return len(self._virtual_index)
 
+    def batching_length_hint(self, index: int) -> int:
+        """Return a metadata-only length bound without loading latent tensors."""
+
+        window_index, _ = self._virtual_index[index]
+        window = self.windows[window_index]
+        plan = self._uniform_segment_sampling_plan
+        candidates = plan.eligible_segment_lengths(
+            source_latent_frames=int(window.latent_num_frames),
+            start_padding_frames=plan.resolve_start_padding_frames(self.data_config, window),
+        )
+        return max(candidates)
+
     def build_train_sampler(
         self, *, world_size: int = 1, rank: int = 0
     ) -> Sampler[int]:

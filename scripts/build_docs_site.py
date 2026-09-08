@@ -38,6 +38,7 @@ PUBLIC_MARKDOWN_PATHS = (
     Path("reproducibility.md"),
     Path("running_experiments.md"),
     Path("testing.md"),
+    Path("variable_length_training_batches.md"),
     Path("video_action_composition.md"),
     Path("video_only_training.md"),
 )

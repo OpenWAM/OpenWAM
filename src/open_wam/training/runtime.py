@@ -9,6 +9,7 @@ from torch.utils.data import DataLoader
 
 from open_wam.configs import (
     AuxiliaryValidationTaskConfig,
+    BatchingMode,
     CheckpointMode,
     ExperimentConfig,
     LoopPolicyName,
@@ -90,6 +91,33 @@ def _checkpointing_requested(config: ExperimentConfig) -> bool:
             and trainer_config.save_interval > 0
         )
     )
+
+
+def _validation_metric_weight(batch: object) -> int:
+    """Keep legacy batch means, but count original samples in variable batches.
+
+    The variable-length pipeline returns an equal-weight mean of per-sample
+    decoder outputs. Weight that mean by its sample count so a short final
+    validation batch does not receive the same weight as a full batch.
+    """
+
+    mode = BatchingMode(getattr(batch, "batching_mode", BatchingMode.STRICT))
+    if mode is BatchingMode.STRICT:
+        return 1
+    lengths = getattr(batch, "sequence_lengths", ())
+    if not lengths or any(int(length) <= 0 for length in lengths):
+        raise ValueError(
+            "Variable-length validation requires positive sequence_lengths."
+        )
+    actions = getattr(batch, "actions", None)
+    if (
+        not isinstance(actions, torch.Tensor)
+        or int(actions.shape[0]) != len(lengths)
+    ):
+        raise ValueError(
+            "Validation sequence_lengths must match the original sample batch size."
+        )
+    return len(lengths)
 
 
 class TrainingRuntime:
@@ -639,7 +667,7 @@ class TrainingRuntime:
             loader = self.val_loader
         self.model.eval()
         metric_totals: dict[str, float] = {}
-        batch_count = 0
+        metric_weight_total = 0
         with torch.no_grad():
             for batch_idx, batch in enumerate(loader):
                 if limit_batches is not None and batch_idx >= limit_batches:
@@ -649,17 +677,18 @@ class TrainingRuntime:
                 )
                 with self.strategy.autocast_context():
                     result = self.step_executor.forward_train(device_batch)
+                metric_weight = _validation_metric_weight(device_batch)
                 for name, value in result.metrics.items():
                     metric_totals[name] = metric_totals.get(name, 0.0) + float(
                         value.item()
-                    )
-                batch_count += 1
-        global_batch_count = float(
+                    ) * metric_weight
+                metric_weight_total += metric_weight
+        global_metric_weight = float(
             self._distributed_sum(
-                torch.tensor(float(batch_count), device=self.strategy.device)
+                torch.tensor(float(metric_weight_total), device=self.strategy.device)
             ).item()
         )
-        if global_batch_count <= 0.0:
+        if global_metric_weight <= 0.0:
             return False
         averaged = {
             name: float(
@@ -667,7 +696,7 @@ class TrainingRuntime:
                     torch.tensor(value, device=self.strategy.device)
                 ).item()
             )
-            / global_batch_count
+            / global_metric_weight
             for name, value in metric_totals.items()
         }
         if task is not None:
@@ -675,7 +704,7 @@ class TrainingRuntime:
                 _auxiliary_validation_summary_metrics(
                     task=task,
                     metrics=averaged,
-                    batch_count=global_batch_count,
+                    batch_count=global_metric_weight,
                     dynamics_metric_namespace=self.dynamics_metric_namespace,
                 )
             )

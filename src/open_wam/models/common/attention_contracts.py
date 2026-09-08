@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -13,6 +14,7 @@ from open_wam.contracts import (
 
 if TYPE_CHECKING:
     from open_wam.configs import HistoryStreamVisibility
+    from .packed_token_layout import PackedTokenLayout
 
 try:
     from torch.nn.attention.flex_attention import BlockMask
@@ -45,6 +47,9 @@ class PreparedAttentionProfile:
     self_attention_block_mask: BlockMask | None = None
     cross_attention_block_mask: BlockMask | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    token_layout: PackedTokenLayout | None = None
+    # Sample-local query/key indices, broadcastable for dense and Flex backends.
+    self_attention_visibility: Callable[[torch.Tensor, torch.Tensor], torch.Tensor] | None = None
 
 
 VIDEO_THEN_ACTION_COUPLING = "video_then_action"

@@ -17,6 +17,7 @@ from .enums import (
     ActionTargetRepresentation,
     ActionTargetStateEncoding,
     AnchorPolicy,
+    BatchingMode,
     DataSplit,
     GripperRepresentation,
     DynamicsObjective,
@@ -42,6 +43,7 @@ __all__ = [
     "ActionNormalizationConfig",
     "ActionSchemaConfig",
     "ActionTargetConfig",
+    "BatchingConfig",
     "CausalPrefixSuffixBucketConfig",
     "DataConfig",
     "DynamicsRoutingConfig",
@@ -641,6 +643,39 @@ class DynamicsRoutingConfig:
         return {mode: weight / denominator for mode, weight in totals.items()}
 
 @dataclass(frozen=True)
+class BatchingConfig:
+    """Opt-in fixed-size batches of variable-length latent sequences.
+
+    Bucket mode sorts finite pools of the existing sampler stream by estimated
+    length and dynamically pads each batch. Train tail dropping is decided
+    before sorting, so the longest examples are not systematically discarded.
+    Strict mode preserves the historical loader/collator unchanged.
+    """
+
+    mode: BatchingMode = BatchingMode.STRICT
+    bucket_pool_size: int = 128
+    pad_to_multiple_of: int = 1
+    drop_last_train: bool = True
+
+    def __post_init__(self) -> None:
+        coerce_fields(self, enum_fields={"mode": BatchingMode})
+        for name in ("bucket_pool_size", "pad_to_multiple_of"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, Integral) or value <= 0:
+                raise ValueError(f"`data.batching.{name}` must be a positive integer.")
+        if not isinstance(self.drop_last_train, bool):
+            raise TypeError("`data.batching.drop_last_train` must be boolean.")
+
+
+def _coerce_batching_config(value: BatchingConfig | Mapping[str, Any]) -> BatchingConfig:
+    if isinstance(value, BatchingConfig):
+        return value
+    if not isinstance(value, Mapping):
+        raise TypeError("`data.batching` must be a mapping.")
+    return BatchingConfig(**value)
+
+
+@dataclass(frozen=True)
 class DataConfig:
     """Shared data-layer config independent from head choice."""
 
@@ -686,6 +721,7 @@ class DataConfig:
     )
     latent_temporal_layout: LatentTemporalLayout = LatentTemporalLayout.WAN_CAUSAL_STRIDE4
     adapter_options: dict[str, Any] = field(default_factory=dict)
+    batching: BatchingConfig = field(default_factory=BatchingConfig)
 
     def __post_init__(self) -> None:
         coerce_fields(
@@ -699,6 +735,7 @@ class DataConfig:
             optional_enum_fields={
                 "val_replay_status_policy": ReplayStatusPolicy,
             },
+            transforms={"batching": _coerce_batching_config},
         )
         if self.latent_temporal_layout is LatentTemporalLayout.EQUAL_BUCKET_LEGACY:
             raise ValueError(

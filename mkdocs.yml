@@ -16,6 +16,7 @@ nav:
       - Quickstart: quickstart.md
       - CLI Reference: cli.md
       - Training And Inference: running_experiments.md
+      - Variable-Length Training Batches: variable_length_training_batches.md
       - Video-Only Training: video_only_training.md
       - Compatibility: compatibility.md
   - Concepts:

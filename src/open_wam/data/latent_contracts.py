@@ -5,6 +5,27 @@ from typing import Any
 
 import torch
 
+from open_wam.configs.enums import BatchingMode
+
+
+# Temporal axes before adding the batch dimension. Transport and unpacking
+# share this contract; model-specific alignment is validated by the consumer.
+LATENT_SAMPLE_TENSOR_AXES = {
+    "video_latents": 1,
+    "actions": 0,
+    "action_mask": 0,
+    "state": 0,
+    "state_mask": 0,
+    "text_context": 0,
+    "negative_text_context": 0,
+    "canonical_video": 1,
+    "condition_latents": 1,
+    "proprio_context_state": 0,
+    "proprio_context_state_mask": 0,
+    "proprio_context_frames": 0,
+    "proprio_context_frames_mask": 0,
+}
+
 
 @dataclass
 class LatentWAMSample:
@@ -46,6 +67,10 @@ class LatentWAMBatch:
     proprio_context_frames: torch.Tensor | None = None
     proprio_context_frames_mask: torch.Tensor | None = None
     metadata: tuple[dict[str, Any], ...] = field(default_factory=tuple)
+    batching_mode: BatchingMode = BatchingMode.STRICT
+    sequence_lengths: tuple[int, ...] = ()
+    # None records an absent optional field; zero records a present empty tensor.
+    tensor_lengths: dict[str, tuple[int | None, ...]] = field(default_factory=dict)
 
 
 def collate_latent_wam_samples(samples: list[LatentWAMSample]) -> LatentWAMBatch:
@@ -120,6 +145,9 @@ def move_latent_wam_batch_to_device(
             batch.proprio_context_frames_mask.to(device) if batch.proprio_context_frames_mask is not None else None
         ),
         metadata=batch.metadata,
+        batching_mode=batch.batching_mode,
+        sequence_lengths=batch.sequence_lengths,
+        tensor_lengths=batch.tensor_lengths,
     )
 
 

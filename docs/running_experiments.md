@@ -66,6 +66,11 @@ uv run --extra train openwam-train \
   --save-root runs/<run-name>
 ```
 
+For supported DualExpert latent-data recipes, see
+[Variable-Length Training Batches](variable_length_training_batches.md) for
+opt-in length bucketing, padding, and sequence-isolated packing. Existing
+experiments keep the `strict` batching default.
+
 Use repeatable `--set section.field=value` arguments only for intentional run
 overrides. Keep the resolved config with the checkpoint. External schedulers
 may set process placement and retry policy, but should invoke this command

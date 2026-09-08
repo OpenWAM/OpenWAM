@@ -2145,12 +2145,14 @@ def test_mixed_video_latent_encoder_canonical_and_per_view_manifest_is_trainable
     train_dataset, _ = build_train_val_latent_datasets(latent_training_config.data)
     sample = train_dataset[0]
     assert sample.video_latents.shape == (48, 2, 2, 4)
+    # The exported config now includes the opt-in batching defaults. Removing
+    # that stanza reproduces the previous artifact fingerprint exactly.
     assert _mixed_video_encoding_artifact_fingerprint(
         output_root,
         temporary_root=tmp_path,
     ) == (
-        19087,
-        "6e7ec9b175e030ae61fecddde93c2d2a4d238e14d6053dd85945e0e32bcfca23",
+        19199,
+        "0dd9959b30c669f3d3aff39813effc9060953103d4a656bd4129bd9111f9286c",
     )
 
 

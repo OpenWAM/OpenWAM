@@ -9,6 +9,7 @@ from typing import Any
 from .enums import (
     ActionDecoderName,
     AttachSite,
+    BatchingMode,
     DualExpertActionExpertInitMode,
     DualExpertConditionMode,
     DualExpertPreset,
@@ -48,6 +49,10 @@ class DualExpertPolicyConfig(VideoActionPolicyConfig):
     @property
     def default_action_decoder(self) -> ActionDecoderName:
         return ActionDecoderName.DUAL_EXPERT
+
+    @property
+    def supported_batching_modes(self) -> tuple[BatchingMode, ...]:
+        return (BatchingMode.STRICT, BatchingMode.PADDED, BatchingMode.PACKED)
 
     def normalize_config_override_values(
         self, values: Mapping[str, Any]
