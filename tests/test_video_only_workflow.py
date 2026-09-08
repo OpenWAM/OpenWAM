@@ -456,6 +456,13 @@ def _load_rollout_script():
     return module
 
 
+def test_video_only_rollout_accepts_checkpoint_resolved_configs() -> None:
+    script_path = REPO_ROOT / "scripts/generate_video_only_rollout.py"
+    source = script_path.read_text()
+
+    assert "load_experiment_config(config_path, checkpoint_runtime_compat=True)" in source
+
+
 def test_video_only_rollout_cli_inherits_inference_defaults_and_uses_sample_indices() -> (
     None
 ):
@@ -680,7 +687,11 @@ def test_video_only_rollout_rejects_output_collision_before_model_construction(
     monkeypatch.setattr(
         module, "_existing_path", lambda *args, **kwargs: tmp_path / "assets"
     )
-    monkeypatch.setattr(module, "load_experiment_config", lambda _: config)
+    monkeypatch.setattr(
+        module,
+        "load_experiment_config",
+        lambda _, **kwargs: config,
+    )
     monkeypatch.setattr(
         module, "_resolve_runtime_config", lambda *args, **kwargs: config
     )

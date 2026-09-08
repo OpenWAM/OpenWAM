@@ -126,7 +126,7 @@ def main() -> None:
         args.reference_assets_root, label="reference assets root"
     )
     config = _resolve_runtime_config(
-        load_experiment_config(config_path),
+        load_experiment_config(config_path, checkpoint_runtime_compat=True),
         transformer_dir=transformer_dir,
         reference_assets_root=reference_assets_root,
         data_root=args.data_root,

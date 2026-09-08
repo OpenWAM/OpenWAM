@@ -269,6 +269,54 @@ weights may have changed in place, and record independent full artifact digests
 for publication results. Output directories are create-only and are published
 atomically after all files are complete.
 
+## Matched Checkpoint Diagnostics
+
+For source-checkout comparisons, run exported video weights through a common
+causal-video/VTA-marginal config and save recurrent latent predictions:
+
+```bash
+uv run --extra eval python scripts/evaluate_video_marginal_checkpoint.py \
+  --cfg configs/experiments/causal_video_prediction_libero_chunked_conditioned.yaml \
+  --checkpoint /models/video_checkpoint/transformer \
+  --data-root /datasets/libero_latents \
+  --empty-text-embedding /datasets/empty_emb.pt \
+  --reference-assets-root /models/lingbot-va-base \
+  --num-samples 20 --segment-frames 16 \
+  --geometry-mode fixed --train-window-size 30 \
+  --rollout-frame-chunk-size 4 --rollout-chunk-horizons 1,2,4 \
+  --skip-train-metrics --save-latent-artifacts \
+  --seed 1729 --output-json outputs/video_diagnostic/model_a.json
+```
+
+Use the same data/config/seed arguments for the second checkpoint. This scores
+the video marginal only, not native policy success. The default split is
+`train`; use an explicit held-out split for validation. Indices are evenly
+spaced in the configured dataset, not task-stratified. Horizons are measured
+in generated chunks; shorter horizons reuse the longest forecast's prefix.
+
+Optional `--num-shards N --shard-index I` preserves global sample ordinals and
+seeds. Give every shard a distinct output JSON. Aggregate the complete set:
+
+```bash
+uv run --extra eval python scripts/summarize_video_marginal_artifacts.py \
+  --label model_a --reports outputs/video_diagnostic/model_a.json \
+  --reference-assets-root /models/lingbot-va-base \
+  --output-dir outputs/video_diagnostic/model_a_rgb
+```
+
+The second stage loads the VAE without the transformer. It compares decoded
+latent targets and predictions, removes the one context frame, and reports
+dense RGB MSE, PSNR, and global (not local-window) SSIM. Optional FVD requires
+both `--uva-root` and `--i3d-checkpoint`; only requested horizons retain FVD
+clips. Infinite PSNR is encoded as the JSON string `"Infinity"`, with
+undefined standard deviation recorded as `null`.
+
+Use fresh output paths, immutable checkpoint/data assets, and clean source
+commits. The aggregator rejects inconsistent report contracts and incomplete
+sample coverage; standard-cost provenance is not a full content hash of large
+weight files. The utilities do not replace simulator evaluation or establish
+statistical equivalence between policies.
+
 ## Extend The Workflow
 
 New datasets should implement the uniform latent data contract and produce the
