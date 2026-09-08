@@ -25,6 +25,7 @@ from .enums import (
     ContextConditionLatentSource,
     DataSplit,
     DualExpertActionExpertInitMode,
+    DualExpertActionExpertSize,
     DualExpertConditionMode,
     DynamicsObjective,
     EvalMode,
@@ -95,6 +96,7 @@ def _validate_video_action_policy_contract(
         ("joint_timestep_coupling", JointTimestepCoupling),
         ("sequence_contract", VideoActionSequenceContract),
         ("proprio_context_mode", ProprioContextMode),
+        ("text_conditioning_mode", TextConditioningMode),
         ("context_condition_latent_source", ContextConditionLatentSource),
         ("history_stream_visibility", HistoryStreamVisibility),
     ):
@@ -242,6 +244,22 @@ def _validate_experiment_config(raw: Mapping[str, Any], issues: _IssueBuilder, *
                 sample_construction=sample_construction,
                 issues=issues,
             )
+            if (
+                policy_variant.get("text_conditioning_mode")
+                == TextConditioningMode.DISABLED.value
+            ):
+                if dropout_probability not in (None, 0.0):
+                    issues.error(
+                        "training.text_condition_dropout_prob",
+                        "Disabled text conditioning requires 0.0; "
+                        "every sample already uses the blank-text embedding.",
+                    )
+                if (inference or {}).get("guidance_scale", 1.0) != 1.0:
+                    issues.error(
+                        "inference.guidance_scale",
+                        "Disabled text conditioning requires 1.0; "
+                        "conditioned and unconditioned branches are identical.",
+                    )
         if policy_name == PolicyVariantName.PARALLEL_STREAM.value:
             for derived_field in (
                 "runtime_mode",
@@ -278,6 +296,13 @@ def _validate_experiment_config(raw: Mapping[str, Any], issues: _IssueBuilder, *
                 policy_variant,
                 "action_expert_init_mode",
                 DualExpertActionExpertInitMode,
+                issues,
+                "policy_variant",
+            )
+            _validate_enum(
+                policy_variant,
+                "action_expert_size",
+                DualExpertActionExpertSize,
                 issues,
                 "policy_variant",
             )

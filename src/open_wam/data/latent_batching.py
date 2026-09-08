@@ -6,6 +6,7 @@ import math
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, replace
 from itertools import islice
+from numbers import Integral
 
 import torch
 from torch.utils.data import Sampler
@@ -19,6 +20,70 @@ from .latent_contracts import (
     _metadata_with_action_stats,
     collate_latent_wam_samples,
 )
+
+
+def select_latent_batch_samples(
+    batch: LatentWAMBatch, indices: tuple[int, ...]
+) -> LatentWAMBatch:
+    """Select samples and trim transport padding without resampling geometry.
+
+    Optional/empty tensors retain the shared latent transport contract. Sample
+    metadata, masks and original extents remain unchanged across subdivision.
+    """
+    count = len(batch.sequence_lengths)
+    if batch.batching_mode is not BatchingMode.PACKED or count <= 0:
+        raise ValueError("Token-budget selection requires a nonempty packed batch.")
+    if (
+        not indices
+        or any(
+            isinstance(index, bool)
+            or not isinstance(index, Integral)
+            or not 0 <= index < count
+            for index in indices
+        )
+        or len(set(indices)) != len(indices)
+    ):
+        raise ValueError("Selected sample indices must be nonempty, unique and in range.")
+    if len(batch.metadata) != count:
+        raise ValueError("Packed sample metadata must match sequence_lengths.")
+    if batch.task_text is not None and len(batch.task_text) != count:
+        raise ValueError("Packed task_text must match sequence_lengths.")
+    payload, selected_lengths = {}, {}
+    for name, sample_axis in LATENT_SAMPLE_TENSOR_AXES.items():
+        value = getattr(batch, name)
+        if value is None:
+            continue
+        axis = sample_axis + 1
+        if not isinstance(value, torch.Tensor) or value.ndim <= axis or value.shape[0] != count:
+            raise ValueError(f"Invalid packed tensor shape for {name!r}.")
+        lengths = batch.tensor_lengths.get(name)
+        if lengths is None or len(lengths) != count or any(
+            length is not None and (
+                isinstance(length, bool)
+                or not isinstance(length, Integral)
+                or not 0 <= length <= value.shape[axis]
+            )
+            for length in lengths
+        ):
+            raise ValueError(f"Invalid original tensor lengths for {name!r}.")
+        extents = tuple(lengths[index] for index in indices)
+        selected_lengths[name] = extents
+        if all(extent is None for extent in extents):
+            payload[name] = None
+            continue
+        slices = [slice(None)] * value.ndim
+        slices[axis] = slice(0, max(extent for extent in extents if extent is not None))
+        payload[name] = value[tuple(slices)].index_select(
+            0, torch.tensor(indices, device=value.device, dtype=torch.long)
+        )
+    return replace(
+        batch,
+        **payload,
+        metadata=tuple(dict(batch.metadata[index]) for index in indices),
+        task_text=None if batch.task_text is None else tuple(batch.task_text[index] for index in indices),
+        sequence_lengths=tuple(batch.sequence_lengths[index] for index in indices),
+        tensor_lengths=selected_lengths,
+    )
 
 
 class LengthBucketSampler(Sampler[int]):

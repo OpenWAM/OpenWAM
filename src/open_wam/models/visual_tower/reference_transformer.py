@@ -14,6 +14,26 @@ def preferred_reference_dtype(device: torch.device) -> torch.dtype:
     return torch.bfloat16
 
 
+def _requested_export_failure_message(
+    *,
+    backbone_config: SharedVideoTransformerConfig,
+    transformer_dir: object,
+    reason: str,
+) -> str:
+    """Keep requested artifact failures distinct from intentional random init."""
+    return (
+        f"Requested backbone warm start is unusable: {reason}\n"
+        f"  looked for: {transformer_dir}\n"
+        f"  backbone.runtime_backbone_artifact_path: {backbone_config.runtime_backbone_artifact_path}\n"
+        f"  backbone.pretrained_model_name_or_path: {backbone_config.pretrained_model_name_or_path}\n"
+        f"  backbone.transformer_subdir: {backbone_config.transformer_subdir}\n"
+        "A checkpoint saved with `trainer.export_runtime_backbone: false` may have "
+        "model weights but no transformer export. Export the runtime backbone or "
+        "set `backbone.runtime_backbone_artifact_path` to a complete export. "
+        "Remove the requested artifact only if random initialization was intended."
+    )
+
+
 def build_reference_transformer(
     backbone_config: SharedVideoTransformerConfig,
     *,
@@ -24,21 +44,35 @@ def build_reference_transformer(
     transformer_dir = resolve_runtime_backbone_dir(backbone_config)
     if transformer_dir is not None and transformer_dir.exists():
         init_mode = getattr(backbone_config, "reference_core_init_mode", ReferenceCoreInitMode.FULL)
-        if init_mode == ReferenceCoreInitMode.VIDEO_ONLY:
-            # Video-only init only needs the checkpoint-native reference model
-            # so we load it with its original config/action dimensions and copy
-            # the shared/video weights out later.
+        try:
+            if init_mode == ReferenceCoreInitMode.VIDEO_ONLY:
+                # Retain checkpoint-native action dimensions for video-only init.
+                return model_cls.from_pretrained(
+                    str(transformer_dir),
+                    torch_dtype=preferred_dtype,
+                )
             return model_cls.from_pretrained(
                 str(transformer_dir),
                 torch_dtype=preferred_dtype,
+                action_dim=action_dim,
             )
-        load_kwargs = {
-            "torch_dtype": preferred_dtype,
-            "action_dim": action_dim,
-        }
-        return model_cls.from_pretrained(
-            str(transformer_dir),
-            **load_kwargs,
+        except Exception as error:
+            raise RuntimeError(
+                _requested_export_failure_message(
+                    backbone_config=backbone_config,
+                    transformer_dir=transformer_dir,
+                    reason=f"{type(error).__name__} while loading it -- {error}",
+                )
+            ) from error
+    if transformer_dir is not None:
+        # Covers canonical detached artifacts, historical model roots, and
+        # explicit absolute component paths without reviving ambiguous resume.
+        raise FileNotFoundError(
+            _requested_export_failure_message(
+                backbone_config=backbone_config,
+                transformer_dir=transformer_dir,
+                reason="the resolved transformer directory does not exist",
+            )
         )
     attention_head_dim = backbone_config.attention_head_dim or (backbone_config.hidden_size // backbone_config.num_heads)
     return model_cls(

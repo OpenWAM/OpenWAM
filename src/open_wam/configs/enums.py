@@ -472,6 +472,13 @@ class DualExpertActionExpertInitMode(StrEnum):
     VIDEO_WEIGHT_INTERPOLATE = "video_weight_interpolate"
 
 
+class DualExpertActionExpertSize(StrEnum):
+    """Optional action-only topology; configured preserves existing dimensions."""
+
+    CONFIGURED = "configured"
+    SMALL_500M = "small_500m"
+
+
 class DualExpertConditionMode(StrEnum):
     """Which video branch the DualExpert action expert conditions on."""
 
@@ -857,6 +864,7 @@ class SchedulerName(StrEnum):
     CONSTANT = "constant"
     WARMUP_CONSTANT = "warmup_constant"
     CONSTANT_WITH_WARMUP = "constant_with_warmup"
+    WARMUP_COSINE = "warmup_cosine"
 
 
 class TrainingObjective(StrEnum):
@@ -945,6 +953,7 @@ class EvalPredictionSource(StrEnum):
     DECODER_ACTION_PRED = "decoder_action_pred"
     RAW_CHUNK_ACTION_PRED = "raw_chunk_action_pred"
     RAW_CHUNK_ACTION_PRED_TAIL_ALIGNED = "raw_chunk_action_pred_tail_aligned"
+    GENERATED_CHUNK_FRAME_ALIGNED = "generated_chunk_frame_aligned"
     DECODER_ACTION_PRED_UNMATCHED = "decoder_action_pred_unmatched"
     DECODER_PREDICTED_LATENTS = "decoder_predicted_latents"
     DECODER_PREDICTED_VIDEO_LATENTS = "decoder_predicted_video_latents"

@@ -235,6 +235,17 @@ def _encode_condition_latents(
             batch_indices = source_indices[start : start + max(1, int(batch_size))]
             frames = [_read_video_frame(reader, frame_index) for frame_index in batch_indices]
             video = _frames_to_video_tensor(frames, device=device)
+            # Match the payload's own encode geometry before hitting the VAE.
+            # Without this the raw mp4 resolution goes in unchanged, which is a
+            # no-op only when the source happens to equal video_height/width
+            # (true for LIBERO's 128x128, false for RoboTwin's 640x480 against a
+            # 256x320 / 128x160 encode). Same bilinear resize the runtime uses in
+            # reference_assets.py's per-camera path, so the condition latent is
+            # produced the way the model will see it.
+            _target_h = int(payload.get("video_height") or video.shape[-2])
+            _target_w = int(payload.get("video_width") or video.shape[-1])
+            if (int(video.shape[-2]), int(video.shape[-1])) != (_target_h, _target_w):
+                video = assets._resize_rgb_chunk(video, _target_h, _target_w)
             latents = assets.encode_video(video, placements=None, reset_cache=True)
             if tuple(latents.shape[-2:]) != (latent_height, latent_width):
                 raise ValueError(
@@ -698,13 +709,37 @@ def _condition_source_frame_indices(
     return indices
 
 
+_MAX_FRAME_BACKOFF = 32
+
+
 def _read_video_frame(reader: Any, frame_index: int) -> Any:
+    # StopIteration as well as IndexError. imageio's pyav backend signals a
+    # past-the-end read by exhausting its decoder, which surfaces as
+    # StopIteration; only the ffmpeg backend raises IndexError. Catching just
+    # IndexError left this fallback unreachable for every pyav-read corpus, and
+    # the augmenter died on the first episode instead of clamping to the last
+    # frame the way it was written to.
+    index = int(frame_index)
     try:
-        return reader.get_data(int(frame_index))
-    except IndexError:
-        metadata = reader.get_meta_data()
-        frame_count = int(metadata.get("nframes") or frame_index + 1)
-        return reader.get_data(max(0, frame_count - 1))
+        return reader.get_data(index)
+    except (IndexError, StopIteration):
+        pass
+    # Walk backwards from the requested index. Deliberately NOT via
+    # get_meta_data(): imageio's pyav backend seeks inside that call too and
+    # raises `TypeError: unsupported operand type(s) for *: 'NoneType' and
+    # 'Fraction'` on these containers, so the old fallback traded one exception
+    # for another. The overshoot is a frame or two in practice; the bound keeps a
+    # genuinely unreadable stream from turning into a linear scan.
+    for candidate in range(index - 1, max(-1, index - 1 - _MAX_FRAME_BACKOFF), -1):
+        try:
+            return reader.get_data(candidate)
+        except (IndexError, StopIteration):
+            continue
+    raise RuntimeError(
+        f"no readable frame at or before index {index} within "
+        f"{_MAX_FRAME_BACKOFF} frames; the video is shorter than the latent "
+        f"payload's frame_ids imply"
+    )
 
 
 def _frames_to_video_tensor(frames: list[Any], *, device: torch.device) -> torch.Tensor:

@@ -67,6 +67,48 @@ def _masked_action_mse(
     return action_mse.sum() / action_denom
 
 
+_POSE_BLOCK_DIMS = 10
+_BLOCK_GROUPS = (("xyz", 0, 3), ("rot6", 3, 9), ("grip", 9, 10))
+
+
+def _masked_action_mse_by_group(
+    *,
+    action_pred: torch.Tensor,
+    target_actions: torch.Tensor,
+    action_mask: torch.Tensor | None,
+    action_dim: int,
+) -> dict[str, torch.Tensor]:
+    """Report per-pose-group MSE without changing the loss.
+
+    The repeated [xyz(3), rot6(6), gripper(1)] convention is used only when
+    the action width is a positive multiple of ten; other widths are untouched.
+    """
+    if action_dim <= 0 or action_dim % _POSE_BLOCK_DIMS:
+        return {}
+    squared = torch.nn.functional.mse_loss(
+        action_pred.float(), target_actions.float(), reduction="none"
+    )
+    if action_mask is not None:
+        mask = action_mask.float()
+        if mask.shape != squared.shape:
+            mask = mask.expand_as(squared)
+        squared = squared * mask
+    else:
+        mask = None
+    blocks = action_dim // _POSE_BLOCK_DIMS
+    out: dict[str, torch.Tensor] = {}
+    for name, lo, hi in (*_BLOCK_GROUPS, ("pose", 0, 9)):
+        cols = [block * _POSE_BLOCK_DIMS + index for block in range(blocks) for index in range(lo, hi)]
+        part = squared[..., cols]
+        denom = (
+            mask[..., cols].sum().clamp_min(1.0)
+            if mask is not None
+            else torch.tensor(float(part.numel()), device=part.device)
+        )
+        out[f"action_mse_{name}"] = part.sum() / denom
+    return out
+
+
 def _masked_video_flow_match_loss(
     *,
     flow_pred: torch.Tensor,
@@ -187,8 +229,15 @@ class DualExpertActionDecoder(ActionDecoder):
                     "future_video_flow_pred": train_artifacts.video.flow_pred.detach(),
                 }
             )
+        group_mse = _masked_action_mse_by_group(
+            action_pred=train_artifacts.action.denoised_actions,
+            target_actions=batch.actions,
+            action_mask=train_artifacts.action.action_mask,
+            action_dim=self.action_dim,
+        )
         metrics = {
             "action_mse": action_mse.detach(),
+            **{key: value.detach() for key, value in group_mse.items()},
             "action_diffusion_loss": diffusion_loss.detach(),
             "weighted_action_diffusion_loss": weighted_action_loss.detach(),
             "latent_mse": latent_mse.detach(),

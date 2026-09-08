@@ -14,6 +14,7 @@ PUBLIC_DOCS = REPO_ROOT / "docs"
 OUTPUT_SENTINEL = ".open_wam_generated_docs"
 TEXT_SUFFIXES = {".csv", ".json", ".md", ".txt", ".yaml", ".yml"}
 PUBLIC_MARKDOWN_PATHS = (
+    Path("action_expert_sizes.md"),
     Path("architecture.md"),
     Path("artifacts.md"),
     Path("benchmarks.md"),

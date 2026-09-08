@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
 from pathlib import Path
 
 import torch
@@ -17,7 +18,9 @@ from open_wam.configs import (
     validate_experiment_config_runtime_contract,
 )
 from open_wam.data.artifacts import DatasetArtifactStatus
+from open_wam.data.latent_batching import select_latent_batch_samples
 from open_wam.pipelines import build_variant_pipeline_from_config
+from open_wam.pipelines.token_cost import build_training_token_cost_fn
 
 from .auxiliary_validation import (
     AuxiliaryValidationDataset,
@@ -55,6 +58,7 @@ from .optim import (
 from .state import TrainState
 from .step_executor import PipelineTrainStepExecutor, build_batch_adapter
 from .strategies import build_training_strategy
+from .token_budget import plan_token_microbatches, token_microbatch_loss_scale
 
 # Keep historical runtime-module lookups stable while canonical owners remain
 # role-specific. These names are compatibility aliases, not extension points.
@@ -141,6 +145,7 @@ class TrainingRuntime:
         dynamics_metric_namespace: str | None = None,
         dataset_artifacts: tuple[DatasetArtifactStatus, ...] = (),
         auxiliary_validation_runs: tuple[AuxiliaryValidationRun, ...] = (),
+        token_cost_fn: Callable[[object], tuple[int, ...]] | None = None,
     ) -> None:
         self.config = config
         self.model = model
@@ -159,6 +164,8 @@ class TrainingRuntime:
         self.auxiliary_validation_runs = auxiliary_validation_runs
         self._last_validation_optimizer_step: int | None = None
         self._accumulated_train_metrics: dict[str, list[torch.Tensor]] = {}
+        self.last_token_batch_plan: dict[str, object] | None = None
+        self.token_cost_fn = token_cost_fn
 
     @classmethod
     def from_config(
@@ -170,6 +177,7 @@ class TrainingRuntime:
         config = validate_experiment_config_runtime_contract(
             resolve_experiment_config(config)
         )
+        token_cost_fn = build_training_token_cost_fn(config)
         resolved_launch_context = launch_context or DistributedLaunchContext.from_env()
         validate_training_launch(config.trainer, resolved_launch_context)
         dataset_artifacts = preflight_runtime_dataset_artifacts(config)
@@ -253,6 +261,7 @@ class TrainingRuntime:
             dynamics_metric_namespace=dynamics_metric_namespace,
             dataset_artifacts=dataset_artifacts,
             auxiliary_validation_runs=auxiliary_validation_runs,
+            token_cost_fn=token_cost_fn,
         )
         if config.trainer.initialize_weights_from is not None:
             runtime.initialize_weights(config.trainer.initialize_weights_from)
@@ -543,9 +552,6 @@ class TrainingRuntime:
         self.train_state.next_batch_index = 0
 
     def _train_micro_step(self, batch) -> None:
-        device_batch = self.step_executor.batch_adapter.move_to_device(
-            batch, self.strategy.device
-        )
         self.model.train()
         gradient_accumulation_steps = max(
             1, self.config.training.gradient_accumulation_steps
@@ -553,14 +559,53 @@ class TrainingRuntime:
         should_update = (
             self.train_state.global_step + 1
         ) % gradient_accumulation_steps == 0
-        self.strategy.set_gradient_sync(self.model, enabled=should_update)
-        with self.strategy.autocast_context():
-            result = self.step_executor.forward_train(device_batch)
-            loss = result.loss / gradient_accumulation_steps
-        self.strategy.backward(loss)
+        batching = getattr(getattr(self.config, "data", None), "batching", None)
+        max_tokens = getattr(batching, "max_tokens", None)
+        if max_tokens is None:
+            device_batch = self.step_executor.batch_adapter.move_to_device(
+                batch, self.strategy.device
+            )
+            self.strategy.set_gradient_sync(self.model, enabled=should_update)
+            with self.strategy.autocast_context():
+                result = self.step_executor.forward_train(device_batch)
+                loss = result.loss / gradient_accumulation_steps
+            self.strategy.backward(loss)
+            self._accumulate_train_metrics(result.metrics)
+            del result, loss, device_batch
+        else:
+            groups, costs = self._plan_token_batch(batch, max_tokens=max_tokens)
+            for physical_index, indices in enumerate(groups):
+                physical_batch = select_latent_batch_samples(batch, indices)
+                device_batch = self.step_executor.batch_adapter.move_to_device(
+                    physical_batch, self.strategy.device
+                )
+                self.strategy.set_gradient_sync(
+                    self.model,
+                    enabled=should_update and physical_index == len(groups) - 1,
+                )
+                with self.strategy.autocast_context():
+                    result = self.step_executor.forward_train(device_batch)
+                    loss = result.loss * token_microbatch_loss_scale(
+                        len(indices), len(costs), gradient_accumulation_steps
+                    )
+                self.strategy.backward(loss)
+                self._accumulate_train_metrics(
+                    result.metrics, sample_weight=len(indices) / len(costs)
+                )
+                # Never keep several physical graphs/outputs alive until the
+                # logical boundary: each backward must release its activations.
+                del result, loss, device_batch, physical_batch
+            batching_metrics = {
+                "batching/physical_microbatches": len(groups),
+                "batching/max_tokens": max(sum(costs[i] for i in group) for group in groups),
+                "batching/samples": len(costs),
+            }
+            self._accumulate_train_metrics({
+                name: torch.tensor(float(value), device=self.strategy.device)
+                for name, value in batching_metrics.items()
+            })
         self.train_state.global_step += 1
         self.train_state.seen_batches += 1
-        self._accumulate_train_metrics(result.metrics)
 
         if not should_update:
             return
@@ -602,6 +647,60 @@ class TrainingRuntime:
                 phase="train",
                 metrics=metric_payload,
             )
+
+    def _plan_token_batch(self, batch, *, max_tokens: int):
+        """Agree on a nonempty physical-call schedule before any model forward.
+
+        FSDP all-gathers occur even during no-sync accumulation. Every rank must
+        therefore execute the same number of forwards/backwards, not merely
+        agree on the final gradient-sync boundary. Validation errors are also
+        exchanged so one rank cannot fail locally while peers enter the model.
+        """
+        costs: tuple[int, ...] = ()
+        local = {"error": None, "samples": 0, "groups": 0, "max_tokens": max_tokens}
+        try:
+            if not callable(self.token_cost_fn):
+                raise ValueError("Token-budget execution requires a configured token-cost callback.")
+            costs = self.token_cost_fn(batch)
+            if len(costs) != len(batch.sequence_lengths):
+                raise ValueError("Token-cost callback must account for every original sample.")
+            groups = plan_token_microbatches(costs, max_tokens=max_tokens)
+            # Also validate every physical slice on CPU before collective
+            # admission. It must not recollate or modify shared C/W metadata.
+            for group in groups:
+                select_latent_batch_samples(batch, group)
+            local.update(samples=len(costs), groups=len(groups))
+        except Exception as error:
+            local["error"] = f"{type(error).__name__}: {error}"
+        statuses = [local]
+        if dist.is_initialized():
+            statuses = [None] * dist.get_world_size()
+            dist.all_gather_object(statuses, local)
+        errors = [
+            f"rank {rank}: {status['error']}"
+            for rank, status in enumerate(statuses)
+            if status["error"]
+        ]
+        if errors:
+            raise ValueError("Token-budget admission failed: " + "; ".join(errors))
+        if len({status["samples"] for status in statuses}) != 1:
+            raise ValueError("Token-budget training requires equal logical sample counts across ranks.")
+        if len({status["max_tokens"] for status in statuses}) != 1:
+            raise ValueError("Token-budget training requires the same max_tokens across ranks.")
+        target = max(status["groups"] for status in statuses)
+        groups = plan_token_microbatches(
+            costs, max_tokens=max_tokens, target_microbatches=target
+        )
+        self.last_token_batch_plan = {
+            "token_costs": costs,
+            "groups": groups,
+            "physical_token_counts": tuple(
+                sum(costs[i] for i in group) for group in groups
+            ),
+            "logical_samples": len(costs),
+            "max_tokens": max_tokens,
+        }
+        return groups, costs
 
     def _report_nonfinite_gradients(self, *, limit: int = 20) -> None:
         diagnostics: list[dict[str, object]] = []
@@ -773,12 +872,14 @@ class TrainingRuntime:
             )
         self.strategy.barrier()
 
-    def _accumulate_train_metrics(self, metrics: dict[str, torch.Tensor]) -> None:
+    def _accumulate_train_metrics(
+        self, metrics: dict[str, torch.Tensor], *, sample_weight: float = 1.0
+    ) -> None:
         gradient_accumulation_steps = max(
             1, self.config.training.gradient_accumulation_steps
         )
         for name, value in metrics.items():
-            scaled_value = value.detach() / gradient_accumulation_steps
+            scaled_value = value.detach() * sample_weight / gradient_accumulation_steps
             self._accumulated_train_metrics.setdefault(name, []).append(scaled_value)
 
     def _finalize_accumulated_train_metrics(self) -> dict[str, float]:

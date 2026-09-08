@@ -168,7 +168,7 @@ def test_load_repo_targets_from_text_and_infers_source_groups(tmp_path: Path) ->
             [
                 "# comment",
                 "lerobot/aloha_static_towel",
-                "DaivdYuan/exumi-insert-pen-lerobot",
+                "DaivdYuan/hub-flip-bagel-lerobot",
                 "custom_group,other-org/custom-set",
             ]
         ),
@@ -177,10 +177,26 @@ def test_load_repo_targets_from_text_and_infers_source_groups(tmp_path: Path) ->
     targets = load_lerobot_consortium_repo_targets(repo_list, default_source_group="manual")
     assert tuple((item.source_group, item.repo_id) for item in targets) == (
         ("official_lerobot", "lerobot/aloha_static_towel"),
-        ("nmotion_current", "DaivdYuan/exumi-insert-pen-lerobot"),
+        ("nmotion_current", "DaivdYuan/hub-flip-bagel-lerobot"),
         ("custom_group", "other-org/custom-set"),
     )
     assert infer_lerobot_consortium_source_group("someone/foo", default_source_group="manual") == "manual"
+
+
+def test_domain_and_embodiment_inference_accepts_generic_metadata() -> None:
+    from open_wam.data import lerobot_consortium_index as index
+
+    assert index._infer_domain_type("example/collection", "Real-world robot data") == "real"
+    assert index._infer_domain_type("example/collection", "Recorded in simulation") == "sim"
+    assert index._infer_domain_type("example/collection", None) == "unknown"
+    embodiment, confidence, _ = index._infer_embodiment(
+        repo_id="example/collection",
+        robot_type=None,
+        action_dim=16,
+        state_dim=16,
+        readme_text="Dexterous hand manipulation",
+    )
+    assert (embodiment, confidence) == ("dexterous_hand", "high")
 
 
 def test_load_repo_targets_from_csv(tmp_path: Path) -> None:

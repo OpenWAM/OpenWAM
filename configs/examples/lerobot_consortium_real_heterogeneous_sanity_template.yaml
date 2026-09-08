@@ -1,15 +1,13 @@
 # Heterogeneous real-HF consortium template: `multicam_as_frames`.
 #
 # This file is a commented data-config template for the real sanity-check set:
-# - DaivdYuan/exumi-insert-pen-lerobot
-# - DaivdYuan/umi-bimanual-dish-washing-lerobot
 # - lerobot/aloha_static_towel
 # - lerobot/aloha_sim_insertion_human
 # - physical-intelligence/libero
 #
 # Important:
 # - This is intentionally a template, not a directly trainable recipe today.
-# - The five repos disagree on:
+# - The three repos disagree on:
 #   - metadata layout (`v3.0` parquet meta vs `v2.0` jsonl meta)
 #   - action/state keys (`action` + `observation.state` vs `actions` + `state`)
 #   - action/state dims
@@ -19,7 +17,7 @@
 #   - a single-slot camera-major video-only pretraining template
 #   - a channel-mapping template
 #   - an inspection-script config to edit into a runnable subset
-# - It is not yet a single clean training config for all five repos together.
+# - It is not yet a single clean training config for all three repos together.
 #
 # Companion file:
 # - `configs/examples/lerobot_consortium_real_heterogeneous_multicam_as_slots_template.yaml`
@@ -90,7 +88,7 @@ data:
   max_val_episodes: null
 
   # Use batch_size 1 for this heterogeneous-resolution sanity template.
-  # Even in single-slot mode, mixed 224x224, 256x256, and 640x480 raw views are
+  # Even in single-slot mode, mixed 256x256 and 640x480 raw views are
   # not yet globally collatable into a normal training batch without an
   # additional resizing/normalization step.
   train_batch_size: 1
@@ -98,9 +96,7 @@ data:
   num_workers: 0
 
   # Public action/state contract expected by downstream variants.
-  # This exact five-repo set is not action-compatible for one training run:
-  # - exumi_insert_pen: action/state dim 7/7
-  # - umi_bimanual_dish_washing: 14/14
+  # This exact three-repo set is not action-compatible for one training run:
   # - aloha_static_towel: 14/14
   # - aloha_sim_insertion_human: 14/14
   # - libero: 7/8
@@ -113,11 +109,11 @@ data:
     state_horizon: 1
 
   # Public supervision contract.
-  # This exact five-repo set is also mixed here:
-  # - four v3 repos use `action` and `observation.state`
+  # This exact three-repo set is also mixed here:
+  # - two v3 repos use `action` and `observation.state`
   # - LIBERO uses `actions` and `state`
   #
-  # So these keys are placeholders for editing, not a claim that all five fit today.
+  # So these keys are placeholders for editing, not a claim that all three fit today.
   action_target:
     representation: raw
     source_key: action
@@ -150,39 +146,6 @@ data:
   # Member list.
   # One item per dataset in the consortium.
   consortium_members:
-    - member_id: exumi_insert_pen
-      repo_id: DaivdYuan/exumi-insert-pen-lerobot
-      local_root: null
-      enabled: true
-      source_group: nmotion_current
-
-      # Optional member-local required channel list, used only when
-      # `channel_selection_mode: required_subset`.
-      include_channels: []
-
-      # Optional member-local explicit mappings.
-      # These override the top-level `channel_mappings` for this member.
-      channel_mappings:
-        - source_name: observation.images.camera0_rgb
-          target_slot: observation.images.slot0
-
-      # Optional per-member sampling weight.
-      # Meaning depends on `weight_mode`.
-      sampling_weight: 1.0
-
-    - member_id: umi_bimanual_dish_washing
-      repo_id: DaivdYuan/umi-bimanual-dish-washing-lerobot
-      local_root: null
-      enabled: true
-      source_group: nmotion_current
-      include_channels: []
-      channel_mappings:
-        - source_name: observation.images.camera0_rgb
-          target_slot: observation.images.slot0
-        - source_name: observation.images.camera1_rgb
-          target_slot: observation.images.slot0
-      sampling_weight: 1.0
-
     - member_id: aloha_static_towel
       repo_id: lerobot/aloha_static_towel
       local_root: null

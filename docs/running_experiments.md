@@ -71,10 +71,49 @@ For supported DualExpert latent-data recipes, see
 opt-in length bucketing, padding, and sequence-isolated packing. Existing
 experiments keep the `strict` batching default.
 
+The optional [small action expert](action_expert_sizes.md) keeps all 30 action
+layers aligned with the video backbone while reducing the action module to
+approximately 503 million parameters. Size selection and token-budget batching
+are independent, opt-in settings; existing recipes retain their defaults.
+
 Use repeatable `--set section.field=value` arguments only for intentional run
 overrides. Keep the resolved config with the checkpoint. External schedulers
 may set process placement and retry policy, but should invoke this command
 without embedding cluster paths in tracked configs.
+
+### Optional Conditioning And Supervision Controls
+
+To disable task text for a VideoAction policy, set these three overrides
+together; existing recipes remain task-prompt conditioned:
+
+```yaml
+policy_variant:
+  text_conditioning_mode: disabled
+training:
+  text_condition_dropout_prob: 0.0
+inference:
+  guidance_scale: 1.0
+```
+
+Disabled text uses the blank-text embedding, not another sample's prompt. It
+does not remove cross-attention parameters or imply a smaller model.
+
+Raw action/state layouts made of `[xyz(3), rot6(6), passthrough]` blocks can opt
+into `data.action_target.relative_pose_block_dims` (for example, 10). Actions
+are then expressed relative to each chunk's absolute observation anchor before
+normalization/mapping. The default `null` leaves raw absolute targets unchanged.
+`proprio_history_lag` optionally encodes historical pose relative to the current
+observation; separate `proprio_history_lag_pose` and
+`proprio_history_lag_gripper` overrides inherit that lag when null. Lags are
+nonnegative source-frame offsets. Action anchors remain absolute even when
+proprio context is lagged. These options require the stated pose-block layout;
+they are not settings for LIBERO's native 7D action interface.
+
+`training.scheduler_name: warmup_cosine` adds linear warmup followed by cosine
+decay to zero over `training.num_steps`. A positive `num_steps` is required.
+The existing constant and warmup-constant schedules retain their behavior.
+An explicitly requested missing or unloadable backbone export now fails with
+an actionable error instead of silently constructing a random model.
 
 ### Multi-GPU
 
@@ -568,6 +607,13 @@ not equivalent to a rollout-local causal-VAE reset at t0.
 ## Offline Evaluation
 
 Use eval configs for dataset-level metrics:
+
+For aligned latent batch evaluation with at least two complete chunks, the
+evaluator holds out the final complete chunk and supplies only the observed
+prefix. Action MSE uses the reported generation-frame position, not an assumed
+tail slice. Unknown or invalid alignment is reported as unavailable rather than
+scoring observed context. Optional RGB is trimmed only when its temporal mapping
+is known. This does not change training supervision or closed-loop LIBERO rollout.
 
 ```bash
 uv run --extra eval openwam-eval \

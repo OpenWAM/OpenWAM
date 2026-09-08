@@ -19,10 +19,15 @@ from open_wam.configs import (
     EvalMode,
     EvalPredictionSource,
     ExperimentConfig,
+    LatentTemporalLayout,
     ReferenceCoreInitMode,
     TrainerAccelerator,
     load_experiment_config,
     serialize_experiment_config,
+)
+from open_wam.contracts.video import (
+    WAN_TEMPORAL_CHUNK_SIZE,
+    wan_raw_frame_count_to_latent_count,
 )
 from open_wam.data import (
     LatentWAMBatch,
@@ -46,6 +51,7 @@ from open_wam.evals.evaluation_contracts import (
 )
 from open_wam.evals.evaluation_metrics import (
     _align_eval_action_tensors,
+    _align_eval_action_tensors_by_generation_frame,
     _masked_action_mse,
     _select_eval_action_prediction,
     _select_eval_video_prediction,
@@ -81,6 +87,7 @@ __all__ = ["EvaluationRequest", "EvaluationSummary", "resolve_evaluation_request
 # implementations live with their reusable metric and window contracts.
 _EVALUATION_COMPATIBILITY_EXPORTS = (
     _align_eval_action_tensors,
+    _align_eval_action_tensors_by_generation_frame,
     _align_rollout_window_tensor,
     _coerce_optional_positive_int,
     _group_dataset_indices_by_episode,
@@ -199,6 +206,51 @@ def _requires_observation_window_session_rebuild(
     )
 
 
+def _prepare_heldout_latent_eval_inputs(
+    batch: LatentWAMBatch,
+    *,
+    frame_chunk_size: int,
+    latent_temporal_layout: LatentTemporalLayout,
+) -> tuple[torch.Tensor, torch.Tensor | None, int]:
+    """Hold out the last complete chunk with explicit temporal geometry.
+
+    Optional RGB is restricted to the same observed prefix when its temporal
+    mapping is known, otherwise omitted. The sample's anchor state is unchanged:
+    it has no per-state timestamps from which to infer a different anchor.
+    This is evaluation-only; no training samples or losses are changed.
+    """
+    latents = batch.video_latents
+    canonical = batch.canonical_video
+    if latents.ndim != 5 or batch.actions.ndim != 3:
+        return latents, canonical, 0
+    total_frames = int(latents.shape[2])
+    total_slots = int(batch.actions.shape[1])
+    chunk_frames = int(frame_chunk_size)
+    if (
+        chunk_frames <= 0
+        or total_frames <= 0
+        or total_slots <= 0
+        or total_slots % total_frames
+        or total_frames // chunk_frames < 2
+    ):
+        return latents, canonical, 0
+    observed_frames = (total_frames // chunk_frames - 1) * chunk_frames
+    observed_latents = latents[:, :, :observed_frames].contiguous()
+    observed_rgb = None
+    if canonical is not None and canonical.ndim == 5:
+        raw_frames = int(canonical.shape[2])
+        if raw_frames == total_frames:
+            observed_rgb = canonical[:, :, :observed_frames].contiguous()
+        elif (
+            latent_temporal_layout == LatentTemporalLayout.WAN_CAUSAL_STRIDE4
+            and raw_frames > 0
+            and wan_raw_frame_count_to_latent_count(raw_frames) == total_frames
+        ):
+            observed_raw_frames = 1 + WAN_TEMPORAL_CHUNK_SIZE * (observed_frames - 1)
+            observed_rgb = canonical[:, :, :observed_raw_frames].contiguous()
+    return observed_latents, observed_rgb, total_slots // total_frames
+
+
 def run_evaluation(
     request: EvaluationRequest,
 ) -> EvaluationSummary:
@@ -266,11 +318,21 @@ def run_evaluation(
                 # `forward_infer_step` already runs the full denoising loop for
                 # the active variant. Batch mode simply evaluates that one-step
                 # inference path independently on each sampled window.
+                eval_action_tokens_per_frame = 0
+                observed_frames = 0
                 if isinstance(batch, LatentWAMBatch):
+                    observed_latents, observed_rgb, eval_action_tokens_per_frame = (
+                        _prepare_heldout_latent_eval_inputs(
+                            batch,
+                            frame_chunk_size=experiment_config.inference.frame_chunk_size,
+                            latent_temporal_layout=experiment_config.data.latent_temporal_layout,
+                        )
+                    )
+                    observed_frames = int(observed_latents.shape[2])
                     output = pipeline.forward_infer_step_from_latents(
-                        batch.video_latents,
+                        observed_latents,
                         infer_context,
-                        canonical_video=batch.canonical_video,
+                        canonical_video=observed_rgb,
                         text_context=batch.text_context,
                         negative_text_context=batch.negative_text_context,
                     )
@@ -281,17 +343,39 @@ def run_evaluation(
                     decoder_action_pred=output.decoder_output.action_pred,
                     policy_aux=output.policy_output.aux,
                 )
-                (
-                    action_prediction_source,
-                    action_prediction,
-                    aligned_target_actions,
-                    aligned_action_mask,
-                ) = _align_eval_action_tensors(
-                    source=action_prediction_source,
-                    prediction=action_prediction,
-                    target_actions=batch.actions,
-                    action_mask=batch.action_mask,
-                )
+                if eval_action_tokens_per_frame > 0:
+                    generation_start = output.policy_output.generation_frame_start
+                    if generation_start is None:
+                        generation_start = {
+                            **output.policy_output.aux,
+                            **output.decoder_output.aux,
+                        }.get("generation_frame_start")
+                    aligned = _align_eval_action_tensors_by_generation_frame(
+                        prediction=action_prediction,
+                        target_actions=batch.actions,
+                        action_mask=batch.action_mask,
+                        generation_frame_start=generation_start,
+                        action_tokens_per_frame=eval_action_tokens_per_frame,
+                    )
+                    if aligned is not None and generation_start >= observed_frames:
+                        action_prediction_source, action_prediction, aligned_target_actions, aligned_action_mask = aligned
+                    else:
+                        # Never score observed context or guess a tail when the
+                        # heldout window's generated geometry is unavailable.
+                        action_prediction_source = EvalPredictionSource.UNAVAILABLE
+                        aligned_target_actions, aligned_action_mask = batch.actions, batch.action_mask
+                else:
+                    (
+                        action_prediction_source,
+                        action_prediction,
+                        aligned_target_actions,
+                        aligned_action_mask,
+                    ) = _align_eval_action_tensors(
+                        source=action_prediction_source,
+                        prediction=action_prediction,
+                        target_actions=batch.actions,
+                        action_mask=batch.action_mask,
+                    )
                 video_prediction_source, video_prediction, aligned_target_video_latents = _select_eval_video_prediction(
                     target_video_latents=output.visual_outputs.frontend.video_latents,
                     decoder_aux=output.decoder_output.aux,
@@ -302,7 +386,7 @@ def run_evaluation(
                 target_video_shape = tuple(aligned_target_video_latents.shape)
                 if video_prediction is not None:
                     video_prediction_shape = tuple(video_prediction.shape)
-                if action_prediction.shape == aligned_target_actions.shape:
+                if action_prediction_source != EvalPredictionSource.UNAVAILABLE and action_prediction.shape == aligned_target_actions.shape:
                     action_mse_values.append(
                         _masked_action_mse(
                             action_prediction,

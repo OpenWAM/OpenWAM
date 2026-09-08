@@ -25,6 +25,10 @@ simulator integrations do not branch on architecture nicknames.
 | `dual_expert` | Video and action have separate transformer experts that execute paired blocks. | Six standard video/action programs, GJD, and conditional FDM/IDM. |
 | `causal_video_prediction` | The visual model runs without action supervision. | Video-only prediction. |
 
+For an action-only size reduction that preserves all 30 paired layers, see
+[Smaller action experts](action_expert_sizes.md). The optional `small_500m`
+profile leaves the video model and program semantics unchanged.
+
 The six standard video/action programs are:
 
 - `video_then_action`

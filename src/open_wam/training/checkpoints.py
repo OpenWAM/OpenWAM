@@ -322,6 +322,71 @@ def _validate_full_training_state_payload(
         )
 
 
+def _training_batch_contract(config: ExperimentConfig) -> dict[str, object]:
+    """Describe the logical cursor and token-admission schedule of a live run."""
+    return {
+        "version": 1,
+        "train_batch_size": int(config.data.train_batch_size),
+        "gradient_accumulation_steps": int(config.training.gradient_accumulation_steps),
+        "mode": config.data.batching.mode.value,
+        "max_tokens": (
+            None if config.data.batching.max_tokens is None
+            else int(config.data.batching.max_tokens)
+        ),
+        "pad_to_multiple_of": int(config.data.batching.pad_to_multiple_of),
+        # devices=1 does not always constrain a distributed launch, so the live
+        # process group, not the configuration's device hint, is authoritative.
+        "world_size": int(dist.get_world_size()) if dist.is_initialized() else 1,
+    }
+
+
+def _validate_training_batch_contract(
+    payload: dict[str, Any], config: ExperimentConfig, checkpoint_path: Path
+) -> None:
+    """Reject token-budget cursor reinterpretation before loading any weights."""
+    source = payload.get("training_batch_contract")
+    target_budgeted = config.data.batching.max_tokens is not None
+    source_budgeted = isinstance(source, dict) and source.get("max_tokens") is not None
+    if not target_budgeted and not source_budgeted:
+        # Legacy non-budgeted checkpoint behavior is intentionally unchanged.
+        return
+    suggestion = (
+        "Use initialize_weights_from (model-only initialization) to start a new "
+        "batching schedule instead of resuming the old training cursor."
+    )
+    if not isinstance(source, dict):
+        raise ValueError(
+            f"Checkpoint {checkpoint_path} has no compatible training_batch_contract "
+            f"for token-budget resume. {suggestion}"
+        )
+    target = _training_batch_contract(config)
+    integer_keys = (
+        "version", "train_batch_size", "gradient_accumulation_steps",
+        "pad_to_multiple_of", "world_size",
+    )
+    malformed = (
+        set(source) != set(target)
+        or any(type(source.get(key)) is not int or source[key] <= 0 for key in integer_keys)
+        or not isinstance(source.get("mode"), str)
+        or type(source.get("max_tokens")) is not int
+        or source["max_tokens"] <= 0
+    )
+    if malformed:
+        raise ValueError(
+            f"Checkpoint {checkpoint_path} has a malformed token-budget "
+            f"training_batch_contract. {suggestion}"
+        )
+    differences = {
+        key: {"checkpoint": source[key], "current": target[key]}
+        for key in target if source[key] != target[key]
+    }
+    if differences:
+        raise ValueError(
+            f"Checkpoint {checkpoint_path} has an incompatible token-budget "
+            f"training_batch_contract: {differences}. {suggestion}"
+        )
+
+
 def _raise_checkpoint_validation_error(error: Exception | None) -> None:
     if not dist.is_initialized():
         if error is not None:
@@ -450,6 +515,8 @@ class CheckpointManager:
                     "strategy_state_dict": strategy_state,
                 }
             )
+            if self.config.data.batching.max_tokens is not None:
+                payload["training_batch_contract"] = _training_batch_contract(self.config)
 
         if _is_rank_zero():
             try:
@@ -559,6 +626,7 @@ class CheckpointManager:
                     )
                 payload = loaded_payload
                 _validate_full_training_state_payload(payload, checkpoint_path)
+                _validate_training_batch_contract(payload, self.config, checkpoint_path)
                 checkpoint_train_state = TrainState.from_state_dict(
                     payload["train_state"]
                 )

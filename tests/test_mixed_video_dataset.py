@@ -2145,14 +2145,19 @@ def test_mixed_video_latent_encoder_canonical_and_per_view_manifest_is_trainable
     train_dataset, _ = build_train_val_latent_datasets(latent_training_config.data)
     sample = train_dataset[0]
     assert sample.video_latents.shape == (48, 2, 2, 4)
-    # The exported config now includes the opt-in batching defaults. Removing
-    # that stanza reproduces the previous artifact fingerprint exactly.
+    # The new optional token-budget and pose/proprio defaults change only the
+    # exported YAML. Tensor contents, sidecars, and manifests match the baseline.
+    assert latent_training_config.data.batching.max_tokens is None
+    assert latent_training_config.data.action_target.relative_pose_block_dims is None
+    assert latent_training_config.data.action_target.proprio_history_lag == 0
+    assert latent_training_config.data.action_target.proprio_history_lag_pose is None
+    assert latent_training_config.data.action_target.proprio_history_lag_gripper is None
     assert _mixed_video_encoding_artifact_fingerprint(
         output_root,
         temporary_root=tmp_path,
     ) == (
-        19199,
-        "0dd9959b30c669f3d3aff39813effc9060953103d4a656bd4129bd9111f9286c",
+        19360,
+        "85f51a3e601e5b68ee1f725c248ac68797cb1d4d73b6b7bcb3925a50d5da7ca2",
     )
 
 

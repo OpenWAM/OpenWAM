@@ -918,7 +918,9 @@ class SharedVideoTransformerCore(nn.Module):
         if hidden_states.device != output_device:
             hidden_states = hidden_states.to(device=output_device)
         temb = temb.to(device=output_device, dtype=hidden_states.dtype)
-        temb_scale_shift_table = self.scale_shift_table[None] + temb[:, :, None, ...]
+        temb_scale_shift_table = _materialize_runtime_parameter(
+            self.scale_shift_table, device=temb.device, dtype=self.scale_shift_table.dtype
+        )[None] + temb[:, :, None, ...]
         shift, scale = _select_chunk_slices(temb_scale_shift_table, 2)
         hidden_states = (
             self.norm_out(hidden_states.float()) * (1.0 + scale) + shift
@@ -1074,7 +1076,9 @@ class SharedVideoTransformerCore(nn.Module):
         if hidden_states.device != output_device:
             hidden_states = hidden_states.to(device=output_device)
         temb = temb.to(device=output_device, dtype=hidden_states.dtype)
-        temb_scale_shift_table = self.scale_shift_table[None] + temb[:, :, None, ...]
+        temb_scale_shift_table = _materialize_runtime_parameter(
+            self.scale_shift_table, device=temb.device, dtype=self.scale_shift_table.dtype
+        )[None] + temb[:, :, None, ...]
         shift, scale = _select_chunk_slices(temb_scale_shift_table, 2)
         hidden_states = (
             self.norm_out(hidden_states.float()) * (1.0 + scale) + shift
@@ -1167,9 +1171,11 @@ class SharedVideoTransformerCore(nn.Module):
             else:
                 hidden_states = forward_block(*block_args)
 
-        temb_scale_shift_table = self.scale_shift_table[None] + prepared.temb[
-            :, :, None, ...
-        ]
+        temb_scale_shift_table = _materialize_runtime_parameter(
+            self.scale_shift_table,
+            device=prepared.temb.device,
+            dtype=self.scale_shift_table.dtype,
+        )[None] + prepared.temb[:, :, None, ...]
         shift, scale = _select_chunk_slices(temb_scale_shift_table, 2)
         hidden_states = (
             self.norm_out(hidden_states.float())
@@ -1684,7 +1690,9 @@ class SharedVideoTransformerCore(nn.Module):
         if hidden_states.device != output_device:
             hidden_states = hidden_states.to(device=output_device)
         temb = temb.to(device=output_device, dtype=hidden_states.dtype)
-        temb_scale_shift_table = self.scale_shift_table[None] + temb[:, :, None, ...]
+        temb_scale_shift_table = _materialize_runtime_parameter(
+            self.scale_shift_table, device=temb.device, dtype=self.scale_shift_table.dtype
+        )[None] + temb[:, :, None, ...]
         shift, scale = _select_chunk_slices(temb_scale_shift_table, 2)
         hidden_states = (
             self.norm_out(hidden_states.float()) * (1.0 + scale) + shift

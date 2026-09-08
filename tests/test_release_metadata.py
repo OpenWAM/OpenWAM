@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 import io
+import json
 from pathlib import Path
 import tarfile
 import tomllib
@@ -31,6 +32,48 @@ def test_public_project_metadata_is_complete() -> None:
 @pytest.mark.unit
 def test_public_consortium_snapshot_has_no_private_repositories() -> None:
     validate_public_consortium_snapshot(REPO_ROOT)
+
+
+@pytest.mark.unit
+def test_public_consortium_snapshot_metadata_is_synchronized() -> None:
+    from open_wam.data.lerobot_consortium_contracts import (
+        build_lerobot_consortium_contract_catalog_from_inventory_rows,
+    )
+    from open_wam.data.lerobot_consortium_inventory_io import (
+        load_lerobot_consortium_inventory_rows,
+        render_lerobot_consortium_inventory_markdown,
+    )
+
+    index_root = REPO_ROOT / "notes" / "index"
+    rows = load_lerobot_consortium_inventory_rows(
+        index_root / "lerobot_consortium_hf_dataset_inventory.csv"
+    )
+    catalog = json.loads(
+        (index_root / "lerobot_consortium_hf_dataset_contracts.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    generated = build_lerobot_consortium_contract_catalog_from_inventory_rows(rows)
+    assert catalog["dataset_count"] == len(catalog["datasets"]) == len(rows)
+    assert catalog["contract_version"] == generated["contract_version"]
+    for stored, rebuilt in zip(catalog["datasets"], generated["datasets"], strict=True):
+        # Manifest-derived routing metadata is richer than CSV-derived estimates.
+        assert {key: value for key, value in stored.items() if key != "video_contract"} == {
+            key: value for key, value in rebuilt.items() if key != "video_contract"
+        }
+
+    markdown = (index_root / "lerobot_consortium_hf_dataset_inventory.md").read_text(
+        encoding="utf-8"
+    )
+    normalized = markdown.replace(
+        "# HF Dataset Inventory", "# LeRobot Consortium HF Dataset Inventory", 1
+    ).replace(
+        "This file is a shareable summary. The complete spreadsheet-friendly "
+        "output is the companion CSV.\n\n",
+        "",
+        1,
+    )
+    assert normalized == render_lerobot_consortium_inventory_markdown(rows)
 
 
 @pytest.mark.unit

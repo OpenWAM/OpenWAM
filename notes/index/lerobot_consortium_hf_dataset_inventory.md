@@ -1,8 +1,8 @@
 # HF Dataset Inventory
 
-- Total repos: `194`
-- nmotion_current: `23` repos, `6184` episodes, `36.08` hours, `23` with text annotations
-- official_lerobot: `171` repos, `183823` episodes, `2063.03` hours, `167` with text annotations
+- Total repos: `177`
+- nmotion_current: `7` repos, `1193` episodes, `7.08` hours, `7` with text annotations
+- official_lerobot: `170` repos, `182376` episodes, `2043.60` hours, `166` with text annotations
 - Rows with incomplete metadata: `2`
   - `lerobot/config_examples`: missing meta/info.json
   - `lerobot/libero-assets`: missing meta/info.json
@@ -11,14 +11,6 @@ This file is a shareable summary. The complete spreadsheet-friendly output is th
 
 | Source | Repo | Domain | Size (GB) | Episodes | Hours | Obs FPS | Action FPS | Avg sec/ep | Embodiment | Action dim | Cameras | Visual dims | Text annotations |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| nmotion_current | DaivdYuan/exumi-insert-pen-lerobot | real | 0.29 | 139 | 0.96 | 30.0 | 30.0 | 24.9 | single_arm (medium) | 7 | 1 | observation.images.camera0_rgb:224x224x3 | single_task_instruction |
-| nmotion_current | DaivdYuan/exumi-open-bottle-lerobot | real | 0.29 | 270 | 1.17 | 30.0 | 30.0 | 15.6 | single_arm (medium) | 7 | 1 | observation.images.camera0_rgb:224x224x3 | single_task_instruction |
-| nmotion_current | DaivdYuan/exumi-peg-in-hole-lerobot | real | 0.29 | 256 | 0.83 | 30.0 | 30.0 | 11.7 | single_arm (medium) | 7 | 1 | observation.images.camera0_rgb:224x224x3 | single_task_instruction |
-| nmotion_current | DaivdYuan/exumi-pick-brocolli-lerobot | real | 0.29 | 30 | 0.12 | 30.0 | 30.0 | 14.6 | single_arm (medium) | 7 | 1 | observation.images.camera0_rgb:224x224x3 | single_task_instruction |
-| nmotion_current | DaivdYuan/exumi-pick-carrot-lerobot | real | 0.29 | 135 | 0.41 | 30.0 | 30.0 | 11.0 | single_arm (medium) | 7 | 1 | observation.images.camera0_rgb:224x224x3 | single_task_instruction |
-| nmotion_current | DaivdYuan/exumi-pick-cube-lerobot | real | 0.29 | 30 | 0.08 | 30.0 | 30.0 | 9.9 | single_arm (medium) | 7 | 1 | observation.images.camera0_rgb:224x224x3 | single_task_instruction |
-| nmotion_current | DaivdYuan/exumi-pull-drawer-lerobot | real | 0.29 | 281 | 1.51 | 30.0 | 30.0 | 19.3 | single_arm (medium) | 7 | 1 | observation.images.camera0_rgb:224x224x3 | single_task_instruction |
-| nmotion_current | DaivdYuan/exumi-stack-cube-lerobot | real | 0.29 | 201 | 0.47 | 30.0 | 30.0 | 8.5 | single_arm (medium) | 7 | 1 | observation.images.camera0_rgb:224x224x3 | single_task_instruction |
 | nmotion_current | DaivdYuan/hub-flip-bagel-in-the-wild-lerobot | real | 0.29 | 274 | 0.85 | 30.0 | 30.0 | 11.2 | single_arm (medium) | 7 | 1 | observation.images.camera0_rgb:224x224x3 | single_task_instruction |
 | nmotion_current | DaivdYuan/hub-flip-bagel-lerobot | unknown | 0.29 | 283 | 0.91 | 30.0 | 30.0 | 11.6 | single_arm (medium) | 7 | 1 | observation.images.camera0_rgb:224x224x3 | single_task_instruction |
 | nmotion_current | DaivdYuan/hub-kettlebell-pushing-lerobot | unknown | 0.29 | 14 | 0.09 | 30.0 | 30.0 | 23.8 | single_arm (medium) | 7 | 1 | observation.images.camera0_rgb:224x224x3 | single_task_instruction |
@@ -26,14 +18,6 @@ This file is a shareable summary. The complete spreadsheet-friendly output is th
 | nmotion_current | DaivdYuan/hub-strap-wires-with-velcro-tape-lerobot | unknown | 0.29 | 193 | 1.40 | 30.0 | 30.0 | 26.2 | single_arm (medium) | 7 | 1 | observation.images.camera0_rgb:224x224x3 | single_task_instruction |
 | nmotion_current | DaivdYuan/hub-tennis-ball-basket-toss-lerobot | unknown | 0.29 | 165 | 1.80 | 30.0 | 30.0 | 39.2 | single_arm (medium) | 7 | 1 | observation.images.camera0_rgb:224x224x3 | single_task_instruction |
 | nmotion_current | DaivdYuan/hub-whiteboard-shape-wipe-lerobot | unknown | 0.29 | 119 | 0.99 | 30.0 | 30.0 | 30.0 | single_arm (medium) | 7 | 1 | observation.images.camera0_rgb:224x224x3 | single_task_instruction |
-| nmotion_current | DaivdYuan/mv-umi-bottles-rack-seg-lerobot | real | 0.29 | 199 | 1.52 | 30.0 | 30.0 | 27.6 | single_arm (medium) | 7 | 2 | observation.images.camera0_rgb:224x224x3<br>observation.images.camera1_rgb:224x224x3 | single_task_instruction |
-| nmotion_current | DaivdYuan/mv-umi-markers-placement-raw-lerobot | real | 0.29 | 453 | 1.71 | 30.0 | 30.0 | 13.6 | single_arm (medium) | 7 | 2 | observation.images.camera0_rgb:224x224x3<br>observation.images.camera1_rgb:224x224x3 | single_task_instruction |
-| nmotion_current | DaivdYuan/mv-umi-markers-placement-seg-lerobot | real | 0.29 | 454 | 1.72 | 30.0 | 30.0 | 13.6 | single_arm (medium) | 7 | 2 | observation.images.camera0_rgb:224x224x3<br>observation.images.camera1_rgb:224x224x3 | single_task_instruction |
-| nmotion_current | DaivdYuan/umi-bimanual-cloth-folding-lerobot | real | 0.29 | 249 | 2.87 | 30.0 | 30.0 | 41.4 | dual_arm (high) | 14 | 2 | observation.images.camera0_rgb:224x224x3<br>observation.images.camera1_rgb:224x224x3 | single_task_instruction |
-| nmotion_current | DaivdYuan/umi-bimanual-dish-washing-lerobot | real | 0.29 | 258 | 4.01 | 30.0 | 30.0 | 55.9 | dual_arm (high) | 14 | 2 | observation.images.camera0_rgb:224x224x3<br>observation.images.camera1_rgb:224x224x3 | single_task_instruction |
-| nmotion_current | DaivdYuan/umi-cup-arrangement-lab-lerobot | real | 0.29 | 305 | 1.71 | 30.0 | 30.0 | 20.2 | single_arm (medium) | 7 | 1 | observation.images.camera0_rgb:224x224x3 | single_task_instruction |
-| nmotion_current | DaivdYuan/umi-cup-arrangement-wild-lerobot | real | 0.29 | 1447 | 6.48 | 30.0 | 30.0 | 16.1 | single_arm (medium) | 7 | 1 | observation.images.camera0_rgb:224x224x3 | single_task_instruction |
-| nmotion_current | DaivdYuan/umi-dynamic-tossing-lerobot | real | 0.29 | 284 | 3.41 | 30.0 | 30.0 | 43.2 | single_arm (medium) | 7 | 1 | observation.images.camera0_rgb:224x224x3 | single_task_instruction |
 | official_lerobot | lerobot/aloha_mobile_cabinet | unknown | 0.59 | 85 | 0.71 | 50.0 | 50.0 | 30.0 | mobile_manipulator (high) | 14 | 3 | observation.images.cam_high:480x640x3<br>observation.images.cam_left_wrist:480x640x3<br>observation.images.cam_right_wrist:480x640x3 | single_task_instruction |
 | official_lerobot | lerobot/aloha_mobile_chair | unknown | 0.59 | 55 | 0.61 | 50.0 | 50.0 | 40.0 | mobile_manipulator (high) | 14 | 3 | observation.images.cam_high:480x640x3<br>observation.images.cam_left_wrist:480x640x3<br>observation.images.cam_right_wrist:480x640x3 | single_task_instruction |
 | official_lerobot | lerobot/aloha_mobile_elevator | unknown | 0.59 | 20 | 0.25 | 50.0 | 50.0 | 45.0 | mobile_manipulator (high) | 14 | 3 | observation.images.cam_high:480x640x3<br>observation.images.cam_left_wrist:480x640x3<br>observation.images.cam_right_wrist:480x640x3 | single_task_instruction |
@@ -184,7 +168,6 @@ This file is a shareable summary. The complete spreadsheet-friendly output is th
 | official_lerobot | lerobot/ucsd_kitchen_dataset | unknown | 0.59 | 150 | 0.22 | 5.0 | 5.0 | 5.3 | single_arm (medium) | 8 | 1 | observation.images.image:480x640x3 | multi_task_instruction |
 | official_lerobot | lerobot/ucsd_pick_and_place_dataset | real | 0.59 | 1355 | 3.76 | 5.0 | 5.0 | 10.0 | single_arm (medium) | 4 | 1 | observation.images.image:224x224x3 | multi_task_instruction |
 | official_lerobot | lerobot/uiuc_d3field | unknown | 0.29 | 192 | 3.72 | 1.0 | 1.0 | 69.7 | single_arm (medium) | 7 | 4 | observation.images.image_4:360x640x3<br>observation.images.image_2:360x640x3<br>observation.images.image_1:360x640x3<br>observation.images.image_3:360x640x3 | none |
-| official_lerobot | lerobot/umi_cup_in_the_wild | real | 0.29 | 1447 | 19.43 | 10.0 | 10.0 | 48.3 | single_arm (medium) |  | 1 | observation.image:224x224x3 | single_task_instruction |
 | official_lerobot | lerobot/unitreeh1_fold_clothes | unknown | 0.59 | 38 | 0.11 | 50.0 | 50.0 | 10.0 | unknown (low) | 40 | 2 | observation.images.cam_left:720x1280x3<br>observation.images.cam_right:720x1280x3 | single_task_instruction |
 | official_lerobot | lerobot/unitreeh1_rearrange_objects | unknown | 0.59 | 30 | 0.04 | 50.0 | 50.0 | 4.8 | unknown (low) | 40 | 2 | observation.images.cam_left:360x640x3<br>observation.images.cam_right:360x640x3 | single_task_instruction |
 | official_lerobot | lerobot/unitreeh1_two_robot_greeting | unknown | 0.59 | 30 | 0.02 | 50.0 | 50.0 | 2.5 | unknown (low) | 40 | 2 | observation.images.cam_left:360x640x3<br>observation.images.cam_right:360x640x3 | single_task_instruction |

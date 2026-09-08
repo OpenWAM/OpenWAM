@@ -82,26 +82,6 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 RUN_REAL_LEROBOT_TESTS = os.getenv("OPEN_WAM_RUN_REAL_LEROBOT_TESTS") == "1"
 REAL_HETEROGENEOUS_SANITY_SET = (
     (
-        "DaivdYuan/exumi-insert-pen-lerobot",
-        30.0,
-        "v3.0",
-        ("observation.images.camera0_rgb",),
-        (224, 224, 3),
-        7,
-        7,
-        "parquet_meta",
-    ),
-    (
-        "DaivdYuan/umi-bimanual-dish-washing-lerobot",
-        30.0,
-        "v3.0",
-        ("observation.images.camera0_rgb", "observation.images.camera1_rgb"),
-        (224, 224, 3),
-        14,
-        14,
-        "parquet_meta",
-    ),
-    (
         "lerobot/aloha_static_towel",
         50.0,
         "v3.0",
@@ -137,6 +117,29 @@ REAL_HETEROGENEOUS_SANITY_SET = (
         "jsonl_meta",
     ),
 )
+
+
+@pytest.mark.parametrize(
+    "template_name",
+    (
+        "lerobot_consortium_real_heterogeneous_sanity_template.yaml",
+        "lerobot_consortium_real_heterogeneous_multicam_as_slots_template.yaml",
+    ),
+)
+def test_heterogeneous_templates_match_retained_sanity_members(template_name: str) -> None:
+    from open_wam.configs.data_parsing import parse_data_config
+
+    payload = yaml.safe_load((REPO_ROOT / "configs/examples" / template_name).read_text())
+    config = parse_data_config(payload["data"])
+    expected = {row[0] for row in REAL_HETEROGENEOUS_SANITY_SET}
+    assert len(expected) == 3
+    assert {member.repo_id for member in config.consortium_members} == expected
+    assert all(member.enabled for member in config.consortium_members)
+    assert {
+        mapping.target_slot
+        for member in config.consortium_members
+        for mapping in member.channel_mappings
+    } <= set(config.camera_names)
 
 
 def test_consortium_storage_imports_preserve_identity() -> None:

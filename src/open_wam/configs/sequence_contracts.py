@@ -179,6 +179,26 @@ def validate_experiment_config_runtime_contract(
 ) -> ExperimentConfig:
     """Validate cross-section runtime contracts after YAML and CLI overrides."""
 
+    config.policy_variant.validate_backbone_config(config.backbone)
+
+    if (
+        isinstance(config.policy_variant, VideoActionPolicyConfig)
+        and config.policy_variant.text_conditioning_mode
+        is enums.TextConditioningMode.DISABLED
+    ):
+        if float(config.training.text_condition_dropout_prob) != 0.0:
+            raise ValueError(
+                "`text_conditioning_mode=disabled` requires "
+                "`training.text_condition_dropout_prob=0.0`; every sample "
+                "already uses the blank-text embedding."
+            )
+        if float(config.inference.guidance_scale) != 1.0:
+            raise ValueError(
+                "`text_conditioning_mode=disabled` requires "
+                "`inference.guidance_scale=1.0`; conditioned and "
+                "unconditioned branches are identical."
+            )
+
     batching = config.data.batching.mode
     if batching.execution_mode not in config.policy_variant.supported_batching_modes:
         raise ValueError(

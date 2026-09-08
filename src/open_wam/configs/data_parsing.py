@@ -548,6 +548,18 @@ def parse_data_config(raw_value: Mapping[str, Any] | None) -> DataConfig:
                 data_defaults.action_target.normalization,
                 field_path="data.action_target.normalization",
             ),
+            relative_pose_block_dims=action_target_raw.get(
+                "relative_pose_block_dims", data_defaults.action_target.relative_pose_block_dims
+            ),
+            proprio_history_lag=action_target_raw.get(
+                "proprio_history_lag", data_defaults.action_target.proprio_history_lag
+            ),
+            proprio_history_lag_pose=action_target_raw.get(
+                "proprio_history_lag_pose", data_defaults.action_target.proprio_history_lag_pose
+            ),
+            proprio_history_lag_gripper=action_target_raw.get(
+                "proprio_history_lag_gripper", data_defaults.action_target.proprio_history_lag_gripper
+            ),
         ),
         action_mapping=_load_action_mapping_config(
             data_raw.get("action_mapping"),

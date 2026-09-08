@@ -1516,6 +1516,7 @@ def test_action_transform_roles_have_one_owner() -> None:
             "axis_angle_to_quaternion",
             "continuous_6d_to_rotation_matrix",
             "normalize_quaternion",
+            "pose_blocks_relative_to_anchor",
             "quaternion_inverse",
             "quaternion_multiply",
             "quaternion_to_axis_angle",
@@ -1605,6 +1606,7 @@ def test_action_transform_roles_have_one_owner() -> None:
         "normalize_joint_positions",
         "normalize_joint_positions_by_limits",
         "normalize_quaternion",
+        "pose_blocks_relative_to_anchor",
         "quaternion_inverse",
         "quaternion_multiply",
         "quaternion_to_axis_angle",
@@ -4320,7 +4322,9 @@ def test_checkpoint_persistence_roles_have_one_owner() -> None:
             "_release_unused_device_memory",
             "_save_state_dict_options",
             "_set_model_state_dict",
+            "_training_batch_contract",
             "_validate_full_training_state_payload",
+            "_validate_training_batch_contract",
         },
         "storage": {
             "_atomic_torch_save",
@@ -4332,7 +4336,7 @@ def test_checkpoint_persistence_roles_have_one_owner() -> None:
     }
     all_names = set().union(*owner_names.values())
 
-    assert len(all_names) == 22
+    assert len(all_names) == 24
     assert all(
         sum(
             name in _top_level_definitions(path)

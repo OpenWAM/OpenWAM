@@ -279,8 +279,21 @@ def _checkpoint_shape_mismatches(
 
 
 def find_checkpoint_resolved_config(path: str | Path | None) -> Path | None:
+    """Read sibling metadata even when model weights have not arrived yet."""
     if path is None:
         return None
+    candidate = Path(path).expanduser()
+    if candidate.is_dir():
+        # Run-root lookup still follows the selected checkpoint's metadata,
+        # never a stale root YAML. This inspects filenames, not tensor storage.
+        selected_state = find_checkpoint_state_file(candidate)
+        if selected_state is not None and selected_state.parent != candidate.resolve():
+            selected_config = selected_state.parent / "resolved_config.yaml"
+            return selected_config.resolve() if selected_config.is_file() else None
+    directory = candidate if candidate.is_dir() else candidate.parent
+    sibling_config = directory / "resolved_config.yaml"
+    if sibling_config.is_file():
+        return sibling_config.resolve()
     checkpoint_file = resolve_checkpoint_file(path)
     resolved_config_path = checkpoint_file.parent / "resolved_config.yaml"
     if resolved_config_path.is_file():

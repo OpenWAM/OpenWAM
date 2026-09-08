@@ -22,6 +22,7 @@ nav:
   - Concepts:
       - Architecture: architecture.md
       - Policy Architectures: policy_architectures.md
+      - Action Expert Sizes: action_expert_sizes.md
       - Video/Action Composition: video_action_composition.md
       - Benchmarks And Data: benchmarks.md
   - Reproducibility:

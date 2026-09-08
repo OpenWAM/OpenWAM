@@ -81,8 +81,9 @@ an empty tensor and restores it before policy preparation. If negative text cont
 provided, positive text context must also be provided with the same shape within
 that sample; text lengths may differ between samples.
 
-The sample count per training microbatch remains fixed on every rank. This
-implementation does not use a variable-size, token-budget batch sampler.
+With `max_tokens: null` (the default), the sample count per training microbatch
+remains fixed on every rank. An optional token budget subdivides a logical loader
+batch into variable-size physical microbatches; see the next section.
 `drop_last_train: true` is the default for new modes. If it is disabled, the
 training sampler length must be divisible by the microbatch size. Validation
 retains an incomplete final batch and aggregates its metrics by original sample
@@ -199,6 +200,73 @@ Keep the dataset, resolution, sequence semantics, optimizer settings, and
 checkpoint frequency fixed for an initial comparison. Record the resolved
 configuration, peak device memory, optimizer-step time, effective token
 throughput, and losses. Reduced padding alone is not a measured speedup.
+
+## Dynamic Token Budgets
+
+For DualExpert VTA or Joint latent training, set `data.batching.mode: packed`
+and a positive `data.batching.max_tokens`. The loader still selects a fixed
+**logical batch**; the runtime groups those samples, in order, into smaller
+**physical microbatches** whose total token count stays within the budget.
+This is not a new sampler and does not discard, truncate, or resample trajectories.
+
+```yaml
+data:
+  train_batch_size: 6       # Logical samples per rank, not one GPU forward
+  val_batch_size: 1
+  batching:
+    mode: packed
+    max_tokens: 100000      # Illustrative ceiling; calibrate for your model/GPU
+    drop_last_train: true
+training:
+  gradient_accumulation_steps: 1
+  sample_loss_weight_mode: none
+```
+
+On four ranks this example retains 24 samples per optimizer update. Each sample
+keeps its own sampled chunk/window geometry. The admission count includes clean
+and noisy video/action streams, any legacy video prefix, and dataset-materialized
+padding. Only batch-added padding is excluded. Text/proprio cross-attention
+lengths are not part of this self-token budget, so the ceiling is **not a GPU
+memory guarantee**. An individually over-budget sample fails before forward;
+increase the budget or explicitly change sample construction.
+
+Ranks agree on the number of nonempty physical forward/backward calls before
+execution, including no-sync accumulation. Groups may contain different sample
+counts across ranks. Loss scaling preserves an equal contribution per original
+sample, not per token or per physical call. Per-sample augmentation does not
+issue unmatched collectives. Validation continues to use `val_batch_size`; the
+training token budget does not automatically subdivide validation batches.
+
+Token admission currently supports the default and
+`legacy_prefix_single_frame_perchunk_proprio` sequence contracts, temporal patch
+size 1, and latent inputs with explicit sampled geometry. Dynamics routing, mode
+tokens, and online RGB are not supported by this counter. Ordinary fixed-size
+`padded`/`packed` execution retains its broader program support.
+
+Token-budget checkpoints record logical batch size, accumulation, budget, mode,
+transport alignment, and actual world size. An incompatible full-state resume
+is rejected before loading weights. Use model-only initialization in a new run
+when changing this schedule or adopting it from a legacy checkpoint; do not
+reinterpret the previous loader cursor.
+
+For a bounded four-rank comparison, allocate the GPUs explicitly, then run
+`scripts/benchmark_latent_batches.py --help`. It compares retained sample draws,
+records cold/warm timing and memory, and checks finite losses, gradient probes,
+parameter updates, and rank synchronization. Use `--geometry-policy sampled` to
+preserve dataset geometry; its `fixed` option is a separate controlled benchmark.
+Pass `--mode packed --max-tokens <ceiling>` for token-budget execution. The harness
+uses logical batch 6 and accumulation 1 for that mode, writes reports to the
+explicit output directory, and does not overwrite the input checkpoint.
+
+CPU planning and integration checks:
+
+```bash
+uv run pytest -q tests/test_token_budget*.py tests/test_dual_expert_token_cost.py \
+  tests/test_training_token_cost_composition.py -m "not gpu"
+```
+
+GPU/FSDP tests are opt-in and may skip without allocated hardware. CPU parity
+does not establish multi-GPU throughput or memory headroom.
 
 ## Resume And Validation Comparisons
 

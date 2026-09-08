@@ -118,18 +118,6 @@ python scripts/manifests/robotwin_to_pr108.py \
     --variant clean
 ```
 
-### UMI
-
-Packed-bundle format. 224x224, 30fps, single camera (`camera0_rgb`). 305 episodes.
-
-```bash
-huggingface-cli download lerobot/umi_cup_in_the_wild --repo-type dataset --local-dir /data/umi
-
-python scripts/manifests/umi_to_pr108.py \
-    --source-root /data/umi \
-    --output-csv manifests/umi.csv
-```
-
 ### Droid (Full)
 
 Packed-bundle format. 320x180, 15fps. ~95K episodes. Very large (~2TB video).
@@ -151,4 +139,4 @@ python scripts/manifests/droid_full_to_pr108.py \
 
 ## Packed-Bundle vs Per-Episode
 
-Some datasets (LIBERO, RobotTwin) store one MP4 per episode. Others (OXE, UMI, Droid) use LeRobot v3.0 "packed-bundle" format where multiple episodes are concatenated into shared MP4 files. For packed-bundle sources, the manifest includes `from_timestamp` and `to_timestamp` so the `mixed_video` reader can seek to the correct segment within the shared file.
+Some datasets (LIBERO, RobotTwin) store one MP4 per episode. Others (OXE, Droid) use LeRobot v3.0 "packed-bundle" format where multiple episodes are concatenated into shared MP4 files. For packed-bundle sources, the manifest includes `from_timestamp` and `to_timestamp` so the `mixed_video` reader can seek to the correct segment within the shared file.
