@@ -124,11 +124,13 @@ def split_latent_train_batch(
         for name in LATENT_SAMPLE_TENSOR_AXES.keys() & extra.keys():
             extra[name] = slice_tensor(name, extra[name], index)
         extra["metadata"] = (dict(metadata[index]),)
-        task_text = batch.extra.get("task_text")
-        if task_text is not None:
-            if len(task_text) != size:
-                raise ValueError("task_text must have one item per sequence.")
-            extra["task_text"] = (task_text[index],)
+        extra["batching_video_capacity"] = int(video_latents.shape[2])
+        for key in ("task_text", "source_task_text"):
+            task_text = batch.extra.get(key)
+            if task_text is not None:
+                if len(task_text) != size:
+                    raise ValueError(f"{key} must have one item per sequence.")
+                extra[key] = (task_text[index],)
         if "video_latents" in batch.extra:
             extra["video_latents"] = video
         sample_batch = replace(
@@ -204,14 +206,21 @@ def forward_variable_latent_batch(
         pipeline.policy_variant.prepare_train_inputs(visual, sample.batch)
         for visual, sample in zip(visual_outputs, samples, strict=True)
     )
-    policies = tuple(
-        pipeline.policy_variant.forward_train_batch(
-            visual_tower=pipeline.visual_tower,
-            visual_outputs=visual_outputs,
-            prepared_inputs=prepared_inputs,
-            batching_mode=batching_mode,
-        )
+    execution = pipeline.policy_variant.forward_train_batch(
+        visual_tower=pipeline.visual_tower,
+        visual_outputs=visual_outputs,
+        prepared_inputs=prepared_inputs,
+        batching_mode=batching_mode,
     )
+    if isinstance(execution, PolicyTrainOutput):
+        if execution.policy_features.shape[0] != len(samples):
+            raise ValueError("Native batch output must preserve the original sample count.")
+        return VariantPipelineTrainOutput(
+            visual_outputs=None,
+            policy_output=execution,
+            decoder_output=pipeline.resolve_train_decoder_output(execution, batch),
+        )
+    policies = tuple(execution)
     if len(policies) != len(samples):
         raise ValueError(
             "Policy batch execution must return one output per original sequence."

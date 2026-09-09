@@ -1,8 +1,9 @@
 from __future__ import annotations
+from pathlib import Path
 
 import copy
 import importlib.metadata
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 import torch
@@ -22,6 +23,7 @@ from open_wam.models.common.video_geometry import (
 )
 
 from .reference_loader import resolve_pretrained_component_dir
+from .prompt_cache import OfflinePromptCache
 from .reference_transformer import preferred_reference_dtype
 
 _PLACEHOLDER_PATH_PREFIXES = ("/path/to/", "/path/to", "path/to/")
@@ -219,6 +221,19 @@ class LingbotReferenceAssets:
         field(default_factory=dict)
     )
     latent_space_identity: VideoLatentSpaceIdentity | None = None
+    offline_prompt_cache: OfflinePromptCache | None = field(init=False, default=None)
+
+    def __post_init__(self) -> None:
+        if self.config.prompt_cache is not None:
+            from open_wam.artifacts.resolver import ArtifactResolver
+
+            cache = self.config.prompt_cache
+            self.offline_prompt_cache = OfflinePromptCache(
+                Path(cache.root), max_text_tokens=self.config.max_text_tokens,
+                text_dim=self.config.text_dim,
+                expected_encoder_fingerprint=cache.encoder_fingerprint,
+                resolver=ArtifactResolver(cache.artifact_cache),
+            )
 
     @classmethod
     def maybe_load(
@@ -229,7 +244,11 @@ class LingbotReferenceAssets:
         if pretrained_root is None:
             return assets
 
-        _validate_pretrained_root(pretrained_root, config=config)
+        asset_config = (
+            replace(config, load_text_conditioning=False)
+            if assets.offline_prompt_cache is not None else config
+        )
+        _validate_pretrained_root(pretrained_root, config=asset_config)
 
         reference_dtype = torch.bfloat16
 
@@ -262,7 +281,7 @@ class LingbotReferenceAssets:
             )
             assets.streaming_vae = WanVAEStreamingWrapper(assets.vae)
 
-        if config.load_text_conditioning:
+        if config.load_text_conditioning and assets.offline_prompt_cache is None:
             tokenizer_cls, text_encoder_cls = _load_transformers_assets()
             text_encoder_dir = resolve_pretrained_component_dir(
                 pretrained_root, config.text_encoder_subdir
@@ -380,11 +399,15 @@ class LingbotReferenceAssets:
         device: torch.device,
         dtype: torch.dtype,
     ) -> torch.Tensor | None:
-        if not self.has_text_encoder:
-            return None
         if not prompts:
             return None
         normalized_prompts = tuple(str(prompt) for prompt in prompts)
+        if self.offline_prompt_cache is not None:
+            return self.offline_prompt_cache.encode_prompts(
+                normalized_prompts, device=device, dtype=dtype
+            )
+        if not self.has_text_encoder:
+            return None
         cache_key = (
             normalized_prompts,
             str(torch.device(device)),

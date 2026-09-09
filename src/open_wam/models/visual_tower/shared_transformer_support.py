@@ -515,6 +515,7 @@ class SharedTransformerBlock(nn.Module):
         self_attention_cache_backend_state=None,
         self_attention_cache_update_mode: int = 0,
         self_attention_cache_stream_ids: torch.Tensor | None = None,
+        cache_text_context: bool = True,
     ) -> tuple[torch.Tensor, AttentionCacheEntry | None, AttentionCacheEntry | None]:
         temb_scale_shift_table = self.scale_shift_table[None] + temb.float()
         shift_msa, scale_msa, gate_msa, c_shift_msa, c_scale_msa, c_gate_msa = _select_chunk_slices(
@@ -553,7 +554,10 @@ class SharedTransformerBlock(nn.Module):
             attention_profile=attention_profile,
             is_cross_attention=True,
             kv_cache_override=cross_attention_cache_entry,
-            cache_current_token_count=encoder_hidden_states.shape[1] if cross_attention_cache_entry is None else 0,
+            cache_current_token_count=(
+                encoder_hidden_states.shape[1]
+                if cache_text_context and cross_attention_cache_entry is None else 0
+            ),
         )
         hidden_states = hidden_states + attn_output
 

@@ -54,7 +54,7 @@ def resolve_mixed_video_decode_size(
             source_height=source_height,
             source_width=source_width,
         )
-    bin_config = _select_mixed_video_resize_bin(
+    bin_config = select_mixed_video_resize_bin(
         data_config.decode_resize_bins,
         source_height=int(source_height),
         source_width=int(source_width),
@@ -334,12 +334,13 @@ def _center_crop_to_aspect(
     return array[top : top + crop_height, :]
 
 
-def _select_mixed_video_resize_bin(
+def select_mixed_video_resize_bin(
     bins: Sequence[MixedVideoResizeBinConfig],
     *,
     source_height: int,
     source_width: int,
 ) -> MixedVideoResizeBinConfig:
+    """Choose the closest log-aspect ratio, then the first fitting pixel tier."""
     if source_height <= 0 or source_width <= 0:
         raise ValueError(
             "Mixed-video source dimensions must be positive, "
@@ -375,5 +376,6 @@ def _select_mixed_video_resize_bin(
 __all__ = [
     "MixedVideoResolvedDecodeSize",
     "resolve_mixed_video_decode_size",
+    "select_mixed_video_resize_bin",
     "transform_frame",
 ]

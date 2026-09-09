@@ -384,6 +384,8 @@ class VisualTower(nn.Module):
         text_context: torch.Tensor | None,
         frame_start: int = 0,
         attention_mask: torch.Tensor | None = None,
+        sequence_lengths: tuple[int, ...] | None = None,
+        use_activation_checkpointing: bool = False,
     ) -> torch.Tensor:
         """Run the shared exact single-stream video path without variant-specific logic."""
 
@@ -424,6 +426,22 @@ class VisualTower(nn.Module):
             .unsqueeze(0)
             .expand(batch_size, -1, -1)
         )
+        if sequence_lengths is not None:
+            if attention_mask is not None:
+                raise ValueError("Packed video constructs its own sequence-isolated masks.")
+            from .sequence_batch import packed_video_tokens
+
+            return packed_video_tokens(
+                self.core,
+                {
+                    "noisy_latents": noisy_latents.to(dtype=model_dtype),
+                    "timesteps": timesteps.to(device=noisy_latents.device, dtype=torch.float32),
+                    "grid_id": grid_id,
+                    "text_emb": text_context,
+                },
+                sequence_lengths=sequence_lengths,
+                use_activation_checkpointing=use_activation_checkpointing,
+            ).to(dtype=noisy_latents.dtype)
         step_output = self.execute_runtime_step(
             RuntimeStepInput(
                 program=build_single_stream_exact_runtime_program(),

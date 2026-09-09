@@ -40,6 +40,8 @@ class MixedVideoStreamRecord:
     channels: int | None
     tasks: tuple[str, ...]
     clip: ResolvedVideoClip
+    physical_episode_key: str | None = None
+    augmentation: str | None = None
 
 
 @dataclass(frozen=True)
@@ -58,6 +60,21 @@ class MixedVideoEpisodeRecord:
     latent_length_frames: int | None
     tasks: tuple[str, ...]
     streams: tuple[MixedVideoStreamRecord, ...]
+
+    @property
+    def physical_episode_key(self) -> str | None:
+        keys = {stream.physical_episode_key for stream in self.streams}
+        explicit = keys - {None}
+        if not explicit:
+            return None
+        if len(explicit) != 1 or None in keys:
+            raise ValueError(
+                f"Mixed-video episode {self.key!r} has conflicting or partially missing physical_episode_key values."
+            )
+        key = next(iter(explicit))
+        if not isinstance(key, str) or not key.strip():
+            raise ValueError("physical_episode_key must be a nonempty, globally namespaced string.")
+        return key
 
 
 @dataclass(frozen=True)

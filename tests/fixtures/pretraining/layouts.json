@@ -1,0 +1,63 @@
+{
+  "2": {
+    "height": 288,
+    "kind": "pair_vertical",
+    "placements": [
+      {
+        "camera": "0",
+        "left": 0.0,
+        "rotation_degrees": 0,
+        "scale": 6.0,
+        "source_height": 24,
+        "source_width": 32,
+        "top": 0.0
+      },
+      {
+        "camera": "1",
+        "left": 0.0,
+        "rotation_degrees": 0,
+        "scale": 6.0,
+        "source_height": 24,
+        "source_width": 32,
+        "top": 144.0
+      }
+    ],
+    "policy": "rgb_mosaic_65k_portable_v2",
+    "width": 192
+  },
+  "3": {
+    "height": 288,
+    "kind": "head_above_left_right",
+    "placements": [
+      {
+        "camera": "0",
+        "left": 0.0,
+        "rotation_degrees": 0,
+        "scale": 8.0,
+        "source_height": 24,
+        "source_width": 32,
+        "top": 0.0
+      },
+      {
+        "camera": "1",
+        "left": 0.0,
+        "rotation_degrees": 0,
+        "scale": 4.0,
+        "source_height": 24,
+        "source_width": 32,
+        "top": 192.0
+      },
+      {
+        "camera": "2",
+        "left": 128.0,
+        "rotation_degrees": 0,
+        "scale": 4.0,
+        "source_height": 24,
+        "source_width": 32,
+        "top": 192.0
+      }
+    ],
+    "policy": "rgb_mosaic_65k_portable_v2",
+    "width": 256
+  }
+}

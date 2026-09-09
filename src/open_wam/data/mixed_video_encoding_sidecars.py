@@ -147,6 +147,7 @@ def _encoded_episode_from_existing_sidecar(
         target_slot=target_slot,
         encoded_slots=encoded_slots,
         encoding_mode=encoding_mode,
+        physical_episode_key=episode.physical_episode_key,
     )
 
 
@@ -172,6 +173,8 @@ def _validate_existing_sidecar_metadata(
             data_config, episode
         ),
     }
+    if episode.physical_episode_key is not None:
+        expected_fields["physical_episode_key"] = episode.physical_episode_key
     for field_name, expected in expected_fields.items():
         if field_name not in metadata:
             raise ValueError(

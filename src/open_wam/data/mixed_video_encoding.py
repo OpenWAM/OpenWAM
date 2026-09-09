@@ -230,6 +230,8 @@ def encode_mixed_video_latent_sources(
                             ),
                             **encoding_metadata,
                             "tasks": list(target_episode.tasks),
+                            **({"physical_episode_key": target_episode.physical_episode_key}
+                               if target_episode.physical_episode_key is not None else {}),
                         },
                     }
                     # WHY async save: torch.save serializes to disk synchronously which
@@ -258,6 +260,7 @@ def encode_mixed_video_latent_sources(
                         target_slot=target.target_slot,
                         encoded_slots=target.source_slots,
                         encoding_mode=target.mode,
+                        physical_episode_key=target_episode.physical_episode_key,
                     )
                     newly_encoded_records.append(record)
                 encoded.append(record)

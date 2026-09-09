@@ -268,8 +268,28 @@ class PipelineTrainStepExecutor:
         prepared: PreparedTrainInput,
     ) -> PreparedTrainInput:
         prob = float(self.training_config.text_condition_dropout_prob)
-        if prob <= 0.0 or prepared.text_context is None or not self.pipeline.training:
+        if prob <= 0.0 or not self.pipeline.training:
             return prepared
+        if prepared.text_context is None:
+            task_text = prepared.policy_batch.extra.get("task_text")
+            if not task_text:
+                return prepared
+            if not isinstance(task_text, tuple) or len(task_text) != prepared.policy_batch.actions.shape[0]:
+                raise ValueError("Text dropout requires one task_text entry per sample.")
+            drop_mask = torch.rand(
+                len(task_text), device=prepared.policy_batch.actions.device
+            ) < prob
+            if not bool(drop_mask.any()):
+                return prepared
+            # Preserve the original label for policy validation. Empty strings
+            # here request the real unconditional embedding from the frontend.
+            extra = dict(prepared.policy_batch.extra)
+            extra["source_task_text"] = task_text
+            extra["task_text"] = tuple(
+                "" if dropped else prompt
+                for prompt, dropped in zip(task_text, drop_mask.tolist(), strict=True)
+            )
+            return replace(prepared, policy_batch=replace(prepared.policy_batch, extra=extra))
         batch_size = prepared.text_context.shape[0]
         drop_mask = torch.rand(batch_size, device=prepared.text_context.device) < prob
         if not bool(drop_mask.any()):

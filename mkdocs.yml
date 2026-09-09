@@ -18,6 +18,7 @@ nav:
       - Training And Inference: running_experiments.md
       - Variable-Length Training Batches: variable_length_training_batches.md
       - Video-Only Training: video_only_training.md
+      - Video Pretraining Data: pretraining/index.md
       - Compatibility: compatibility.md
   - Concepts:
       - Architecture: architecture.md

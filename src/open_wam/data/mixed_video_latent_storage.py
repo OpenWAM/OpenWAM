@@ -11,6 +11,7 @@ from open_wam.artifacts import load_tensor_artifact
 from open_wam.configs import MixedVideoDataConfig
 
 from .mixed_video_catalog_contracts import MixedVideoStreamRecord
+from open_wam.artifacts.resolver import ArtifactResolver
 
 
 __all__ = [
@@ -25,11 +26,12 @@ def resolve_mixed_video_latent_path(
     stream: MixedVideoStreamRecord,
     *,
     cache_dir: str | None,
+    resolver: ArtifactResolver | None = None,
 ) -> Path:
     """Resolve one local or Hugging Face latent sidecar path."""
 
     if stream.latent_path is not None:
-        if not stream.latent_path.exists():
+        if not stream.latent_path.exists() and not (resolver and resolver.contains(stream.latent_path)):
             raise FileNotFoundError(
                 f"Missing mixed-video latent file for source={stream.source_id}, "
                 f"episode={stream.episode_index}, "
@@ -62,21 +64,35 @@ def load_mixed_video_latent_tensor(
     path: Path,
     *,
     key: str,
+    resolver: ArtifactResolver | None = None,
 ) -> torch.Tensor:
-    """Load one `[C,T,H,W]` sidecar as contiguous float32."""
+    """Return contiguous float32 CTHW, honoring an explicit payload axis order.
 
-    payload = load_tensor_artifact(path)
+    Undeclared tensors retain the existing CTHW contract; axes are never guessed
+    from their sizes. Pretraining encoders declare THWC in `latent_layout`.
+    """
+
+    with (resolver or ArtifactResolver()).materialize(path) as materialized:
+        payload = load_tensor_artifact(materialized)
+    layout = "CTHW"
     if isinstance(payload, torch.Tensor):
         tensor = payload
     elif isinstance(payload, dict) and key in payload:
         tensor = payload[key]
+        layout = payload.get("latent_layout", "CTHW")
     else:
         raise ValueError(
             f"Expected latent tensor or key {key!r} in latent payload at {path}."
         )
     if not isinstance(tensor, torch.Tensor) or tensor.ndim != 4:
         raise ValueError(
-            f"Expected latent tensor [C,T,H,W] at {path}, got {type(tensor)!r}."
+            f"Expected a rank-four latent tensor at {path}, got {type(tensor)!r}."
+        )
+    if layout == "THWC":
+        tensor = tensor.permute(3, 0, 1, 2)
+    elif layout != "CTHW":
+        raise ValueError(
+            f"Unsupported latent_layout {layout!r} at {path}; expected CTHW or THWC."
         )
     return tensor.to(dtype=torch.float32).contiguous()
 
@@ -96,6 +112,7 @@ class MixedVideoLatentRepository:
 
     def __init__(self, data_config: MixedVideoDataConfig) -> None:
         self.data_config = data_config
+        self.resolver = ArtifactResolver(data_config.artifact_cache)
         self.cache: OrderedDict[
             tuple[str, str, str],
             torch.Tensor,
@@ -123,8 +140,9 @@ class MixedVideoLatentRepository:
         path = resolve_mixed_video_latent_path(
             stream,
             cache_dir=self.data_config.cache_dir,
+            resolver=self.resolver,
         )
-        latents = load_mixed_video_latent_tensor(path, key=stream.latent_key)
+        latents = load_mixed_video_latent_tensor(path, key=stream.latent_key, resolver=self.resolver)
         self.cache[cache_key] = latents
         while len(self.cache) > self.cache_capacity:
             self.cache.popitem(last=False)

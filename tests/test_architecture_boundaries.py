@@ -2079,7 +2079,7 @@ def test_mixed_video_decode_has_explicit_package_owners() -> None:
         "_letterbox_pad_to_target",
         "_resize_frame",
         "_resolve_frame_fit_mode",
-        "_select_mixed_video_resize_bin",
+        "select_mixed_video_resize_bin",
         "resolve_mixed_video_decode_size",
         "transform_frame",
     }
@@ -2111,6 +2111,7 @@ def test_mixed_video_decode_has_explicit_package_owners() -> None:
     assert {
         "MixedVideoResolvedDecodeSize",
         "resolve_mixed_video_decode_size",
+        "select_mixed_video_resize_bin",
         "transform_frame",
     } == _module_all_names(frames_path)
     assert {
@@ -2152,7 +2153,7 @@ def test_mixed_video_decode_has_explicit_package_owners() -> None:
             mixed_video_decode_backends,
             name,
         )
-    for name in frame_owned_names:
+    for name in frame_owned_names - {"select_mixed_video_resize_bin"}:
         assert getattr(mixed_video_decode, name) is getattr(
             mixed_video_decode_frames,
             name,
@@ -2544,6 +2545,7 @@ def test_mixed_video_window_planning_has_one_owner() -> None:
         "build_episode_windows",
         "build_latent_view_windows",
         "build_source_balanced_epoch_order",
+        "build_shape_bucketed_epoch_order",
         "valid_latent_view_combinations",
     } <= _class_method_definitions(
         planning_path,
@@ -2566,11 +2568,6 @@ def test_mixed_video_window_planning_has_one_owner() -> None:
             "_build_sample_index",
             "build_latent_view_windows",
         ),
-        (
-            "MixedVideoWindowDataset",
-            "build_epoch_index_order",
-            "build_source_balanced_epoch_order",
-        ),
     )
     for class_name, method_name, owner_method in delegates:
         compatibility_method = _class_method(
@@ -2584,6 +2581,20 @@ def test_mixed_video_window_planning_has_one_owner() -> None:
         assert isinstance(delegated_call, ast.Call)
         assert isinstance(delegated_call.func, ast.Attribute)
         assert delegated_call.func.attr == owner_method
+
+    # Dataset dispatch may choose spatial bucketing, while both ordering
+    # algorithms remain owned by the window planner.
+    dispatch = _class_method(dataset_path, "MixedVideoWindowDataset", "build_epoch_index_order")
+    planner_calls = {
+        node.func.attr for node in ast.walk(dispatch)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Attribute)
+        and node.func.value.attr == "_window_planner"
+    }
+    assert planner_calls == {
+        "build_source_balanced_epoch_order", "build_shape_bucketed_epoch_order",
+    }
+    assert not any(isinstance(node, (ast.For, ast.While)) for node in ast.walk(dispatch))
 
 
 def test_lerobot_latent_supervision_assembly_has_one_owner() -> None:
@@ -5501,6 +5512,7 @@ def test_shared_transformer_support_has_one_implementation_owner() -> None:
             "models/policy_variants/dual_expert/packed_block.py",
             "models/visual_tower/__init__.py",
             "models/visual_tower/replica_core.py",
+            "models/visual_tower/sequence_batch.py",
             "models/visual_tower/shared_transformer_support.py",
         },
         "runtime_parameter_ops": {

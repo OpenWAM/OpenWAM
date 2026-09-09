@@ -151,6 +151,12 @@ class CausalVideoPredictionPolicyConfig(PolicyVariantConfig):
     use_activation_checkpointing: bool = False
 
     @property
+    def supported_batching_modes(self) -> tuple[BatchingMode, ...]:
+        if self.program is CausalVideoProgram.PREFIX_SUFFIX:
+            return tuple(BatchingMode)
+        return (BatchingMode.STRICT,)
+
+    @property
     def default_action_decoder(self) -> ActionDecoderName:
         return ActionDecoderName.VIDEO_ONLY
 

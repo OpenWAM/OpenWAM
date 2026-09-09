@@ -186,6 +186,7 @@ def _build_variable_length_loader(
         sampler = LengthBucketSampler(
             sampler,
             length_for_index=length_hint,
+            shape_for_index=getattr(dataset, "batching_shape_hint", None),
             batch_size=batch_size,
             pool_size=batching.bucket_pool_size,
             drop_last=drop_last,

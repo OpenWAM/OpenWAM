@@ -179,6 +179,17 @@ def build_sequence_self_attention(
     return _backend_mask(predicate, layout.token_count, layout.token_count, device)
 
 
+def build_sequence_id_attention(
+    query_ids: torch.Tensor, key_ids: torch.Tensor,
+) -> tuple[torch.Tensor | None, Any | None]:
+    """Full local attention with isolation between independent sequence IDs."""
+    def predicate(b, h, q, k):
+        del b, h
+        return query_ids[q] == key_ids[k]
+
+    return _backend_mask(predicate, query_ids.numel(), key_ids.numel(), query_ids.device)
+
+
 def build_sequence_batch_cross_attention(
     query_lengths: Sequence[int],
     query_slots: Sequence[int],
@@ -238,9 +249,6 @@ def build_sequence_batch_cross_attention(
             del b, h
             return (query_ids[q] == text_ids[k]) & permitted[q, text_position[k]]
     else:
-
-        def predicate(b, h, q, k):
-            del b, h
-            return query_ids[q] == text_ids[k]
+        return build_sequence_id_attention(query_ids, text_ids)
 
     return _backend_mask(predicate, sum(query_slots), sum(text_lengths), device)

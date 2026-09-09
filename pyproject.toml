@@ -43,6 +43,12 @@ openwam-sim-rollout = "open_wam.cli.sim_rollout:main"
 
 [project.optional-dependencies]
 core = []
+# Dataset preparation and bounded object storage, used together with [train].
+pretrain = [
+    "av>=12.0",
+    "boto3>=1.40",
+    "opencv-python-headless>=4.10,<5",
+]
 # Keep the characterized Transformers minor line bounded. Version 5.10 is the
 # first line containing the security fix required by the release audit.
 torch = [
@@ -152,7 +158,9 @@ docs = [
 ]
 full = [
     "accelerate>=1.1.0",
+    "av>=12.0",
     "bddl==1.0.1",
+    "boto3>=1.40",
     "cloudpickle>=3.1.2",
     "diffusers>=0.35.0,<0.38",
     "easydict>=1.13",

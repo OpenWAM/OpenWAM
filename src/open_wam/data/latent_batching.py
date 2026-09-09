@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from collections import Counter
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, replace
 from itertools import islice
@@ -37,6 +38,7 @@ class LengthBucketSampler(Sampler[int]):
         batch_size: int,
         pool_size: int,
         drop_last: bool,
+        shape_for_index: Callable[[int], int] | None = None,
     ) -> None:
         if batch_size <= 0 or pool_size <= 0:
             raise ValueError("Bucket batch_size and pool_size must be positive.")
@@ -45,6 +47,7 @@ class LengthBucketSampler(Sampler[int]):
         self.batch_size = int(batch_size)
         self.pool_size = max(batch_size, (pool_size // batch_size) * batch_size)
         self.drop_last = bool(drop_last)
+        self.shape_for_index = shape_for_index
 
     def __len__(self) -> int:
         size = len(self.sampler)  # type: ignore[arg-type]
@@ -59,7 +62,13 @@ class LengthBucketSampler(Sampler[int]):
         source = iter(islice(iter(self.sampler), len(self)))
         while pool := list(islice(source, self.pool_size)):
             # Python's stable sort keeps equal-length replacement draws intact.
-            yield from sorted(pool, key=self.length_for_index)
+            if self.shape_for_index is None:
+                yield from sorted(pool, key=self.length_for_index)
+            else:
+                shapes = {index: self.shape_for_index(index) for index in pool}
+                if any(count % self.batch_size for count in Counter(shapes[index] for index in pool).values()):
+                    raise ValueError("Length bucketing requires complete spatially compatible batches from the source sampler.")
+                yield from sorted(pool, key=lambda index: (shapes[index], self.length_for_index(index)))
 
 
 def _pad_axis(value: torch.Tensor, axis: int, size: int) -> torch.Tensor:

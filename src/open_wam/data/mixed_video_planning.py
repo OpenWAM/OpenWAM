@@ -189,6 +189,126 @@ class MixedVideoWindowPlanner:
             rng.shuffle(epoch_order)
         return tuple(epoch_order)
 
+    def build_shape_bucketed_epoch_order(
+        self,
+        *,
+        sample_index: Sequence[MixedVideoWindowRecord],
+        episode_records: Mapping[str, MixedVideoEpisodeRecord],
+        shape_ids: Sequence[int],
+        world_size: int,
+        batch_size: int,
+        epoch: int = 0,
+    ) -> tuple[int, ...]:
+        """Keep rank-local H/W compatible while preserving source draws.
+
+        Repeat only incomplete shape tails and rank-alignment columns, recording
+        their multiplicities. Length bucketing subsequently only permutes this
+        existing order; it must not add, remove or resample any of these draws.
+        """
+
+        resolved_world_size = max(1, int(world_size))
+        resolved_batch_size = max(1, int(batch_size))
+        base_order = self.build_source_balanced_epoch_order(
+            sample_index=sample_index,
+            episode_records=episode_records,
+            epoch=epoch,
+        )
+        if resolved_batch_size <= 1 or not base_order:
+            return base_order
+        if len(shape_ids) != len(sample_index):
+            raise ValueError(
+                "Shape-bucketed ordering needs one grid id per planned window, got "
+                f"shape_ids={len(shape_ids)}, sample_index={len(sample_index)}."
+            )
+
+        # Walk the source-balanced order once, dropping each index into the open
+        # column for its grid. A column closes at `batch_size` and becomes one
+        # rank-batch. Relative order within a grid is preserved, so the
+        # source interleaving the planner produced still shows through.
+        open_columns: dict[int, list[int]] = {}
+        columns: list[list[int]] = []
+        for index in base_order:
+            shape_id = int(shape_ids[index])
+            column = open_columns.get(shape_id)
+            if column is None:
+                column = []
+                open_columns[shape_id] = column
+            column.append(int(index))
+            if len(column) == resolved_batch_size:
+                columns.append(column)
+                del open_columns[shape_id]
+
+        # Close each grid's partial tail column. Borrow the shortfall from
+        # ANOTHER full column of the same grid rather than repeating a sample
+        # already inside this column: a sample appearing twice in one batch
+        # would carry double weight in that batch's gradient, whereas a sample
+        # appearing in two different batches is just a sample seen twice.
+        columns_by_shape: dict[int, list[int]] = {}
+        for column_position, column in enumerate(columns):
+            columns_by_shape.setdefault(int(shape_ids[column[0]]), []).append(column_position)
+        repeated_samples = 0
+        degenerate_shapes: list[int] = []
+        for shape_id in sorted(open_columns):
+            column = open_columns[shape_id]
+            if not column:
+                continue
+            deficit = resolved_batch_size - len(column)
+            donors = columns_by_shape.get(shape_id, ())
+            if donors:
+                borrowed: list[int] = []
+                donor_cursor = 0
+                while len(borrowed) < deficit:
+                    donor = columns[donors[donor_cursor % len(donors)]]
+                    borrowed.append(donor[(donor_cursor // len(donors)) % len(donor)])
+                    donor_cursor += 1
+                column.extend(borrowed)
+            else:
+                # This grid holds fewer than `batch_size` windows in the entire
+                # epoch, so there is no other batch to borrow from. Repeating
+                # within the batch is the only alternative to dropping the grid
+                # outright, which would remove a source from the mixture.
+                degenerate_shapes.append(shape_id)
+                column.extend(column[position % len(column)] for position in range(deficit))
+            repeated_samples += deficit
+            columns.append(column)
+        self.last_shape_bucketing_degenerate_shapes = tuple(degenerate_shapes)
+
+        # Shuffling columns (not samples) restores a globally mixed order while
+        # leaving each column homogeneous. Seeded identically on every rank:
+        # all ranks must derive the SAME global order or the stride sharding
+        # silently overlaps.
+        rng = random.Random(
+            int(self.data_config.sampling_seed)
+            + int(epoch) * 1_000_003
+            + resolved_world_size * 7_919
+            + resolved_batch_size * 104_729
+        )
+        rng.shuffle(columns)
+
+        # Pad the column count to a whole number of blocks. Padding columns are
+        # taken from the FRONT of the shuffled list, which lands in an early
+        # block, so the final block never holds the same column twice and no
+        # step sees a duplicated batch across its ranks.
+        remainder = len(columns) % resolved_world_size
+        if remainder:
+            snapshot = list(columns)
+            deficit = resolved_world_size - remainder
+            if len(snapshot) >= resolved_world_size:
+                columns.extend(snapshot[position] for position in range(deficit))
+            else:
+                columns.extend(snapshot[position % len(snapshot)] for position in range(deficit))
+            repeated_samples += deficit * resolved_batch_size
+
+        epoch_order: list[int] = []
+        for block_start in range(0, len(columns), resolved_world_size):
+            block = columns[block_start : block_start + resolved_world_size]
+            for row in range(resolved_batch_size):
+                for column in block:
+                    epoch_order.append(column[row])
+        self.last_shape_bucketing_repeats = repeated_samples
+        return tuple(epoch_order)
+
+
     def _select_valid_causal_bucket(
         self,
         episode: MixedVideoEpisodeRecord,

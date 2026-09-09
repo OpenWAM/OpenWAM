@@ -1,0 +1,391 @@
+# Video pretraining dataset registry for nine sources. Paths are portable templates; callers expand environment variables.
+# This catalogs pretraining sources and processing, not downstream policy fine-tuning or evaluation datasets, and is not ExperimentConfig.
+schema_version: 1
+documentation: ../../pretraining/datasets.md
+scope: video_pretraining_nine_sources
+# Published model weights, not a dataset hosting repository.
+pretraining_model_weights: https://huggingface.co/OpenWAM-Stanford/OpenWAM-Pretraining
+paths:
+  raw: '${DATA_ROOT}/raw'
+  derived: '${DATA_ROOT}/converted'
+  single_view_latents: '${WORK_ROOT}/latents/single'
+  multiview: '${WORK_ROOT}/multiview'
+  episodes: '${WORK_ROOT}/episodes'
+  single_view_manifests: '${WORK_ROOT}/manifests/single'
+  multiview_manifests: '${WORK_ROOT}/manifests/multiview'
+  snapshots: '${WORK_ROOT}/snapshots'
+  text_cache: '${WORK_ROOT}/text'
+  vae: '${VAE_ROOT}'
+  text_encoder: '${MODEL_ASSETS}/text_encoder'
+  tokenizer: '${MODEL_ASSETS}/tokenizer'
+  # OBJECT_URI is the storage root URI obtained from your own storage console.
+  optional_raw_object_storage: '${OBJECT_URI}/openwam/raw/'
+  optional_latent_object_storage: '${OBJECT_URI}/openwam/processed/latents/'
+statistics:
+  interpretation: historical_frozen_snapshot_not_live_progress
+  single_view_snapshot_utc: '2026-09-06T08:06:32Z'
+  multiview_admission_snapshot_utc: '2026-09-07T23:47:02Z'
+  audit_date_utc: '2026-09-08'
+  single_view_rows: 1053709
+  added_multiview_clips: 144648
+  admitted_multiview_physical_episodes: 107681
+  earlier_full_multiview_plan_episodes: 366968
+  historical_native_prompt_count_including_empty: 18774
+  count_warning: 'CSV rows are camera streams/clips; planned, complete, verified, and admitted counts differ.'
+common:
+  pin_upstream_revision: true
+  download_scope: explicit_task_take_or_archive_selection
+  prepare_script: scripts/pretraining/prepare_dataset.py
+  single_view_encoder: scripts/pretraining/encoding/encode_latents.py
+  manifest_builder: scripts/pretraining/build_manifest.py
+  snapshot_publisher: scripts/pretraining/publish_snapshot.py
+  prompt_encoder: scripts/pretraining/text/encode_prompt_cache.py
+  single_view:
+    target_fps: 15
+    size_mode: aspect_bins
+    fit_mode: letterbox_pad
+    canvases_wh: [[128, 128], [256, 256], [352, 256], [352, 192]]
+    temporal_rgb_length: '1 + 4k'
+    latent_layout: THWC
+    latent_channels: 48
+    spatial_compression: 16
+    temporal_compression: 4
+    store_dtype: fp16
+    normalize_with_vae_mean_std: true
+    posterior: mean
+    frame_ids_timebase: native_source_frames
+  multiview:
+    prepare_script: scripts/pretraining/multiview/prepare.py
+    worker_script: scripts/pretraining/multiview/worker.py
+    archive_worker_script: scripts/pretraining/multiview/archive_worker.py
+    input: synchronized_native_rgb_cameras
+    encode_after_rgb_multi_view: true
+    concatenate_existing_latents: false
+    camera_count: [2, 3]
+    canvas_target_pixels: 65536
+    canvas_area_ratio_bounds: [0.8, 1.2]
+    canvas_alignment: 32
+    per_camera_isotropic_resize: true
+    max_rgb_frames_per_clip: 257
+    max_latent_frames_per_clip: 65
+    target_fps: 15
+    frame_ids_timebase_fps: 15
+    admission: complete_verified_receipts_only
+    exclude_smoke: true
+  text:
+    source: native_episode_or_take_metadata
+    missing: explicit_empty_with_status
+    conflicting: fail_and_require_reviewed_mapping
+    key: sha256_of_exact_utf8
+    generated_caption_fallback: false
+  split:
+    group: canonical_physical_episode_across_views_segments_and_source_aliases
+    historical_checkpoint_unseen_claim: false
+
+sources:
+  - id: VPT-01
+    name: LIBERO
+    enabled: true
+    upstream:
+      project: https://libero-project.github.io/datasets
+      code: https://github.com/Lifelong-Robot-Learning/LIBERO
+      public_lerobot_repos: [lerobot/libero]
+      public_lerobot_reference: https://huggingface.co/docs/lerobot/libero
+      revision: REQUIRED_PER_DOWNLOAD
+      historical_exact_public_revision: null
+    paths:
+      raw: '${DATA_ROOT}/raw/VPT-01/<repo>'
+      latent: '${WORK_ROOT}/latents/single/VPT-01/<repo>/latents'
+      episodes: '${WORK_ROOT}/episodes/VPT-01.jsonl'
+      manifest: '${WORK_ROOT}/manifests/single/VPT-01.csv'
+      optional_raw_object_storage: '${OBJECT_URI}/openwam/raw/VPT-01/<revision>/'
+    download_include: ['meta/*', 'data/*', 'videos/*', README.md]
+    adapter: lerobot
+    native_text: 'episode.tasks / task_index → meta/tasks'
+    multiview:
+      enabled: true
+      order: [workspace_or_agent, wrist]
+      pair_orientation: horizontal
+    historical:
+      single_view_rows: 13000
+      admitted_multiview_clips: 6500
+      internal_subsets: [S01, S02, S03, S04, S05]
+      warning: 'Public lerobot/libero is not guaranteed to match the five historical subsets episode by episode or in FPS.'
+    external_processing: 'Use upstream tools for official collection, simulation, and original HDF5-to-LeRobot conversion.'
+
+  - id: VPT-04
+    name: UMI_and_MV_UMI
+    enabled: true
+    upstream:
+      projects: ["https://umi-gripper.github.io/", "https://mv-umi.github.io/"]
+      directory: https://umi-data.github.io/
+      public_lerobot_repos:
+        - DaivdYuan/mv-umi-bottles-rack-seg-lerobot
+        - DaivdYuan/mv-umi-markers-placement-raw-lerobot
+        - DaivdYuan/mv-umi-markers-placement-seg-lerobot
+        - DaivdYuan/umi-bimanual-cloth-folding-lerobot
+        - DaivdYuan/umi-bimanual-dish-washing-lerobot
+        - DaivdYuan/umi-dynamic-tossing-lerobot
+      revision: REQUIRED_PER_REPO
+      input_provenance: public_lerobot_conversion_of_upstream_data
+    paths:
+      raw: '${DATA_ROOT}/raw/VPT-04/<repo>'
+      repaired_metadata_view: '${DATA_ROOT}/converted/VPT-04/<revision>/<repo>'
+      latent: '${WORK_ROOT}/latents/single/VPT-04/<repo>/latents'
+      episodes: '${WORK_ROOT}/episodes/VPT-04.jsonl'
+      manifest: '${WORK_ROOT}/manifests/single/VPT-04.csv'
+      optional_raw_object_storage: '${OBJECT_URI}/openwam/raw/VPT-04/<revision>/'
+    download_include: ['meta/*', 'data/*', 'videos/*', README.md]
+    adapter: lerobot
+    metadata_conflicts: fail_before_encoding
+    native_text: 'v3 episode metadata → native task table'
+    multiview:
+      enabled: true
+      pair_orientation: auto
+      single_camera_episode: retain_single_view_only
+    historical:
+      single_view_rows: 3510
+      admitted_multiview_clips: 2446
+      metadata_repair_required_for_three_mv_umi_inputs: true
+    external_processing: 'Raw Zarr and public LeRobot conversion tooling has not been fully imported into this repository.'
+
+  - id: VPT-05
+    name: AgiBot_World_Alpha_Beta
+    enabled: true
+    upstream:
+      huggingface_repos: [agibot-world/AgiBotWorld-Alpha, agibot-world/AgiBotWorld-Beta]
+      code: https://github.com/OpenDriveLab/AgiBot-World
+      revision: REQUIRED_PER_REPO
+      access: upstream_application_and_authenticated_download
+      possible_alpha_beta_overlap: true
+    paths:
+      raw: '${DATA_ROOT}/raw/VPT-05/<alpha_or_beta>/observations/<task>/<archive>'
+      task_info: '${DATA_ROOT}/raw/VPT-05/<alpha_or_beta>/task_info/task_<task_id>.json'
+      derived: '${DATA_ROOT}/converted/VPT-05/<archive_identity>'
+      latent: '${WORK_ROOT}/latents/single/VPT-05/<repo>/latents'
+      episodes: '${WORK_ROOT}/episodes/VPT-05.jsonl'
+      manifest: '${WORK_ROOT}/manifests/single/VPT-05.csv'
+      optional_raw_object_storage: '${OBJECT_URI}/openwam/raw/VPT-05/<revision>/'
+    download_scope: one_task_with_task_info_then_one_archive_per_conversion
+    raw_format: tar_of_original_episode_videos
+    converter: scripts/pretraining/convert_agibot.py
+    adapter_after_conversion: lerobot
+    selected_cameras: [head_color, hand_left_color, hand_right_color]
+    native_text: 'task_info list: exact original episode_id → task_name'
+    text_excludes_by_default: [init_scene_text, lable_info.action_config]
+    preserve_original_episode_mapping: true
+    multiview:
+      enabled: true
+      order: [head_color, hand_left_color, hand_right_color]
+      layout: head_above_left_right
+    historical:
+      single_view_rows: 46299
+      admitted_multiview_clips: 12
+      complete_upstream_dataset: false
+    external_processing: 'Complete official LeRobot/action conversion and dataset publication tools remain upstream.'
+
+  - id: VPT-06
+    name: RoboMIND
+    enabled: true
+    upstream:
+      huggingface_repo: x-humanoid-robomind/RoboMIND
+      url: https://huggingface.co/datasets/x-humanoid-robomind/RoboMIND
+      revision: REQUIRED_PER_DOWNLOAD
+    paths:
+      official_raw: '${DATA_ROOT}/raw/VPT-06/official/<archive_or_part>'
+      failure_raw: '${DATA_ROOT}/raw/VPT-06/failure/<source>/data/trajectory.hdf5'
+      staging: '${WORK_ROOT}/robomind/<archive>'
+      official_latent: '${WORK_ROOT}/latents/single/VPT-06/official_rgbv1'
+      failure_latent: '${WORK_ROOT}/latents/single/VPT-06/failure_rgbv1'
+      old_color_latent: '${DATA_ROOT}/legacy/VPT-06/old_color_contract'
+      publications: '${WORK_ROOT}/robomind/publications/<content_hash>/index.json'
+      episodes: '${WORK_ROOT}/episodes/VPT-06.official.jsonl'
+      manifest: '${WORK_ROOT}/manifests/single/VPT-06.csv'
+      optional_raw_object_storage: '${OBJECT_URI}/openwam/raw/VPT-06/<revision>/'
+    download_scope: complete_selected_archive_with_all_parts_or_exact_failure_hdf5
+    official:
+      encoder: scripts/pretraining/encoding/encode_hdf5_text.py
+      adapter: robomind_report
+      color_policy: robomind_official_rgb_v1
+      detect_typed_hwc_before_flattening: true
+      bgr_to_rgb_embodiments: [h5_franka_3rgb, h5_franka_1rgb, h5_ur_1rgb, h5_franka_fr3_dual]
+      retain_decoded_channel_order_embodiments:
+        - h5_agilex_3rgb
+        - h5_simulation
+        - h5_sim_franka_3rgb
+        - h5_sim_tienkung_1rgb
+        - h5_tienkung_gello_1rgb
+        - h5_tienkung_xsens_1rgb
+        - h5_tienkung_prod1_gello_1rgb
+    failure:
+      encoder: scripts/pretraining/encoding/encode_failure.py
+      color_policy: robomind_failure_standard_jpeg_v1
+      pixel_decode: standard_jpeg_rgb
+      source_fps: required_from_native_metadata
+      migration_status: portable_encoder_present_full_queue_pipeline_not_ported
+      validation_boundary: new_encoder_requires_actual_model_smoke_before_bulk_use
+      use_official_encoder_without_adapter: false
+    native_text: exact_hdf5_native_instruction_with_field_provenance
+    multiview:
+      enabled: true
+      camera_roles: reviewed_native_metadata
+      orientation_overrides: explicit_per_episode_contract
+      anatomical_wrist_role_from_left_right_name_alone: false
+    historical:
+      single_view_rows: 25419
+      official_rows: 19857
+      failure_rows: 5562
+      admitted_multiview_clips: 12714
+      complete_upstream_dataset: false
+
+  - id: VPT-07
+    name: InternData_A1
+    enabled: true
+    upstream:
+      huggingface_repo: InternRobotics/InternData-A1
+      url: https://huggingface.co/datasets/InternRobotics/InternData-A1
+      project: https://internrobotics.github.io/interndata-a1.github.io/
+      revision: REQUIRED_PER_DOWNLOAD
+      access: upstream_application_and_authenticated_download
+      published_lerobot_roots: [sim_updated, sim_updated_lerobotv30]
+    paths:
+      raw: '${DATA_ROOT}/raw/VPT-07/<version>/<category>/<robot>/<task>'
+      latent: '${WORK_ROOT}/latents/single/VPT-07/<repo>/latents'
+      episodes: '${WORK_ROOT}/episodes/VPT-07.jsonl'
+      manifest: '${WORK_ROOT}/manifests/single/VPT-07.csv'
+      optional_raw_object_storage: '${OBJECT_URI}/openwam/raw/VPT-07/<revision>/'
+    download_scope: one_selected_robot_task_with_all_native_metadata
+    adapter: lerobot
+    native_text: 'episode task; unique repo task only with metadata proof'
+    multiview:
+      enabled: true
+      layout: auto_pair_or_head_above_left_right
+    historical:
+      single_view_rows: 618856
+      admitted_multiview_clips: 111575
+      truncated_label_rows_left_empty: 44793
+      warning: 'Historical mirrored layouts and current public layouts are not proven frame-equivalent; truncation counts do not extend to new releases.'
+
+  - id: VPT-08
+    name: RoboCOIN
+    enabled: true
+    upstream:
+      dataset_directory: https://huggingface.co/RoboCOIN/datasets
+      project: https://flagopen.github.io/RoboCOIN/
+      code: https://github.com/FlagOpen/RoboCOIN
+      example_repo: RoboCOIN/alpha_bot_2_move_the_table
+      access: accept_repo_conditions_and_authenticated_download
+      revision: REQUIRED_PER_TASK_REPO
+      historical_alias_to_public_repo_map: REQUIRED_FOR_EXACT_REPLAY
+    paths:
+      raw: '${DATA_ROOT}/raw/VPT-08/<task_repo>'
+      latent: '${WORK_ROOT}/latents/single/VPT-08/<repo>/latents'
+      episodes: '${WORK_ROOT}/episodes/VPT-08.jsonl'
+      manifest: '${WORK_ROOT}/manifests/single/VPT-08.csv'
+      optional_raw_object_storage: '${OBJECT_URI}/openwam/raw/VPT-08/<revision>/'
+    download_include: ['meta/*', 'data/*', 'videos/*', README.md]
+    adapter: lerobot
+    native_text: 'episode tasks/task_index; metadata-proven unique repo task fallback'
+    multiview:
+      enabled: true
+      max_cameras: 3
+      ambiguous_roles: hold_for_review
+    historical:
+      single_view_rows: 143159
+      admitted_multiview_clips: 12
+
+  - id: VPT-09
+    name: FastUMI
+    enabled: true
+    upstream:
+      huggingface_repo: IPEC-COMMUNITY/FastUMI_100k_lerobot
+      url: https://huggingface.co/datasets/IPEC-COMMUNITY/FastUMI_100k_lerobot
+      revision: REQUIRED_PER_DOWNLOAD
+      task_roots: [single_arm, dual_arm]
+    paths:
+      raw: '${DATA_ROOT}/raw/VPT-09/<single_arm_or_dual_arm>/<task>'
+      latent: '${WORK_ROOT}/latents/single/VPT-09/<task>/latents'
+      episodes: '${WORK_ROOT}/episodes/VPT-09.jsonl'
+      manifest: '${WORK_ROOT}/manifests/single/VPT-09.csv'
+      optional_raw_object_storage: '${OBJECT_URI}/openwam/raw/VPT-09/<revision>/'
+    download_scope: one_native_task_with_meta_data_and_videos
+    adapter: lerobot
+    native_text: exact_episode_native_task
+    multiview:
+      enabled: true
+      pair_orientation: horizontal
+      crop_policy: fastumi_wide_inner_v4
+      native_geometry_wh: [1280, 720]
+      sample_fractions: [0, 0.25, 0.5, 0.75, 1]
+      preserve_full_height: true
+      max_trim_per_side_pixels: 192
+      guard_pixels: 24
+      min_retained_width_fraction: 0.70
+      boundary_alignment: 2
+      constant_crop_for_whole_video: true
+      variable_canvas: true
+      reuse_old_multi_view_videos: false
+    historical:
+      single_view_rows: 157561
+      native_fastumi_rows: 141051
+      aliases_from_01: 13000
+      aliases_from_04: 3510
+      admitted_multiview_clips: 11389
+      unmapped_unplug_raw_videos: 1536
+      unrelated_derived_multi_view_videos: 9112
+      alias_sampling_semantics: preserve_only_if_explicitly_reproducing_historical_mixture
+
+  - id: VPT-10R
+    name: EgoExo4D_RGB
+    enabled: true
+    upstream:
+      project: https://ego-exo4d-data.org/
+      access: https://docs.ego-exo4d-data.org/getting-started/
+      downloader: https://docs.ego-exo4d-data.org/download/
+      release: REQUIRED_PER_DOWNLOAD
+    paths:
+      raw_shared: '${DATA_ROOT}/raw/EgoExo4D'
+      takes_metadata: '${DATA_ROOT}/raw/EgoExo4D/takes.json'
+      filtered_input: '${DATA_ROOT}/converted/EgoExo4D/rgb/takes'
+      latent: '${WORK_ROOT}/latents/single/VPT-10R/<take>/latents'
+      episodes: '${WORK_ROOT}/episodes/VPT-10R.jsonl'
+      manifest: '${WORK_ROOT}/manifests/single/VPT-10R.csv'
+      optional_raw_object_storage: '${OBJECT_URI}/openwam/raw/EgoExo4D/<release>/'
+    download_parts: [metadata, takes]
+    download_scope: explicit_take_uids
+    adapter: video_tree
+    video_pattern: '*/frame_aligned_videos/*.mp4'
+    stream_selection: official_metadata_rgb_streams_only
+    native_text: exact_take_name_to_takes_json_task_name
+    text_granularity: take_task_not_temporal_narration
+    multiview: {enabled: false, reason: retain_original_single_views}
+    historical: {single_view_rows: 30800, admitted_multiview_clips: 0}
+    external_processing: official_egoexo_access_and_download_cli
+
+  - id: VPT-10S
+    name: EgoExo4D_SLAM
+    enabled: true
+    upstream:
+      project: https://ego-exo4d-data.org/
+      access: https://docs.ego-exo4d-data.org/getting-started/
+      downloader: https://docs.ego-exo4d-data.org/download/
+      release: REQUIRED_PER_DOWNLOAD
+    paths:
+      raw_shared: '${DATA_ROOT}/raw/EgoExo4D'
+      takes_metadata: '${DATA_ROOT}/raw/EgoExo4D/takes.json'
+      filtered_input: '${DATA_ROOT}/converted/EgoExo4D/slam/takes'
+      latent: '${WORK_ROOT}/latents/single/VPT-10S/<take>/latents'
+      episodes: '${WORK_ROOT}/episodes/VPT-10S.jsonl'
+      manifest: '${WORK_ROOT}/manifests/single/VPT-10S.csv'
+      optional_raw_object_storage: '${OBJECT_URI}/openwam/raw/EgoExo4D/<release>/'
+    download_parts: [metadata, takes]
+    download_scope: same_explicit_take_uids_as_rgb_without_duplicate_download
+    adapter: video_tree
+    video_pattern: '*/frame_aligned_videos/*.mp4'
+    stream_selection: official_metadata_monochrome_slam_only
+    pixel_policy: monochrome_replicated_to_three_equal_channels
+    native_text: exact_take_name_to_takes_json_task_name
+    shared_split_identity_with: VPT-10R
+    multiview: {enabled: false, reason: retain_original_single_views}
+    historical: {single_view_rows: 15105, admitted_multiview_clips: 0}
+    external_processing: official_egoexo_access_and_download_cli

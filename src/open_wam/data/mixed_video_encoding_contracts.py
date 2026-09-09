@@ -69,6 +69,7 @@ class MixedVideoEncodedEpisode:
     target_slot: str = "observation.images.slot0"
     encoded_slots: tuple[str, ...] = ()
     encoding_mode: MixedVideoLatentEncodingMode = MixedVideoLatentEncodingMode.CANONICAL
+    physical_episode_key: str | None = None
 
     def __post_init__(self) -> None:
         latent_shape = tuple(int(value) for value in self.latent_shape)

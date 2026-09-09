@@ -784,9 +784,10 @@ def test_causal_video_prediction_masks_padded_tokens_during_train_rollout() -> N
 
     rollout = variant._build_train_rollout(
         visual_tower=tower,  # type: ignore[arg-type]
-        visual_outputs=VisualStageOutputs(frontend=frontend),
+        video_latents=frontend.video_latents,
+        token_grid=frontend.token_grid,
         text_context=frontend.conditioning.text_context,
-        metadata=(
+        layouts=variant._resolve_layouts(available_frames=6, metadata=(
             {
                 "observed_prefix_frames": 2,
                 "future_suffix_frames": 2,
@@ -798,7 +799,7 @@ def test_causal_video_prediction_masks_padded_tokens_during_train_rollout() -> N
                 "future_suffix_frames": 5,
                 "valid_video_frames": 6,
             },
-        ),
+        )),
     )
 
     assert tower.attention_mask is not None

@@ -219,11 +219,13 @@ class PolicyVariant(nn.Module, ABC):
         prepared_inputs: Sequence[PolicyPreparedInputs],
         *,
         batching_mode: BatchingMode,
-    ) -> tuple[PolicyTrainOutput, ...]:
-        """Execute isolated sequences together, returning one output per sample.
+    ) -> PolicyTrainOutput | tuple[PolicyTrainOutput, ...]:
+        """Execute isolated sequences together under the variant's decoder contract.
 
         Consumers opt in explicitly; a loop of full-model forwards is not a
-        substitute for shared heavy-layer execution.
+        substitute for shared heavy-layer execution. Return sample-local outputs
+        for equal-sample reduction, or a native batched output when the decoder
+        owns a different reduction (for example, supervised video-frame means).
         """
         raise NotImplementedError(
             f"{type(self).__name__} does not support variable-length batch execution."

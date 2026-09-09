@@ -1,12 +1,14 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Any
 
 import torch
+import torch.nn.functional as F
 
 from open_wam.configs import (
+    BatchingMode,
     CausalVideoProgram,
     InferenceConfig,
     TextConditioningMode,
@@ -334,6 +336,7 @@ class CausalVideoPredictionPolicyVariant(PolicyVariant):
         *,
         token_grid: TokenGridMetadata,
         device: torch.device,
+        compact: bool = False,
     ) -> torch.Tensor | None:
         if all(layout.total_frames == token_grid.num_frames for layout in layouts):
             return None
@@ -367,25 +370,20 @@ class CausalVideoPredictionPolicyVariant(PolicyVariant):
         valid_key_tokens = temporal_patch_indices.unsqueeze(
             0
         ) < valid_patch_counts.unsqueeze(1)
-        return valid_key_tokens[:, None, :].expand(-1, sequence_length, -1).contiguous()
+        mask = valid_key_tokens[:, None, :]
+        return mask if compact else mask.expand(-1, sequence_length, -1).contiguous()
 
     def _build_train_rollout(
         self,
         *,
         visual_tower: VisualTower,
-        visual_outputs: VisualStageOutputs,
-        metadata: tuple[dict[str, Any], ...],
+        video_latents: torch.Tensor,
+        token_grid: TokenGridMetadata,
+        layouts: list[_PrefixSuffixLayout],
         text_context: torch.Tensor | None,
+        batching_mode: BatchingMode = BatchingMode.STRICT,
     ) -> dict[str, Any]:
-        video_latents = visual_outputs.frontend.video_latents
         batch_size, _, num_frames, _, _ = video_latents.shape
-        layouts = self._resolve_layouts(
-            metadata=metadata,
-            available_frames=num_frames,
-            frame_mapping=visual_outputs.frontend.conditioning.metadata.get(
-                "video_frame_mapping"
-            ),
-        )
         scheduler = FlowMatchScheduler(
             shift=self.training_config.video_sigma_shift,
             sigma_min=0.0,
@@ -428,10 +426,18 @@ class CausalVideoPredictionPolicyVariant(PolicyVariant):
                 batch_index, :, layout.observed_frames : layout.total_frames
             ] = 1.0
 
-        attention_mask = self._build_valid_token_attention_mask(
-            layouts,
-            token_grid=visual_outputs.frontend.token_grid,
+        packed = batching_mode is BatchingMode.PACKED
+        attention_mask = None if packed else self._build_valid_token_attention_mask(
+            layouts, token_grid=token_grid,
             device=video_latents.device,
+            compact=batching_mode is not BatchingMode.STRICT,
+        )
+        packed_kwargs = (
+            {
+                "sequence_lengths": tuple(layout.total_frames for layout in layouts),
+                "use_activation_checkpointing": self.config.use_activation_checkpointing,
+            }
+            if packed else {}
         )
         flow_pred = visual_tower.predict_video_flow(
             noisy_latents=noisy_latents,
@@ -439,6 +445,7 @@ class CausalVideoPredictionPolicyVariant(PolicyVariant):
             text_context=text_context,
             frame_start=0,
             attention_mask=attention_mask,
+            **packed_kwargs,
         )
         predicted_latents = denoised_video_latents_from_flow(
             noisy_latents=noisy_latents,
@@ -584,12 +591,11 @@ class CausalVideoPredictionPolicyVariant(PolicyVariant):
             "layouts": (layout,),
         }
 
-    def forward_train(
+    def _validate_train_conditioning(
         self,
-        visual_tower: VisualTower,
         visual_outputs: VisualStageOutputs,
         prepared_inputs: PolicyPreparedInputs,
-    ) -> PolicyTrainOutput:
+    ) -> None:
         conditioning = visual_outputs.frontend.conditioning
         batch_size = int(visual_outputs.frontend.video_latents.shape[0])
         text_context_to_validate = conditioning.text_context
@@ -601,12 +607,25 @@ class CausalVideoPredictionPolicyVariant(PolicyVariant):
         self._validate_text_conditioning(
             text_context=text_context_to_validate,
             negative_text_context=conditioning.negative_text_context,
-            task_text=prepared_inputs.batch.extra.get("task_text"),
+            task_text=prepared_inputs.batch.extra.get(
+                "source_task_text", prepared_inputs.batch.extra.get("task_text")
+            ),
             batch_size=batch_size,
             require_negative_text=(
                 float(self.training_config.text_condition_dropout_prob) > 0.0
             ),
         )
+
+    def forward_train(
+        self,
+        visual_tower: VisualTower,
+        visual_outputs: VisualStageOutputs,
+        prepared_inputs: PolicyPreparedInputs,
+    ) -> PolicyTrainOutput:
+        self._validate_train_conditioning(visual_outputs, prepared_inputs)
+        video_latents = visual_outputs.frontend.video_latents
+        conditioning = visual_outputs.frontend.conditioning
+        batch_size = int(video_latents.shape[0])
         metadata = self._metadata_tuple(
             prepared_inputs.batch.extra.get("metadata"),
             expected_batch_size=batch_size,
@@ -614,8 +633,12 @@ class CausalVideoPredictionPolicyVariant(PolicyVariant):
         if self.config.program == CausalVideoProgram.PREFIX_SUFFIX:
             rollout = self._build_train_rollout(
                 visual_tower=visual_tower,
-                visual_outputs=visual_outputs,
-                metadata=metadata,
+                video_latents=video_latents,
+                token_grid=visual_outputs.frontend.token_grid,
+                layouts=self._resolve_layouts(
+                    metadata=metadata, available_frames=video_latents.shape[2],
+                    frame_mapping=conditioning.metadata.get("video_frame_mapping"),
+                ),
                 text_context=conditioning.text_context,
             )
             supervised_frame_count = torch.tensor(
@@ -634,9 +657,50 @@ class CausalVideoPredictionPolicyVariant(PolicyVariant):
             supervised_frame_count = rollout["future_loss_mask"].float().sum(
                 dim=(1, 2, 3, 4)
             ).mean()
-        policy_features = visual_outputs.frontend.video_latents.new_zeros(
-            batch_size, 0, self.config.hidden_size
+        return self._train_output(rollout, supervised_frame_count)
+
+    def forward_train_batch(
+        self, visual_tower: VisualTower,
+        visual_outputs: Sequence[VisualStageOutputs],
+        prepared_inputs: Sequence[PolicyPreparedInputs], *, batching_mode: BatchingMode,
+    ) -> PolicyTrainOutput:
+        """Keep native batched RNG draws and decoder-owned frame-weighted losses."""
+        if self.config.program is not CausalVideoProgram.PREFIX_SUFFIX:
+            raise ValueError("Variable video batching requires the prefix/suffix program.")
+        if not visual_outputs or len(visual_outputs) != len(prepared_inputs):
+            raise ValueError("Video batching requires paired nonempty prepared sequences.")
+        layouts = []
+        for visual, prepared in zip(visual_outputs, prepared_inputs, strict=True):
+            self._validate_train_conditioning(visual, prepared)
+            layouts.extend(self._resolve_layouts(
+                metadata=self._metadata_tuple(prepared.batch.extra.get("metadata"), expected_batch_size=1),
+                available_frames=visual.frontend.video_latents.shape[2],
+                frame_mapping=visual.frontend.conditioning.metadata.get("video_frame_mapping"),
+            ))
+        capacity = int(prepared_inputs[0].batch.extra["batching_video_capacity"])
+        latents = torch.cat([
+            F.pad(visual.frontend.video_latents, (0, 0, 0, 0, 0, capacity - visual.frontend.video_latents.shape[2]))
+            for visual in visual_outputs
+        ])
+        contexts = [visual.frontend.conditioning.text_context for visual in visual_outputs]
+        text = None
+        if any(context is not None for context in contexts):
+            if any(context is None for context in contexts):
+                raise ValueError("Video batch text conditioning must be present for every sample or none.")
+            text_capacity = max(context.shape[1] for context in contexts)
+            text = torch.cat([F.pad(context, (0, 0, 0, text_capacity - context.shape[1])) for context in contexts])
+        grid = visual_outputs[0].frontend.token_grid
+        rollout = self._build_train_rollout(
+            visual_tower=visual_tower, video_latents=latents,
+            token_grid=replace(grid, num_frames=capacity, sequence_length=capacity * grid.tokens_per_frame),
+            layouts=layouts, text_context=text, batching_mode=batching_mode,
         )
+        count = torch.tensor([layout.future_frames for layout in layouts], device=latents.device, dtype=torch.float32).mean()
+        return self._train_output(rollout, count)
+
+    def _train_output(self, rollout: dict[str, Any], supervised_frame_count: torch.Tensor) -> PolicyTrainOutput:
+        latents = rollout["target_latents"]
+        policy_features = latents.new_zeros(latents.shape[0], 0, self.config.hidden_size)
         return PolicyTrainOutput(
             policy_features=policy_features,
             metrics={
