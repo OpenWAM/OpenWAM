@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from array import array
 from collections import OrderedDict
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 import hashlib
 from typing import Any
 
@@ -9,6 +10,7 @@ import torch
 from torch.utils.data import Dataset
 
 from open_wam.configs import (
+    BatchingMode,
     DataConfig,
     MixedVideoDataConfig,
     MixedVideoMissingStreamPolicy,
@@ -80,6 +82,7 @@ class MixedVideoTrainSampler(EpochOrderDistributedSampler):
         resolved_rank = int(rank)
         if resolved_rank < 0 or resolved_rank >= resolved_world_size:
             raise ValueError(f"Invalid sampler rank={rank} for world_size={world_size}.")
+        dataset.configure_batch_geometry(world_size=resolved_world_size, batch_size=int(dataset.data_config.train_batch_size))
         super().__init__(
             dataset,
             world_size=resolved_world_size,
@@ -233,12 +236,39 @@ class MixedVideoWindowDataset(Dataset[WAMSample]):
     def build_train_sampler(self, *, world_size: int = 1, rank: int = 0) -> MixedVideoTrainSampler:
         return MixedVideoTrainSampler(self, world_size=world_size, rank=rank)
 
+    def configure_batch_geometry(self, *, world_size: int, batch_size: int) -> None:
+        """Record the loader geometry the epoch order must be aligned to."""
+
+        self._batch_geometry = (max(1, int(world_size)), max(1, int(batch_size)))
+
+
     def build_epoch_index_order(self, *, epoch: int = 0) -> tuple[int, ...]:
+        world_size, batch_size = getattr(self, "_batch_geometry", (1, 1))
+        if batch_size > 1 and bool(getattr(self.data_config, "shape_bucketed_batching", False)):
+            return self._window_planner.build_shape_bucketed_epoch_order(
+                sample_index=self.sample_index,
+                episode_records=self.episode_records,
+                shape_ids=self.window_shape_ids(),
+                world_size=world_size,
+                batch_size=batch_size,
+                epoch=epoch,
+            )
         return self._window_planner.build_source_balanced_epoch_order(
             sample_index=self.sample_index,
             episode_records=self.episode_records,
             epoch=epoch,
         )
+
+
+    def window_shape_ids(self) -> Sequence[int]:
+        """Return one small integer per planned window identifying its batch shape."""
+
+        raise ValueError(
+            "`shape_bucketed_batching` is implemented for the latent mixed-video dataset only "
+            "(trainer.batch_adapter=latents). The RGB path resolves its decoded size lazily per "
+            "sample, so per-window shapes are not known at ordering time."
+        )
+
 
     def _build_views(
         self,
@@ -364,6 +394,9 @@ class MixedVideoLatentWindowDataset(MixedVideoWindowDataset):
     def _allowed_source_formats(self) -> frozenset[MixedVideoSourceFormat]:
         return frozenset({MixedVideoSourceFormat.LATENT, MixedVideoSourceFormat.RGB_AND_LATENT})
 
+    def batching_length_hint(self, index: int) -> int:
+        return int(self.sample_index[index].valid_video_frames)
+
     def _configured_stream_slots(self) -> tuple[str, ...]:
         slots = list(self.data_config.latent_camera_names)
         for combination in self.data_config.latent_view_combinations:
@@ -381,6 +414,81 @@ class MixedVideoLatentWindowDataset(MixedVideoWindowDataset):
             episode_records=self.episode_records,
             episode_keys=self.episode_keys,
         )
+
+    def window_shape_ids(self) -> Sequence[int]:
+        """Map every planned window to a small id identifying its collated shape.
+
+        Two windows may share a batch exactly when `torch.stack` accepts their
+        `video_latents` together, i.e. when the assembled canvas has the same
+        (H, W). `assemble_latent_views` builds that canvas as a pure function of
+        the per-view grid, the number of selected views and the canvas view
+        count -- it requires all selected views to be the same resolution and
+        raises otherwise -- so those three values are a complete shape key. The
+        channel and frame axes need no key: C is fixed by the encoder and T is
+        padded by the collator in variable modes and by the dataset in strict mode.
+
+        The grid comes from the manifest's `height`/`width` columns, which for
+        latent sources record the LATENT grid (8x8, 16x16, 12x22, 16x22), so no
+        sidecar has to be opened to plan an epoch.
+        """
+
+        cached = getattr(self, "_window_shape_id_cache", None)
+        if cached is not None:
+            return cached
+
+        canvas_view_count = _latent_view_assembly_canvas_view_count(self.data_config)
+        shape_key_to_id: dict[tuple[int, int, int, int], int] = {}
+        episode_slot_grid: dict[tuple[str, str], tuple[int, int]] = {}
+        shape_ids = array("i", bytes(4 * len(self.sample_index)))
+
+        for window_position, window in enumerate(self.sample_index):
+            episode = self.episode_records[window.episode_key]
+            slots = tuple(str(slot) for slot in window.view_combination_slots)
+            if not slots:
+                valid = self._window_planner.valid_latent_view_combinations(episode)
+                if not valid:
+                    raise KeyError(
+                        f"Mixed-video latent episode {episode.key!r} has no valid latent view combinations."
+                    )
+                slots = tuple(str(slot) for slot in valid[0].slots)
+            grid_key = (window.episode_key, slots[0])
+            grid = episode_slot_grid.get(grid_key)
+            if grid is None:
+                streams_by_slot: dict[str, MixedVideoStreamRecord] = {}
+                for stream in sorted(episode.streams, key=lambda item: item.stream_index):
+                    streams_by_slot.setdefault(stream.target_slot, stream)
+                stream = streams_by_slot.get(slots[0])
+                if stream is None:
+                    raise KeyError(
+                        f"Mixed-video latent episode {episode.key!r} is missing configured stream slot {slots[0]!r}."
+                    )
+                if stream.height is None or stream.width is None:
+                    raise ValueError(
+                        f"Shape-bucketed batching needs the latent grid of source={stream.source_id!r}, "
+                        f"stream={stream.stream_key!r}, but its manifest row has no height/width. "
+                        "Rebuild that manifest with latent grid columns, or set "
+                        "`shape_bucketed_batching: false` and train_batch_size: 1."
+                    )
+                grid = (int(stream.height), int(stream.width))
+                episode_slot_grid[grid_key] = grid
+            shape_key = (grid[0], grid[1], len(slots), canvas_view_count)
+            shape_id = shape_key_to_id.get(shape_key)
+            if shape_id is None:
+                shape_id = len(shape_key_to_id)
+                shape_key_to_id[shape_key] = shape_id
+            shape_ids[window_position] = shape_id
+
+        self._window_shape_id_cache = shape_ids
+        self._window_shape_key_to_id = dict(shape_key_to_id)
+        return shape_ids
+
+
+    @property
+    def batching_shape_hint(self) -> Callable[[int], int] | None:
+        """Only opt-in spatial grouping requires manifest grid metadata."""
+        if not self.data_config.shape_bucketed_batching:
+            return None
+        return self.window_shape_ids().__getitem__
 
     def __getitem__(self, index: int) -> LatentWAMSample:
         window = self.sample_index[index]
@@ -505,6 +613,8 @@ class MixedVideoLatentWindowDataset(MixedVideoWindowDataset):
                 f"Mixed-video bucket requested {latents.shape[1]} latent frames, "
                 f"but data.num_frames={padded_frames}."
             )
+        if self.data_config.batching.mode is not BatchingMode.STRICT:
+            return latents.contiguous()
         if latents.shape[1] == padded_frames:
             return latents.contiguous()
         padding = torch.zeros(

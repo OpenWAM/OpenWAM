@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 import math
 
 from .data_consortium import ConsortiumChannelMappingConfig
+from .asset_cache import ArtifactCacheConfig
 from .data_contracts import (
     ActionMappingConfig,
     ActionSchemaConfig,
@@ -235,6 +236,7 @@ class MixedVideoDataConfig(DataConfig):
         )
     )
     video_sources: tuple[MixedVideoSourceConfig, ...] = ()
+    artifact_cache: ArtifactCacheConfig | None = None
     latent_encoding_mode: MixedVideoLatentEncodingMode = MixedVideoLatentEncodingMode.CANONICAL
     latent_view_combinations: tuple[MixedVideoViewCombinationConfig, ...] = field(default_factory=tuple)
     decode_size_mode: MixedVideoDecodeSizeMode = MixedVideoDecodeSizeMode.FIXED
@@ -250,6 +252,7 @@ class MixedVideoDataConfig(DataConfig):
     random_mode: MixedVideoRandomMode = MixedVideoRandomMode.WITHIN_SOURCE
     weight_mode: MixedVideoWeightMode = MixedVideoWeightMode.PROPORTIONAL_TO_SIZE
     sampling_seed: int = 0
+    shape_bucketed_batching: bool = False
 
     def __post_init__(self) -> None:
         super().__post_init__()
@@ -307,11 +310,12 @@ class MixedVideoDataConfig(DataConfig):
         if self.decode_size_mode == MixedVideoDecodeSizeMode.ASPECT_RATIO_BINS and not self.decode_resize_bins:
             raise ValueError("`decode_size_mode=aspect_ratio_bins` requires at least one `decode_resize_bins` entry.")
         if self.decode_size_mode == MixedVideoDecodeSizeMode.ASPECT_RATIO_BINS and (
-            self.train_batch_size != 1 or self.val_batch_size != 1
+            (self.train_batch_size != 1 and not self.shape_bucketed_batching)
+            or self.val_batch_size != 1
         ):
             raise ValueError(
-                "`decode_size_mode=aspect_ratio_bins` currently requires train_batch_size=1 and val_batch_size=1 "
-                "because samples can have different decoded heights/widths."
+                "Aspect-ratio bins require shape_bucketed_batching for train_batch_size>1, "
+                "and val_batch_size=1 because validation retains its ordinary order."
             )
         if not self.video_sources:
             raise ValueError("`mixed_video` requires at least one `video_sources` entry.")

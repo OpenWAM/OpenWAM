@@ -80,6 +80,8 @@ def _manifest_row_for_encoded_episode(
         "encoding_mode": record.encoding_mode,
         "encoded_slots": "|".join(record.encoded_slots),
         "tasks": "|".join(record.tasks),
+        **({"physical_episode_key": record.physical_episode_key}
+           if record.physical_episode_key is not None else {}),
     }
 
 
@@ -194,7 +196,10 @@ def _write_source_manifests(
         if manifest_path.exists() and not overwrite:
             raise FileExistsError(f"Manifest already exists: {manifest_path}. Pass --overwrite to replace it.")
         with manifest_path.open("w", encoding="utf-8", newline="") as handle:
-            writer = csv.DictWriter(handle, fieldnames=fieldnames)
+            source_fields = fieldnames + (("physical_episode_key",) if any(
+                row.get("physical_episode_key") is not None for row in rows
+            ) else ())
+            writer = csv.DictWriter(handle, fieldnames=source_fields)
             writer.writeheader()
             writer.writerows(rows)
         manifest_paths[source_id] = manifest_path

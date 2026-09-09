@@ -570,6 +570,17 @@ def _mixed_video_encoding_artifact_fingerprint(
                 str(temporary_root),
                 "<TMP>",
             )
+            if path.name == "latent_training_config.yaml":
+                import yaml
+
+                payload = yaml.safe_load(artifacts[relative_path])
+                # New opt-in transport fields are inert in this frozen fixture.
+                # Assert their defaults before omitting them from the old file
+                # fingerprint; all tensors and other metadata stay byte-exact.
+                assert payload['data'].pop('shape_bucketed_batching') is False
+                assert payload['data'].pop('artifact_cache') is None
+                assert payload['backbone'].pop('prompt_cache') is None
+                artifacts[relative_path] = yaml.safe_dump(payload, sort_keys=False)
             continue
         payload = torch.load(path, map_location="cpu")
         latents = payload["video_latents"].contiguous()
@@ -2145,8 +2156,7 @@ def test_mixed_video_latent_encoder_canonical_and_per_view_manifest_is_trainable
     train_dataset, _ = build_train_val_latent_datasets(latent_training_config.data)
     sample = train_dataset[0]
     assert sample.video_latents.shape == (48, 2, 2, 4)
-    # The exported config now includes the opt-in batching defaults. Removing
-    # that stanza reproduces the previous artifact fingerprint exactly.
+    # Inert optional cache/bucketing fields are asserted and normalized above.
     assert _mixed_video_encoding_artifact_fingerprint(
         output_root,
         temporary_root=tmp_path,

@@ -7,6 +7,7 @@ from typing import Any, Literal
 from open_wam.contracts.paths import validate_model_component_path
 
 from .coercion import coerce_enum, coerce_optional_enum
+from .asset_cache import PromptCacheConfig, parse_prompt_cache
 from .enums import (
     AttentionMode,
     BackboneImplementation,
@@ -67,6 +68,7 @@ class SharedVideoTransformerConfig:
     text_encoder_subdir: str = "text_encoder"
     tokenizer_subdir: str = "tokenizer"
     max_text_tokens: int = 512
+    prompt_cache: PromptCacheConfig | None = None
     load_wan_vae_frontend: bool = False
     load_text_conditioning: bool = False
     load_reference_core_weights: bool = False
@@ -122,6 +124,7 @@ def parse_shared_video_transformer_config(
         load_reference_core_weights = False
 
     return SharedVideoTransformerConfig(
+        prompt_cache=parse_prompt_cache(raw.get("prompt_cache")),
         input_channels=raw.get("input_channels", defaults.input_channels),
         latent_channels=raw.get("latent_channels", defaults.latent_channels),
         latent_stride=raw.get("latent_stride", defaults.latent_stride),

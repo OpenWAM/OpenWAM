@@ -4,6 +4,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from . import enums as config_enums
+from .asset_cache import parse_artifact_cache
 from .coercion import (
     coerce_enum as _coerce_enum,
     coerce_optional_enum as _coerce_optional_enum,
@@ -801,6 +802,8 @@ def parse_data_config(raw_value: Mapping[str, Any] | None) -> DataConfig:
     if data_config_cls is MixedVideoDataConfig:
         resize_bins = _load_mixed_video_resize_bins(data_raw.get("decode_resize_bins"))
         common_data_kwargs.update(
+            shape_bucketed_batching=bool(data_raw.get("shape_bucketed_batching", data_defaults.shape_bucketed_batching)),
+            artifact_cache=parse_artifact_cache(data_raw.get("artifact_cache")),
             video_sources=_load_mixed_video_sources(data_raw.get("video_sources")),
             latent_encoding_mode=_coerce_enum(
                 config_enums.MixedVideoLatentEncodingMode,

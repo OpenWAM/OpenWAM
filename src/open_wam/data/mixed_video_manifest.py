@@ -189,6 +189,8 @@ def _load_source_streams(
                 channels=_optional_int_field(row, "channels"),
                 tasks=_parse_tasks(row),
                 clip=clip,
+                physical_episode_key=_string_field(row, "physical_episode_key"),
+                augmentation=_string_field(row, "augmentation"),
             )
         )
     return streams

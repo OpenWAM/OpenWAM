@@ -32,6 +32,14 @@ PUBLIC_MARKDOWN_PATHS = (
     Path("index.md"),
     Path("lingbot_va_baseline_libero10.md"),
     Path("policy_architectures.md"),
+    Path("pretraining/index.md"),
+    Path("pretraining/batching.md"),
+    Path("pretraining/data_processing.md"),
+    Path("pretraining/datasets.md"),
+    Path("pretraining/multiview_training.md"),
+    Path("pretraining/storage.md"),
+    Path("pretraining/training.md"),
+    Path("pretraining/validation.md"),
     Path("dual_expert_refactor_characterization.md"),
     Path("quickstart.md"),
     Path("release.md"),
@@ -43,6 +51,7 @@ PUBLIC_MARKDOWN_PATHS = (
     Path("video_only_training.md"),
 )
 PUBLIC_ASSET_PATHS = (
+    Path("assets/pretraining/datasets.yaml"),
     Path("assets/affiliations/SOURCES.txt"),
     Path("assets/affiliations/stanford-ai-lab.jpg"),
     Path("assets/affiliations/stanford-svl.png"),

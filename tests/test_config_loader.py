@@ -1387,7 +1387,22 @@ trainer:
         load_experiment_config(config_path)
 
 
-def test_mixed_video_aspect_ratio_bins_reject_multi_sample_batches(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("train_batch_size", "val_batch_size", "shape_bucketed", "expected_error"),
+    [
+        (1, 1, False, None),
+        (2, 1, False, "shape_bucketed_batching"),
+        (2, 1, True, None),
+        (2, 2, True, "val_batch_size=1"),
+    ],
+)
+def test_mixed_video_aspect_ratio_bins_require_spatial_batching(
+    tmp_path: Path,
+    train_batch_size: int,
+    val_batch_size: int,
+    shape_bucketed: bool,
+    expected_error: str | None,
+) -> None:
     manifest_path = tmp_path / "mixed_manifest.csv"
     config_path = tmp_path / "mixed_video_bad_batch.yaml"
     config_path.write_text(
@@ -1402,8 +1417,9 @@ data:
       local_root: {tmp_path}
   camera_names: [observation.images.slot0]
   latent_camera_names: [observation.images.slot0]
-  train_batch_size: 2
-  val_batch_size: 1
+  train_batch_size: {train_batch_size}
+  val_batch_size: {val_batch_size}
+  shape_bucketed_batching: {str(shape_bucketed).lower()}
   decode_size_mode: aspect_ratio_bins
   action_schema:
     action_dim: 1
@@ -1430,8 +1446,14 @@ trainer:
         encoding="utf-8",
     )
 
-    with pytest.raises(ValueError, match="train_batch_size=1"):
-        load_experiment_config(config_path)
+    if expected_error is not None:
+        with pytest.raises(ValueError, match=expected_error):
+            load_experiment_config(config_path)
+    else:
+        config = load_experiment_config(config_path)
+        assert config.data.train_batch_size == train_batch_size
+        assert config.data.val_batch_size == val_batch_size
+        assert config.data.shape_bucketed_batching is shape_bucketed
 
 
 def test_raw_libero_smoke_variant_yaml_configs_load() -> None:

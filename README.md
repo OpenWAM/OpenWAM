@@ -49,6 +49,15 @@ the [artifact documentation](docs/artifacts.md) as each resource is published.
 
 ## Research Scope
 
+For OpenWAM video pretraining, see the
+[pretraining datasets and workflow](docs/pretraining/index.md). The guide covers
+the nine pretraining data sources, downloads, RGB multi-view composition before
+VAE encoding, task text, verified object storage with a bounded cache, training,
+checkpoints, and inference. These inputs are the pretraining corpus; downstream
+robot policy fine-tuning and evaluation have their own dataset configurations.
+Published model weights are available at
+[OpenWAM-Stanford/OpenWAM-Pretraining on Hugging Face](https://huggingface.co/OpenWAM-Stanford/OpenWAM-Pretraining).
+
 OpenWAM provides:
 
 - one typed train, resume, evaluation, and simulator runtime across policy

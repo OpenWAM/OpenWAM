@@ -36,7 +36,6 @@ _center_crop_to_aspect = _frames._center_crop_to_aspect
 _letterbox_pad_to_target = _frames._letterbox_pad_to_target
 _resize_frame = _frames._resize_frame
 _resolve_frame_fit_mode = _frames._resolve_frame_fit_mode
-_select_mixed_video_resize_bin = _frames._select_mixed_video_resize_bin
 transform_frame = _frames.transform_frame
 _resample_video_frames_at_target_indices = (
     _timeline._resample_video_frames_at_target_indices

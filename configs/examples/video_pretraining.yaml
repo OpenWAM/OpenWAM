@@ -1,0 +1,217 @@
+# Generate a resolved config with scripts/pretraining/make_config.py.
+# For joint single-view + multiview pretraining, merge both validated manifest
+# sets and pass --require-multiview to make_config.py and train.py.
+# Each RGB multi view video is encoded once into one latent stream;
+# the loader reads its actual spatial shape without a model-side view toggle.
+name: openwam_pretraining
+data:
+  dataset_name: mixed_video
+  dataset_type: mixed_video
+  cache_dir: null
+  video_sources: []
+  camera_names:
+  - observation.images.slot0
+  latent_camera_names:
+  - observation.images.slot0
+  canonical_height: 128
+  canonical_width: 128
+  view_layout:
+  - source_name: observation.images.slot0
+    canonical_name: observation.images.slot0
+    top: 0
+    left: 0
+    height: 128
+    width: 128
+  decode_size_mode: aspect_ratio_bins
+  decode_resize_bins:
+  - name: square_128
+    aspect_width: 1
+    aspect_height: 1
+    target_height: 128
+    target_width: 128
+    max_pixels: 16384
+  - name: square_256
+    aspect_width: 1
+    aspect_height: 1
+    target_height: 256
+    target_width: 256
+  - name: four_three_352x256
+    aspect_width: 4
+    aspect_height: 3
+    target_height: 256
+    target_width: 352
+  - name: sixteen_nine_352x192
+    aspect_width: 16
+    aspect_height: 9
+    target_height: 192
+    target_width: 352
+  decode_height: 128
+  decode_width: 128
+  decode_fit_mode: letterbox_pad
+  decode_allow_upscale: true
+  target_observation_fps: null
+  missing_observation_fps: 30.0
+  missing_stream_policy: error
+  random_mode: within_source
+  weight_mode: manual_override
+  sampling_seed: 0
+  num_frames: 64
+  frame_stride: 1
+  sample_stride: 1
+  episode_cache_size: 2
+  train_fraction: 0.98
+  train_batch_size: 36
+  val_batch_size: 1
+  num_workers: 8
+  action_schema:
+    action_dim: 1
+    action_horizon: 0
+    state_dim: 1
+    state_horizon: 0
+  action_target:
+    representation: raw
+    source_key: action
+    pose_source_key: observation.state
+  sample_construction:
+    mode: causal_prefix_suffix
+    num_frames: 64
+    action_horizon: 0
+    state_horizon: 0
+    frame_stride: 1
+    causal_prefix_suffix_buckets:
+    - observed_frames: 1
+      future_frames: 2
+    - observed_frames: 1
+      future_frames: 4
+    - observed_frames: 1
+      future_frames: 8
+    - observed_frames: 1
+      future_frames: 16
+    - observed_frames: 1
+      future_frames: 32
+    - observed_frames: 1
+      future_frames: 48
+    - observed_frames: 2
+      future_frames: 2
+    - observed_frames: 2
+      future_frames: 4
+    - observed_frames: 2
+      future_frames: 8
+    - observed_frames: 2
+      future_frames: 16
+    - observed_frames: 2
+      future_frames: 32
+    - observed_frames: 2
+      future_frames: 48
+    - observed_frames: 4
+      future_frames: 2
+    - observed_frames: 4
+      future_frames: 4
+    - observed_frames: 4
+      future_frames: 8
+    - observed_frames: 4
+      future_frames: 16
+    - observed_frames: 4
+      future_frames: 32
+    - observed_frames: 4
+      future_frames: 48
+    - observed_frames: 8
+      future_frames: 2
+    - observed_frames: 8
+      future_frames: 4
+    - observed_frames: 8
+      future_frames: 8
+    - observed_frames: 8
+      future_frames: 16
+    - observed_frames: 8
+      future_frames: 32
+    - observed_frames: 8
+      future_frames: 48
+    - observed_frames: 16
+      future_frames: 2
+    - observed_frames: 16
+      future_frames: 4
+    - observed_frames: 16
+      future_frames: 8
+    - observed_frames: 16
+      future_frames: 16
+    - observed_frames: 16
+      future_frames: 32
+    - observed_frames: 16
+      future_frames: 48
+    randomize_geometry: true
+  shape_bucketed_batching: true
+  batching:
+    mode: bucket
+    bucket_pool_size: 1152
+    pad_to_multiple_of: 1
+    drop_last_train: true
+backbone:
+  implementation: shared_transformer
+  pretrained_model_name_or_path: __MODEL_ASSETS__
+  hidden_size: 3072
+  num_layers: 30
+  num_heads: 24
+  attention_head_dim: 128
+  ffn_dim: 14336
+  text_dim: 4096
+  max_text_tokens: 512
+  patch_size_t: 1
+  patch_size_h: 2
+  patch_size_w: 2
+  load_wan_vae_frontend: false
+  load_text_conditioning: false
+  load_reference_core_weights: true
+  transformer_subdir: transformer
+  reference_core_init_mode: video_only
+  latent_channels: 48
+  latent_stride: 16
+policy_variant:
+  name: causal_video_prediction
+  program: prefix_suffix
+  attach_site: post_visual_core
+  hidden_size: 3072
+action_decoder:
+  name: video_only_decoder
+  hidden_size: 3072
+  action_dim: 1
+  action_horizon: 0
+training:
+  learning_rate: 1.0e-05
+  beta1: 0.9
+  beta2: 0.95
+  weight_decay: 0.01
+  warmup_steps: 100
+  gradient_accumulation_steps: 1
+  num_steps: 1000
+  enabled_objectives:
+  - latent
+  latent_loss_weight: 1.0
+  action_loss_weight: 0.0
+  trainable_components:
+  - all
+  frozen_components: []
+  scheduler_name: constant
+  text_condition_dropout_prob: 0.1
+inference:
+  video_num_inference_steps: 25
+  guidance_scale: 1.0
+  use_cache: true
+  frame_chunk_size: 2
+trainer:
+  limit_train_batches: null
+  limit_val_batches: 1
+  runtime: composable
+  batch_adapter: latents
+  loop_policy: steps
+  strategy: fsdp
+  accelerator: gpu
+  precision: bf16-mixed
+  default_root_dir: __RUN_ROOT__
+  save_interval: 1000
+  max_checkpoints_to_keep: 2
+  export_runtime_backbone: false
+  enable_wandb: false
+  wandb_project: openwam-mixed-video-pretrain
+  wandb_mode: disabled
+  checkpoint_mode: full_training_state
