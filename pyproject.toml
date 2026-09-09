@@ -52,7 +52,7 @@ pretrain = [
 # Keep the characterized Transformers minor line bounded. Version 5.10 is the
 # first line containing the security fix required by the release audit.
 torch = [
-    "diffusers>=0.35.0,<0.38",
+    "diffusers>=0.35.0,<0.39",
     "einops>=0.8.0",
     "huggingface_hub>=0.30",
     "msgpack>=1.2.1",
@@ -65,7 +65,7 @@ torch = [
 ]
 train = [
     "accelerate>=1.1.0",
-    "diffusers>=0.35.0,<0.38",
+    "diffusers>=0.35.0,<0.39",
     "einops>=0.8.0",
     "h5py>=3.11.0",
     "huggingface_hub>=0.30",
@@ -81,7 +81,7 @@ train = [
     "transformers>=5.10.0,<5.11",
 ]
 eval = [
-    "diffusers>=0.35.0,<0.38",
+    "diffusers>=0.35.0,<0.39",
     "einops>=0.8.0",
     "h5py>=3.11.0",
     "huggingface_hub>=0.30",
@@ -132,7 +132,7 @@ robotwin = [
 sim = [
     "bddl==1.0.1",
     "cloudpickle>=3.1.2",
-    "diffusers>=0.35.0,<0.38",
+    "diffusers>=0.35.0,<0.39",
     "easydict>=1.13",
     "einops>=0.8.0",
     "future>=1.0.0",
@@ -162,7 +162,7 @@ full = [
     "bddl==1.0.1",
     "boto3>=1.40",
     "cloudpickle>=3.1.2",
-    "diffusers>=0.35.0,<0.38",
+    "diffusers>=0.35.0,<0.39",
     "easydict>=1.13",
     "einops>=0.8.0",
     "future>=1.0.0",
