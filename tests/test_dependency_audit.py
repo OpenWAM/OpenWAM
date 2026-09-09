@@ -4,7 +4,12 @@ from datetime import date
 
 import pytest
 
-from scripts.check_dependency_audit import AuditException, validate_audit_report
+from scripts.check_dependency_audit import (
+    DEFAULT_POLICY,
+    AuditException,
+    load_audit_exceptions,
+    validate_audit_report,
+)
 
 
 def _report(*, vulnerability_id: str = "PYSEC-test") -> dict[str, object]:
@@ -66,3 +71,27 @@ def test_dependency_audit_rejects_stale_exception() -> None:
             (_exception(),),
             today=date(2026, 8, 6),
         )
+
+
+@pytest.mark.parametrize("version,today,error", (
+    ("1.13.0", date(2026, 9, 9), None),
+    ("1.14.0", date(2026, 9, 9), "unaccepted vulnerabilities"),
+    ("1.13.0", date(2026, 10, 10), "expired"),
+))
+def test_accelerate_release_exception_is_version_and_time_bounded(
+    version: str, today: date, error: str | None,
+) -> None:
+    exception, = [
+        item for item in load_audit_exceptions(DEFAULT_POLICY)
+        if item.vulnerability_id == "CVE-2026-69112"
+    ]
+    report = {"dependencies": [{
+        "name": "accelerate", "version": version,
+        "vulns": [{"id": "CVE-2026-69112", "fix_versions": []}],
+    }]}
+    if error is not None:
+        with pytest.raises(ValueError, match=error):
+            validate_audit_report(report, (exception,), today=today)
+    else:
+        result = validate_audit_report(report, (exception,), today=today)
+        assert result.accepted_exceptions == (exception,)

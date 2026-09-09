@@ -1,6 +1,13 @@
 schema_version = 1
 
 [[exceptions]]
+id = "CVE-2026-69112"
+package = "accelerate"
+version = "1.13.0"
+expires = 2026-10-09
+reason = "Maintainer-authorized risk acceptance for the 0.1.1 SDK release, not a vulnerability fix. A malicious checkpoint shard index can escape its directory or reference a special file. Only owner-reviewed checkpoints in trusted, non-writable-by-others directories are supported under this exception; safetensors alone is insufficient. Upstream closed the report as outside its artifact-trust threat model without a released fix (huggingface/accelerate#4067, #4214). Keep the characterized dependency version and reassess before expiry; the base SDK does not install Accelerate."
+
+[[exceptions]]
 id = "PYSEC-2026-40"
 package = "diffusers"
 version = "0.37.1"

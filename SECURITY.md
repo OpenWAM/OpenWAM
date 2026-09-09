@@ -51,6 +51,21 @@ release checks. Narrow exceptions live in
 version, advisory, rationale, and expiration date. New, stale, or expired
 exceptions fail CI.
 
+For the 0.1.1 SDK release, maintainers accepted the residual risk from
+`accelerate==1.13.0` / `CVE-2026-69112` until **2026-10-09**. A malicious
+sharded-checkpoint index can reference files outside the checkpoint directory
+or special files that hang the loader. Safetensors does not prevent that path
+resolution issue. Only use checkpoints whose source and shard index have been
+reviewed, in directories not writable by other users; do not expose model
+loading as a service accepting untrusted uploads. This applies to optional
+model/training stacks, not the dependency-light base SDK.
+
+This exception is **risk acceptance, not a code fix**. The upstream maintainer
+[closed the report as outside their artifact-trust threat model](https://github.com/huggingface/accelerate/issues/4067#issuecomment-5586233400),
+but the advisory remains active. The frozen-version exception must be
+reassessed before expiry; it does not cover arbitrary versions resolved by
+installing optional PyPI extras.
+
 Out of scope:
 
 - expected failures from missing optional simulator packages
