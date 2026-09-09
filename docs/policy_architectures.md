@@ -147,20 +147,10 @@ Choose the smallest extension that expresses the change:
 See [Add A Policy Architecture](cookbooks/new_policy_architecture.md) and the
 [Extension SDK](extension_sdk.md).
 
-## Compatibility Names
+## Configuration Compatibility
 
-Historical naming aliases are accepted at explicit compatibility boundaries:
-
-| Historical input | Canonical meaning |
-| --- | --- |
-| M1 / Method 1 | `parallel_stream` |
-| M5 / Method 5 / `mot` / MoT | `dual_expert` |
-| `mot_decoder` | `dual_expert_decoder` |
-| `lingbot_parallel_decoder` | `parallel_stream_decoder` |
-
-Checkpoint-local resolved configs can migrate retired semantic fields that
-map unambiguously onto the current contract through
-`checkpoint_runtime_compat=True`. This is not a guarantee that arbitrary
-historical M1 configs remain executable. New YAML, CLI overrides, and Python
-configs must use canonical semantic fields; ordinary config loading does not
-translate them.
+Use the architecture and program names above in YAML, CLI overrides, and
+Python configs. Start from the shipped experiment templates when creating a
+run; a checkpoint's resolved config records its original experiment and is not
+a replacement for a current template. See [Compatibility](compatibility.md)
+for checkpoint-loading guarantees.

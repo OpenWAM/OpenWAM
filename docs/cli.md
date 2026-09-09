@@ -1,37 +1,25 @@
 # CLI Reference
 
-OpenWAM exposes package-owned console commands and keeps legacy root scripts as
-compatibility wrappers.
+OpenWAM provides six console commands for configuration, training, and inference.
 
 ## Stable Commands
 
-| Command | Purpose | Legacy path |
-| --- | --- | --- |
-| `openwam-train` | Train from an experiment YAML | `scripts/train.py` |
-| `openwam-eval` | Offline eval from experiment or eval YAML | `scripts/eval.py` |
-| `openwam-inspect-config` | Load and print typed config | `scripts/inspect_config.py` |
-| `openwam-validate-config` | Static YAML validation without model imports | `scripts/validate_configs_static.py` |
-| `openwam-sanity` | Run quantified load/train/eval/rollout-style sanity checks | `scripts/run_benchmark_pipeline_sanity.py` |
-| `openwam-sim-rollout` | Run a registered simulator adapter in closed loop | `scripts/run_sim_realtime_sandbox.py` |
+| Command | Purpose |
+| --- | --- |
+| `openwam-train` | Train from an experiment YAML |
+| `openwam-eval` | Offline evaluation from experiment or eval YAML |
+| `openwam-inspect-config` | Load and print typed config |
+| `openwam-validate-config` | Static YAML validation without model imports |
+| `openwam-sanity` | Check loading, training, evaluation, and rollout-style inference |
+| `openwam-sim-rollout` | Run a registered simulator adapter in closed loop |
 
-All six commands execute entirely from the installed package. The listed
-legacy script paths are compatibility adapters to the same package parsers and
-runtimes.
-
-## Compatibility Policy
-
-New docs should prefer `openwam-*` commands. Existing `scripts/...` commands
-must remain callable until they have:
-
-1. a package-owned replacement
-2. compatibility tests or dry-run/help equivalence
-3. a documented deprecation warning
-4. a later explicit removal PR
+All six commands work from an installed package. Use `--help` for their options.
+The `uv run` examples below assume a source checkout; after a pip installation
+with the relevant extras, invoke the commands directly without that prefix.
 
 For complete train, full-state resume, offline evaluation, and benchmark
 rollout examples, use [Training and Inference](running_experiments.md). It is
-the canonical operator guide; archived engineering notes are not command
-references.
+the complete usage guide.
 
 ## Command Examples
 

@@ -21,17 +21,6 @@ paths:
   # OBJECT_URI is the storage root URI obtained from your own storage console.
   optional_raw_object_storage: '${OBJECT_URI}/openwam/raw/'
   optional_latent_object_storage: '${OBJECT_URI}/openwam/processed/latents/'
-statistics:
-  interpretation: historical_frozen_snapshot_not_live_progress
-  single_view_snapshot_utc: '2026-09-06T08:06:32Z'
-  multiview_admission_snapshot_utc: '2026-09-07T23:47:02Z'
-  audit_date_utc: '2026-09-08'
-  single_view_rows: 1053709
-  added_multiview_clips: 144648
-  admitted_multiview_physical_episodes: 107681
-  earlier_full_multiview_plan_episodes: 366968
-  historical_native_prompt_count_including_empty: 18774
-  count_warning: 'CSV rows are camera streams/clips; planned, complete, verified, and admitted counts differ.'
 common:
   pin_upstream_revision: true
   download_scope: explicit_task_take_or_archive_selection
@@ -80,7 +69,6 @@ common:
     generated_caption_fallback: false
   split:
     group: canonical_physical_episode_across_views_segments_and_source_aliases
-    historical_checkpoint_unseen_claim: false
 
 sources:
   - id: VPT-01
@@ -92,7 +80,6 @@ sources:
       public_lerobot_repos: [lerobot/libero]
       public_lerobot_reference: https://huggingface.co/docs/lerobot/libero
       revision: REQUIRED_PER_DOWNLOAD
-      historical_exact_public_revision: null
     paths:
       raw: '${DATA_ROOT}/raw/VPT-01/<repo>'
       latent: '${WORK_ROOT}/latents/single/VPT-01/<repo>/latents'
@@ -106,11 +93,6 @@ sources:
       enabled: true
       order: [workspace_or_agent, wrist]
       pair_orientation: horizontal
-    historical:
-      single_view_rows: 13000
-      admitted_multiview_clips: 6500
-      internal_subsets: [S01, S02, S03, S04, S05]
-      warning: 'Public lerobot/libero is not guaranteed to match the five historical subsets episode by episode or in FPS.'
     external_processing: 'Use upstream tools for official collection, simulation, and original HDF5-to-LeRobot conversion.'
 
   - id: VPT-04
@@ -143,11 +125,7 @@ sources:
       enabled: true
       pair_orientation: auto
       single_camera_episode: retain_single_view_only
-    historical:
-      single_view_rows: 3510
-      admitted_multiview_clips: 2446
-      metadata_repair_required_for_three_mv_umi_inputs: true
-    external_processing: 'Raw Zarr and public LeRobot conversion tooling has not been fully imported into this repository.'
+    external_processing: 'Use upstream tooling to convert raw Zarr into LeRobot.'
 
   - id: VPT-05
     name: AgiBot_World_Alpha_Beta
@@ -178,10 +156,6 @@ sources:
       enabled: true
       order: [head_color, hand_left_color, hand_right_color]
       layout: head_above_left_right
-    historical:
-      single_view_rows: 46299
-      admitted_multiview_clips: 12
-      complete_upstream_dataset: false
     external_processing: 'Complete official LeRobot/action conversion and dataset publication tools remain upstream.'
 
   - id: VPT-06
@@ -197,7 +171,6 @@ sources:
       staging: '${WORK_ROOT}/robomind/<archive>'
       official_latent: '${WORK_ROOT}/latents/single/VPT-06/official_rgbv1'
       failure_latent: '${WORK_ROOT}/latents/single/VPT-06/failure_rgbv1'
-      old_color_latent: '${DATA_ROOT}/legacy/VPT-06/old_color_contract'
       publications: '${WORK_ROOT}/robomind/publications/<content_hash>/index.json'
       episodes: '${WORK_ROOT}/episodes/VPT-06.official.jsonl'
       manifest: '${WORK_ROOT}/manifests/single/VPT-06.csv'
@@ -222,7 +195,6 @@ sources:
       color_policy: robomind_failure_standard_jpeg_v1
       pixel_decode: standard_jpeg_rgb
       source_fps: required_from_native_metadata
-      migration_status: portable_encoder_present_full_queue_pipeline_not_ported
       validation_boundary: new_encoder_requires_actual_model_smoke_before_bulk_use
       use_official_encoder_without_adapter: false
     native_text: exact_hdf5_native_instruction_with_field_provenance
@@ -231,12 +203,6 @@ sources:
       camera_roles: reviewed_native_metadata
       orientation_overrides: explicit_per_episode_contract
       anatomical_wrist_role_from_left_right_name_alone: false
-    historical:
-      single_view_rows: 25419
-      official_rows: 19857
-      failure_rows: 5562
-      admitted_multiview_clips: 12714
-      complete_upstream_dataset: false
 
   - id: VPT-07
     name: InternData_A1
@@ -260,11 +226,6 @@ sources:
     multiview:
       enabled: true
       layout: auto_pair_or_head_above_left_right
-    historical:
-      single_view_rows: 618856
-      admitted_multiview_clips: 111575
-      truncated_label_rows_left_empty: 44793
-      warning: 'Historical mirrored layouts and current public layouts are not proven frame-equivalent; truncation counts do not extend to new releases.'
 
   - id: VPT-08
     name: RoboCOIN
@@ -276,7 +237,6 @@ sources:
       example_repo: RoboCOIN/alpha_bot_2_move_the_table
       access: accept_repo_conditions_and_authenticated_download
       revision: REQUIRED_PER_TASK_REPO
-      historical_alias_to_public_repo_map: REQUIRED_FOR_EXACT_REPLAY
     paths:
       raw: '${DATA_ROOT}/raw/VPT-08/<task_repo>'
       latent: '${WORK_ROOT}/latents/single/VPT-08/<repo>/latents'
@@ -290,9 +250,6 @@ sources:
       enabled: true
       max_cameras: 3
       ambiguous_roles: hold_for_review
-    historical:
-      single_view_rows: 143159
-      admitted_multiview_clips: 12
 
   - id: VPT-09
     name: FastUMI
@@ -325,15 +282,6 @@ sources:
       constant_crop_for_whole_video: true
       variable_canvas: true
       reuse_old_multi_view_videos: false
-    historical:
-      single_view_rows: 157561
-      native_fastumi_rows: 141051
-      aliases_from_01: 13000
-      aliases_from_04: 3510
-      admitted_multiview_clips: 11389
-      unmapped_unplug_raw_videos: 1536
-      unrelated_derived_multi_view_videos: 9112
-      alias_sampling_semantics: preserve_only_if_explicitly_reproducing_historical_mixture
 
   - id: VPT-10R
     name: EgoExo4D_RGB
@@ -359,7 +307,6 @@ sources:
     native_text: exact_take_name_to_takes_json_task_name
     text_granularity: take_task_not_temporal_narration
     multiview: {enabled: false, reason: retain_original_single_views}
-    historical: {single_view_rows: 30800, admitted_multiview_clips: 0}
     external_processing: official_egoexo_access_and_download_cli
 
   - id: VPT-10S
@@ -387,5 +334,4 @@ sources:
     native_text: exact_take_name_to_takes_json_task_name
     shared_split_identity_with: VPT-10R
     multiview: {enabled: false, reason: retain_original_single_views}
-    historical: {single_view_rows: 15105, admitted_multiview_clips: 0}
     external_processing: official_egoexo_access_and_download_cli

@@ -1,108 +1,110 @@
 # Testing
 
-OpenWAM uses pytest markers to make resource requirements explicit.
+Run tests from a source checkout. Pytest markers identify checks that need a
+GPU, dataset, or simulator.
 
-## Markers
-
-- `unit`: CPU-only unit tests with no local data, simulator, or GPU requirement.
-- `smoke`: short CPU-safe integration tests for public command/config surfaces.
-- `gpu`: requires CUDA and an explicit local resource gate.
-- `sim`: requires an external simulator such as LIBERO, RoboTwin, or CALVIN.
-- `data`: requires non-fixture local datasets.
-- `slow`: long-running train/eval/rollout checks.
-- `integration`: cross-component tests that are larger than unit tests.
-
-## Public CI Static Tier
-
-```bash
-OPEN_WAM_CI_NO_TORCH=1 python scripts/ci_basic_sanity.py
-```
-
-The dependency-light jobs remain intentionally cheap. They do not import
-Torch or touch private checkpoints, local datasets, GPUs, or external
-simulator checkouts.
-
-Tier 0 checks package metadata, entrypoint declarations, public config
-references, artifact manifest shape, local path sample hygiene, duplicate
-optional dependencies, source contracts that should remain import-safe, and
-production-core Pyflakes over `src`, `scripts`, `tests`, and `baselines`.
-Pyflakes runs in an isolated `uv --no-project` environment; it
-does not install OpenWAM or its runtime dependencies.
-
-Run that static lint locally with the pinned development dependency:
-
-```bash
-uv run python -m pyflakes src scripts tests baselines
-```
-
-The default PR workflow also includes two dependency-light companion jobs:
-
-- `minimal-package`: installs only the minimal package and verifies import-safe
-  package surfaces plus CLI parser construction without Torch.
-- `docs-site`: installs only MkDocs, stages curated public docs, asserts Torch
-  is unavailable, and builds the static GitHub Pages site.
-## Required CPU Semantic Gate
-
-Every pull request runs the complete CPU-safe suite on Python 3.11 and 3.12:
+## CPU Tests
 
 ```bash
 uv sync --frozen --group dev --extra full
-uv run pytest --strict-markers -q -m "not (gpu or sim or data or slow)"
+CUDA_VISIBLE_DEVICES="" uv run pytest --strict-markers -q \
+  -m "not (gpu or sim or data or slow)"
 ```
 
-This expression deliberately includes unmarked tests. A missing marker cannot
-silently remove a test from the standard gate. Tests marked `gpu`, `sim`,
-`data`, or `slow` must have a separate documented gate and skip with an
-actionable resource message when run without that resource.
+This is the standard semantic suite, including unmarked tests. It checks
+configuration, data contracts, training, inference, gradients, and checkpoint
+behavior using small fixtures. It does not measure full-model benchmark quality.
 
-## Manual CPU Smoke Workflow
+For a shorter end-to-end check, follow the
+[CPU first run](quickstart.md#complete-cpu-first-run).
 
-`.github/workflows/cpu-smoke.yml` remains a manually runnable end-to-end CLI
-check for the public tiny fixture. Its underlying contracts are also covered
-by the required CPU semantic suite.
+## Resource Requirements
 
-## Local Full Checks
+| Marker | Requirement |
+| --- | --- |
+| `unit` | CPU; no external data or simulator |
+| `smoke` | Short integration check; inspect additional resource markers |
+| `integration` | Cross-component check |
+| `gpu` | Allocated CUDA device and the test's explicit opt-in |
+| `sim` | Configured external simulator |
+| `data` | Non-fixture local dataset |
+| `slow` | Longer-running training or rollout |
 
-Run GPU tests only when a GPU is intentionally allocated:
+Configure local assets through `configs/local_paths.yaml` or
+`OPEN_WAM_LOCAL_PATHS`. Resource-gated tests explain missing prerequisites
+rather than silently substituting synthetic inputs.
 
 ```bash
 OPEN_WAM_RUN_GPU_SANITY=1 uv run pytest -m gpu
-```
-
-Core DualExpert/GJD refactors have a stricter, separately gated real-checkpoint
-workflow. See
-[Dual-Expert Refactor Characterization](dual_expert_refactor_characterization.md)
-for its six non-GJD programs, five GJD ablations, six available exact-checkpoint
-slots, frozen real-data replay, FSDP update checks, stateful inference, and
-record-versus-verify commands.
-
-Run simulator tests only after configuring `configs/local_paths.yaml` or
-`OPEN_WAM_LOCAL_PATHS`:
-
-```bash
 uv run pytest -m sim
 ```
 
-Tests that require real datasets or simulator roots should skip with an
-actionable message when the resource is missing.
+Individual GPU suites can require additional opt-ins and artifact manifests.
+Run only the suites appropriate to your allocated hardware.
+
+## Numerical Regression
+
+For changes to attention, conditioning, caches, training, or inference, compare
+against immutable references made with the same configs, checkpoint, frozen
+inputs, and hardware/software stack. Keep the reference from before the change;
+do not regenerate a golden to make a failing comparison pass.
+
+The real-checkpoint runner accepts a local manifest based on
+`tests/characterization/dual_expert_assets.example.yaml`. It can capture input
+fixtures, training steps, recurrent inference, cache rollover, full-state
+restore, and simulator rollouts. Inspect the available phases with:
+
+```bash
+uv run python -m tests.characterization.run_dual_expert_refactor_characterization --help
+```
+
+Given an existing fixture set and reviewed reference reports, record and compare
+one checkpoint:
+
+```bash
+uv run python -m tests.characterization.run_dual_expert_refactor_characterization \
+  record \
+  --assets /path/to/assets.yaml \
+  --fixture-root /path/to/frozen_fixtures \
+  --output-root /path/to/new_reports \
+  --stage-root /path/to/local_scratch \
+  --asset-id dual_expert_joint \
+  --cuda-devices 0,1,2,3
+
+uv run python -m tests.characterization.run_dual_expert_refactor_characterization \
+  verify \
+  --actual-root /path/to/new_reports \
+  --golden-root /path/to/reference_reports \
+  --asset-id dual_expert_joint
+```
+
+The reports check input identity, shapes, dtypes, losses, predictions,
+gradients, optimizer updates, and recurrent state. Comparisons use exact tensor
+hashes where deterministic and explicit tolerances for supported
+floating-point reductions. Equal seeds alone do not establish cross-device
+bitwise parity. See [Compatibility](compatibility.md).
+
+Checkpoint-backed coverage depends on the supplied assets. Passing synthetic
+or CPU tests does not establish parity for an unavailable model or simulator.
 
 ## Video-Only Parity
 
-The CPU semantic suite permanently fixes the causal-video training contract at
-the gradient level. A fixed tiny shared transformer, latent/text batch,
-diffusion seed, and SGD update must preserve the exact trainable-name set and
-parameter inventory. It compares the loss, predicted latents, every named
-gradient, and every named updated parameter elementwise against an immutable
-`safetensors` golden. Names, shapes, and dtypes must match exactly; numerical
-values use a small tolerance because supported CPU kernels are not
-byte-identical across hosts. The companion inference test executes the real
-causal policy over multiple chunks while also verifying clean-prefix
-preservation and complete generated-history progression.
+Video-only training has frozen CPU tests for losses, predictions, every named
+gradient, and parameter updates. Companion inference tests check clean-prefix
+preservation and generated-history progression. Pretraining tests also cover
+RGB processing, latent layouts, text conditioning, mixed datasets, and batching.
 
-Additional focused tests require exact converter tensor provenance, strict
-template model-schema coverage, topology-scoped export ownership, complete
-prefix timestep-zero conditioning, exact cross-view latent metadata and
-geometry, explicit text-dropout source preservation, typed policy-to-decoder video-flow
-artifacts, strict CFG requirements, and create-only atomic publication.
-Real-checkpoint GPU runs remain the resource-gated confirmation that
-dtype/device integration matches these CPU contracts.
+See [Pretraining Validation](pretraining/validation.md) for data checks before
+scaling up a run.
+
+## Documentation And Static Checks
+
+```bash
+uv run python -m pyflakes src scripts tests baselines
+OPEN_WAM_CI_NO_TORCH=1 uv run python scripts/ci_basic_sanity.py
+uv run --extra docs python scripts/build_docs_site.py --output .docs_site
+uv run --extra docs mkdocs build --strict
+```
+
+To preview documentation locally, use `uv run --extra docs mkdocs serve` after
+building `.docs_site`.

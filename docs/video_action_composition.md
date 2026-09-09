@@ -1,6 +1,6 @@
 # Generated Video To Action Composition
 
-Status: implemented. This note defines the maintained inference contract and
+This guide describes the inference contract and
 the parity gates that protect it.
 
 ## Purpose

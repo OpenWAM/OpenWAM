@@ -13,12 +13,10 @@ New integrations should import from these role-specific modules:
 - `open_wam.sdk.simulator`: simulator protocol and factory registration
 - `open_wam.sdk.results`: versioned results and provenance
 
-These modules are the compatibility-managed Python SDK. Historical broad
-facades such as `open_wam.configs`, `open_wam.data`, and
-`open_wam.pipelines` remain import-compatible during the pre-1.0 migration,
-but their complete symbol sets are not a promise that every implementation
-helper is stable. Modules below `open_wam.models.*` are internal unless a
-contract is re-exported by `open_wam.sdk.policy`.
+These modules are the compatibility-managed Python SDK. Other package exports
+are not a promise that every implementation helper is stable. Modules below
+`open_wam.models.*` are internal unless a contract is re-exported by
+`open_wam.sdk.policy`.
 
 The wheel ships a `py.typed` marker, so type checkers consume annotations from
 these SDK modules directly. Public stability still follows the role-specific
@@ -476,9 +474,7 @@ implementation has three parameter-free roles:
 - `open_wam.models.common.attention_backends` selects and executes dense SDPA
   or FlexAttention representations.
 
-`open_wam.models.common.attention_profiles` remains a historical import
-facade. New integrations should depend on the role module matching what they
-extend, or on the stable `open_wam.models.common` public exports above.
+Use the role module matching the operation when working on these implementations.
 
 Built-in DualExpert checkpoint layouts are narrower policy-internal contracts:
 
@@ -490,8 +486,7 @@ Built-in DualExpert checkpoint layouts are narrower policy-internal contracts:
 - `open_wam.models.policy_variants.dual_expert.attention_cached` owns split-cache
   action inference layouts.
 
-`open_wam.models.policy_variants.dual_expert.attention` remains a compatibility
-facade. Extensions implementing a new attention paradigm should normally
+Extensions implementing a new attention paradigm should normally
 construct a common `PreparedAttentionProfile`; depend on a DualExpert role only when
 the extension deliberately implements that exact built-in sequence layout.
 
@@ -527,9 +522,8 @@ canonical owners are:
 - `runtime_parameter_ops` for FSDP-safe linear, normalization, and
   feed-forward helpers.
 
-The package-root exports and historical `shared_transformer_support` aggregate
-remain compatible. New implementation code should import the role owner it
-uses. These functions own learned transformer execution or the explicit tensor
+Implementation code should import the role owner it uses. These functions own
+learned transformer execution or the explicit tensor
 operations supporting it, not sequence visibility or cache retention.
 Extensions should normally submit an attention profile through
 `VisualCoreInput`; use the lower-level primitives only when implementing a
@@ -546,8 +540,6 @@ The parameter-free cache API is split by role:
 - `open_wam.models.common.cache_backend_lifecycle` defines payload allocation,
   mutation, reset, and materialization.
 
-`open_wam.models.common.cache_backends` remains a historical import and pickle
-facade. New integrations should import the role module that owns the operation.
 Custom policies that retain the built-in cache formats can reuse:
 
 - `prepare_sdpa_mask` and `prepend_cached_prefix_mask`;

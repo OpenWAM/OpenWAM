@@ -68,8 +68,8 @@ New structured result files should include:
 }
 ```
 
-When changing result schemas, write both old and new fields for one
-compatibility window. Remove legacy fields only in a later legacy-removal PR.
+Read `schema_version` before consuming a result programmatically. Record the
+complete envelope alongside videos and metrics so the run can be reproduced.
 
 ## WandB
 

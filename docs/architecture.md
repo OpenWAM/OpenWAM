@@ -63,7 +63,7 @@ src/open_wam/models/policy_variants/parallel_stream/
 
 The `lingbot_exact` runtime name denotes the maintained exact packed numerical
 backend. It is not a separate architecture and does not determine the
-video/action program. Historical M1 resolved configs are not a supported public
+video/action program. Arbitrary older resolved configs are not a supported public
 configuration surface.
 
 ### Dual Expert
@@ -253,15 +253,9 @@ Extensions use open string identifiers and parse their own typed options.
 Built-in finite choices remain enums. See [Extension SDK](extension_sdk.md) and
 the cookbooks under `docs/cookbooks/`.
 
-## Compatibility Policy
+## Numerical Behavior
 
-Historical `mot`, `MoT*`, `M1`, and `M5` names are input compatibility labels
-only. They resolve to canonical architecture names at explicit import or
-launcher boundaries. Maintained implementation code, configs, run metadata,
-artifact manifests, and documentation use `parallel_stream`, `dual_expert`, and
-explicit program names.
-
-Compatibility may change labels and metadata, but it must not change model
-numerics. The strict characterization suite compares outputs, losses,
-gradients, optimizer updates, recurrent caches, checkpoint resume, and rollout
-artifacts against immutable checkpoint-backed goldens.
+Changing a component boundary must preserve the configured model semantics.
+Regression tests compare outputs, losses, gradients, optimizer updates,
+recurrent caches, checkpoint resume, and rollout artifacts against immutable
+references. See [Testing](testing.md#numerical-regression).
