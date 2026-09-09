@@ -78,7 +78,7 @@ REQUIRED_PROJECT_CLASSIFIERS = frozenset(
 REQUIRED_PROJECT_KEYWORDS = frozenset({"robotics", "world action models", "world models"})
 REQUIRED_ATTRIBUTION = (
     "OpenWAM Team, Stanford Vision and Learning Lab (SVL), Stanford University. "
-    "OpenWAM, version 0.1.0, 2026."
+    "OpenWAM, version 0.1.1, 2026."
 )
 _SHA256_PATTERN = re.compile(r"^(?:sha256:)?[0-9a-fA-F]{64}$")
 

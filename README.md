@@ -35,7 +35,7 @@ OpenWAM separates model topology, video/action conditioning, sequence
 semantics, visual execution, and action decoding so that controlled experiments
 share the same trainer and visual stack.
 
-> **Release status:** OpenWAM 0.1.0 is pre-release Linux research software.
+> **Release status:** OpenWAM 0.1.1 is alpha-stage Linux research software.
 > The public CPU lifecycle and synthetic artifacts are self-contained. Large
 > benchmark runs use separately provisioned datasets and checkpoints described
 > by the [artifact contract](https://github.com/OpenWAM/OpenWAM/blob/main/docs/artifacts.md).
@@ -332,7 +332,7 @@ If OpenWAM supports your research, cite the software record in
   title   = {OpenWAM},
   author  = {{OpenWAM Team}},
   year    = {2026},
-  version = {0.1.0},
+  version = {0.1.1},
   url     = {https://github.com/OpenWAM/OpenWAM}
 }
 ```

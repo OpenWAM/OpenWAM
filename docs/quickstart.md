@@ -9,8 +9,8 @@ OpenWAM supports Linux with Python 3.11 or 3.12.
 
 ### Installed SDK
 
-Once the PyPI release is available, install the canonical package in a virtual
-environment. Until then, use the source checkout below or install a reviewed
+For a published release, install the canonical package in a virtual environment.
+For an unreleased revision, use the source checkout below or install a reviewed
 wheel from the release-checks workflow.
 
 ```bash

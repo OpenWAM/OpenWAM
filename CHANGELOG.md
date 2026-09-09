@@ -3,6 +3,23 @@
 OpenWAM follows semantic-versioned public surfaces for configs, CLI flags,
 result schemas, artifact manifests, and checkpoint layout expectations.
 
+## 0.1.1 - 2026-09-09
+
+### Added
+
+- PyPI release tooling for the `openwam` SDK and exact-version installation
+  aliases, with isolated installation tests and project-scoped Trusted
+  Publishers. The initial publication targets `openwam` and `open-wam`.
+- Condensed public change snapshots in staging-to-production promotion PRs.
+
+### Security
+
+- Documented, maintainer-authorized acceptance of the malicious-checkpoint
+  risk in `accelerate==1.13.0` / `CVE-2026-69112`, expiring 2026-10-09.
+  This is not a vulnerability fix; see [Artifact Trust](SECURITY.md#artifact-trust).
+  The dependency audit remains enforced, and the base SDK does not install
+  Accelerate. Model code and third-party dependency versions are unchanged.
+
 ## 0.1.0 - 2026-09-07
 
 ### Added
