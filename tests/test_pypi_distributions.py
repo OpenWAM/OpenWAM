@@ -25,6 +25,9 @@ from scripts.build_pypi_distributions import (
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PYPROJECT = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 PROJECT = PYPROJECT["project"]
+PUBLISH_WORKFLOW = yaml.load(
+    (REPO_ROOT / ".github/workflows/publish-pypi.yml").read_text(), Loader=yaml.BaseLoader
+)
 
 
 @pytest.mark.unit
@@ -75,9 +78,7 @@ def test_publishing_accepts_matching_alpha_tag() -> None:
 
 @pytest.mark.unit
 def test_publishing_is_manual_production_only_and_separated_from_builds() -> None:
-    workflow = yaml.load(
-        (REPO_ROOT / ".github/workflows/publish-pypi.yml").read_text(), Loader=yaml.BaseLoader
-    )
+    workflow = PUBLISH_WORKFLOW
     assert set(workflow["on"]) == {"workflow_dispatch"}
     assert workflow["permissions"] == {"contents": "read"}
     jobs = workflow["jobs"]
@@ -90,12 +91,79 @@ def test_publishing_is_manual_production_only_and_separated_from_builds() -> Non
     assert jobs["checks"]["with"]["release"] == "true"
     publish = jobs["publish"]
     assert publish["needs"] == "checks"
-    assert publish["environment"]["name"] == "${{ inputs.index }}"
+    project = workflow["on"]["workflow_dispatch"]["inputs"]["project"]
+    assert project["type"] == "choice"
+    assert project["default"] == PROJECT["name"]
+    assert project["options"] == [PROJECT["name"], *INSTALLATION_ALIASES]
+    assert publish["environment"]["name"] == (
+        "${{ inputs.project == 'openwam' && inputs.index || "
+        "format('{0}-{1}', inputs.index, inputs.project) }}"
+    )
     assert publish["permissions"] == {"id-token": "write"}
     assert all("checkout" not in step.get("uses", "") for step in publish["steps"])
     uploads = [step for step in publish["steps"] if "pypi-publish" in step.get("uses", "")]
-    assert [step["with"]["packages-dir"] for step in uploads] == ["dist/core/", "dist/aliases/"]
+    assert [step["with"]["packages-dir"] for step in uploads] == ["upload/"]
     assert all(step["with"]["skip-existing"] == "true" for step in uploads)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("name", (PROJECT["name"], *INSTALLATION_ALIASES))
+@pytest.mark.parametrize("version", (PROJECT["version"], "0.2.0a1"))
+def test_publishing_selects_only_requested_project_and_tag(
+    tmp_path: Path, name: str, version: str,
+) -> None:
+    expected = {}
+    for project in (PROJECT["name"], *INSTALLATION_ALIASES):
+        directory = tmp_path / "dist" / ("core" if project == PROJECT["name"] else "aliases")
+        directory.mkdir(parents=True, exist_ok=True)
+        for candidate in (version, "9.9.9"):
+            for suffix in ("-py3-none-any.whl", ".tar.gz"):
+                filename = f"{project.replace('-', '_')}-{candidate}{suffix}"
+                payload = filename.encode()
+                (directory / filename).write_bytes(payload)
+                if project == name and candidate == version:
+                    expected[filename] = payload
+    selection, = [step for step in PUBLISH_WORKFLOW["jobs"]["publish"]["steps"] if "run" in step]
+    assert selection["env"] == {
+        "RELEASE_PROJECT": "${{ inputs.project }}", "RELEASE_TAG": "${{ github.ref_name }}",
+    }
+    subprocess.run(
+        ["bash", "-c", selection["run"]], cwd=tmp_path, check=True,
+        env={**os.environ, "RELEASE_PROJECT": name, "RELEASE_TAG": f"v{version}"},
+    )
+    assert {path.name: path.read_bytes() for path in (tmp_path / "upload").iterdir()} == expected
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("failure", (
+    "unknown_project", "missing_wheel", "missing_sdist", "multiple_wheels", "existing_upload",
+))
+def test_publishing_refuses_incomplete_or_ambiguous_payloads(tmp_path: Path, failure: str) -> None:
+    directory = tmp_path / "dist/aliases"
+    directory.mkdir(parents=True)
+    wheel = directory / "open_wam-1.2.3-py3-none-any.whl"
+    sdist = directory / "open_wam-1.2.3.tar.gz"
+    wheel.touch()
+    sdist.touch()
+    if failure == "missing_wheel":
+        wheel.unlink()
+    elif failure == "missing_sdist":
+        sdist.unlink()
+    elif failure == "multiple_wheels":
+        (directory / "open_wam-1.2.3-py2.py3-none-any.whl").touch()
+    elif failure == "existing_upload":
+        (tmp_path / "upload").mkdir()
+        (tmp_path / "upload/unrelated.whl").touch()
+    selection, = [step for step in PUBLISH_WORKFLOW["jobs"]["publish"]["steps"] if "run" in step]
+    result = subprocess.run(
+        ["bash", "-c", selection["run"]], cwd=tmp_path, capture_output=True,
+        env={
+            **os.environ, "RELEASE_TAG": "v1.2.3",
+            "RELEASE_PROJECT": "unknown" if failure == "unknown_project" else "open-wam",
+        },
+    )
+    assert result.returncode != 0
+    assert not (tmp_path / "upload" / wheel.name).exists()
 
 
 @pytest.mark.unit

@@ -12,6 +12,16 @@ on:
         options:
           - testpypi
           - pypi
+      project:
+        description: Publish one project (publish openwam before its aliases)
+        required: true
+        type: choice
+        default: openwam
+        options:
+          - openwam
+          - open-wam
+          - openwam-sdk
+          - open-wam-sdk
 
 permissions:
   contents: read
@@ -48,9 +58,9 @@ jobs:
   publish:
     needs: checks
     runs-on: ubuntu-latest
-    # Configure required reviewers and v* tag restrictions on both environments.
+    # Pending PyPI projects need distinct identities; protect each environment.
     environment:
-      name: ${{ inputs.index }}
+      name: ${{ inputs.project == 'openwam' && inputs.index || format('{0}-{1}', inputs.index, inputs.project) }}
     permissions:
       id-token: write
     steps:
@@ -58,15 +68,32 @@ jobs:
         with:
           name: pypi-distributions
           path: dist
-      - name: Publish canonical OpenWAM first
+      - name: Select the reviewed project distributions
+        env:
+          RELEASE_PROJECT: ${{ inputs.project }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$RELEASE_PROJECT" in
+            openwam) directory=dist/core ;;
+            open-wam|openwam-sdk|open-wam-sdk) directory=dist/aliases ;;
+            *) echo "Unsupported release project" >&2; exit 1 ;;
+          esac
+          name="${RELEASE_PROJECT//-/_}"
+          version="${RELEASE_TAG#v}"
+          shopt -s nullglob
+          wheels=("$directory/$name-$version-"*.whl)
+          sdist="$directory/$name-$version.tar.gz"
+          if [[ ${#wheels[@]} -ne 1 || ! -f "$sdist" ]]; then
+            echo "Expected one wheel and source archive for $RELEASE_PROJECT $version" >&2
+            exit 1
+          fi
+          mkdir upload
+          cp -- "${wheels[0]}" "$sdist" upload/
+      - name: Publish selected project
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
         with:
           repository-url: ${{ inputs.index == 'pypi' && 'https://upload.pypi.org/legacy/' || 'https://test.pypi.org/legacy/' }}
-          packages-dir: dist/core/
-          skip-existing: true
-      - name: Publish official installation aliases
-        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
-        with:
-          repository-url: ${{ inputs.index == 'pypi' && 'https://upload.pypi.org/legacy/' || 'https://test.pypi.org/legacy/' }}
-          packages-dir: dist/aliases/
+          packages-dir: upload/
           skip-existing: true
