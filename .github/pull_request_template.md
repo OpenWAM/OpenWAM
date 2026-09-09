@@ -1,8 +1,11 @@
 ## Summary
 
+<!-- public-summary:start -->
+<!-- Copied into public release/promotion notes. Keep this section and the title public-safe. -->
 - What changed:
 - Why it changed:
 - User/developer impact:
+<!-- public-summary:end -->
 
 ## Change Type
 

@@ -3,13 +3,47 @@
 This guide is the public first-run path. It does not require private datasets,
 private checkpoints, CUDA, or external simulators.
 
-OpenWAM supports Linux with Python 3.11 or 3.12. Install `uv` before using the
-commands below.
+OpenWAM supports Linux with Python 3.11 or 3.12.
 
 ## Install
 
+### Installed SDK
+
+Once the PyPI release is available, install the canonical package in a virtual
+environment. Until then, use the source checkout below or install a reviewed
+wheel from the release-checks workflow.
+
 ```bash
-uv sync --group dev --extra train --extra eval
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install 'openwam[train,eval]'
+openwam-sanity \
+  --cfg configs/examples/public_tiny_synthetic_contract.yaml \
+  --device cpu --max-batches 1 --rollout-steps 1
+```
+
+For an alpha version, request the exact version shown on the release page
+with `==<version>`. The distribution is named `openwam`; Python code uses
+`import open_wam`. The official `open-wam`, `openwam-sdk`, and `open-wam-sdk`
+installation aliases forward to the same implementation and extras.
+
+The base `pip install openwam` needs only PyYAML and supports config/metadata
+APIs and CLI help. Add `[train,pretrain]` for video data preparation and
+pretraining, or `[eval]` for offline model evaluation. Weights, datasets, and
+external simulator source trees remain separately provisioned.
+
+All `openwam-*` commands below also work in an installed environment: omit
+their `uv run` / `uv run --extra ...` prefix after installing the relevant
+extras. Packaged config references do not require cloning the repository.
+Use the frozen checkout path for exact dependency reproduction; an ordinary
+PyPI install resolves the declared dependency ranges, not `uv.lock`.
+
+### Source Checkout
+
+Install `uv` and run from a clone of the repository:
+
+```bash
+uv sync --frozen --group dev --extra train --extra eval
 ```
 
 This installs the CPU-capable development, training, and evaluation stack used

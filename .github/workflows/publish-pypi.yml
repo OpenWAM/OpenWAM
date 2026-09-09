@@ -1,0 +1,72 @@
+name: publish-pypi
+
+# Neither staging promotion nor a main push publishes a package.
+on:
+  workflow_dispatch:
+    inputs:
+      index:
+        description: Package index (run against the reviewed release tag)
+        required: true
+        type: choice
+        default: testpypi
+        options:
+          - testpypi
+          - pypi
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-${{ inputs.index }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify-ref:
+    if: github.repository == 'OpenWAM/OpenWAM' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Require a version-matched tag from production main
+        env:
+          RELEASE_REF: ${{ github.ref }}
+        run: |
+          git merge-base --is-ancestor HEAD origin/main
+          python scripts/build_pypi_distributions.py --check-tag "$RELEASE_REF"
+
+  checks:
+    needs: verify-ref
+    uses: ./.github/workflows/release-checks.yml
+    with:
+      release: true
+
+  publish:
+    needs: checks
+    runs-on: ubuntu-latest
+    # Configure required reviewers and v* tag restrictions on both environments.
+    environment:
+      name: ${{ inputs.index }}
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: pypi-distributions
+          path: dist
+      - name: Publish canonical OpenWAM first
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
+        with:
+          repository-url: ${{ inputs.index == 'pypi' && 'https://upload.pypi.org/legacy/' || 'https://test.pypi.org/legacy/' }}
+          packages-dir: dist/core/
+          skip-existing: true
+      - name: Publish official installation aliases
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
+        with:
+          repository-url: ${{ inputs.index == 'pypi' && 'https://upload.pypi.org/legacy/' || 'https://test.pypi.org/legacy/' }}
+          packages-dir: dist/aliases/
+          skip-existing: true

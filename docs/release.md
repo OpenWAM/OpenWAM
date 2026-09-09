@@ -37,6 +37,98 @@ python scripts/check_release_metadata.py --dist-dir dist
 python -m twine check dist/*
 ```
 
+## PyPI SDK And Installation Aliases
+
+`openwam` is the canonical distribution; `open_wam` is the Python import.
+The official `open-wam`, `openwam-sdk`, and `open-wam-sdk` metapackages install
+the exact same version of `openwam`. Each forwards every canonical extra,
+including `[train]`, `[eval]`, and `[pretrain]`. They contain no Python modules
+or console scripts, so installing them together or uninstalling an alias
+does not overwrite or remove the implementation.
+
+PyPI normalizes underscores and periods to hyphens: `open_wam` installs
+`open-wam`, not `openwam`. Prefer the canonical name in new documentation and
+requirements. These are functional installation aliases, not empty name
+reservations. Account registration, TestPyPI publication, and pending Trusted
+Publishers do not reserve names on the production index.
+
+The first PyPI publication is a separate release operation; merging the
+packaging workflow does not mean the packages are already available. Build
+and exercise the release locally before publishing:
+
+```bash
+python -m pip install 'build>=1.2,<2' 'twine>=6' 'tomli-w>=1,<2' PyYAML pytest packaging
+python scripts/build_pypi_distributions.py --out-dir dist
+python scripts/check_release_metadata.py --dist-dir dist/core
+python scripts/check_release_metadata.py --dist-dir dist/aliases
+python -m twine check --strict dist/core/* dist/aliases/*
+python -m pip download --only-binary=:all: --dest dist/dependencies dist/core/*.whl
+OPENWAM_DISTRIBUTIONS_DIR="$PWD/dist" python -m pytest -q tests/test_pypi_distributions.py
+```
+
+Use a fresh output directory. The builder reads version, extras, and shared
+metadata from `pyproject.toml`; alias definitions do not duplicate dependency
+lists. Each wheel is built from its source distribution. Installation tests
+use isolated environments outside the checkout, check all four spellings and
+co-installation, inspect every extra, and exercise all installed CLI parsers.
+They do not establish GPU parity for a newly resolved dependency stack.
+
+### Publisher Setup
+
+On PyPI, verify the maintainer account's email, enable 2FA, and configure four
+pending GitHub Trusted Publishers under **Account > Publishing**:
+
+| Field | Value |
+| --- | --- |
+| Project | One entry each for `openwam`, `open-wam`, `openwam-sdk`, `open-wam-sdk` |
+| Owner | `OpenWAM` |
+| Repository | `OpenWAM` |
+| Workflow filename | `publish-pypi.yml` |
+| Environment | `pypi` |
+
+Repeat on TestPyPI, using its separate account and environment `testpypi`.
+For existing projects, add publishers in their project settings instead.
+Add a trusted backup project Owner after the first publication. No PyPI API
+token or password is stored in GitHub: publishing uses OIDC.
+
+Before enabling publication, create the `pypi` and `testpypi` GitHub
+environments in `OpenWAM/OpenWAM`, require maintainer approval, and restrict
+deployments to `v*` tags. GitHub environment protections are repository
+settings, not created by the workflow YAML. Protect version tags against
+replacement and deletion. See [PyPI's publisher setup](https://docs.pypi.org/trusted-publishers/creating-a-project-through-oidc/).
+
+### Release Procedure
+
+1. Merge and validate the public changes. Set the intended new version in
+   `pyproject.toml`, update `CITATION.cff`, `CHANGELOG.md`, and the attribution
+   version in `NOTICE` and its release check together. Use a PEP 440 suffix
+   such as `0.2.0a1` for an alpha; a GitHub prerelease flag alone does not mark
+   a PyPI version as a prerelease. Do not reuse the existing `v0.1.0` tag for
+   newer code. Date the release metadata when actually preparing the release.
+2. Run the release checklist, including the dependency audit. Review dependency
+   bounds and the supported Python/CUDA environment. `pip install` does not
+   apply `uv.lock`; exact model reproduction still uses the frozen checkout.
+   Do not waive security or numerical parity checks to obtain project names.
+3. Tag the reviewed production commit with `v<project.version>`. In Actions,
+   run **publish-pypi** against that tag with `index=testpypi`. The workflow
+   rejects staging/branch publication, checks tag/version agreement and main
+   ancestry, and runs the package and dependency gates before approval.
+4. Inspect the artifacts and approve the TestPyPI environment. Install the
+   candidate using TestPyPI **only** for the four OpenWAM distributions;
+   provision third-party dependencies from the normal index separately. Avoid
+   mixing indexes with `--extra-index-url` when verifying package provenance.
+5. Run the same tag with `index=pypi` and approve production publication.
+   The upload job has no checkout or build step: it uploads the artifacts
+   tested in that workflow run, canonical package first and then aliases.
+6. Verify all four project pages, versions, extras, and fresh installs. Record
+   the release and supported environment in the public documentation.
+
+Uploads to four projects are not atomic. If interrupted, rerun the same tag;
+existing files are skipped so the remaining uploads can finish. Do not move
+the tag or silently replace a bad release: inspect published files and use a
+new version for corrections. Publication only starts on manual dispatch;
+neither a main push nor a tag push uploads anything by itself.
+
 ## Distribution Resources
 
 The wheel includes the package plus read-only canonical configs, examples,
