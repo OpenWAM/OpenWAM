@@ -90,7 +90,33 @@ conditional history, no task text, and only the matching prediction loss.
 Experiment configs and public commands use architecture and program names
 directly.
 
-## Quick Start
+## Installation
+
+OpenWAM is available on [PyPI](https://pypi.org/project/openwam/) for Linux
+with Python 3.11 or 3.12. In a virtual environment:
+
+```bash
+python -m pip install openwam
+```
+
+The base package provides configuration and metadata APIs. For model training
+and evaluation, install the runtime extras:
+
+```bash
+python -m pip install 'openwam[train,eval]'
+```
+
+Use `openwam[train,pretrain]` for video data preparation and pretraining, or
+`openwam[sim]` for model-driven simulator rollouts. Python imports use
+`open_wam`. The optional `openwam-sdk` installation alias provides the same
+implementation and extras.
+
+The [quickstart](https://github.com/OpenWAM/OpenWAM/blob/main/docs/quickstart.md)
+covers installed-package usage. For development or exact dependency
+reproduction, use the frozen source checkout below. Model weights, datasets,
+and external simulator source trees are provisioned separately.
+
+## Quick Start From Source
 
 OpenWAM supports Linux with Python 3.11 or 3.12. Install
 [`uv`](https://docs.astral.sh/uv/), then run the public CPU contract:
@@ -113,7 +139,7 @@ uv run --extra train openwam-sanity \
 This path requires no private data, checkpoint, GPU, or external simulator. It
 checks config loading, dataset construction, a train forward pass, batch
 inference, and recurrent rollout-style inference. The
-[complete CPU first run](https://github.com/OpenWAM/OpenWAM/blob/main/docs/quickstart.md#complete-cpu-first-run) adds exact
+[complete CPU first run](https://github.com/OpenWAM/OpenWAM/blob/main/docs/quickstart.md#complete-cpu-first-run) adds stateful
 resume and checkpoint-backed evaluation.
 
 Install only the runtime needed for later work:

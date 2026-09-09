@@ -1,8 +1,7 @@
 # Training And Inference
 
-This is the maintained operator guide for OpenWAM training, offline
-evaluation, and simulator rollout. Commands in archived engineering notes are
-historical records, not alternate launch interfaces.
+Use this guide to configure assets, train or resume a model, and run offline
+evaluation or simulator rollouts.
 
 ## Configure Local Assets
 
@@ -181,12 +180,11 @@ being stored and silently ignored. Joint, noisy-condition, and GJD programs
 may still set an explicit timestep-coupling ablation such as `match_sigma`.
 Sequence contracts never choose or rewrite the noise clock.
 
-### Recorded LIBERO Recipes
+### LIBERO Training Examples
 
-Both recipes below run from a clean checkout with no data or sampling
-overrides. PR #23 moved the validated LIBERO recipe into the config files, so
-the only flags here are operational: where to save, how long to run, and the
-accumulation divisor that keeps the effective batch at the recipe's 10.
+Both recipes below use the shipped data and sampling settings. The flags
+select the output directory, training duration, and checkpoint retention.
+The single-process examples use an effective batch size of 10.
 
 Joint denoising:
 
@@ -745,4 +743,4 @@ mode, diffusion steps, fallback policy, and horizon.
 Changes that can affect model numerics must verify immutable fixtures and
 checkpoint-backed goldens rather than regenerate expected values. The exact
 six-program dual-expert training, recurrent inference, four-GPU, full-state resume, and GJD
-gates are documented in [DualExpert Refactor Characterization](dual_expert_refactor_characterization.md).
+gates are described in [Testing](testing.md#numerical-regression).

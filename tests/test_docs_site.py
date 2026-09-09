@@ -25,7 +25,7 @@ def test_docs_site_stages_curated_public_docs_only(tmp_path: Path) -> None:
 
     summary = builder.build_docs_site(output)
 
-    assert summary["public_pages"] == len(builder.PUBLIC_MARKDOWN_PATHS) == 35
+    assert summary["public_pages"] == len(builder.PUBLIC_MARKDOWN_PATHS) == 33
     assert summary["public_assets"] == len(builder.PUBLIC_ASSET_PATHS) == 6
     assert summary["notes_published"] is False
     assert summary["broken_local_links"] == 0
@@ -47,6 +47,9 @@ def test_docs_site_stages_curated_public_docs_only(tmp_path: Path) -> None:
     assert not (output / "engineering-notes").exists()
     assert not (output / "CHECKPOINT.md").exists()
     assert not (output / "camera_sync_deploy_issue.md").exists()
+    assert not (output / "github_pages.md").exists()
+    assert not (output / "dual_expert_refactor_characterization.md").exists()
+    assert not (output / "staging").exists()
     assert builder.scan_private_fragments(output) == []
     assert builder.scan_broken_local_links(output) == []
     assert builder.scan_broken_local_links(

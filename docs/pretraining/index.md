@@ -46,7 +46,7 @@ This is a reproducible build workflow with configurable paths. Dataset size depe
 4. **[Object-storage backup, on-demand reads, and caching](storage.md)**: upload verification, recovery metadata, and local storage limits.
 5. **[Training, resuming, and video inference](training.md)**: model assets, batches, checkpoints, and outputs.
 6. [Variable-length batch contract](batching.md): the scope of `strict / padded / bucket / packed`.
-7. [Validation and reproducibility limits](validation.md): numerical gates, deliberate corrections, and full-model acceptance checks.
+7. [Validation](validation.md): data checks and a model pilot before scaling up.
 
 See the [dataset registry](../assets/pretraining/datasets.yaml) for source descriptions and processing rules. This guide is the maintained entry point for OpenWAM video pretraining.
 
@@ -192,6 +192,6 @@ python -m pytest -q \
 
 CPU checks cover geometry, colors, source metadata→manifest→configuration, snapshot invariants, cache budgets/read leases/corruption recovery, text, and batch isolation. CUDA encoding, training, and rollout with the full 30-layer model still require acceptance checks in the actual execution environment using the pilot commands above. Passing CPU checks does not establish that a complete dataset re-encoding or model-training run has finished.
 
-See the [validation record](validation.md) for the complete check commands, dependency versions, and known baseline issues.
+See the [validation checklist](validation.md) before a full training run.
 
 The [published OpenWAM pretraining weights](https://huggingface.co/OpenWAM-Stanford/OpenWAM-Pretraining) contain model weights only. They do not restore AdamW moments, the scheduler, or the DataLoader cursor. See the [training guide](training.md) for downloading weights and the distinction between initialization and full-state resumption.

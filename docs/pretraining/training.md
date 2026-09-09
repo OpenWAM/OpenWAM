@@ -41,7 +41,7 @@ export MODEL_ASSETS="$MODEL_ROOT/video-init"
 export VAE_ROOT="$MODEL_ASSETS/vae"
 ```
 
-The converter's output directory must not already exist. An independently released compatible transformer can be used directly without conversion. This conversion defines a new initialization; it does not reproduce every historical initialization and training phase. See [video_only_training.md](../video_only_training.md) for details of the Wan-to-LingBot weight conversion.
+The converter's output directory must not already exist. An independently released compatible transformer can be used directly without conversion. Record the chosen initialization with your experiment. See [video_only_training.md](../video_only_training.md) for details of the Wan-to-LingBot weight conversion.
 
 All inputs in one pretraining pool must use the same VAE weights and normalization. A shared “Wan2.2” label does not establish file equivalence. Multiview contracts and RoboMind encoding evidence record weight-file fingerprints.
 
@@ -62,7 +62,7 @@ By default, all nine pretraining sources must be present and every clip must hav
 
 Each multi view composition was composed in RGB space and encoded by the VAE as one complete latent stream. The merged CSVs carry `augmentation=single_view` or `augmentation=multi_view`; they select the input representation. There is no `multiview: true` model switch. The single `observation.images.slot0` in the latent configuration can therefore represent an entire multi view composition. Original single-camera and multi view composition rows share the same trainer and video-prediction objective.
 
-The base model has 30 layers, hidden size 3072, 24 attention heads, 48 latent channels, text dimension 4096, and a maximum text length of 512 tokens. The default objective is latent flow only. AdamW uses learning rate `1e-5`, betas `(0.9, 0.95)`, weight decay `.01`, gradient accumulation 1, and task-text dropout `.1`. This is a reproducible consolidated recipe, not a claim that every historical phase used an identical configuration.
+The base model has 30 layers, hidden size 3072, 24 attention heads, 48 latent channels, text dimension 4096, and a maximum text length of 512 tokens. The default objective is latent flow only. AdamW uses learning rate `1e-5`, betas `(0.9, 0.95)`, weight decay `.01`, gradient accumulation 1, and task-text dropout `.1`.
 
 Each sample contains at most 64 latent frames, with observed-prefix/future-suffix geometry sampled from the configured buckets. Supervision covers only valid future regions. CSV lengths are already in latent-frame units; no second RGB-FPS normalization is applied.
 

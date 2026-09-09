@@ -1,31 +1,30 @@
-# Video Pretraining Datasets: Nine Sources, Downloads, Processing, and Validation
+# Video Pretraining Datasets
 
-This guide covers the **datasets used for OpenWAM video pretraining**: the audited nine-source data mixture and a portable workflow for rebuilding equivalent input types from public releases. It does not define downstream robot policy fine-tuning or evaluation datasets. Public datasets evolve: row counts, task names, camera keys, and episode IDs from a new download cannot be assumed to reproduce a historical training snapshot. The single-view statistics refer to the **2026-09-06 08:06:32 UTC snapshot**; multiview admission counts refer to a frozen snapshot from **2026-09-07 23:47:02 UTC**, audited on 2026-09-08 UTC. These are historical records, not live progress reports.
+This guide describes the nine-source video pretraining recipe: where to obtain inputs, how to encode cameras, and how to validate the resulting manifests. It does not define downstream policy training or evaluation splits. Pin each upstream revision; dataset sizes, camera keys, and episode identities can change between releases.
 
 Published model weights: [OpenWAM-Stanford/OpenWAM-Pretraining](https://huggingface.co/OpenWAM-Stanford/OpenWAM-Pretraining). This Hugging Face repository hosts the OpenWAM pretraining checkpoint weights; download the pretraining datasets from the upstream sources documented below.
 
 The machine-readable registry is [datasets.yaml](../assets/pretraining/datasets.yaml). Its paths are templates whose environment variables must be expanded by the caller; it is not a model training configuration. Bind each training run to the CSV manifests, data contracts, text cache, and object catalog of its published snapshot.
 
-## 1. Pretraining Scope and Counts
+## 1. Supported Sources
 
-| ID | Pretraining data source | Historical single-view CSV rows | Added multiview clips in the specified snapshot | Raw input format |
-| --- | --- | ---: | ---: | --- |
-| VPT-01 | LIBERO | 13,000 | 6,500 | Converted LeRobot with workspace and wrist videos |
-| VPT-04 | Six UMI / MV-UMI subsets | 3,510 | 2,446 | LeRobot v3 videos and metadata |
-| VPT-05 | AgiBot World Alpha / Beta | 46,299 | 12 | Video tar archives and task_info organized by task / episode |
-| VPT-06 | RoboMIND official / failure | 25,419 | 12,714 | Split archives or individual HDF5 files |
-| VPT-07 | InternData-A1 | 618,856 | 111,575 | LeRobot organized by robot and task |
-| VPT-08 | RoboCOIN | 143,159 | 12 | Separate LeRobot repository for each task |
-| VPT-09 | FastUMI and historical duplicate references | 157,561 | 11,389 | LeRobot v2.1 single-arm / dual-arm tasks |
-| VPT-10R | Ego-Exo4D color streams | 30,800 | 0 | frame_aligned_videos and takes.json |
-| VPT-10S | Ego-Exo4D monochrome SLAM streams | 15,105 | 0 | Monochrome streams from the same takes |
-| Total | Nine sampling sources | **1,053,709** | **144,648** | |
+| ID | Pretraining data source | Raw input format |
+| --- | --- | --- |
+| VPT-01 | LIBERO | Converted LeRobot with workspace and wrist videos |
+| VPT-04 | UMI / MV-UMI | LeRobot v3 videos and metadata |
+| VPT-05 | AgiBot World Alpha / Beta | Video tar archives and task_info organized by task / episode |
+| VPT-06 | RoboMIND official / failure | Split archives or individual HDF5 files |
+| VPT-07 | InternData-A1 | LeRobot organized by robot and task |
+| VPT-08 | RoboCOIN | Separate LeRobot repository for each task |
+| VPT-09 | FastUMI | LeRobot v2.1 single-arm / dual-arm tasks |
+| VPT-10R | Ego-Exo4D color streams | frame_aligned_videos and takes.json |
+| VPT-10S | Ego-Exo4D monochrome SLAM streams | Monochrome streams from the same takes |
 
-One single-view CSV row represents a latent clip / camera stream, not an independent physical episode. The specified multiview snapshot contains 144,648 clips from 107,681 physical episodes. An earlier complete candidate plan listed 366,968 episodes eligible for composition. **Planned, encoded, validated, and admitted to training** are four distinct counts.
+One CSV row represents a latent clip or camera stream, not an independent physical episode. Track planned, encoded, validated, and admitted clips separately in your own build.
 
-Source 09 contains **141,051 native FastUMI references and 16,510 duplicate references to sources 01 / 04**. The duplicates cover all 13,000 rows of 01 and 3,510 rows of 04. The historical sampling mixture retained these references. A new dataset build must explicitly decide whether to preserve that weighting; 157,561 is not the number of additional FastUMI videos. The Alpha / Beta releases in source 05 may also overlap upstream, so their release names alone do not establish independent episodes.
+Deduplicate by physical episode across views and source aliases, and keep those representations in the same train/validation split. Repeating an episode under another source changes its sampling weight. AgiBot Alpha / Beta releases may also overlap; release names alone do not establish independent episodes.
 
-Sources 02 and 03 are absent from this nine-source recipe. The presence of an RLDS encoder does not mean OXE / DROID are enabled. MCAP collection, downstream policy datasets, and other simulation data workflows are outside these nine-source pretraining statistics.
+The source IDs are recipe identifiers, not a complete dataset catalog. OXE / DROID are not enabled by this template even though an optional RLDS encoder is available.
 
 ## 2. Portable Paths, Pinned Downloads, and the Single-View Workflow
 
@@ -107,7 +106,7 @@ The default is `aspect_bins + letterbox_pad`: choose the canvas with the nearest
 | Near 4:3 | 352 × 256 |
 | Near 16:9 | 352 × 192 |
 
-Single-view inputs can therefore contain both padding introduced by encoding and dark corners already present in the original camera image. Distinguish them during visual inspection. Explicitly selecting `center_crop` or `stretch` changes the data contract and does not reproduce the historical default.
+Single-view inputs can therefore contain both padding introduced by encoding and dark corners already present in the original camera image. Distinguish them during visual inspection. Explicitly selecting `center_crop` or `stretch` changes the data contract.
 
 Use the VAE posterior mean. Map input pixels from `[0,1]` to `[-1,1]` in float32, then compute using the model precision. Normalize latents with the VAE configuration's mean / standard deviation. The current model has spatial compression 16, temporal compression 4, and 48 latent channels; output tensors use fp16 `THWC`. A typical path is:
 
@@ -121,7 +120,7 @@ Each payload must retain source FPS, sampling FPS, frame_ids, original dimension
 
 **Original source.** The [official LIBERO dataset documentation](https://libero-project.github.io/datasets) describes workspace cameras, wrist cameras, states, and language tasks. Original download and simulation tools are in the [official LIBERO repository](https://github.com/Lifelong-Robot-Learning/LIBERO). The five suites are Spatial, Object, Goal, 90, and 10; LIBERO-100 consists of 90 / 10.
 
-**Public input supported by this encoder.** The [LeRobot LIBERO guide](https://huggingface.co/docs/lerobot/libero) lists preprocessed releases including [lerobot/libero](https://huggingface.co/datasets/lerobot/libero). This public repository is an entry point for new builds. Its episode counts, FPS, and selected suites have not been matched individually against the historical `S01…S05` inputs, so it does not guarantee reproduction of the historical 13,000 rows.
+**Public input supported by this encoder.** The [LeRobot LIBERO guide](https://huggingface.co/docs/lerobot/libero) lists preprocessed releases including [lerobot/libero](https://huggingface.co/datasets/lerobot/libero). Select the suites and episodes needed for your build, and verify FPS at the chosen revision.
 
 ```bash
 export HF_REPO='lerobot/libero'
@@ -136,9 +135,9 @@ export RAW_ROOT="$DATA_ROOT/raw/$SOURCE/libero"
 
 To convert official HDF5 files again, use the upstream LIBERO / LeRobot conversion tools corresponding to that release. Preserve the suite, task, demo ID, image-flip convention, and timestamps. This repository does not vendor the entire upstream simulation collection and HDF5-to-LeRobot conversion project. The RoboMIND-specific encoder is not a LIBERO HDF5 adapter.
 
-**Text.** Join the episode's native `tasks` or explicit `task_index` to its task table. Workspace and wrist cameras inherit the same episode text. Historical labels are task instructions, not automatically generated video descriptions.
+**Text.** Join the episode's native `tasks` or explicit `task_index` to its task table. Workspace and wrist cameras inherit the same native task instruction.
 
-**Multiview.** Select the agent / workspace camera and wrist camera from the same episode and place them side by side. Confirm camera roles from metadata; if a new release changes camera keys, inspect the planned order first. The historical 6,500 two-view episodes correspond to 13,000 single-view references, but those counts are not a requirement for a new public release.
+**Multiview.** Select the agent / workspace camera and wrist camera from the same episode and place them side by side. Confirm camera roles from metadata; if a new release changes camera keys, inspect the planned order first.
 
 ## 4. VPT-04: Six UMI / MV-UMI Subsets
 
@@ -170,7 +169,7 @@ export RAW_ROOT="$DATA_ROOT/raw/$SOURCE"
 
 **Text.** Task assignments come from v3 episode metadata and the native task table. A readable repository name does not replace missing task text. Converted action or state fields may use upstream fallbacks; their presence does not establish additional action supervision in this video pretraining recipe.
 
-**Known metadata limitations.** Three historical MV-UMI conversions contained duplicate episode parquet records with conflicting time intervals. Verified training inputs used a repaired metadata view while retaining the original video bytes. Whether the public repository has since been corrected depends on the revision. Validate each new download strictly. On conflict, produce a repair report based on actual video duration, segments, and canonical episode records, and write a new view under `$DATA_ROOT/converted/VPT-04/<revision>/`. The loader must not arbitrarily select the first record. The historical repair publication workflow is not a general automatic repair tool for arbitrary releases.
+**Metadata validation.** Check for duplicate episode records and conflicting time intervals before encoding. Resolve conflicts against the actual video duration and canonical episode metadata; do not select the first record arbitrarily. Keep originals unchanged and write any reviewed repair under `$DATA_ROOT/converted/VPT-04/<revision>/`.
 
 **Multiview.** Apply the common rule to two-camera episodes: stack vertically when both images are landscape; otherwise place square, portrait, or mixed-aspect images side by side. Single-camera episodes, including dynamic tossing, remain single-view; duplicating a frame does not create another camera. The raw / segmented marker datasets are separate releases, but independence requires checking their original episode identities.
 
@@ -207,7 +206,7 @@ This converter creates a bounded LeRobot input for video pretraining. The comple
 
 **Text.** The top level of `task_info/task_<id>.json` is a list whose entries contain `episode_id`, `task_id`, and `task_name`. Join the exact original episode ID to `task_name`. The `start_frame/end_frame/action_text` entries under `lable_info.action_config` are separate temporal annotations; they are not automatically included in the current task-level text. Archive ranges, task directory names, and adjacent episodes must not fill missing labels.
 
-**Multiview.** Place the head image above the left / right hand images. Synchronize the streams, compose their RGB pixels, and encode the full multi view video with the VAE. The historical 46,299 single-view rows describe a processed subset. The specified multiview snapshot admitted only 12 clips; this is neither the full candidate count nor evidence that Alpha / Beta are fully processed.
+**Multiview.** Place the head image above the left / right hand images. Synchronize the streams, compose their RGB pixels, and encode the full multi view video with the VAE.
 
 ## 6. VPT-06: RoboMIND Official and Failure Data
 
@@ -258,7 +257,7 @@ python scripts/pretraining/build_manifest.py \
   --out "$WORK_ROOT/manifests/single/VPT-06.official.csv"
 ```
 
-Verify source FPS against the actual files / metadata. A historical rate of 30 Hz does not justify assigning 30 to every new embodiment. The official RGB policy uses two groups identified by **exact embodiment path components**:
+Verify source FPS against the actual files and metadata; do not assume one rate for every embodiment. The official RGB policy uses two groups identified by **exact embodiment path components**:
 
 | Official path class | Channel handling after decoding |
 | --- | --- |
@@ -271,7 +270,7 @@ Read task text from native HDF5 instruction fields such as `language_instruction
 
 ### 6.3 Failure Data Workflow and Coverage Limits
 
-Failure data is often published as individual `.../data/trajectory.hdf5` files. The verified historical workflow uses **`robomind_failure_standard_jpeg_v1`**: decode standard JPEG as RGB, recording the text schema and failure-source provenance separately. This differs from the official embodiment rules. The standalone `encode_failure.py` entry point accepts only standard JPEG bytes and does not apply the official embodiment channel policy:
+Failure data is often published as individual `.../data/trajectory.hdf5` files. The **`robomind_failure_standard_jpeg_v1`** policy decodes standard JPEG as RGB, recording the text schema and failure-source provenance separately. This differs from the official embodiment rules. The standalone `encode_failure.py` entry point accepts only standard JPEG bytes and does not apply the official embodiment channel policy:
 
 ```bash
 export FAILURE_RAW="$DATA_ROOT/raw/VPT-06/failure/selected_subset"
@@ -295,9 +294,7 @@ python scripts/pretraining/build_manifest.py \
   --out "$WORK_ROOT/manifests/single/VPT-06.failure.csv"
 ```
 
-Process different native FPS values in separate batches; do not apply one guessed rate to the entire source. `--plan` previews HDF5 counts without validating all JPEG frames or tensors. Run a small encoding and reconstruction check with the actual model before bulk use. Porting the code does not demonstrate successful GPU re-encoding of the entire dataset. The full failure download, scheduling, and historical publication / recovery tooling has not been imported; existing manifest / latent provenance and the validation scope of these portable scripts are recorded separately.
-
-The historical nine-source frozen snapshot contains 25,419 source-06 rows: **19,857 official + 5,562 failure**. Expanded publication indices can add data later, but admission requires revalidation, frozen manifests, complete text caches, and a new training snapshot. Corrected baseline coverage, additionally encoded archives, and rows admitted to source-06 training are separate quantities.
+Process different native FPS values in separate batches; do not apply one guessed rate to the entire source. `--plan` previews HDF5 counts without validating all JPEG frames or tensors. Run a small encoding and reconstruction check with the actual model before bulk use. Adding data requires validated manifests, complete text caches, and a new training snapshot.
 
 Keep the following local locations separate:
 
@@ -310,9 +307,9 @@ $WORK_ROOT/robomind/publications/<content_hash>/index.json
 $WORK_ROOT/robomind/publications/<content_hash>/VPT-06.csv
 ```
 
-Latents with the old color error must retain their legacy contract and stay separate from the corrected RGB outputs. Publishing a new version requires validated outputs, RGB / text / sampling contracts, and the intended coverage set; concatenating two CSVs alone is insufficient.
+Keep latents with different color or encoding contracts separate. Publishing a new snapshot requires validated outputs and compatible RGB, text, and sampling contracts; concatenating two CSVs alone is insufficient.
 
-**Multiview.** Select two or three streams using their actual camera roles. `camera_left/right` can denote external cameras rather than left / right wrists; front / top and wrist roles are not interchangeable. A historical correction used `camera_top`, rotated 180°, above wrist-left / wrist-right for a reviewed subset of six-camera episodes. Record orientation corrections per episode, not as a dataset-wide rotation. Keep samples with more than three cameras and ambiguous roles pending review.
+**Multiview.** Select two or three streams using their actual camera roles. `camera_left/right` can denote external cameras rather than left / right wrists; front / top and wrist roles are not interchangeable. Inspect `camera_top` orientation and record any required 180-degree correction per episode, not as a dataset-wide rotation. Keep samples with more than three cameras and ambiguous roles pending review.
 
 ## 7. VPT-07: InternData-A1
 
@@ -334,11 +331,11 @@ export RAW_ROOT="$DATA_ROOT/raw/$SOURCE/$INTERN_SUBSET"
 
 Retain complete `meta/`, `data/`, and `videos/` directories within each task. Common camera keys include `images.rgb.head`, `images.rgb.hand_left`, `images.rgb.hand_right`, or a single-arm hand camera. Treat `meta/info.json` as authoritative rather than assuming one field naming scheme across embodiments. Validate FPS using both metadata and actual video timelines.
 
-**Text.** Prefer episode task mappings. A repository-level task may label every episode only when metadata establishes that the repository has exactly one task. A historical text audit identified 44,793 single-view rows with truncated labels; these were left empty instead of reconstructed. That historical count does not imply that the current public revision has the same malformed labels. Count empty text and valid native labels separately in manifests.
+**Text.** Prefer episode task mappings. A repository-level task may label every episode only when metadata establishes that the repository has exactly one task. Leave missing or truncated labels explicitly empty instead of reconstructing them. Count empty text and valid native labels separately in manifests.
 
-**Version boundary.** Historical encoded inputs used a different directory layout, including repository names such as `franka-1/...`. Substituting a newer public directory name does not establish identical episodes or source frames. New downloads require new manifests and provenance records. Official inputs are already LeRobot, so another third-party format conversion is generally unnecessary.
+**Version boundary.** New downloads require manifests tied to their exact source revision and episode identities. Official inputs are already LeRobot, so another format conversion is generally unnecessary.
 
-**Multiview.** Use the common two-image rule for two cameras. For three cameras, prefer head above left / right hand. Select one explicit representative view from stereo head cameras; two head cameras do not represent two hands. Review combinations with ambiguous roles. The specified snapshot's 111,575 added clips are the portion validated and admitted at that time.
+**Multiview.** Use the common two-image rule for two cameras. For three cameras, prefer head above left / right hand. Select one explicit representative view from stereo head cameras; two head cameras do not represent two hands. Review combinations with ambiguous roles.
 
 ## 8. VPT-08: RoboCOIN
 
@@ -357,11 +354,11 @@ export RAW_ROOT="$DATA_ROOT/raw/$SOURCE/alpha_bot_2_move_the_table"
 # Run the three processing commands from Section 2.2.
 ```
 
-Inputs consist of LeRobot episodes, task metadata, and camera videos. Camera fields vary by robot, including head, front-chest, and wrist. Historical snapshots use aliases such as `AI2_Alphabot_2_*`; these are not guaranteed to be current public Hugging Face repository IDs. Exact reproduction of the historical 143,159 rows requires the saved source mapping and revisions, rather than the organization's current complete repository list.
+Inputs consist of LeRobot episodes, task metadata, and camera videos. Camera fields vary by robot, including head, front-chest, and wrist. Record the exact repository IDs and revisions used in your build.
 
 **Text.** Prefer episode tasks / task_index. A repository-level fallback requires metadata proving a unique task. Titles, directory names, and robot names do not replace task instructions.
 
-**Multiview.** Select two or three cameras. When head, left-hand, and right-hand roles are known, place the head above the other two. Other three-view combinations require recorded roles or an explicitly reviewed order. Do not select the first three arbitrary cameras from a larger set. The specified snapshot admitted only 12 clips; candidate episode counts do not establish encoding completion.
+**Multiview.** Select two or three cameras. When head, left-hand, and right-hand roles are known, place the head above the other two. Other three-view combinations require recorded roles or an explicitly reviewed order. Do not select the first three arbitrary cameras from a larger set.
 
 ## 9. VPT-09: FastUMI
 
@@ -378,15 +375,13 @@ export RAW_ROOT="$DATA_ROOT/raw/$SOURCE/dual_arm/Fold_the_Suit"
 # Run the three processing commands from Section 2.2.
 ```
 
-A single-arm example is `single_arm/take_items_out_of_drawer/` in the official tree; confirm capitalization at the pinned revision. Keep the task's `meta/episodes.jsonl`, `meta/tasks.jsonl`, `meta/info.json`, and `data/`. Join each episode to its exact native task. Historical alias rows from 01 / 04 can inherit their original label only through the same latent / episode identity.
+A single-arm example is `single_arm/take_items_out_of_drawer/` in the official tree; confirm capitalization at the pinned revision. Keep the task's `meta/episodes.jsonl`, `meta/tasks.jsonl`, `meta/info.json`, and `data/`. Join each episode to its exact native task.
 
-**Single-view.** Resize and pad each complete fisheye image isotropically as described in Section 2.3. Original circular dark corners remain. The historical single-view collection was not uniformly cropped to an interior rectangle.
+**Single-view.** Resize and pad each complete fisheye image isotropically as described in Section 2.3. Original circular dark corners remain; do not crop the image to an interior rectangle.
 
 **Current multiview crop rule.** Place the two views side by side. For validated 1280×720 inputs, sample each view at 0%, 25%, 50%, 75%, and 100% of its timeline to choose one fixed horizontal crop for the entire video; retain all 720 original rows. A visible pixel has an RGB maximum channel value greater than 32. A column contributes to boundary detection only when it has more than 8 visible pixels. Leave a 24-pixel guard on both sides, trim at most 192 pixels per side, align boundaries to even coordinates, and retain at least 70% of the original width. Other input geometries must fail for review instead of inheriting these constants automatically.
 
-The crop reduces outer black areas at the sides; fisheye dark corners may remain. The crop is fixed per video rather than changing between frames, and each camera uses one isotropic resize factor. The canvas is approximately 65k pixels with dimensions aligned to 32, chosen primarily to reduce padding. Dimensions vary by task; **512×128 is not a fixed output size**. The earlier tighter interior crop that removed top / bottom content is not the current rule.
-
-**Coverage.** The historical 141,051 verified native videos exclude 1,536 `Unplug_the_Power_Strip` videos without a complete encoding mapping. Another 9,112 older derived multi view videos have not been matched to the current multiview receipts. These are counts from particular historical inventories, not public dataset totals. Presence in a raw directory does not prove admission to training.
+The crop reduces outer black areas at the sides; fisheye dark corners may remain. The crop is fixed per video rather than changing between frames, and each camera uses one isotropic resize factor. The canvas is approximately 65k pixels with dimensions aligned to 32, chosen primarily to reduce padding. Dimensions vary by task; **512×128 is not a fixed output size**.
 
 ## 10. VPT-10R: Ego-Exo4D Color Streams
 
@@ -424,7 +419,7 @@ python scripts/pretraining/build_manifest.py \
 
 **Text.** Join the exact `take_name` to `task_name` in the official `takes.json`. This is take-level task text, not second-by-second narration, commentary, or generated captions. A missing exact take match cannot be repaired by approximating the directory name.
 
-**Multiview.** This recipe explicitly retains the original individual camera streams and does not generate Ego-Exo multi view videos. The historical 30,800 rows are encoded color-stream clips, not the number of takes.
+**Multiview.** This recipe retains the original individual camera streams and does not generate Ego-Exo multi view videos.
 
 ## 11. VPT-10S: Ego-Exo4D Monochrome SLAM Streams
 
@@ -451,7 +446,7 @@ python scripts/pretraining/build_manifest.py \
   --out "$WORK_ROOT/manifests/single/$SOURCE.csv"
 ```
 
-Text remains the take's official `task_name`. Share a physical-take split identity with 10R so that the same action does not cross training / validation sets merely because its source ID differs. Multiview augmentation is disabled. The historical 15,105 rows are only a reference for the specified manifest.
+Text remains the take's official `task_name`. Share a physical-take split identity with 10R so that the same action does not cross training / validation sets merely because its source ID differs. Multiview augmentation is disabled.
 
 ## 12. Multiview: Synchronize Native RGB and Encode a New Latent
 
@@ -485,7 +480,7 @@ Inputs are native camera streams from the same physical episode. **Compose RGB f
 
 ### 12.2 Layout and Timeline
 
-For two cameras, stack vertically when both frames are landscape; otherwise place them side by side. Sources 01 / 09 explicitly use horizontal placement. Three-camera layouts place head above the other two views, which occupy the lower left / right positions. Review combinations whose roles are unclear. Each view uses one resize factor for both axes. Canvas dimensions are multiples of 32, and area lies within `0.8…1.2 × 65,536`; padding occupies pixels outside the image placements. The portable layout implementation has its own contract: its modified algorithm SHA is not the historical snapshot contract.
+For two cameras, stack vertically when both frames are landscape; otherwise place them side by side. Sources 01 / 09 explicitly use horizontal placement. Three-camera layouts place head above the other two views, which occupy the lower left / right positions. Review combinations whose roles are unclear. Each view uses one resize factor for both axes. Canvas dimensions are multiples of 32, and area lies within `0.8…1.2 × 65,536`; padding occupies pixels outside the image placements.
 
 Resample cameras within their shared time window to 15 Hz. For video, select nearest frames using actual PTS and check declared FPS, container metadata, and time gaps. For HDF5, select frames using verified FPS. Split long videos into non-overlapping segments of at most 257 RGB frames, each of length `1 + 4k`, corresponding to at most 65 latent frames. Do not encode tails shorter than 5 frames; separately record the remaining 0–3 frames removed for temporal alignment.
 
@@ -523,7 +518,7 @@ python scripts/pretraining/text/encode_prompt_cache.py \
   --out "$WORK_ROOT/text/pilot-v1" --allow-subset
 ```
 
-Omit `--allow-subset` for the complete nine-source build. The training configuration, manifest task inventory, and cache index must agree. Encode new task embeddings before admitting their data to training. The historical expanded nine-source text cache contained 18,774 prompts, including empty text; this snapshot-specific count does not predict the number of prompts in newly downloaded releases.
+Omit `--allow-subset` for the complete nine-source build. The training configuration, manifest task inventory, and cache index must agree. Encode new task embeddings before admitting their data to training.
 
 Optional object storage should use your own namespace. Obtain the root URI from your storage console and provide it as `OBJECT_URI`; the following are path templates, with variables expanded by the caller:
 
@@ -539,10 +534,8 @@ Upload, catalog construction, and restore entry points are under `scripts/pretra
 
 Before reclaiming raw video, establish each file's completed latent / action / text dependencies and verify that your remote backup matches its full local content. Matching names, sizes, or multipart ETags alone do not prove equivalence. Keep derived multi view videos, raw files lacking encoding mappings, and temporary files still needed by processing outside any deletion set for verified backed-up raw video. This guide contains no automatic deletion commands.
 
-## 14. Ported Workflow Scope and Reproducibility Records
+## 14. Build Records
 
-Verified historical behavior includes frozen nine-source CSVs, source-specific RoboMIND RGB corrections, native-text joins, multiview re-encoding from original RGB, and validated admission into frozen training snapshots. This repository provides portable single-view encoding, episode preparation, manifest validation, multiview encoding, text caching, snapshot publication, and storage entry points. The ported paths and layout versions define new code contracts.
+Retain source URLs and revisions, input inventories and checksums, original episode IDs, camera / FPS / RGB contracts, VAE fingerprints, completion receipts, text provenance, and frozen CSV / split / text-cache indices. These records identify exactly what entered training.
 
-The following still require upstream projects or fixed input artifacts: LIBERO simulation and original HDF5-to-LeRobot conversion, UMI / MV-UMI raw Zarr conversion, official Ego-Exo4D access / download tools, and the complete RoboMIND failure scheduling / publication chain. The standalone failure JPEG encoder is included here; it does not represent the entire processing system. Historical archive queues, automatic cleanup scripts, and environment-specific launchers have not been copied as generic download tools.
-
-For every full build, retain the public repository / URL and revision; selected task / take / archive inventories and checksums; original episode ID mappings; camera / FPS / RGB / crop contracts; VAE configuration and weight fingerprints; planned, complete, rejected, and admitted episode / clip counts; output SHAs and complete receipts; native-text provenance and prompt SHAs; and frozen CSV / split / text-cache indices. These records make differences between new builds, historical inputs, and public releases traceable.
+LIBERO collection and HDF5-to-LeRobot conversion, UMI raw Zarr conversion, and Ego-Exo4D access / downloads use their upstream tools. OpenWAM handles preparation and encoding of the supported inputs described above. See [Validation](validation.md) before scaling up a build.

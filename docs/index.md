@@ -33,11 +33,8 @@ on reproducible usage, typed extension points, and benchmark contracts.
 - [Artifacts](artifacts.md): checkpoint manifests, local path aliases, and artifact cards.
 - [Reproducibility](reproducibility.md): result envelopes, experiment cards, and tracking policy.
 
-## Contributor Operations
+## Reference
 
-- [CLI Reference](cli.md): package-owned commands and legacy script policy.
-- [Testing](testing.md): CI tiers, pytest markers, and resource gates.
-- [DualExpert Refactor Characterization](dual_expert_refactor_characterization.md): opt-in
-  real-checkpoint training and streaming-inference regression gate.
-- [GitHub Pages](github_pages.md): how this site is built and deployed.
-- [Release Process](release.md): versioning, packaging checks, and release checklist.
+- [CLI Reference](cli.md): commands and examples.
+- [Testing](testing.md): local tests and numerical comparisons for extensions.
+- [Releases](release.md): package versions and reproducible installation.

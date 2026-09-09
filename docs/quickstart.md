@@ -9,9 +9,7 @@ OpenWAM supports Linux with Python 3.11 or 3.12.
 
 ### Installed SDK
 
-For a published release, install the canonical package in a virtual environment.
-For an unreleased revision, use the source checkout below or install a reviewed
-wheel from the release-checks workflow.
+Install from [PyPI](https://pypi.org/project/openwam/) in a virtual environment:
 
 ```bash
 python -m venv .venv
@@ -22,10 +20,10 @@ openwam-sanity \
   --device cpu --max-batches 1 --rollout-steps 1
 ```
 
-For an alpha version, request the exact version shown on the release page
-with `==<version>`. The distribution is named `openwam`; Python code uses
-`import open_wam`. The official `open-wam`, `openwam-sdk`, and `open-wam-sdk`
-installation aliases forward to the same implementation and extras.
+The distribution is named `openwam`; Python code uses `import open_wam`.
+The optional `openwam-sdk` installation alias provides the same implementation
+and extras. To pin a version, use `openwam[train,eval]==0.1.1`; see
+[Releases](release.md) for reproducibility guidance.
 
 The base `pip install openwam` needs only PyYAML and supports config/metadata
 APIs and CLI help. Add `[train,pretrain]` for video data preparation and
@@ -43,6 +41,8 @@ PyPI install resolves the declared dependency ranges, not `uv.lock`.
 Install `uv` and run from a clone of the repository:
 
 ```bash
+git clone https://github.com/OpenWAM/OpenWAM.git
+cd OpenWAM
 uv sync --frozen --group dev --extra train --extra eval
 ```
 
@@ -136,26 +136,18 @@ uv run --extra train openwam-train \
 
 ## Optional Runtimes
 
-Install only the simulator or documentation extras needed by the next task:
+Install only the simulator extras needed by the next task:
 
 ```bash
 uv sync --extra libero
 uv sync --extra calvin
 uv sync --extra robotwin
 uv sync --extra sim
-uv sync --extra docs
 ```
 
 The benchmark-named extras add benchmark-side dependency overlays; they do not
 include the model stack or upstream source trees. Use `[sim]` for model-driven
 closed-loop rollouts, then install the selected benchmark source separately.
-
-For local documentation preview:
-
-```bash
-uv run --extra docs python scripts/build_docs_site.py --output .docs_site
-uv run --extra docs mkdocs serve
-```
 
 ## Local Paths
 
@@ -262,8 +254,7 @@ Preferred package commands:
 - `openwam-sanity`
 - `openwam-sim-rollout`
 
-Legacy `python scripts/...` commands remain supported as compatibility
-entrypoints while the runtime is migrated into package modules.
+These commands work from both a source checkout and an installed package.
 
 ## Resource Matrix
 

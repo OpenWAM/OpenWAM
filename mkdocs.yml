@@ -18,7 +18,15 @@ nav:
       - Training And Inference: running_experiments.md
       - Variable-Length Training Batches: variable_length_training_batches.md
       - Video-Only Training: video_only_training.md
-      - Video Pretraining Data: pretraining/index.md
+      - Video Pretraining:
+          - Overview: pretraining/index.md
+          - Datasets: pretraining/datasets.md
+          - Data Preparation: pretraining/data_processing.md
+          - Multiview Training: pretraining/multiview_training.md
+          - Training And Inference: pretraining/training.md
+          - Batching: pretraining/batching.md
+          - Object Storage: pretraining/storage.md
+          - Validation: pretraining/validation.md
       - Compatibility: compatibility.md
   - Concepts:
       - Architecture: architecture.md
@@ -40,11 +48,9 @@ nav:
       - Add A Dataset: cookbooks/new_dataset.md
       - Add A Simulator Adapter: cookbooks/new_simulator_adapter.md
       - Reproduce A Result: cookbooks/reproduce_result.md
-  - Operations:
+  - Development:
       - Testing: testing.md
-      - Dual-Expert Refactor Characterization: dual_expert_refactor_characterization.md
-      - GitHub Pages: github_pages.md
-      - Release Process: release.md
+      - Releases: release.md
 markdown_extensions:
   - admonition
   - tables
