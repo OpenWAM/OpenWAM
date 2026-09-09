@@ -1,6 +1,23 @@
 name: release-checks
 
 on:
+  pull_request:
+    paths:
+      - '.github/workflows/*pypi*'
+      - '.github/workflows/release-checks.yml'
+      - 'scripts/*pypi*'
+      - 'scripts/check_release_metadata.py'
+      - 'tests/test_pypi_distributions.py'
+      - 'tests/test_release_metadata.py'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - 'README.md'
+      - 'docs/release.md'
+  workflow_call:
+    inputs:
+      release:
+        required: true
+        type: boolean
   workflow_dispatch:
     inputs:
       release:
@@ -16,18 +33,29 @@ permissions:
   contents: read
 
 jobs:
-  package:
+  dependency-audit:
+    name: release-dependency-audit
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install uv
-        uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Audit frozen full environment
+        run: uv run --frozen --group audit python scripts/check_dependency_audit.py
+
+  package:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
       - name: Install packaging tools
-        run: python -m pip install --upgrade build twine PyYAML
+        run: python -m pip install 'build>=1.2,<2' 'twine>=6' 'tomli-w>=1,<2' PyYAML pytest packaging
       - name: Check release metadata
         env:
           OPEN_WAM_FINAL_RELEASE: ${{ github.event_name == 'push' || inputs.release }}
@@ -37,11 +65,25 @@ jobs:
           else
             python scripts/check_release_metadata.py
           fi
-      - name: Audit frozen full environment
-        run: uv run --frozen --group audit python scripts/check_dependency_audit.py
-      - name: Build source and wheel distributions
-        run: python -m build
+      - name: Build canonical and alias distributions
+        run: python scripts/build_pypi_distributions.py --out-dir dist
       - name: Validate distributions
         run: |
-          python scripts/check_release_metadata.py --dist-dir dist
-          python -m twine check dist/*
+          python scripts/check_release_metadata.py --dist-dir dist/core
+          python scripts/check_release_metadata.py --dist-dir dist/aliases
+          python -m twine check --strict dist/core/* dist/aliases/*
+      - name: Prepare offline minimal installation dependencies
+        run: |
+          python -m pip download --only-binary=:all: --dest dist/dependencies dist/core/*.whl
+      - name: Exercise fresh canonical and alias installations
+        env:
+          OPENWAM_DISTRIBUTIONS_DIR: ${{ github.workspace }}/dist
+        run: python -m pytest -q tests/test_pypi_distributions.py tests/test_release_metadata.py
+      - name: Retain the tested distributions
+        uses: actions/upload-artifact@v4
+        with:
+          name: pypi-distributions
+          path: |
+            dist/core/
+            dist/aliases/
+          if-no-files-found: error

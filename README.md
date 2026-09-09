@@ -6,15 +6,15 @@
   <a href="https://github.com/OpenWAM/OpenWAM/actions/workflows/ci.yml"><img src="https://github.com/OpenWAM/OpenWAM/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://openwam.github.io/OpenWAM/"><img src="https://img.shields.io/badge/docs-online-blue.svg" alt="Documentation"></a>
   <a href="https://www.python.org/"><img src="https://img.shields.io/badge/python-3.11%20%7C%203.12-blue.svg" alt="Python 3.11 or 3.12"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-blue.svg" alt="License: AGPL v3"></a>
+  <a href="https://github.com/OpenWAM/OpenWAM/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-blue.svg" alt="License: AGPL v3"></a>
 </p>
 
 <p align="center">
   <a href="https://openwam.github.io/OpenWAM/">Documentation</a> &middot;
-  <a href="docs/quickstart.md">Quickstart</a> &middot;
-  <a href="docs/policy_architectures.md">Methods</a> &middot;
-  <a href="docs/running_experiments.md">Training and evaluation</a> &middot;
-  <a href="docs/extension_sdk.md">Extension SDK</a> &middot;
+  <a href="https://github.com/OpenWAM/OpenWAM/blob/main/docs/quickstart.md">Quickstart</a> &middot;
+  <a href="https://github.com/OpenWAM/OpenWAM/blob/main/docs/policy_architectures.md">Methods</a> &middot;
+  <a href="https://github.com/OpenWAM/OpenWAM/blob/main/docs/running_experiments.md">Training and evaluation</a> &middot;
+  <a href="https://github.com/OpenWAM/OpenWAM/blob/main/docs/extension_sdk.md">Extension SDK</a> &middot;
   <a href="#citation">Citation</a>
 </p>
 
@@ -24,11 +24,11 @@
 </p>
 
 <p align="center">
-  <a href="https://www.stanford.edu/"><img src="docs/assets/affiliations/stanford-wordmark.png" alt="Stanford University" height="20" valign="middle"></a>
+  <a href="https://www.stanford.edu/"><img src="https://raw.githubusercontent.com/OpenWAM/OpenWAM/main/docs/assets/affiliations/stanford-wordmark.png" alt="Stanford University" height="20" valign="middle"></a>
   &nbsp;&nbsp;&nbsp;
-  <a href="https://ai.stanford.edu/"><img src="docs/assets/affiliations/stanford-ai-lab.jpg" alt="Stanford Artificial Intelligence Laboratory" height="28" valign="middle"></a>
+  <a href="https://ai.stanford.edu/"><img src="https://raw.githubusercontent.com/OpenWAM/OpenWAM/main/docs/assets/affiliations/stanford-ai-lab.jpg" alt="Stanford Artificial Intelligence Laboratory" height="28" valign="middle"></a>
   &nbsp;&nbsp;&nbsp;
-  <a href="https://svl.stanford.edu/"><img src="docs/assets/affiliations/stanford-svl.png" alt="Stanford Vision and Learning Lab" height="28" valign="middle"></a>
+  <a href="https://svl.stanford.edu/"><img src="https://raw.githubusercontent.com/OpenWAM/OpenWAM/main/docs/assets/affiliations/stanford-svl.png" alt="Stanford Vision and Learning Lab" height="28" valign="middle"></a>
 </p>
 
 OpenWAM separates model topology, video/action conditioning, sequence
@@ -38,19 +38,19 @@ share the same trainer and visual stack.
 > **Release status:** OpenWAM 0.1.0 is pre-release Linux research software.
 > The public CPU lifecycle and synthetic artifacts are self-contained. Large
 > benchmark runs use separately provisioned datasets and checkpoints described
-> by the [artifact contract](docs/artifacts.md).
+> by the [artifact contract](https://github.com/OpenWAM/OpenWAM/blob/main/docs/artifacts.md).
 
 ## Upcoming Research Release
 
 Detailed evaluation results, trained model checkpoints, datasets, and the
 OpenWAM research paper are being prepared for public release and will be
 available very soon. Canonical links and integrity metadata will be added to
-the [artifact documentation](docs/artifacts.md) as each resource is published.
+the [artifact documentation](https://github.com/OpenWAM/OpenWAM/blob/main/docs/artifacts.md) as each resource is published.
 
 ## Research Scope
 
 For OpenWAM video pretraining, see the
-[pretraining datasets and workflow](docs/pretraining/index.md). The guide covers
+[pretraining datasets and workflow](https://github.com/OpenWAM/OpenWAM/blob/main/docs/pretraining/index.md). The guide covers
 the nine pretraining data sources, downloads, RGB multi-view composition before
 VAE encoding, task text, verified object storage with a bounded cache, training,
 checkpoints, and inference. These inputs are the pretraining corpus; downstream
@@ -113,7 +113,7 @@ uv run --extra train openwam-sanity \
 This path requires no private data, checkpoint, GPU, or external simulator. It
 checks config loading, dataset construction, a train forward pass, batch
 inference, and recurrent rollout-style inference. The
-[complete CPU first run](docs/quickstart.md#complete-cpu-first-run) adds exact
+[complete CPU first run](https://github.com/OpenWAM/OpenWAM/blob/main/docs/quickstart.md#complete-cpu-first-run) adds exact
 resume and checkpoint-backed evaluation.
 
 Install only the runtime needed for later work:
@@ -127,7 +127,7 @@ Install only the runtime needed for later work:
 | Documentation | `uv sync --extra docs` |
 
 Benchmark extras supply dependency overlays, not upstream source trees. Follow
-[Benchmarks and Data](docs/benchmarks.md) before a real simulator run.
+[Benchmarks and Data](https://github.com/OpenWAM/OpenWAM/blob/main/docs/benchmarks.md) before a real simulator run.
 
 ## Training
 
@@ -146,7 +146,7 @@ elsewhere.
 
 All architectures use `openwam-train`. The shipped Parallel Stream and Dual
 Expert LIBERO policy programs use the same validated full-trajectory W64 recipe
-described in [Training and Inference](docs/running_experiments.md#libero-policy-planning-default).
+described in [Training and Inference](https://github.com/OpenWAM/OpenWAM/blob/main/docs/running_experiments.md#libero-policy-planning-default).
 The reference 30-layer configs are FSDP workloads characterized with four 48 GB GPUs:
 
 ```bash
@@ -195,7 +195,7 @@ invocation config.
 Conditional FDM/IDM uses the dynamics-routing data adapter. The maintained
 config mixes real demonstrations with encoded counterfactual train and
 validation roots; a real-demo-only ablation is also supported. Read the
-[data prerequisites](docs/running_experiments.md#data-prerequisites) before
+[data prerequisites](https://github.com/OpenWAM/OpenWAM/blob/main/docs/running_experiments.md#data-prerequisites) before
 selecting `forward_dynamics` or `inverse_dynamics`.
 
 ## Evaluation And Rollout
@@ -222,7 +222,7 @@ uv run --extra sim openwam-sim-rollout \
 Benchmark adapters translate observations and actions. Sequence, attention,
 cache, and denoising semantics remain owned by the selected policy. Maintained
 LIBERO and GJD commands are listed in
-[Training and Inference](docs/running_experiments.md).
+[Training and Inference](https://github.com/OpenWAM/OpenWAM/blob/main/docs/running_experiments.md).
 
 ## Architecture
 
@@ -241,8 +241,8 @@ ExperimentConfig -> VariantPipeline -> VisualTower -> PolicyVariant -> ActionDec
 | `ActionDecoder` | Final supervised outputs, masks, losses, metrics, and committed actions. |
 
 This boundary keeps the visual stack stable while experiments vary one owned
-contract at a time. See [Architecture](docs/architecture.md) and
-[Policy Architectures and Programs](docs/policy_architectures.md).
+contract at a time. See [Architecture](https://github.com/OpenWAM/OpenWAM/blob/main/docs/architecture.md) and
+[Policy Architectures and Programs](https://github.com/OpenWAM/OpenWAM/blob/main/docs/policy_architectures.md).
 
 ## Use OpenWAM With Your System
 
@@ -269,8 +269,8 @@ uv run --extra train openwam-train \
 ```
 
 Extensions import compatibility-managed contracts from the role-specific
-`open_wam.sdk` modules. See the [Extension SDK](docs/extension_sdk.md) and
-[cookbooks](docs/cookbooks/new_policy_architecture.md).
+`open_wam.sdk` modules. See the [Extension SDK](https://github.com/OpenWAM/OpenWAM/blob/main/docs/extension_sdk.md) and
+[cookbooks](https://github.com/OpenWAM/OpenWAM/blob/main/docs/cookbooks/new_policy_architecture.md).
 
 ## Reproducibility
 
@@ -288,8 +288,8 @@ Exact numerical claims use the locked dependency graph and documented
 hardware/software stack. A refactor near model execution must pass immutable
 training-step, recurrent-inference, cache-rollover, and full-state-resume
 characterization; expected values are not regenerated by the refactor. See
-[Reproducibility](docs/reproducibility.md),
-[Compatibility](docs/compatibility.md), and [Testing](docs/testing.md).
+[Reproducibility](https://github.com/OpenWAM/OpenWAM/blob/main/docs/reproducibility.md),
+[Compatibility](https://github.com/OpenWAM/OpenWAM/blob/main/docs/compatibility.md), and [Testing](https://github.com/OpenWAM/OpenWAM/blob/main/docs/testing.md).
 
 ## Repository Layout
 
@@ -306,26 +306,26 @@ notes/index/   generated public consortium metadata packaged at runtime
 
 | Topic | Guide |
 | --- | --- |
-| Install and first run | [Quickstart](docs/quickstart.md) |
-| Runtime ownership | [Architecture](docs/architecture.md) |
-| Architectures and programs | [Policy Architectures](docs/policy_architectures.md) |
-| Train, resume, evaluate, and roll out | [Training and Inference](docs/running_experiments.md) |
-| Dataset and simulator setup | [Benchmarks and Data](docs/benchmarks.md) |
-| Custom datasets, policies, decoders, and simulators | [Extension SDK](docs/extension_sdk.md) |
-| Checkpoints and manifests | [Artifacts](docs/artifacts.md) |
-| Test and parity tiers | [Testing](docs/testing.md) |
+| Install and first run | [Quickstart](https://github.com/OpenWAM/OpenWAM/blob/main/docs/quickstart.md) |
+| Runtime ownership | [Architecture](https://github.com/OpenWAM/OpenWAM/blob/main/docs/architecture.md) |
+| Architectures and programs | [Policy Architectures](https://github.com/OpenWAM/OpenWAM/blob/main/docs/policy_architectures.md) |
+| Train, resume, evaluate, and roll out | [Training and Inference](https://github.com/OpenWAM/OpenWAM/blob/main/docs/running_experiments.md) |
+| Dataset and simulator setup | [Benchmarks and Data](https://github.com/OpenWAM/OpenWAM/blob/main/docs/benchmarks.md) |
+| Custom datasets, policies, decoders, and simulators | [Extension SDK](https://github.com/OpenWAM/OpenWAM/blob/main/docs/extension_sdk.md) |
+| Checkpoints and manifests | [Artifacts](https://github.com/OpenWAM/OpenWAM/blob/main/docs/artifacts.md) |
+| Test and parity tiers | [Testing](https://github.com/OpenWAM/OpenWAM/blob/main/docs/testing.md) |
 
 ## Contributing
 
 Contributions should preserve the typed runtime boundary and add focused tests
-for every changed contract. Read [CONTRIBUTING.md](CONTRIBUTING.md), the
-[Code of Conduct](CODE_OF_CONDUCT.md), and the
-[Security Policy](SECURITY.md) before opening a pull request.
+for every changed contract. Read [CONTRIBUTING.md](https://github.com/OpenWAM/OpenWAM/blob/main/CONTRIBUTING.md), the
+[Code of Conduct](https://github.com/OpenWAM/OpenWAM/blob/main/CODE_OF_CONDUCT.md), and the
+[Security Policy](https://github.com/OpenWAM/OpenWAM/blob/main/SECURITY.md) before opening a pull request.
 
 ## Citation
 
 If OpenWAM supports your research, cite the software record in
-[`CITATION.cff`](CITATION.cff):
+[`CITATION.cff`](https://github.com/OpenWAM/OpenWAM/blob/main/CITATION.cff):
 
 ```bibtex
 @software{open_wam_2026,
@@ -339,15 +339,15 @@ If OpenWAM supports your research, cite the software record in
 
 ## License
 
-OpenWAM is released under the [GNU Affero General Public License v3.0](LICENSE)
-with the redistribution attribution described in [`NOTICE`](NOTICE). Covered
+OpenWAM is released under the [GNU Affero General Public License v3.0](https://github.com/OpenWAM/OpenWAM/blob/main/LICENSE)
+with the redistribution attribution described in [`NOTICE`](https://github.com/OpenWAM/OpenWAM/blob/main/NOTICE). Covered
 modified versions and network services must provide corresponding source, and
 redistributed copies must preserve the OpenWAM attribution notice. Academic
 work that uses OpenWAM should cite the software record in
-[`CITATION.cff`](CITATION.cff).
+[`CITATION.cff`](https://github.com/OpenWAM/OpenWAM/blob/main/CITATION.cff).
 
 Third-party components retain their own terms; the adapted LingBot-VA module
 is distributed under Apache License 2.0. Full attributions are listed in
-[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) and [`LICENSES/`](LICENSES/).
+[`THIRD_PARTY_NOTICES.md`](https://github.com/OpenWAM/OpenWAM/blob/main/THIRD_PARTY_NOTICES.md) and [`LICENSES/`](https://github.com/OpenWAM/OpenWAM/tree/main/LICENSES/).
 Stanford, SAIL, and SVL marks are not licensed under AGPL-3.0-only and remain
 the property of Stanford University.
