@@ -75,24 +75,34 @@ They do not establish GPU parity for a newly resolved dependency stack.
 
 ### Publisher Setup
 
-On PyPI, verify the maintainer account's email, enable 2FA, and configure four
-pending GitHub Trusted Publishers under **Account > Publishing**:
+On PyPI, verify the maintainer account's email, enable 2FA, and configure
+pending GitHub Trusted Publishers under **Account > Publishing**. Use owner
+`OpenWAM`, repository `OpenWAM`, and workflow filename `publish-pypi.yml` for
+each project, with distinct environments:
 
-| Field | Value |
-| --- | --- |
-| Project | One entry each for `openwam`, `open-wam`, `openwam-sdk`, `open-wam-sdk` |
-| Owner | `OpenWAM` |
-| Repository | `OpenWAM` |
-| Workflow filename | `publish-pypi.yml` |
-| Environment | `pypi` |
+| Project / workflow `project` input | PyPI environment | TestPyPI environment |
+| --- | --- | --- |
+| `openwam` | `pypi` | `testpypi` |
+| `open-wam` | `pypi-open-wam` | `testpypi-open-wam` |
+| `openwam-sdk` | `pypi-openwam-sdk` | `testpypi-openwam-sdk` |
+| `open-wam-sdk` | `pypi-open-wam-sdk` | `testpypi-open-wam-sdk` |
 
-Repeat on TestPyPI, using its separate account and environment `testpypi`.
+PyPI rejects identical pending-publisher identities across project names and
+allows at most three pending publishers per account at once. Register and
+publish `openwam` first, then register the remaining aliases as slots become
+available. Publishing only `openwam` and `open-wam` is supported; unselected
+projects require no publisher or GitHub environment. An existing `OpenWAM`
+entry already covers `openwam`; scope its environment to `pypi`, not `(Any)`.
+These pending-publisher restrictions are enforced by
+[PyPI's registration handler](https://github.com/pypi/warehouse/blob/main/warehouse/accounts/views.py).
+
+Repeat on TestPyPI using its separate account and the environments above.
 For existing projects, add publishers in their project settings instead.
 Add a trusted backup project Owner after the first publication. No PyPI API
 token or password is stored in GitHub: publishing uses OIDC.
 
-Before enabling publication, create the `pypi` and `testpypi` GitHub
-environments in `OpenWAM/OpenWAM`, require maintainer approval, and restrict
+Before publishing a selected project, create its matching GitHub
+environment in `OpenWAM/OpenWAM`, require maintainer approval, and restrict
 deployments to `v*` tags. GitHub environment protections are repository
 settings, not created by the workflow YAML. Protect version tags against
 replacement and deletion. See [PyPI's publisher setup](https://docs.pypi.org/trusted-publishers/creating-a-project-through-oidc/).
@@ -110,21 +120,27 @@ replacement and deletion. See [PyPI's publisher setup](https://docs.pypi.org/tru
    apply `uv.lock`; exact model reproduction still uses the frozen checkout.
    Do not waive security or numerical parity checks to obtain project names.
 3. Tag the reviewed production commit with `v<project.version>`. In Actions,
-   run **publish-pypi** against that tag with `index=testpypi`. The workflow
-   rejects staging/branch publication, checks tag/version agreement and main
+   run **publish-pypi** against that tag with `index=testpypi`, `project=openwam`.
+   The workflow rejects staging/branch publication, checks tag/version agreement and main
    ancestry, and runs the package and dependency gates before approval.
-4. Inspect the artifacts and approve the TestPyPI environment. Install the
-   candidate using TestPyPI **only** for the four OpenWAM distributions;
+4. Inspect the artifacts and approve the matching TestPyPI environment. Once
+   `openwam` succeeds, dispatch again for each desired alias, using the same
+   tag and index with its `project` value. Install the candidate using
+   TestPyPI **only** for the selected OpenWAM distributions;
    provision third-party dependencies from the normal index separately. Avoid
    mixing indexes with `--extra-index-url` when verifying package provenance.
-5. Run the same tag with `index=pypi` and approve production publication.
-   The upload job has no checkout or build step: it uploads the artifacts
-   tested in that workflow run, canonical package first and then aliases.
-6. Verify all four project pages, versions, extras, and fresh installs. Record
+5. Run the same tag with `index=pypi`, `project=openwam`, and approve production
+   publication. Wait for success before dispatching each desired alias. The
+   upload job has no checkout or build step: it selects only the requested
+   project's wheel and source archive from the tested artifacts. Building and
+   testing all aliases does not publish them.
+6. Verify the selected project pages, versions, extras, and fresh installs. Record
    the release and supported environment in the public documentation.
 
-Uploads to four projects are not atomic. If interrupted, rerun the same tag;
-existing files are skipped so the remaining uploads can finish. Do not move
+Each dispatch publishes one project. To start with the two installation spellings,
+publish `project=openwam`, then `project=open-wam`; SDK aliases can wait.
+If interrupted, rerun the same project, index, and tag; existing files are
+skipped so the remaining uploads can finish. Do not move
 the tag or silently replace a bad release: inspect published files and use a
 new version for corrections. Publication only starts on manual dispatch;
 neither a main push nor a tag push uploads anything by itself.
