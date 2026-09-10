@@ -29,6 +29,8 @@
   <a href="https://ai.stanford.edu/"><img src="https://raw.githubusercontent.com/OpenWAM/OpenWAM/main/docs/assets/affiliations/stanford-ai-lab.jpg" alt="Stanford Artificial Intelligence Laboratory" height="28" valign="middle"></a>
   &nbsp;&nbsp;&nbsp;
   <a href="https://svl.stanford.edu/"><img src="https://raw.githubusercontent.com/OpenWAM/OpenWAM/main/docs/assets/affiliations/stanford-svl.png" alt="Stanford Vision and Learning Lab" height="28" valign="middle"></a>
+  &nbsp;&nbsp;&nbsp;
+  <a href="https://src.stanford.edu/"><img src="https://images.squarespace-cdn.com/content/v1/66b6b61fc5e5030973bd431f/01e83141-2062-49fa-8043-730d17b75cca/SRClogo.png" alt="Stanford Robotics Center" height="32" valign="middle"></a>
 </p>
 
 OpenWAM separates model topology, video/action conditioning, sequence
@@ -375,5 +377,5 @@ work that uses OpenWAM should cite the software record in
 Third-party components retain their own terms; the adapted LingBot-VA module
 is distributed under Apache License 2.0. Full attributions are listed in
 [`THIRD_PARTY_NOTICES.md`](https://github.com/OpenWAM/OpenWAM/blob/main/THIRD_PARTY_NOTICES.md) and [`LICENSES/`](https://github.com/OpenWAM/OpenWAM/tree/main/LICENSES/).
-Stanford, SAIL, and SVL marks are not licensed under AGPL-3.0-only and remain
+Stanford, SAIL, SVL, and SRC marks are not licensed under AGPL-3.0-only and remain
 the property of Stanford University.

@@ -26,11 +26,13 @@ Its upstream attribution and Apache-2.0 terms are preserved.
 ## Stanford Institutional Marks
 
 - Components: `docs/assets/affiliations/stanford-wordmark.png`,
-  `docs/assets/affiliations/stanford-ai-lab.jpg`, and
-  `docs/assets/affiliations/stanford-svl.png`
+  `docs/assets/affiliations/stanford-ai-lab.jpg`,
+  `docs/assets/affiliations/stanford-svl.png`, and
+  `docs/assets/affiliations/stanford-src.webp`
 - Sources: [Stanford Identity Guide](https://identity.stanford.edu/visual-identity/stanford-logos/wordmarks/),
   [Stanford Artificial Intelligence Laboratory](https://ai.stanford.edu/logo/),
-  and [Stanford Vision and Learning Lab](https://svl.stanford.edu/)
+  [Stanford Vision and Learning Lab](https://svl.stanford.edu/),
+  and [Stanford Robotics Center](https://src.stanford.edu/)
 - Rights holder: Stanford University
 
 These unmodified marks identify the project's institutional affiliation. They
