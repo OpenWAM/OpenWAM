@@ -42,6 +42,10 @@ share the same trainer and visual stack.
 > benchmark runs use separately provisioned datasets and checkpoints described
 > by the [artifact contract](https://github.com/OpenWAM/OpenWAM/blob/main/docs/artifacts.md).
 
+<p align="center">
+  <img src="docs/assets/robot-teaser.gif" alt="OpenWAM robot manipulation teaser" width="720">
+</p>
+
 ## Upcoming Research Release
 
 Detailed evaluation results, trained model checkpoints, datasets, and the
