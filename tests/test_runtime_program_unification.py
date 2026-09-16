@@ -13,7 +13,7 @@ from open_wam.configs.backbone import SharedVideoTransformerConfig
 from open_wam.data import build_synthetic_batch
 from open_wam.models.common import AttentionProfileSpec, PreparedAttentionProfile
 from open_wam.models.policy_variants import PolicyTrainBatch
-from open_wam.models.policy_variants.dual_expert.attention import (
+from open_wam.models.policy_variants.dual_expert.attention_packed import (
     build_dual_expert_packed_coupling_attention_profile,
 )
 from open_wam.models.policy_variants.dual_expert.dual_stream_execution import (
@@ -274,14 +274,19 @@ def test_conditioned_video_runtime_matches_m5_dual_expert_video_branch() -> None
         build_flex_masks=False,
     )
 
+    from open_wam.models.policy_variants.dual_expert.packed_block import (
+        DualExpertPackedBlockStack,
+    )
+
+    stack = DualExpertPackedBlockStack(tower.core.execution_blocks, action_expert.execution_blocks)
     with torch.no_grad():
         m5_video, _ = forward_dual_expert_packed_coupling_denoise(
+            packed_block_stack=stack,
             visual_tower=tower,
             noisy_video_latents=noisy_video,
             clean_video_latents=condition_video,
             noisy_video_timesteps=video_timesteps,
             clean_video_timesteps=condition_timesteps,
-            action_expert=action_expert,
             packed_action_pre=packed_action_pre,
             attention_profile=m5_profile,
             text_context=text_context,

@@ -8,7 +8,7 @@ import pytest
 from open_wam.cli.sim_rollout import build_arg_parser
 from open_wam.evals.sim_rollout import _build_adapter, _parse_simulator_options
 from open_wam.simulators.builtins import _build_calvin
-from open_wam.simulators.contracts import LegacyAdapterSimulatorBackend
+from open_wam.simulators.contracts import ObservationAdapterBackend
 from open_wam.simulators.registry import (
     SimulatorFactoryContext,
     register_simulator_adapter,
@@ -61,16 +61,18 @@ def test_simulator_factory_context_rejects_untyped_options() -> None:
         )
 
 
-def test_builtin_factory_normalizes_legacy_adapter(
+def test_builtin_factory_normalizes_raw_observations(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from open_wam.integrations import calvin_env
 
-    legacy_adapter = SimpleNamespace(benchmark_name="calvin")
+    from open_wam.simulators.contracts import SimulatorCapabilities
+
+    raw_adapter = SimpleNamespace(benchmark_name="calvin", capabilities=SimulatorCapabilities("single_env_step"))
     monkeypatch.setattr(
         calvin_env,
         "CalvinBenchmarkAdapter",
-        lambda config: legacy_adapter,
+        lambda config: raw_adapter,
     )
 
     adapter = _build_calvin(
@@ -81,8 +83,8 @@ def test_builtin_factory_normalizes_legacy_adapter(
         )
     )
 
-    assert isinstance(adapter, LegacyAdapterSimulatorBackend)
-    assert adapter.adapter is legacy_adapter
+    assert isinstance(adapter, ObservationAdapterBackend)
+    assert adapter.adapter is raw_adapter
 
 
 def test_unknown_simulator_reports_registered_identifiers() -> None:

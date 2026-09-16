@@ -221,8 +221,8 @@ def test_exact_parallel_stream_uses_decoder_action_dim_when_dataset_stays_raw() 
     pipeline = build_variant_pipeline_from_config(config)
     assert pipeline.visual_tower.action_dim == 30
     assert pipeline.policy_variant.action_dim == 30
-    assert pipeline.policy_variant.exact_action_adapter.spec is not None
-    assert pipeline.policy_variant.exact_action_adapter.spec.raw_action_dim == 7
+    assert pipeline.policy_variant.action_adapter.spec is not None
+    assert pipeline.policy_variant.action_adapter.spec.raw_action_dim == 7
     requirements = pipeline.policy_variant.pipeline_requirements(
         default_action_dim=config.action_decoder.action_dim,
         default_action_horizon=config.action_decoder.action_horizon,
@@ -231,7 +231,7 @@ def test_exact_parallel_stream_uses_decoder_action_dim_when_dataset_stays_raw() 
     assert requirements.accepted_source_action_shapes == ((7, 16), (30, 16))
     assert (
         pipeline.action_decoder.source_action_channel_ids
-        == pipeline.policy_variant.exact_action_adapter.spec.used_action_channel_ids
+        == pipeline.policy_variant.action_adapter.spec.used_action_channel_ids
     )
 
 

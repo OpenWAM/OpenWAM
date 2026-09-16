@@ -42,8 +42,7 @@ class DualExpertPolicyConfig(VideoActionPolicyConfig):
     action_ffn_dim: int | None = None
     # Trade forward compute for activation memory by recomputing each
     # (video, action) block pair during backward instead of storing its
-    # activations. Only affects two-stream train paths that run through
-    # `forward_joint_video_action_denoise`.
+    # activations in the owned paired-block stack.
     use_activation_checkpointing: bool = False
 
     @property

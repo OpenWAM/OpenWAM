@@ -41,7 +41,7 @@ from open_wam.models.policy_variants.causal_video_prediction import (
 from open_wam.models.policy_variants.observed_video_history import (
     ObservedVideoHistoryState,
 )
-from open_wam.models.policy_variants.video_flow_artifacts import (
+from open_wam.models.decoder_artifacts import (
     VIDEO_FLOW_DECODER_ARTIFACT_CONTRACT,
     VideoFlowTrainArtifacts,
 )
@@ -247,16 +247,13 @@ def test_causal_video_inference_publishes_only_future_frames_for_composition() -
     )
     context = PolicyInferContext(
         output_request=PolicyInferenceOutputRequest.video_only(),
-        extra={
-            "task_text": ("move the object",),
-            "metadata": (
+        task_text=("move the object",), metadata=(
                 {
                     "observed_prefix_frames": 2,
                     "future_suffix_frames": 3,
                     "valid_video_frames": 5,
                 },
             ),
-        },
     )
 
     output = variant.forward_infer_step(
@@ -276,20 +273,24 @@ def test_causal_video_inference_publishes_only_future_frames_for_composition() -
     torch.testing.assert_close(artifacts.predicted_latents[:, :, :2], latents[:, :, :2])
 
 
-def test_causal_video_composition_synthesizes_future_template_from_one_observation() -> None:
+@pytest.mark.parametrize("use_cache", (False, True))
+def test_causal_video_composition_synthesizes_future_template_from_one_observation(
+    use_cache: bool,
+) -> None:
     variant = CausalVideoPredictionPolicyVariant(
         config=CausalVideoPredictionPolicyConfig(
             program=CausalVideoProgram.CHUNKED_CONDITIONED_VIDEO,
             noisy_video_condition_prob=0.0,
         ),
         training_config=TrainingConfig(window_size=8),
-        inference_config=InferenceConfig(frame_chunk_size=4),
+        inference_config=InferenceConfig(frame_chunk_size=4, use_cache=use_cache),
     )
     observed = torch.randn(1, 3, 1, 2, 2)
     generated = torch.randn(1, 3, 4, 2, 2)
 
     class _Tower:
         def generate_chunked_conditioned_video_latents(self, **kwargs):
+            assert kwargs["use_cache"] is use_cache
             torch.testing.assert_close(kwargs["observed_history"], observed)
             assert kwargs["future_template"].shape == generated.shape
             assert bool((kwargs["future_template"] == 0).all())
@@ -313,7 +314,7 @@ def test_causal_video_composition_synthesizes_future_template_from_one_observati
         _Tower(),  # type: ignore[arg-type]
         visual_outputs,  # type: ignore[arg-type]
         PolicyInferContext(
-            extra={"task_text": ("move the object",)},
+            task_text=("move the object",),
             video_generation=PolicyVideoGenerationRequest(frame_count=4),
             temporal_geometry=_W30_F4,
         ),
@@ -337,7 +338,7 @@ def test_causal_video_composition_synthesizes_future_template_from_one_observati
             _Tower(),  # type: ignore[arg-type]
             visual_outputs,  # type: ignore[arg-type]
             PolicyInferContext(
-                extra={"task_text": ("move the object",)},
+                task_text=("move the object",),
                 video_generation=PolicyVideoGenerationRequest(frame_count=4),
                 temporal_geometry=_W30_F4,
             ),
@@ -360,6 +361,7 @@ def test_causal_video_composition_synthesizes_future_template_from_one_observati
 
     class _NextTower:
         def generate_chunked_conditioned_video_latents(self, **kwargs):
+            assert kwargs["use_cache"] is use_cache
             torch.testing.assert_close(
                 kwargs["observed_history"],
                 torch.cat([observed, next_observed], dim=2),
@@ -380,7 +382,7 @@ def test_causal_video_composition_synthesizes_future_template_from_one_observati
         _NextTower(),  # type: ignore[arg-type]
         next_visual_outputs,  # type: ignore[arg-type]
         PolicyInferContext(
-            extra={"task_text": ("move the object",)},
+            task_text=("move the object",),
             video_generation=PolicyVideoGenerationRequest(frame_count=4),
             temporal_geometry=_W30_F4,
         ),
@@ -390,7 +392,8 @@ def test_causal_video_composition_synthesizes_future_template_from_one_observati
     assert next_output.generated_video is not None
     assert next_output.generated_video.frame_start == 5
     assert next_output.generation_frame_start == 5
-    assert next_output.next_state.cursor.current_start_frame == 5
+    assert next_output.next_state.cursor.current_start_frame == 9
+    assert next_output.next_state.observed_frame_end == 5
 
 
 def test_causal_video_composition_reconciles_repeated_short_requests() -> None:
@@ -430,7 +433,7 @@ def test_causal_video_composition_reconciles_repeated_short_requests() -> None:
         )
 
     context = PolicyInferContext(
-        extra={"task_text": ("move the object",)},
+        task_text=("move the object",),
         video_generation=PolicyVideoGenerationRequest(frame_count=2),
         temporal_geometry=_W30_F4,
     )
@@ -478,14 +481,17 @@ def test_causal_video_composition_reconciles_repeated_short_requests() -> None:
     )
 
 
-def test_native_chunked_causal_inference_honors_reconciliation_capability() -> None:
+@pytest.mark.parametrize("use_cache", (False, True))
+def test_native_chunked_causal_inference_honors_reconciliation_capability(
+    use_cache: bool,
+) -> None:
     variant = CausalVideoPredictionPolicyVariant(
         config=CausalVideoPredictionPolicyConfig(
             program=CausalVideoProgram.CHUNKED_CONDITIONED_VIDEO,
             noisy_video_condition_prob=0.0,
         ),
         training_config=TrainingConfig(window_size=30),
-        inference_config=InferenceConfig(frame_chunk_size=4),
+        inference_config=InferenceConfig(frame_chunk_size=4, use_cache=use_cache),
     )
     first_prefix = torch.randn(1, 3, 1, 2, 2)
     next_observed = torch.randn(1, 3, 4, 2, 2)
@@ -494,6 +500,7 @@ def test_native_chunked_causal_inference_honors_reconciliation_capability() -> N
 
     class _Tower:
         def generate_chunked_conditioned_video_latents(self, **kwargs):
+            assert kwargs["use_cache"] is use_cache
             calls.append(kwargs)
             return generated
 
@@ -511,9 +518,7 @@ def test_native_chunked_causal_inference_honors_reconciliation_capability() -> N
         )
 
     context = PolicyInferContext(
-        extra={
-            "task_text": ("move the object",),
-            "metadata": (
+        task_text=("move the object",), metadata=(
                 {
                     "observed_prefix_frames": 1,
                     "future_suffix_frames": 4,
@@ -521,7 +526,6 @@ def test_native_chunked_causal_inference_honors_reconciliation_capability() -> N
                     "chunk_origin_frame": 0,
                 },
             ),
-        },
         temporal_geometry=_W30_F4,
     )
     first_output = variant.forward_infer_step(
@@ -615,7 +619,7 @@ def test_prefix_suffix_composition_advances_from_each_real_observation_chunk() -
             _Tower(expected_frame_start),  # type: ignore[arg-type]
             visual_outputs,  # type: ignore[arg-type]
             PolicyInferContext(
-                extra={"task_text": ("move the object",)},
+                task_text=("move the object",),
                 video_generation=PolicyVideoGenerationRequest(frame_count=4),
                 temporal_geometry=_W30_F4,
             ),
@@ -626,7 +630,8 @@ def test_prefix_suffix_composition_advances_from_each_real_observation_chunk() -
         state = output.next_state
 
     assert generated_frame_starts == [1, 5]
-    assert state.cursor.current_start_frame == 5
+    assert state.cursor.current_start_frame == 9
+    assert state.observed_frame_end == 5
 
 
 class _CaptureVideoFlowTower:
@@ -1456,10 +1461,7 @@ def test_causal_video_inference_rejects_batched_latents_explicitly() -> None:
     batched_latents = latents.expand(batch_size, -1, -1, -1, -1).clone()
     batched_text = text_context.expand(batch_size, -1, -1).clone()
     context = PolicyInferContext(
-        extra={
-            "task_text": ("move object",) * batch_size,
-            "metadata": policy_batch.extra["metadata"] * batch_size,
-        }
+        task_text=("move object",) * batch_size, metadata=policy_batch.extra["metadata"] * batch_size
     )
 
     with pytest.raises(ValueError, match="supports batch size 1; got 2"):

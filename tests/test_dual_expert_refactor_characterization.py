@@ -839,6 +839,10 @@ def test_latent_fixture_round_trip_is_hash_verified(tmp_path: Path) -> None:
 
     assert restored.task_text == batch.task_text
     assert restored.metadata == batch.metadata
+    assert restored.batching_mode == batch.batching_mode
+    assert restored.sequence_lengths == ()
+    assert restored.tensor_lengths == {}
+    assert restored.condition_latents is None
     for field_name in (
         "video_latents",
         "actions",
@@ -1841,12 +1845,12 @@ def test_libero_rollout_command_matches_maintained_contract(
         seed=3,
     )
 
-    assert command[1].endswith("scripts/run_libero_dual_expert_visualization.py")
+    assert command[1].endswith("scripts/run_libero_policy.py")
     assert _option_value(command, "--cfg").endswith(
         f"{method.asset_id}/resolved_config.yaml"
     )
     assert _option_value(command, "--frontend-encode-mode") == ("lingbot_streaming_vae")
-    assert _option_value(command, "--dual-expert-inference-window-size") == "30"
+    assert _option_value(command, "--inference-window-size") == "30"
     assert _option_value(command, "--max-timestep") == (
         "1500" if method.is_gjd else "800"
     )
@@ -2064,7 +2068,7 @@ def test_comparison_projection_normalizes_only_schema_v1_metadata() -> None:
                 "policy_variant.sequence_contract": "legacy_prefix",
             },
         },
-        "state": {"type": "DualExpertRuntimeState"},
+        "state": {"type": "VideoActionRolloutState"},
         "loss": 1.25,
     }
 
@@ -2217,15 +2221,11 @@ def test_comparison_projection_normalizes_retired_dual_expert_route_metadata() -
     canonical = {
         "backend": {
             "backend": "split_cache",
-            "block_restore_ready": True,
-            "block_restore_required": True,
-            "block_restore_performed": True,
             "policy_variant": "dual_expert",
             "route": {
                 "program": "video_then_action",
                 "current_block_coupling": "video_then_action",
                 "kind": "split_cache",
-                "requires_block_restore": True,
                 "supports_realtime_history_controls": True,
                 "uses_split_cache_rollout": True,
                 "uses_stateful_realtime_session": True,
@@ -2237,6 +2237,32 @@ def test_comparison_projection_normalizes_retired_dual_expert_route_metadata() -
     assert _comparison_projection(legacy) == _comparison_projection(canonical)
     canonical["action"][0] = 1.000001
     assert _comparison_projection(legacy) != _comparison_projection(canonical)
+
+
+@pytest.mark.parametrize("report_key", ["state_schema", "state_fingerprints"])
+def test_feature_cache_ownership_mapping_preserves_every_value(report_key) -> None:
+    prefix = "next_state.variant_state."
+    original = {report_key: {
+        prefix + "video_cache.layers[0].key": {"sha256": "original", "shape": [1, 4]},
+        prefix + "action_cache.layers[0].value": {"sha256": "action", "shape": [1, 4]},
+        prefix + "action_cache_start_frame": 7,
+    }}
+    moved = {report_key: {
+        prefix + "features.video.layers[0].key": {"sha256": "original", "shape": [1, 4]},
+        prefix + "features.action.layers[0].value": {"sha256": "action", "shape": [1, 4]},
+        prefix + "features.action_start_frame": 7,
+    }}
+    if report_key == "state_schema":
+        moved[report_key][prefix + "features"] = {
+            "kind": "dataclass", "type": "DualExpertFeatureCache"
+        }
+    assert _comparison_projection(original) == _comparison_projection(moved)
+    for key in tuple(moved[report_key]):
+        changed = json.loads(json.dumps(moved))
+        changed[report_key][key] = "changed"
+        assert _comparison_projection(original) != _comparison_projection(changed)
+    moved[report_key][prefix + "features.unexpected"] = 1
+    assert _comparison_projection(original) != _comparison_projection(moved)
 
 
 def test_comparison_projection_ignores_serialized_checkpoint_sizes() -> None:

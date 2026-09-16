@@ -49,6 +49,7 @@ PUBLIC_MARKDOWN_PATHS = (
     Path("video_only_training.md"),
 )
 PUBLIC_ASSET_PATHS = (
+    Path("assets/robot-teaser.gif"),
     Path("assets/pretraining/datasets.yaml"),
     Path("assets/affiliations/SOURCES.txt"),
     Path("assets/affiliations/stanford-ai-lab.jpg"),

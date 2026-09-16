@@ -23,6 +23,7 @@ class AuditFinding:
     version: str
     vulnerability_id: str
     fix_versions: tuple[str, ...] = ()
+    aliases: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -86,6 +87,7 @@ def parse_audit_findings(payload: dict[str, Any]) -> tuple[AuditFinding, ...]:
                     version=version,
                     vulnerability_id=str(vulnerability["id"]),
                     fix_versions=tuple(sorted(str(item) for item in vulnerability.get("fix_versions", ()))),
+                    aliases=tuple(sorted(set(str(item) for item in vulnerability.get("aliases", ())))),
                 )
             )
     return tuple(sorted(findings))
@@ -110,12 +112,21 @@ def validate_audit_report(
     accepted: list[AuditException] = []
     unaccepted: list[AuditFinding] = []
     for finding in findings:
-        key = finding.package, finding.version, finding.vulnerability_id
-        exception = exception_by_key.get(key)
-        if exception is None:
+        identifiers = {finding.vulnerability_id, *finding.aliases}
+        matching = [
+            exception_by_key[key]
+            for identifier in sorted(identifiers)
+            if (key := (finding.package, finding.version, identifier)) in exception_by_key
+        ]
+        if len(matching) > 1:
+            raise ValueError(
+                "Dependency audit exceptions repeat aliases of the same advisory: "
+                + ", ".join(_format_exception(exception) for exception in matching)
+            )
+        if not matching:
             unaccepted.append(finding)
         else:
-            accepted.append(exception)
+            accepted.append(matching[0])
     if unaccepted:
         raise ValueError(
             "Dependency audit found unaccepted vulnerabilities: "

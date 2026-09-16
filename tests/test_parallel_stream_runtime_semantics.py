@@ -1,4 +1,5 @@
 from __future__ import annotations
+import open_wam.models.policy_variants.parallel_stream.runtime_semantics as owner_runtime_semantics
 
 import pytest
 
@@ -16,7 +17,7 @@ from open_wam.configs.policy_parallel_stream import parallel_runtime_mode_for_pr
 from open_wam.models.common import (
     chunked_temporal_exact_profile_name_for_coupling,
 )
-from open_wam.models.policy_variants.parallel_stream import reference_runtime, variant
+from open_wam.models.policy_variants.parallel_stream import inference
 from open_wam.models.policy_variants.parallel_stream.runtime_semantics import (
     attention_profile_name_for_current_block_coupling,
     prefix_visibility_mode_for_policy,
@@ -36,41 +37,16 @@ def _policy_config(**overrides: object) -> ParallelStreamPolicyConfig:
 
 def test_backend_runtime_semantics_do_not_leak_into_generic_research_tools() -> None:
     assert (
-        reference_runtime.resolve_parallel_current_block_coupling
+        owner_runtime_semantics.resolve_parallel_current_block_coupling
         is resolve_parallel_current_block_coupling
     )
     assert (
-        variant.resolve_parallel_current_block_coupling
+        inference.resolve_parallel_current_block_coupling
         is resolve_parallel_current_block_coupling
     )
     assert not hasattr(dynamics_rollout, "resolve_parallel_current_block_coupling")
 
 
-def test_reference_runtime_semantic_names_alias_canonical_contract() -> None:
-    assert (
-        reference_runtime._attention_profile_name_for_current_block_coupling
-        is attention_profile_name_for_current_block_coupling
-    )
-    assert (
-        reference_runtime._prefix_visibility_mode_for_policy
-        is prefix_visibility_mode_for_policy
-    )
-    assert (
-        reference_runtime.resolve_parallel_context_condition_latent_source
-        is resolve_parallel_context_condition_latent_source
-    )
-    assert (
-        reference_runtime.resolve_parallel_history_stream_visibility
-        is resolve_parallel_history_stream_visibility
-    )
-    assert (
-        reference_runtime.resolve_parallel_joint_timestep_coupling
-        is resolve_parallel_joint_timestep_coupling
-    )
-    assert (
-        reference_runtime._uses_legacy_prefix_per_chunk_proprio_contract
-        is uses_legacy_prefix_per_chunk_proprio_contract
-    )
 
 
 @pytest.mark.parametrize("coupling", list(CurrentBlockCoupling))

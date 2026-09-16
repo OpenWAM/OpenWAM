@@ -6,15 +6,12 @@ from dataclasses import replace
 import torch
 
 from open_wam.configs import (
-    CurrentBlockCoupling,
-    DynamicsObjective,
     InferenceConfig,
     TrainingConfig,
 )
 from open_wam.configs.backbone import SharedVideoTransformerConfig
 from open_wam.configs.enums import BatchingMode
 from open_wam.configs.policy_dual_expert import DualExpertPolicyConfig
-from open_wam.configs.policy_video_action import supports_video_conditioned_action
 from open_wam.contracts import SampleConstructionMetadata
 from open_wam.models.common.dynamics_objectives import (
     resolve_dynamics_rollout_plan,
@@ -24,46 +21,25 @@ from open_wam.models.visual_tower import VisualStageOutputs, VisualTower
 
 from ..base import VideoActionPolicyVariant
 from ..contracts import (
-    DynamicsRolloutRequest,
-    PolicyCompositionCapability,
-    PolicyCompositionRngPolicy,
-    PolicyGenerationActionOrigin,
     PolicyInferContext,
-    PolicyInferenceCapabilities,
-    PolicyInferenceOutputRequest,
     PolicyInferOutput,
     PolicyInferState,
     PolicyModuleTopology,
-    PolicyObservationWindowSessionPolicy,
-    PolicyObservedHistory,
-    PolicyObservedHistoryOutput,
-    PolicyOutputModality,
     PolicyPreparedInputs,
-    PolicyRecurrentHistoryPolicy,
-    PolicyRolloutContract,
-    PolicyTemporalGeometry,
     PolicyTrainBatch,
     PolicyTrainOutput,
     PolicyVisualStage,
 )
-from ..output_semantics import video_action_program_output_modalities
 from .conditioning import DualExpertConditioning
-from .contracts import DualExpertRuntimeState
-from .coupling_semantics import resolve_dual_expert_current_block_coupling
-from .decoder_artifacts import DUAL_EXPERT_DECODER_ARTIFACT_CONTRACT
+from open_wam.models.common.video_action_state import VideoActionRolloutState
+from open_wam.models.decoder_artifacts import DUAL_EXPERT_DECODER_ARTIFACT_CONTRACT
 from .inference_backend import ensure_dual_expert_policy_variant_inference_backend
 from .module_topology import build_dual_expert_module_topology
 from .modules import DualExpertActionExpert, init_action_expert_from_video_core
-from .observed_history import reconcile_dual_expert_observed_history
 from .packed_block import DualExpertPackedBlockStack
-from .packed_inference import DualExpertPackedInferenceProgram
+from .inference import DualExpertInferenceProgram
 from .packed_training import DualExpertPackedTrainingProgram
-from .rollout_geometry import (
-    resolve_dual_expert_rollout_frame_chunk_size,
-    resolve_dual_expert_sequence_actions_per_frame,
-)
 from .sequence_layout import DualExpertTrainingLayout
-from .split_cache_inference import DualExpertSplitCacheInferenceProgram
 
 
 class DualExpertPolicyVariant(VideoActionPolicyVariant):
@@ -118,120 +94,19 @@ class DualExpertPolicyVariant(VideoActionPolicyVariant):
         # packed unit cleanly without aliasing.
         self.packed_block_stack: DualExpertPackedBlockStack | None = None
         self._packed_block_stack_attached = False
-        self._split_cache_inference_blocks_restored = False
 
     @property
     def decoder_artifact_contract(self) -> str:
         return DUAL_EXPERT_DECODER_ARTIFACT_CONTRACT
 
     @property
-    def rollout_contract(self) -> PolicyRolloutContract:
-        return PolicyRolloutContract(
-            generation_action_origin=PolicyGenerationActionOrigin.ZERO,
-            observation_window_session_policy=(
-                PolicyObservationWindowSessionPolicy.REBUILD_FROM_OBSERVATION_WINDOW
-            ),
+    def action_tokens_per_frame(self) -> int:
+        density, remainder = divmod(
+            self.action_horizon, self.inference_config.frame_chunk_size
         )
-
-    @property
-    def inference_capabilities(self) -> PolicyInferenceCapabilities:
-        native = video_action_program_output_modalities(self.config.program)
-        coupling = resolve_dual_expert_current_block_coupling(self.config)
-        selective: list[PolicyInferenceOutputRequest] = []
-        if (
-            PolicyOutputModality.VIDEO in native
-            and coupling
-            in {
-                CurrentBlockCoupling.VIDEO_THEN_ACTION,
-                CurrentBlockCoupling.DECOUPLED_SAME_STEP,
-            }
-        ):
-            selective.append(PolicyInferenceOutputRequest.video_only())
-        if (
-            PolicyOutputModality.ACTION in native
-            and coupling
-            in {
-                CurrentBlockCoupling.ACTION_THEN_VIDEO,
-                CurrentBlockCoupling.DECOUPLED_SAME_STEP,
-            }
-        ):
-            selective.append(PolicyInferenceOutputRequest.action_only())
-        recurrent_history_policy = (
-            PolicyRecurrentHistoryPolicy.NEXT_OBSERVATION
-            if coupling
-            in {
-                CurrentBlockCoupling.VIDEO_THEN_ACTION,
-                CurrentBlockCoupling.DECOUPLED_SAME_STEP,
-            }
-            else PolicyRecurrentHistoryPolicy.EXPLICIT_RECONCILIATION
-        )
-        return PolicyInferenceCapabilities(
-            native_modalities=native,
-            selective_requests=tuple(selective),
-            composition_capabilities=(
-                (
-                    PolicyCompositionCapability.video_to_action(
-                        rng_policy=(
-                            PolicyCompositionRngPolicy.CALLER_STREAM
-                            if coupling is CurrentBlockCoupling.VIDEO_THEN_ACTION
-                            else PolicyCompositionRngPolicy.ISOLATED_STEP_SEED
-                        )
-                    ),
-                )
-                if supports_video_conditioned_action(self.config.program)
-                else ()
-            ),
-            recurrent_history_policy=recurrent_history_policy,
-        )
-
-    def resolve_inference_context(
-        self,
-        context: PolicyInferContext,
-    ) -> PolicyInferContext:
-        """Map a neutral video artifact onto this policy's native semantics."""
-
-        context = super().resolve_inference_context(context)
-        frame_chunk_size, _, _ = resolve_dual_expert_rollout_frame_chunk_size(
-            context,
-            default_frame_chunk_size=int(self.inference_config.frame_chunk_size),
-            base_action_horizon=int(self.action_horizon),
-        )
-        context = replace(
-            context,
-            temporal_geometry=PolicyTemporalGeometry(
-                frame_chunk_size=frame_chunk_size,
-                attention_window_size=(
-                    context.require_temporal_geometry().attention_window_size
-                ),
-            ),
-        )
-        request = context.video_conditioned_action
-        if request is None:
-            return context
-        if (
-            resolve_dual_expert_current_block_coupling(self.config)
-            is CurrentBlockCoupling.VIDEO_THEN_ACTION
-        ):
-            return context
-        video = request.generated_video.latents
-        return replace(
-            context,
-            dynamics=DynamicsRolloutRequest(
-                objective=DynamicsObjective.VIDEO_CONDITIONED_ACTION,
-                clean_video=video,
-                frame_chunk_size=int(video.shape[2]),
-            ),
-            video_conditioned_action=None,
-        )
-
-    def build_rollout_infer_extra(
-        self,
-        *,
-        runtime_device: torch.device | None,
-    ) -> dict[str, object]:
-        if runtime_device is None:
-            return {}
-        return {"action_device": str(runtime_device)}
+        if remainder:
+            raise ValueError("Action horizon must contain complete model-frame groups.")
+        return density
 
     def attach_visual_tower(self, visual_tower: VisualTower) -> None:
         """Build the packed-coupling block stack after visual weight loading.
@@ -243,7 +118,7 @@ class DualExpertPolicyVariant(VideoActionPolicyVariant):
         ``_maybe_initialize_action_expert`` runs BEFORE the transfer because
         the init helper reads from ``visual_tower.core.blocks`` and writes to
         ``self.action_expert.blocks``; after transfer both ModuleLists are
-        empty.
+        empty. Both stacks retain non-owning execution views for inference.
         """
         if self._packed_block_stack_attached:
             return
@@ -263,37 +138,8 @@ class DualExpertPolicyVariant(VideoActionPolicyVariant):
         )
         visual_tower.core.blocks = torch.nn.ModuleList()
         self.action_expert.blocks = torch.nn.ModuleList()
-
-    def restore_packed_blocks_for_split_cache_inference(
-        self, visual_tower: VisualTower
-    ) -> bool:
-        """Move packed-owned blocks back for inference-only split-cache rollout.
-
-        Packed training transfers block ownership into ``packed_block_stack`` so
-        FSDP can shard paired video/action blocks cleanly. Split-cache inference
-        needs the pre-packed module lists, so this performs a
-        one-way ownership transfer back to ``visual_tower.core.blocks`` and
-        ``action_expert.blocks``. ``packed_block_stack`` is cleared afterward
-        so the module tree has a single owner for each block.
-        """
-
-        if self.packed_block_stack is None:
-            return False
-        video_blocks = [
-            packed_block.video_block
-            for packed_block in self.packed_block_stack.packed_blocks
-        ]
-        action_blocks = [
-            packed_block.action_block
-            for packed_block in self.packed_block_stack.packed_blocks
-        ]
-        if not video_blocks or not action_blocks:
-            return False
-        visual_tower.core.blocks = torch.nn.ModuleList(video_blocks)
-        self.action_expert.blocks = torch.nn.ModuleList(action_blocks)
-        self.packed_block_stack = None
-        self._split_cache_inference_blocks_restored = True
-        return True
+        visual_tower.core.bind_execution_blocks(video_blocks)
+        self.action_expert.bind_execution_blocks(action_blocks)
 
     def _maybe_initialize_action_expert(self, visual_tower: VisualTower) -> None:
         if self._action_expert_initialized:
@@ -359,22 +205,6 @@ class DualExpertPolicyVariant(VideoActionPolicyVariant):
                 f"got action_layers={self.config.num_action_layers}, "
                 f"backbone_layers={backbone_num_layers}."
             )
-
-    def reconcile_observed_history(
-        self,
-        history: PolicyObservedHistory,
-        infer_state: PolicyInferState | None,
-    ) -> PolicyObservedHistoryOutput:
-        return reconcile_dual_expert_observed_history(
-            policy_state=infer_state,
-            history=history,
-            action_horizon=int(self.action_horizon),
-            action_tokens_per_frame=resolve_dual_expert_sequence_actions_per_frame(
-                action_horizon=int(self.action_horizon),
-                frame_chunk_size=int(self.inference_config.frame_chunk_size),
-            ),
-            action_dim=int(self.action_dim),
-        )
 
     def prepare_train_inputs(
         self,
@@ -468,15 +298,15 @@ class DualExpertPolicyVariant(VideoActionPolicyVariant):
             batching_mode=batching_mode,
         )
 
-    def _forward_infer_packed_coupling(
+    def _forward_infer_sequence(
         self,
         visual_tower: VisualTower,
         visual_outputs: VisualStageOutputs,
         context: PolicyInferContext,
         infer_state: PolicyInferState,
-        runtime_state: DualExpertRuntimeState,
+        runtime_state: VideoActionRolloutState,
     ) -> PolicyInferOutput:
-        return DualExpertPackedInferenceProgram(
+        return DualExpertInferenceProgram(
             config=self.config,
             training_config=self.training_config,
             inference_config=self.inference_config,
@@ -501,32 +331,28 @@ class DualExpertPolicyVariant(VideoActionPolicyVariant):
         previous_state: PolicyInferState | None = None,
     ) -> PolicyInferState:
         self._maybe_initialize_action_expert(visual_tower)
-        state = previous_state or PolicyInferState()
+        state = (
+            replace(previous_state, cursor=replace(previous_state.cursor))
+            if previous_state is not None
+            else PolicyInferState()
+        )
         runtime_state = (
-            state.variant_state
-            if isinstance(state.variant_state, DualExpertRuntimeState)
-            else DualExpertRuntimeState()
+            replace(state.variant_state)
+            if isinstance(state.variant_state, VideoActionRolloutState)
+            else VideoActionRolloutState()
         )
-        action_device_raw = context.extra.get("action_device")
-        action_device = (
-            next(self.action_expert.parameters()).device
-            if action_device_raw is None
-            else torch.device(str(action_device_raw))
-        )
+        runtime_state.require_complete_video_history()
+        action_device = next(self.action_expert.parameters()).device
         action_dtype = next(self.action_expert.parameters()).dtype
         proprio_state = self.conditioning.resolve_proprio_state(
             context.state,
             label="dual-expert inference",
             fallback_state=runtime_state.proprio_state,
         )
-        if proprio_state is not None:
-            runtime_state.proprio_state = proprio_state.detach().clone()
         hidden_proprio_state = self.conditioning.resolve_infer_hidden_proprio_context(
             context.state,
             fallback_state=runtime_state.hidden_proprio_state,
         )
-        if hidden_proprio_state is not None:
-            runtime_state.hidden_proprio_state = hidden_proprio_state.detach().clone()
         dynamics_rollout_plan = resolve_dynamics_rollout_plan(
             program=self.config.program,
             request=context.dynamics,
@@ -564,37 +390,20 @@ class DualExpertPolicyVariant(VideoActionPolicyVariant):
                     generalist_rollout_mode,
                 )
             )
-        runtime_state.generalist_mode_text_token_count = int(
-            generalist_mode_text_token_count
+        return replace(
+            state,
+            variant_state=replace(
+                runtime_state,
+                text_context=resolved_text_context,
+                generalist_mode_text_token_count=int(generalist_mode_text_token_count),
+                proprio_state=None
+                if proprio_state is None
+                else proprio_state.detach().clone(),
+                hidden_proprio_state=None
+                if hidden_proprio_state is None
+                else hidden_proprio_state.detach().clone(),
+            ),
         )
-        condition_latents = visual_outputs.frontend.video_latents
-        current_condition_frame_start = int(state.cursor.current_start_frame)
-        # Note: `runtime_state.video_cache` is populated inside
-        # `forward_infer_step` after the slot-pool warmup + video denoise
-        # last-step write, so we don't prefill it here.
-        runtime_state.text_context = resolved_text_context
-        runtime_state.video_tokens_per_frame = int(
-            visual_outputs.frontend.token_grid.tokens_per_frame
-        )
-        # Only initialize `next_condition_frame_start` on the first chunk of a
-        # session. After that, `forward_infer_step` at the end of each chunk
-        # sets it to the current chunk's `generation_frame_start` so the NEXT
-        # chunk's observation write lands on the same rotary positions as the
-        # current chunk's pred entries (overwriting them, keeping the cache
-        # contiguous). Without this guard, advancing here by
-        # `condition_latents.shape[2]` double-advances alongside
-        # `cursor.current_start_frame` and leaves a `chunk_frames`-wide gap
-        # of empty rotary slots at every chunk boundary. The observation update
-        # therefore overwrites the speculative entries at the same positions
-        # before the cursor advances again.
-        if runtime_state.past_clean_latents is None:
-            runtime_state.next_condition_frame_start = int(
-                current_condition_frame_start + int(condition_latents.shape[2])
-            )
-        runtime_state.action_device = str(action_device)
-        state.variant_state = runtime_state
-        del context
-        return state
 
     def forward_infer_step(
         self,
@@ -605,40 +414,16 @@ class DualExpertPolicyVariant(VideoActionPolicyVariant):
     ) -> PolicyInferOutput:
         runtime_state = (
             infer_state.variant_state
-            if isinstance(infer_state.variant_state, DualExpertRuntimeState)
-            else DualExpertRuntimeState()
+            if isinstance(infer_state.variant_state, VideoActionRolloutState)
+            else VideoActionRolloutState()
         )
         self._maybe_initialize_action_expert(visual_tower)
-        dual_expert_inference_backend = (
-            ensure_dual_expert_policy_variant_inference_backend(
-                policy_variant=self,
-                visual_tower=visual_tower,
-                policy_config=self.config,
-                allow_module_mutation=bool(
-                    context.extra.get("allow_dual_expert_backend_restore", True)
-                ),
-            )
+        ensure_dual_expert_policy_variant_inference_backend(
+            policy_variant=self,
+            visual_tower=visual_tower,
+            policy_config=self.config,
         )
-        use_split_cache_infer = (
-            dual_expert_inference_backend["backend"] == "split_cache"
-        )
-        if not use_split_cache_infer:
-            return self._forward_infer_packed_coupling(
-                visual_tower=visual_tower,
-                visual_outputs=visual_outputs,
-                context=context,
-                infer_state=infer_state,
-                runtime_state=runtime_state,
-            )
-        return DualExpertSplitCacheInferenceProgram(
-            config=self.config,
-            training_config=self.training_config,
-            inference_config=self.inference_config,
-            conditioning=self.conditioning,
-            action_expert=self.action_expert,
-            action_dim=self.action_dim,
-            action_horizon=self.action_horizon,
-        ).run(
+        return self._forward_infer_sequence(
             visual_tower=visual_tower,
             visual_outputs=visual_outputs,
             context=context,

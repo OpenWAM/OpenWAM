@@ -1,15 +1,13 @@
 from __future__ import annotations
+from open_wam.models.common.channel_action_adapter import ChannelActionAdapter
 
 import torch
 
 from open_wam.configs import ParallelStreamPolicyConfig, VideoActionProgram
-from open_wam.models.policy_variants.parallel_stream.action_adapter import (
-    LingbotActionAdapter,
-    build_action_adapter_spec,
-)
+from open_wam.models.policy_variants.parallel_stream.action_adapter import build_action_adapter_spec
 
 
-def _build_libero_adapter() -> LingbotActionAdapter:
+def _build_libero_adapter() -> ChannelActionAdapter:
     config = ParallelStreamPolicyConfig(
         program=VideoActionProgram.VIDEO_THEN_ACTION,
         reference_profile="libero",
@@ -17,7 +15,7 @@ def _build_libero_adapter() -> LingbotActionAdapter:
     )
     spec = build_action_adapter_spec(config, model_action_dim=30)
     assert spec is not None
-    return LingbotActionAdapter(spec)
+    return ChannelActionAdapter(spec)
 
 
 def test_explicit_none_action_norm_overrides_reference_profile_quantiles() -> None:
@@ -30,7 +28,7 @@ def test_explicit_none_action_norm_overrides_reference_profile_quantiles() -> No
     )
     spec = build_action_adapter_spec(config, model_action_dim=30)
     assert spec is not None
-    adapter = LingbotActionAdapter(spec)
+    adapter = ChannelActionAdapter(spec)
     raw_action = torch.tensor([[[0.1, -0.2, 0.3, -0.4, 0.5, -0.6, 0.7, -0.8]]], dtype=torch.float32)
 
     model_action = adapter.to_model_action_sequence(raw_action, action_space="raw")

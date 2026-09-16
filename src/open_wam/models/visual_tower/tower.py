@@ -22,6 +22,8 @@ from open_wam.models.common import (
     resolve_one_frame_conditioned_history_window,
     unpatchify_video_sequence,
 )
+from open_wam.models.common.denoising import denoise
+from open_wam.models.common.denoising_cache import DenoisingCache
 from open_wam.models.video_backbone.contracts import (
     AttentionCacheEntry,
     CacheState,
@@ -486,6 +488,7 @@ class VisualTower(nn.Module):
         singleton_chunk_frame: int | None = None,
         use_activation_checkpointing: bool = False,
         stage: str = "train",
+        denoising_cache: DenoisingCache | None = None,
     ) -> torch.Tensor:
         """Run native VTA-style conditioned video without action tokens."""
 
@@ -541,6 +544,7 @@ class VisualTower(nn.Module):
         step_output = self.execute_runtime_step(
             RuntimeStepInput(
                 program=build_chunked_conditioned_video_runtime_program(),
+                denoising_cache=denoising_cache,
                 payload={
                     "latent_dict": {
                         "noisy_latents": noisy_latents.to(dtype=model_dtype),
@@ -960,6 +964,7 @@ class VisualTower(nn.Module):
         guidance_scale: float,
         prefix_condition_frames: int = 1,
         sample_seed: int | None = None,
+        use_cache: bool = True,
     ) -> torch.Tensor:
         """Denoise a video chunk with the native VTA video-marginal program."""
 
@@ -1012,6 +1017,56 @@ class VisualTower(nn.Module):
             num_train_timesteps=num_train_timesteps,
         )
         scheduler.set_timesteps(num_inference_steps)
+
+        def denoise_chunk(model_history, current, frame_start, origin):
+            condition_latents = torch.cat(
+                [model_history, torch.zeros_like(current)], dim=2
+            )
+            history_frames = int(model_history.shape[2])
+            conditioned_cache = DenoisingCache() if use_cache else None
+            unconditioned_cache = DenoisingCache() if use_cache else None
+
+            def predict(current, timestep):
+                model_latents = torch.cat([model_history, current], dim=2)
+                timestep_values = torch.zeros(
+                    int(model_latents.shape[0]),
+                    int(model_latents.shape[2]),
+                    device=future_template.device,
+                    dtype=torch.float32,
+                )
+                timestep_values[:, history_frames:] = timestep
+                condition_timesteps = torch.zeros_like(timestep_values)
+                def predict_branch(branch_text, cache):
+                    return self.predict_chunked_conditioned_video_flow(
+                        noisy_latents=model_latents,
+                        condition_latents=condition_latents,
+                        timesteps=timestep_values,
+                        condition_timesteps=condition_timesteps,
+                        text_context=branch_text,
+                        chunk_size=chunk_size,
+                        window_size=window_size,
+                        frame_start=frame_start,
+                        chunk_origin_frame=origin,
+                        prefix_condition_frames=int(prefix_condition_frames),
+                        stage="infer",
+                        denoising_cache=cache,
+                    )
+
+                prediction = predict_branch(text_context, conditioned_cache)
+                if guidance_scale > 1.0:
+                    prediction = combine_cfg_prediction(
+                        prediction,
+                        predict_branch(negative_text_context, unconditioned_cache),
+                        guidance_scale=guidance_scale,
+                    )
+                return prediction[:, :, history_frames:]
+
+            return denoise(
+                current,
+                scheduler.timesteps.to(device=future_template.device),
+                predict=predict,
+                update=scheduler.step,
+            )
 
         generated_chunks: list[torch.Tensor] = []
         generated_frame_count = 0
@@ -1075,68 +1130,16 @@ class VisualTower(nn.Module):
                     dtype=model_dtype,
                     generator=generator,
                 )
-                condition_latents = torch.cat(
-                    [model_history, torch.zeros_like(current)], dim=2
+                current = denoise_chunk(
+                    model_history, current, timeline_frame_start, timeline_chunk_origin
                 )
-                history_frames = int(model_history.shape[2])
-                for timestep in scheduler.timesteps.to(device=future_template.device):
-                    model_latents = torch.cat([model_history, current], dim=2)
-                    timestep_values = torch.zeros(
-                        int(model_latents.shape[0]),
-                        int(model_latents.shape[2]),
-                        device=future_template.device,
-                        dtype=torch.float32,
-                    )
-                    timestep_values[:, history_frames:] = timestep
-                    condition_timesteps = torch.zeros_like(timestep_values)
-                    prediction = self.predict_chunked_conditioned_video_flow(
-                        noisy_latents=model_latents,
-                        condition_latents=condition_latents,
-                        timesteps=timestep_values,
-                        condition_timesteps=condition_timesteps,
-                        text_context=text_context,
-                        chunk_size=chunk_size,
-                        window_size=window_size,
-                        frame_start=timeline_frame_start,
-                        chunk_origin_frame=timeline_chunk_origin,
-                        prefix_condition_frames=int(prefix_condition_frames),
-                        stage="infer",
-                    )
-                    if guidance_scale > 1.0:
-                        unconditioned_prediction = (
-                            self.predict_chunked_conditioned_video_flow(
-                                noisy_latents=model_latents,
-                                condition_latents=condition_latents,
-                                timesteps=timestep_values,
-                                condition_timesteps=condition_timesteps,
-                                text_context=negative_text_context,
-                                chunk_size=chunk_size,
-                                window_size=window_size,
-                                frame_start=timeline_frame_start,
-                                chunk_origin_frame=timeline_chunk_origin,
-                                prefix_condition_frames=int(prefix_condition_frames),
-                                stage="infer",
-                            )
-                        )
-                        prediction = combine_cfg_prediction(
-                            prediction,
-                            unconditioned_prediction,
-                            guidance_scale=guidance_scale,
-                        )
-                    current = scheduler.step(
-                        prediction[:, :, history_frames:],
-                        timestep,
-                        current,
-                    )
                 returned_chunk = current[
                     :,
                     :,
                     chunk_offset : chunk_offset + returned_frame_count,
                 ]
                 generated_chunks.append(returned_chunk)
-                timeline_history = torch.cat(
-                    [timeline_history, returned_chunk], dim=2
-                )
+                timeline_history = torch.cat([timeline_history, returned_chunk], dim=2)
                 generated_frame_count += returned_frame_count
         return torch.cat(generated_chunks, dim=2).to(dtype=future_template.dtype)
 

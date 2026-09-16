@@ -12,7 +12,7 @@ from open_wam.models.action_decoders.base import (
     require_decoder_artifact_payload,
 )
 from open_wam.models.policy_variants.contracts import PolicyInferOutput, PolicyTrainBatch, PolicyTrainOutput
-from open_wam.models.policy_variants.video_flow_artifacts import (
+from open_wam.models.decoder_artifacts import (
     VIDEO_FLOW_DECODER_ARTIFACT_CONTRACT,
     VideoFlowInferArtifacts,
     VideoFlowTrainArtifacts,

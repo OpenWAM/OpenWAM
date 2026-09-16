@@ -91,7 +91,7 @@ def packed_video_tokens(
         # disable sparse cross-attention and break sequence isolation on CUDA.
         cache_text_context=False,
     )
-    for block in core.blocks:
+    for block in core.execution_blocks:
         if use_activation_checkpointing and torch.is_grad_enabled():
             hidden, _, _ = checkpoint(block, hidden, use_reentrant=False, **kwargs)
         else:

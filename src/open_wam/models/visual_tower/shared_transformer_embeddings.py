@@ -85,7 +85,7 @@ def apply_rotary_emb(x: torch.Tensor, freqs: torch.Tensor) -> torch.Tensor:
     """Apply complex rotary frequencies to per-head query or key features."""
 
     x_complex = torch.view_as_complex(
-        x.to(torch.float64).reshape(x.shape[0], x.shape[1], x.shape[2], -1, 2)
+        x.to(torch.float64).reshape(*x.shape[:-1], x.shape[-1] // 2, 2)
     )
     if freqs.ndim == 3:
         freqs = freqs[:, :, None, :]

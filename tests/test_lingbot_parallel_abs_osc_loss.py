@@ -227,7 +227,7 @@ def test_recovered_osc_loss_includes_rotation_error() -> None:
     assert torch.isfinite(pred_source.grad).all()
 
 
-def test_lingbot_parallel_infer_keeps_model_actions_and_exposes_raw_aux() -> None:
+def test_parallel_decoder_keeps_model_actions_and_ignores_raw_diagnostics() -> None:
     decoder = ParallelStreamActionDecoder(hidden_size=8, action_dim=30, action_horizon=4)
     model_actions = torch.randn(1, 4, 30)
     raw_actions = torch.randn(1, 4, 10)
@@ -241,7 +241,4 @@ def test_lingbot_parallel_infer_keeps_model_actions_and_exposes_raw_aux() -> Non
 
     assert output.action_pred.shape == (1, 4, 30)
     torch.testing.assert_close(output.action_pred, model_actions)
-    torch.testing.assert_close(output.aux["raw_action_pred"], raw_actions)
-    assert output.aux["action_space"] == "model"
-    assert output.aux["raw_action_space"] == "raw"
-    torch.testing.assert_close(output.aux["model_action_pred"], model_actions)
+    assert "raw_action_pred" not in output.aux

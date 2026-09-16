@@ -57,7 +57,7 @@ def test_extension_template_runs_train_gradient_and_inference() -> None:
     train_output.decoder_output.loss.backward()
     infer_output = pipeline.forward_infer_step(
         batch.views,
-        PolicyInferContext(state=batch.state, extra={"task_text": batch.task_text}),
+        PolicyInferContext(state=batch.state, task_text=batch.task_text),
     )
 
     assert train_output.decoder_output.action_pred.shape == (1, 2, 4)

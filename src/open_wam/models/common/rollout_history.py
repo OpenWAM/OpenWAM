@@ -46,16 +46,10 @@ def resolve_execute_action_steps(
 def build_executed_action_history_tensor(
     executed_control_actions: list[np.ndarray],
     *,
-    start_frame_group: int,
     action_per_frame: int,
     action_dim: int,
 ) -> torch.Tensor | None:
-    """Build policy warmup history from actions sent to the environment.
-
-    The helper returns a CPU float32 tensor for actions actually sent to the
-    simulator. Legacy zero-bootstrap rows for skipped frame groups are
-    deprecated because they expose synthetic action context to the model.
-    """
+    """Return CPU float32 history containing only actual environment controls."""
 
     if action_per_frame <= 0:
         raise ValueError(f"Expected action_per_frame > 0, got {action_per_frame}.")
@@ -68,12 +62,5 @@ def build_executed_action_history_tensor(
         raise ValueError(
             "Executed control action history must be [T, D_action], "
             f"got {tuple(executed.shape)}, action_dim={action_dim}."
-        )
-    skipped_tokens = max(0, int(start_frame_group)) * int(action_per_frame)
-    if skipped_tokens > 0:
-        raise ValueError(
-            "Skipped frame-group action bootstrap is deprecated because it would expose synthetic zero "
-            "actions as model context. Use first-frame prefix conditioning that executes the full generated "
-            "chunk instead."
         )
     return torch.from_numpy(executed).unsqueeze(0)

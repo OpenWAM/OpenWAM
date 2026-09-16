@@ -95,8 +95,9 @@ def load_latent_batch_fixture(path: str | Path) -> LatentWAMBatch:
     _verify_file_hash(tensor_path, str(payload["tensor_sha256"]))
     tensors = load_file(tensor_path, device="cpu")
     kwargs: dict[str, Any] = {
-        field_name: tensors.get(field_name)
+        field_name: tensors[field_name]
         for field_name in _LATENT_BATCH_TENSOR_FIELDS
+        if field_name in tensors
     }
     task_text = payload.get("task_text")
     kwargs["task_text"] = None if task_text is None else tuple(task_text)

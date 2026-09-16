@@ -39,7 +39,7 @@ from .runtime_semantics import (
     resolve_parallel_history_stream_visibility,
     resolve_parallel_joint_timestep_coupling,
 )
-from .training_artifact_contracts import ParallelTrainArtifacts
+from open_wam.models.decoder_artifacts import ParallelTrainArtifacts
 from .training_noise import (
     build_parallel_flow_noise_artifacts as _add_noise,
 )

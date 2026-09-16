@@ -7,14 +7,13 @@ from typing import Any
 
 import torch
 
+from ..contracts import PolicyInferState
+
 
 @dataclass
 class ParallelInferArtifacts:
     action_pred: torch.Tensor
     predicted_latents: torch.Tensor
-    next_cache: dict[str, Any]
+    next_state: PolicyInferState
+    generation_frame_start: int
     debug: dict[str, Any]
-
-
-# Checkpoint-era import compatibility.
-LingbotParallelInferArtifacts = ParallelInferArtifacts

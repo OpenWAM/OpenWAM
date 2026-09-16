@@ -356,6 +356,7 @@ def prepare_exact_dual_stream_train_sequence(
     ],
     rope: Callable[[torch.Tensor], torch.Tensor],
     encode_proprio_context: Callable[..., torch.Tensor] | None = None,
+    attention_profile: PreparedAttentionProfile | None = None,
 ) -> PreparedExactTrainSequence:
     latent_dict = input_dict["latent_dict"]
     action_dict = input_dict["action_dict"]
@@ -468,8 +469,12 @@ def prepare_exact_dual_stream_train_sequence(
         input_dict.get("proprio_context_token_count", 0) or 0
     )
 
-    exact_attention_profile = None
-    if attention_profile_name in {
+    exact_attention_profile = attention_profile
+    if exact_attention_profile is not None:
+        layout = exact_attention_profile.token_layout
+        if layout is None or layout.token_count != hidden_states.shape[1]:
+            raise ValueError("Prepared attention must cover the packed sequence exactly.")
+    elif attention_profile_name in {
         "chunked_temporal_exact",
         "chunked_temporal_exact_joint",
         "chunked_temporal_exact_action_then_video",

@@ -1079,7 +1079,7 @@ def test_shared_rollout_history_rejects_bootstrap_zero_actions() -> None:
         np.array([0.5, -0.5], dtype=np.float32),
     ]
 
-    with pytest.raises(ValueError, match="deprecated"):
+    with pytest.raises(TypeError, match="start_frame_group"):
         build_executed_action_history_tensor(
             executed,
             start_frame_group=1,
@@ -1089,7 +1089,6 @@ def test_shared_rollout_history_rejects_bootstrap_zero_actions() -> None:
 
     history = build_executed_action_history_tensor(
         executed,
-        start_frame_group=0,
         action_per_frame=2,
         action_dim=2,
     )

@@ -123,10 +123,19 @@ compatibility alias: it is still recorded as `trainer.devices`, and explicit
 CLI values now establish the same launch expectation instead of being silently
 ignored. Use `--expected-world-size` in new automation.
 
-`strategy: fsdp` shards parameters, gradients, and optimizer state across the
-launched processes. A single process gets no sharding benefit regardless of how
-many GPUs are visible, so single-device memory must fit the whole model plus its
-optimizer state.
+`strategy: fsdp` uses FSDP even with one launched process. One rank has no
+cross-device sharding benefit, but still uses FSDP mixed precision, block
+activation checkpointing, and optional CPU offload. Set
+`OPEN_WAM_FSDP_CPU_OFFLOAD=1` to offload parameters, gradients, and optimizer
+state to host memory; it trades GPU memory for host memory and transfer cost,
+not guaranteed speed. Model construction must still fit before offload begins.
+No `MASTER_ADDR` or `MASTER_PORT` is needed for a single-process launch.
+
+Older versions silently treated one-rank FSDP as single-device training.
+Select `trainer.strategy=single_device` explicitly to preserve that execution
+path when resuming a published run. Enabling FSDP is a numerical execution
+change, not a promise of bitwise parity with that old fallback. One-rank DDP
+continues to use the unwrapped model.
 
 #### Effective batch does not follow the config across process counts
 
@@ -629,15 +638,15 @@ experiment orchestration and visualization live under `scripts/`.
 
 ## LIBERO Inference
 
-The maintained dual-expert evaluator loads one checkpoint and executes a closed-loop
-episode with the LingBot streaming VAE:
+The maintained policy evaluator loads either video/action architecture and
+executes a closed-loop episode with the LingBot streaming VAE:
 
 ```bash
-uv run --extra sim python scripts/run_libero_dual_expert_visualization.py \
+uv run --extra sim python scripts/run_libero_policy.py \
   --cfg /path/to/checkpoint_step_N/resolved_config.yaml \
   --checkpoint /path/to/checkpoint_step_N \
   --frontend-encode-mode lingbot_streaming_vae \
-  --dual-expert-inference-window-size 30 \
+  --inference-window-size 30 \
   --benchmark libero_10 \
   --task-id 0 \
   --episode-idx 0 \
@@ -645,7 +654,7 @@ uv run --extra sim python scripts/run_libero_dual_expert_visualization.py \
   --max-chunks 50 \
   --startup-model-obs-frames 1 \
   --startup-env-init-steps 5 \
-  --output-dir outputs/libero_dual_expert \
+  --output-dir outputs/libero_policy \
   --runtime-device cuda:0 \
   --action-device cuda:0 \
   --frontend-device cuda:0 \
@@ -682,7 +691,7 @@ For a task/episode sweep, use the loaded-once batch evaluator rather than a
 shell loop that reloads the checkpoint for every episode:
 
 ```bash
-uv run --extra sim python scripts/run_libero_dual_expert_batch_visualization.py \
+uv run --extra sim python scripts/run_libero_policy_batch.py \
   --cfg /path/to/checkpoint_step_N/resolved_config.yaml \
   --checkpoint /path/to/checkpoint_step_N \
   --benchmark libero_10 \
@@ -690,12 +699,12 @@ uv run --extra sim python scripts/run_libero_dual_expert_batch_visualization.py 
   --episode-idxs 0-49 \
   --seed-by-episode \
   --frontend-encode-mode lingbot_streaming_vae \
-  --dual-expert-inference-window-size 30 \
+  --inference-window-size 30 \
   --max-timestep 800 \
   --max-chunks 50 \
   --startup-model-obs-frames 1 \
   --startup-env-init-steps 5 \
-  --output-dir outputs/libero_dual_expert_batch \
+  --output-dir outputs/libero_policy_batch \
   --save-rollout-video \
   --runtime-device cuda:0 \
   --action-device cuda:0 \
@@ -706,7 +715,8 @@ uv run --extra sim python scripts/run_libero_dual_expert_batch_visualization.py 
 The batch runner preserves the single-episode runtime semantics and starts
 fresh rollout state for each episode while retaining loaded model resources.
 
-Parallel stream uses the shared realtime sandbox:
+Either architecture can use the same realtime engine. For a blocking run that
+executes complete predictions:
 
 ```bash
 uv run --extra sim python scripts/run_libero_realtime_sandbox.py \
@@ -714,8 +724,21 @@ uv run --extra sim python scripts/run_libero_realtime_sandbox.py \
   --checkpoint /path/to/checkpoint_step_N \
   --task-id 0 \
   --episode-idx 0 \
-  --output-dir outputs/libero_parallel_stream
+  --realtime-scheduler-profile blocking_control \
+  --output-dir outputs/libero_realtime
 ```
+
+Use `--execute-prefix-actions 8` to execute two model frames from a four-frame
+prediction when the policy has four actions per model frame. Short prefixes
+require observed-history replanning, not open-loop extensions. Fixed-rate
+execution can use `--sequence-empty-plan-policy fallback`; actual fallback
+controls and observations always enter the next history commit.
+
+The maintained commands are `run_libero_policy.py`, `run_libero_policy_batch.py`,
+and `run_libero_realtime_sandbox.py`. Architecture-named and `mot`/`exact` aliases
+are removed. `--action-route native` uses the configured program; it does not
+force joint denoising. Chunk/window and selective-output controls are
+`--rollout-frame-chunk-size`, `--inference-window-size`, and `--action-only-rollout`.
 
 ## Generic Simulator Rollout
 

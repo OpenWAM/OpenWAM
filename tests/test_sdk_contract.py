@@ -19,12 +19,18 @@ from open_wam.sdk.data import (
 )
 from open_wam.sdk.policy import (
     ActionDecoder,
+    ActionDecoderRolloutPlan,
+    ActionSpaceAdapter,
+    PolicyExecutionCommit,
     PolicyGeneratedVideo,
     PolicyInferenceCapabilities,
     PolicyOutputModality,
     PolicyPipelineRequirements,
     PolicyRecurrentHistoryPolicy,
+    PolicyRolloutContract,
+    PolicyRolloutTelemetry,
     PolicyTemporalGeometry,
+    PolicyTemporalSpan,
     PolicyVariant,
     PolicyVideoGenerationRequest,
     PolicyVisualStage,
@@ -61,12 +67,19 @@ def test_role_specific_sdk_exposes_extension_contracts() -> None:
     )
     assert PolicyOutputModality.VIDEO in capabilities.native_modalities
     assert PolicyGeneratedVideo.__module__.endswith("policy_variants.contracts")
-    assert PolicyVideoGenerationRequest.__module__.endswith(
-        "policy_variants.contracts"
-    )
+    assert PolicyVideoGenerationRequest.__module__.endswith("policy_variants.contracts")
     assert PolicyTemporalGeometry.__module__.endswith("policy_variants.contracts")
     assert PolicyVisualStage.CORE.value == "core"
     assert ActionDecoder.__module__ == "open_wam.models.action_decoders.base"
+    assert ActionDecoderRolloutPlan.__module__ == "open_wam.models.action_decoders.base"
+    assert ActionSpaceAdapter.__module__ == "open_wam.contracts.action_space"
+    for contract in (
+        PolicyExecutionCommit,
+        PolicyRolloutContract,
+        PolicyRolloutTelemetry,
+        PolicyTemporalSpan,
+    ):
+        assert contract.__module__.endswith("policy_variants.contracts")
     assert PreparedAttentionProfile.__module__.endswith("attention_contracts")
     assert RuntimeSequenceFamily.__module__.endswith("runtime_programs")
     assert RuntimeStepInput.__module__.endswith("runtime_programs")

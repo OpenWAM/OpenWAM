@@ -341,7 +341,7 @@ def test_out_of_tree_policy_and_decoder_run_full_pipeline(
     train_output.decoder_output.loss.backward()
     infer_output = pipeline.forward_infer_step(
         batch.views,
-        PolicyInferContext(state=batch.state, extra={"task_text": batch.task_text}),
+        PolicyInferContext(state=batch.state, task_text=batch.task_text),
     )
 
     assert train_output.decoder_output.action_pred.shape == (1, 2, 4)

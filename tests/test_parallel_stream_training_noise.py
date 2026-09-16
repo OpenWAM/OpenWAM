@@ -10,7 +10,6 @@ from open_wam.models.common.flow_matching import (
 from open_wam.models.common.flow_noise_plan import (
     sample_coupled_timestep_values as sample_shared_coupled_timestep_values,
 )
-from open_wam.models.policy_variants.parallel_stream import reference_runtime
 from open_wam.models.policy_variants.parallel_stream.training_noise import (
     build_parallel_flow_noise_artifacts,
     sample_coupled_parallel_timestep_values,
@@ -32,25 +31,6 @@ def _scheduler(*, shift: float, steps: int) -> FlowMatchScheduler:
     return scheduler
 
 
-def test_reference_runtime_training_noise_names_alias_canonical_contract() -> None:
-    assert reference_runtime.sample_timestep_id is sample_timestep_id
-    assert reference_runtime._add_noise is build_parallel_flow_noise_artifacts
-    assert (
-        reference_runtime._sample_coupled_timestep_values
-        is sample_coupled_parallel_timestep_values
-    )
-    assert (
-        reference_runtime._sample_index_matched_timestep_values
-        is sample_index_matched_timestep_values
-    )
-    assert (
-        reference_runtime._sample_shared_video_schedule_timestep_values
-        is sample_shared_video_schedule_timestep_values
-    )
-    assert (
-        reference_runtime._share_video_scheduler_grid_with_action_scheduler
-        is share_video_scheduler_grid_with_action_scheduler
-    )
 
 
 def test_parallel_flow_noise_explicit_sigma_values_and_gradients() -> None:

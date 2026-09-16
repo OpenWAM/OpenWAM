@@ -1,33 +1,19 @@
 from __future__ import annotations
 
-from open_wam.models.policy_variants.parallel_stream import reference_runtime
-from open_wam.models.policy_variants.parallel_stream.training_artifacts import (
-    LingbotParallelTrainArtifacts,
-    ParallelTrainArtifacts,
-    prepare_parallel_action_conditioned_train_artifacts,
-    prepare_parallel_exact_train_artifacts,
-    prepare_parallel_prefix_condition_exact_train_artifacts,
-)
+import pickle
+
+import torch
+
+from open_wam.models.decoder_artifacts import ParallelTrainArtifacts
 
 
-def test_generic_training_artifact_name_preserves_legacy_type_identity() -> None:
-    assert ParallelTrainArtifacts is LingbotParallelTrainArtifacts
-
-
-def test_reference_runtime_training_artifact_names_alias_canonical_owner() -> None:
-    assert (
-        reference_runtime.LingbotParallelTrainArtifacts
-        is LingbotParallelTrainArtifacts
+def test_training_artifact_contract_roundtrip() -> None:
+    value = ParallelTrainArtifacts(
+        input_dict={"probe": torch.tensor([1.0])},
+        latent_scheduler=object(),
+        action_scheduler=object(),
     )
-    assert (
-        reference_runtime.prepare_parallel_action_conditioned_train_artifacts
-        is prepare_parallel_action_conditioned_train_artifacts
-    )
-    assert (
-        reference_runtime.prepare_parallel_exact_train_artifacts
-        is prepare_parallel_exact_train_artifacts
-    )
-    assert (
-        reference_runtime.prepare_parallel_prefix_condition_exact_train_artifacts
-        is prepare_parallel_prefix_condition_exact_train_artifacts
-    )
+    restored = pickle.loads(pickle.dumps(value))
+    assert type(restored) is ParallelTrainArtifacts
+    assert torch.equal(restored.input_dict["probe"], value.input_dict["probe"])
+    assert restored.dynamics_objective is value.dynamics_objective

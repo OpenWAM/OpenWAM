@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 import torch
 
 from open_wam.configs import EvalPredictionSource
+from open_wam.contracts.action_space import ActionSpaceAdapter
+from open_wam.models.policy_variants import PolicyGeneratedVideo
 
 
 def _masked_action_mse(
@@ -35,11 +35,14 @@ def _select_eval_action_prediction(
     *,
     target_actions: torch.Tensor,
     decoder_action_pred: torch.Tensor,
-    policy_aux: dict[str, Any],
+    action_adapter: ActionSpaceAdapter | None,
 ) -> tuple[EvalPredictionSource, torch.Tensor]:
     if decoder_action_pred.shape == target_actions.shape:
         return EvalPredictionSource.DECODER_ACTION_PRED, decoder_action_pred
-    raw_chunk_action_pred = policy_aux.get("raw_chunk_action_pred")
+    raw_chunk_action_pred = (
+        action_adapter.to_source(decoder_action_pred)
+        if action_adapter is not None else None
+    )
     if (
         isinstance(raw_chunk_action_pred, torch.Tensor)
         and raw_chunk_action_pred.ndim == target_actions.ndim
@@ -74,45 +77,19 @@ def _align_eval_action_tensors(
     return source, prediction, target_actions, action_mask
 
 
-def _select_rollout_previous_action(
-    *,
-    decoder_action_pred: torch.Tensor,
-    policy_aux: dict[str, Any],
-) -> torch.Tensor:
-    """Return the model-facing action tensor to feed into the next rollout step."""
-
-    chunk_action_pred = policy_aux.get("chunk_action_pred")
-    if isinstance(chunk_action_pred, torch.Tensor) and chunk_action_pred.ndim == 3:
-        return chunk_action_pred
-    return decoder_action_pred
-
-
 def _select_eval_video_prediction(
     *,
     target_video_latents: torch.Tensor,
-    decoder_aux: dict[str, Any],
-    policy_aux: dict[str, Any],
+    generated_video: PolicyGeneratedVideo | None,
 ) -> tuple[EvalPredictionSource, torch.Tensor | None, torch.Tensor]:
-    for source_name in ("predicted_latents", "predicted_video_latents"):
-        candidate = decoder_aux.get(source_name)
-        if isinstance(candidate, torch.Tensor) and candidate.shape == target_video_latents.shape:
-            return (
-                EvalPredictionSource.DECODER_PREDICTED_LATENTS
-                if source_name == "predicted_latents"
-                else EvalPredictionSource.DECODER_PREDICTED_VIDEO_LATENTS,
-                candidate,
-                target_video_latents,
-            )
-    for source_name in ("predicted_latents", "predicted_video_latents"):
-        candidate = policy_aux.get(source_name)
-        if isinstance(candidate, torch.Tensor) and candidate.shape == target_video_latents.shape:
-            return (
-                EvalPredictionSource.POLICY_PREDICTED_LATENTS
-                if source_name == "predicted_latents"
-                else EvalPredictionSource.POLICY_PREDICTED_VIDEO_LATENTS,
-                candidate,
-                target_video_latents,
-            )
+    if generated_video is not None:
+        candidate = generated_video.latents
+        start = generated_video.frame_start
+        if start is not None and start > 0 and start + candidate.shape[2] == target_video_latents.shape[2]:
+            # Preserve full-window scoring: the observed prefix has zero error.
+            candidate = torch.cat([target_video_latents[:, :, :start], candidate], dim=2)
+        if candidate.shape == target_video_latents.shape:
+            return EvalPredictionSource.POLICY_PREDICTED_VIDEO_LATENTS, candidate, target_video_latents
     return EvalPredictionSource.UNAVAILABLE, None, target_video_latents
 
 

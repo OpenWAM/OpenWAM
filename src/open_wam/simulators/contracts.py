@@ -1,7 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Mapping, Protocol, TypeAlias
+
+from open_wam.runtime.control import ControlCommand, ControlTransition
 
 if TYPE_CHECKING:
     import numpy as np
@@ -33,24 +35,18 @@ class SimulatorCapabilities:
 
 @dataclass(frozen=True)
 class SimulatorObservation:
-    """Policy-visible simulator observation plus raw benchmark payload."""
+    """Canonical cameras and model-ready state, plus the untouched raw payload.
+
+    state must use the configured data schema's encoding and exact feature width.
+    Native qpos/EEF conversion belongs to the benchmark adapter, not the policy.
+    It may be omitted only when the policy does not condition on proprio.
+    """
 
     views: Mapping[str, _NumpyArray]
     state: _NumpyArray | None = None
     task_text: str | None = None
     raw: Any = None
     metadata: dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass(frozen=True)
-class SimulatorStepResult:
-    """One policy-visible simulator control transition."""
-
-    observation: SimulatorObservation
-    reward: float | None = None
-    done: bool = False
-    success: bool = False
-    info: dict[str, Any] = field(default_factory=dict)
 
 
 class SimulatorBackend(Protocol):
@@ -65,15 +61,15 @@ class SimulatorBackend(Protocol):
     def task_text(self) -> str | None:
         """Return the current natural-language instruction, if available."""
 
-    def action_from_model_action(
+    def materialize_control(
         self,
-        model_action: _NumpyArray,
+        source_action: _NumpyArray,
         *,
         data_config: Any,
-    ) -> _NumpyArray:
-        """Convert one model-facing action vector into the simulator action space."""
+    ) -> ControlCommand:
+        """Convert a dataset-source command into executable controls."""
 
-    def step(self, action: _NumpyArray) -> SimulatorStepResult:
+    def step(self, action: _NumpyArray) -> ControlTransition[SimulatorObservation]:
         """Execute one policy-visible control action."""
 
     def render_frame(
@@ -86,23 +82,13 @@ class SimulatorBackend(Protocol):
         """Release simulator resources."""
 
 
-class LegacyAdapterSimulatorBackend:
-    """Compatibility wrapper for pre-normalized simulator adapters.
+class ObservationAdapterBackend:
+    """Normalize a benchmark's raw observations at the simulator boundary."""
 
-    Existing adapters expose raw observations plus ``extract_*`` methods. This
-    wrapper turns them into the normalized backend contract so rollout code can
-    depend on one interface while benchmark adapters migrate incrementally.
-    """
-
-    capabilities = SimulatorCapabilities(action_step_semantics="policy_control_step")
-
-    def __init__(self, adapter: Any, *, capabilities: SimulatorCapabilities | None = None) -> None:
+    def __init__(self, adapter: Any) -> None:
         self.adapter = adapter
-        self.benchmark_name = str(getattr(adapter, "benchmark_name", "unknown"))
-        if capabilities is not None:
-            self.capabilities = capabilities
-        elif hasattr(adapter, "capabilities"):
-            self.capabilities = adapter.capabilities
+        self.benchmark_name = adapter.benchmark_name
+        self.capabilities = adapter.capabilities
 
     def reset(self, spec: EpisodeSpec) -> SimulatorObservation:
         raw_observation = self.adapter.reset(
@@ -115,26 +101,18 @@ class LegacyAdapterSimulatorBackend:
     def task_text(self) -> str | None:
         return self.adapter.task_text()
 
-    def action_from_model_action(
+    def materialize_control(
         self,
-        model_action: _NumpyArray,
+        source_action: _NumpyArray,
         *,
         data_config: Any,
-    ) -> _NumpyArray:
-        return self.adapter.model_action_to_env_action(model_action, data_config=data_config)
+    ) -> ControlCommand:
+        return self.adapter.materialize_control(source_action, data_config=data_config)
 
-    def step(self, action: _NumpyArray) -> SimulatorStepResult:
+    def step(self, action: _NumpyArray) -> ControlTransition[SimulatorObservation]:
         transition = self.adapter.step(action)
         observation = self._normalize_observation(transition.observation)
-        info = dict(getattr(transition, "info", {}) or {})
-        success = bool(self.adapter.success(transition.observation, info))
-        return SimulatorStepResult(
-            observation=observation,
-            reward=getattr(transition, "reward", None),
-            done=bool(getattr(transition, "done", False)),
-            success=success,
-            info=info,
-        )
+        return replace(transition, observation=observation)
 
     def render_frame(
         self,
@@ -152,11 +130,3 @@ class LegacyAdapterSimulatorBackend:
             task_text=self.adapter.task_text(),
             raw=raw_observation,
         )
-
-
-def ensure_simulator_backend(value: Any) -> SimulatorBackend:
-    """Return ``value`` if normalized, otherwise wrap a legacy adapter."""
-
-    if hasattr(value, "action_from_model_action"):
-        return value
-    return LegacyAdapterSimulatorBackend(value)

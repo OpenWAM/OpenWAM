@@ -1,14 +1,11 @@
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
-from typing import TYPE_CHECKING, Any, TypedDict
+from typing import TYPE_CHECKING, TypedDict
 
 import torch
 
-from open_wam.models.policy_variants import PolicyGenerationActionOrigin
 
 if TYPE_CHECKING:
-    from open_wam.models.policy_variants import PolicyVariant
     from open_wam.pipelines import VariantPipeline
 
 
@@ -31,39 +28,6 @@ def resolve_runtime_devices(
     if not parts:
         return (fallback,)
     return tuple(torch.device(part) for part in parts)
-
-
-def uses_zero_based_generation_start(policy_variant: PolicyVariant) -> bool:
-    return (
-        policy_variant.rollout_contract.generation_action_origin
-        == PolicyGenerationActionOrigin.ZERO
-    )
-
-
-def resolve_initial_generation_action_start(
-    initial_observations: Sequence[Mapping[str, Any]],
-    *,
-    initial_generation_action_start: int | None,
-    rollout_starts_at_action_zero: bool = False,
-) -> int:
-    if initial_generation_action_start is not None:
-        return max(0, int(initial_generation_action_start))
-    if rollout_starts_at_action_zero:
-        return 0
-    return max(0, len(initial_observations))
-
-
-def build_sequence_rollout_infer_extra(
-    *,
-    policy_variant: PolicyVariant,
-    prompt: str,
-    runtime_device: torch.device | None = None,
-) -> dict[str, object]:
-    extra: dict[str, object] = {"task_text": (prompt,)}
-    extra.update(
-        policy_variant.build_rollout_infer_extra(runtime_device=runtime_device)
-    )
-    return extra
 
 
 def prepare_rollout_observation_inputs(
@@ -97,10 +61,7 @@ def prepare_rollout_observation_inputs(
                 dtype=canonical_video.dtype,
             )
         resolved_negative_text_context = negative_text_context
-        if (
-            resolved_negative_text_context is None
-            and resolved_text_context is not None
-        ):
+        if resolved_negative_text_context is None and resolved_text_context is not None:
             resolved_negative_text_context = assets.encode_blank_text(
                 batch_size=canonical_video.shape[0],
                 device=frontend_device,

@@ -1,4 +1,5 @@
 from __future__ import annotations
+from dataclasses import replace
 
 from types import SimpleNamespace
 
@@ -25,11 +26,8 @@ from open_wam.configs import (
     VideoActionSequenceContract,
 )
 from open_wam.models.common import (
-    checkpoint_unshard_context,
     expand_scalar_timestep,
     explicit_sigma_euler_step,
-    summon_full_parameters,
-    unshard_runtime_parameters,
     zero_terminal_next_sigma,
 )
 from open_wam.models.common.attention_profiles import (
@@ -48,6 +46,9 @@ from open_wam.models.policy_variants import (
     PolicyInferContext,
     PolicyInferenceOutputRequest,
     PolicyInferState,
+    PolicyObservedHistory,
+    PolicyExecutionCommit,
+    PolicyTemporalSpan,
     PolicyOutputModality,
     PolicyRecurrentHistoryPolicy,
     PolicyTemporalGeometry,
@@ -55,51 +56,25 @@ from open_wam.models.policy_variants import (
     PolicyVideoGenerationRequest,
     RolloutCursor,
 )
-from open_wam.models.policy_variants.dual_expert import runtime as dual_expert_runtime
 from open_wam.models.policy_variants.dual_expert import (
-    split_cache_inference as split_cache_inference_module,
+    inference as inference_module,
 )
-from open_wam.models.policy_variants.dual_expert.attention import (
+from open_wam.models.policy_variants.dual_expert.attention_unpacked import (
     build_chunk_causal_video_mask,
     build_dual_expert_attention_mask,
-    build_dual_expert_inference_action_attention_mask,
+)
+from open_wam.models.policy_variants.dual_expert.attention_packed import (
     build_dual_expert_packed_coupling_attention_mask,
     build_dual_expert_packed_coupling_attention_profile,
-    build_packed_action_attention_mask,
-)
-from open_wam.models.policy_variants.dual_expert.cache_execution import (
-    forward_action_with_video_and_action_cache,
-    forward_action_with_video_cache,
-    prefill_video_kv_cache,
-)
-from open_wam.models.policy_variants.dual_expert.cache_state import (
-    append_dual_expert_action_cache,
-    move_dual_expert_action_cache,
-    move_dual_expert_video_cache,
-    rewind_dual_expert_runtime_action_cache_to_frame,
-    trim_dual_expert_action_cache_prefix,
-    trim_dual_expert_action_cache_tail,
-    trim_dual_expert_video_cache_tail,
 )
 from open_wam.models.policy_variants.dual_expert.conditioning import (
     DualExpertConditioning,
     resolve_dual_expert_condition_latents,
 )
-from open_wam.models.policy_variants.dual_expert.contracts import (
-    DualExpertActionCache,
-    DualExpertActionLayerCache,
-    DualExpertRuntimeState,
-)
-from open_wam.models.policy_variants.dual_expert.coupling_semantics import (
-    is_dual_expert_same_step_coupling,
-)
-from open_wam.models.policy_variants.dual_expert.decoder_artifacts import (
+from open_wam.models.common.video_action_state import VideoActionRolloutState
+from open_wam.models.decoder_artifacts import (
     DUAL_EXPERT_DECODER_ARTIFACT_CONTRACT,
     DualExpertInferArtifacts,
-)
-from open_wam.models.policy_variants.dual_expert.dual_stream_execution import (
-    forward_dual_expert_packed_coupling_denoise,
-    forward_joint_video_action_denoise,
 )
 from open_wam.models.policy_variants.dual_expert.modules import (
     DualExpertActionExpert,
@@ -111,11 +86,6 @@ from open_wam.models.policy_variants.dual_expert.packed_block import (
 from open_wam.models.policy_variants.dual_expert.rollout_geometry import (
     resolve_dual_expert_rollout_cache_window_frames,
     resolve_dual_expert_rollout_history_frames,
-)
-from open_wam.models.policy_variants.dual_expert.runtime import (
-    dual_expert_scheduler_next_sigma,
-    expand_dual_expert_scalar_timestep,
-    step_dual_expert_flow_with_sigmas,
 )
 from open_wam.models.policy_variants.dual_expert.variant import DualExpertPolicyVariant
 from open_wam.models.video_backbone.config import SharedVideoTransformerConfig
@@ -130,82 +100,16 @@ from open_wam.pipelines import (
 _CONFIG_INITIALIZATION = open_wam.configs
 
 
-def test_dual_expert_runtime_attention_exports_are_compatibility_aliases() -> None:
-    canonical_builders = {
-        "build_chunk_causal_video_mask": build_chunk_causal_video_mask,
-        "build_dual_expert_attention_mask": build_dual_expert_attention_mask,
-        "build_dual_expert_inference_action_attention_mask": build_dual_expert_inference_action_attention_mask,
-        "build_dual_expert_packed_coupling_attention_mask": build_dual_expert_packed_coupling_attention_mask,
-        "build_dual_expert_packed_coupling_attention_profile": build_dual_expert_packed_coupling_attention_profile,
-        "build_packed_action_attention_mask": build_packed_action_attention_mask,
-    }
-    for name, canonical_builder in canonical_builders.items():
-        assert getattr(dual_expert_runtime, name) is canonical_builder
 
 
-def test_dual_expert_runtime_cache_exports_are_compatibility_aliases() -> None:
-    canonical_operations = {
-        "append_dual_expert_action_cache": append_dual_expert_action_cache,
-        "move_dual_expert_action_cache": move_dual_expert_action_cache,
-        "move_dual_expert_video_cache": move_dual_expert_video_cache,
-        "rewind_dual_expert_runtime_action_cache_to_frame": rewind_dual_expert_runtime_action_cache_to_frame,
-        "trim_dual_expert_action_cache_prefix": trim_dual_expert_action_cache_prefix,
-        "trim_dual_expert_action_cache_tail": trim_dual_expert_action_cache_tail,
-        "trim_dual_expert_video_cache_tail": trim_dual_expert_video_cache_tail,
-    }
-    for name, canonical_operation in canonical_operations.items():
-        assert getattr(dual_expert_runtime, name) is canonical_operation
 
 
-def test_dual_expert_runtime_condition_and_flow_exports_are_compatibility_aliases() -> (
-    None
-):
-    assert (
-        dual_expert_runtime.resolve_dual_expert_condition_latents
-        is resolve_dual_expert_condition_latents
-    )
-    assert (
-        dual_expert_runtime.expand_dual_expert_scalar_timestep is expand_scalar_timestep
-    )
-    assert (
-        dual_expert_runtime.dual_expert_scheduler_next_sigma is zero_terminal_next_sigma
-    )
-    assert (
-        dual_expert_runtime.step_dual_expert_flow_with_sigmas
-        is explicit_sigma_euler_step
-    )
 
 
-def test_dual_expert_runtime_sharding_exports_are_compatibility_aliases() -> None:
-    assert dual_expert_runtime._checkpoint_summon_context is checkpoint_unshard_context
-    assert dual_expert_runtime._summon_full_params is summon_full_parameters
-    assert dual_expert_runtime._unshard_runtime_params is unshard_runtime_parameters
 
 
-def test_dual_expert_runtime_cache_execution_exports_are_compatibility_aliases() -> (
-    None
-):
-    assert (
-        dual_expert_runtime.forward_action_with_video_and_action_cache
-        is forward_action_with_video_and_action_cache
-    )
-    assert (
-        dual_expert_runtime.forward_action_with_video_cache
-        is forward_action_with_video_cache
-    )
-    assert dual_expert_runtime.prefill_video_kv_cache is prefill_video_kv_cache
 
 
-def test_dual_expert_runtime_dual_stream_exports_are_compatibility_aliases() -> None:
-    assert (
-        dual_expert_runtime.forward_joint_video_action_denoise
-        is forward_joint_video_action_denoise
-    )
-    assert (
-        dual_expert_runtime.forward_dual_expert_packed_coupling_denoise
-        is forward_dual_expert_packed_coupling_denoise
-    )
-    assert is_dual_expert_same_step_coupling(CurrentBlockCoupling.JOINT)
 
 
 def test_dual_expert_action_expert_pre_and_post_shapes() -> None:
@@ -365,121 +269,29 @@ def test_build_dual_expert_attention_mask_respects_full_video_visibility() -> No
     assert mask[8:, :8].all()
 
 
-def test_build_dual_expert_inference_action_mask_uses_absolute_frame_starts() -> None:
-    mask = build_dual_expert_inference_action_attention_mask(
-        video_seq_len=8,
-        past_action_seq_len=0,
-        current_action_seq_len=4,
-        video_tokens_per_frame=2,
-        action_tokens_per_frame=2,
-        chunk_size_frames=2,
-        window_size_frames=8,
-        device=torch.device("cpu"),
-        video_frame_start=0,
-        current_action_frame_start=2,
-    )
-
-    current_action_query = 8
-    current_video_frame_token = 4
-    assert mask[current_action_query, current_video_frame_token]
 
 
-def test_build_dual_expert_inference_action_mask_decouples_same_step_video() -> None:
-    mask = build_dual_expert_inference_action_attention_mask(
-        video_seq_len=8,
-        past_action_seq_len=0,
-        current_action_seq_len=4,
-        video_tokens_per_frame=2,
-        action_tokens_per_frame=2,
-        chunk_size_frames=2,
-        window_size_frames=8,
-        device=torch.device("cpu"),
-        video_frame_start=0,
-        current_action_frame_start=2,
-        current_block_coupling=CurrentBlockCoupling.DECOUPLED_SAME_STEP,
-    )
-
-    current_action_query = 8
-    current_video_frame_token = 4
-    previous_video_frame_token = 2
-    assert not mask[current_action_query, current_video_frame_token]
-    assert mask[current_action_query, previous_video_frame_token]
 
 
-def test_build_dual_expert_inference_action_mask_honors_strict_chunk_origin() -> None:
-    origin_zero = build_dual_expert_inference_action_attention_mask(
-        video_seq_len=5,
-        past_action_seq_len=0,
-        current_action_seq_len=4,
-        video_tokens_per_frame=1,
-        action_tokens_per_frame=1,
-        chunk_size_frames=4,
-        window_size_frames=8,
-        device=torch.device("cpu"),
-        video_frame_start=0,
-        current_action_frame_start=1,
-        chunk_origin_frame=0,
-        current_block_coupling=CurrentBlockCoupling.DECOUPLED_SAME_STEP,
-    )
-    strict_origin = build_dual_expert_inference_action_attention_mask(
-        video_seq_len=5,
-        past_action_seq_len=0,
-        current_action_seq_len=4,
-        video_tokens_per_frame=1,
-        action_tokens_per_frame=1,
-        chunk_size_frames=4,
-        window_size_frames=8,
-        device=torch.device("cpu"),
-        video_frame_start=0,
-        current_action_frame_start=1,
-        chunk_origin_frame=1,
-        current_block_coupling=CurrentBlockCoupling.DECOUPLED_SAME_STEP,
-    )
-
-    first_current_action_query = 5
-    frame0_video_key = 0
-    assert not origin_zero[first_current_action_query, frame0_video_key]
-    assert strict_origin[first_current_action_query, frame0_video_key]
 
 
-def test_build_dual_expert_inference_action_mask_keeps_strict_first_target_chunk_together() -> (
-    None
-):
-    mask = build_dual_expert_inference_action_attention_mask(
-        video_seq_len=5,
-        past_action_seq_len=0,
-        current_action_seq_len=4,
-        video_tokens_per_frame=1,
-        action_tokens_per_frame=1,
-        chunk_size_frames=4,
-        window_size_frames=8,
-        device=torch.device("cpu"),
-        video_frame_start=0,
-        current_action_frame_start=1,
-        chunk_origin_frame=1,
-        current_block_coupling=CurrentBlockCoupling.VIDEO_THEN_ACTION,
-    )
-
-    first_current_action_query = 5
-    frame4_video_key = 4
-    assert mask[first_current_action_query, frame4_video_key]
 
 
-def test_build_packed_action_mask_decouples_same_step_clean_video() -> None:
-    mask = build_packed_action_attention_mask(
+def test_packed_coupling_decouples_current_but_keeps_clean_video_history() -> None:
+    mask = build_dual_expert_packed_coupling_attention_mask(
         num_video_frames=2,
         video_tokens_per_frame=2,
         num_action_frames=2,
         action_tokens_per_frame=2,
-        action_chunk_size_frames=1,
+        chunk_size_frames=1,
         device=torch.device("cpu"),
         current_block_coupling="decoupled_same_step",
     )
 
-    action_noisy_frame_0_query = 0
-    action_noisy_frame_1_query = 2
-    video_clean_frame_0_key = 0
-    video_clean_frame_1_key = 2
+    action_noisy_frame_0_query = 8
+    action_noisy_frame_1_query = 10
+    video_clean_frame_0_key = 4
+    video_clean_frame_1_key = 6
     assert not mask[action_noisy_frame_0_query, video_clean_frame_0_key]
     assert not mask[action_noisy_frame_1_query, video_clean_frame_1_key]
     assert mask[action_noisy_frame_1_query, video_clean_frame_0_key]
@@ -898,67 +710,10 @@ def test_build_dual_expert_packed_coupling_profile_uses_flex_on_cuda() -> None:
     assert profile.self_attention_block_mask is not None
 
 
-def test_trim_dual_expert_action_cache_prefix_keeps_oldest_tokens() -> None:
-    key = torch.arange(1 * 1 * 6 * 1, dtype=torch.float32).reshape(1, 1, 6, 1)
-    value = key + 100
-    cache = DualExpertActionCache(
-        layers=(DualExpertActionLayerCache(key=key, value=value),),
-        action_seq_len=6,
-    )
-
-    trimmed = trim_dual_expert_action_cache_prefix(cache, max_action_seq_len=4)
-
-    assert trimmed.action_seq_len == 4
-    assert torch.equal(
-        trimmed.layers[0].key.flatten(), torch.arange(4, dtype=torch.float32)
-    )
-    assert torch.equal(
-        trimmed.layers[0].value.flatten(), torch.arange(100, 104, dtype=torch.float32)
-    )
 
 
-def test_runtime_action_cache_rewind_uses_absolute_cache_start_frame() -> None:
-    key = torch.arange(1 * 1 * 12 * 1, dtype=torch.float32).reshape(1, 1, 12, 1)
-    state = DualExpertRuntimeState(
-        action_cache=DualExpertActionCache(
-            layers=(DualExpertActionLayerCache(key=key, value=key + 100),),
-            action_seq_len=12,
-        ),
-        action_cache_start_frame=10,
-    )
-
-    rewind_dual_expert_runtime_action_cache_to_frame(
-        state,
-        absolute_frame_start=14,
-        action_tokens_per_frame=2,
-    )
-
-    assert state.action_cache_start_frame == 10
-    assert state.action_cache is not None
-    assert state.action_cache.action_seq_len == 8
-    assert torch.equal(
-        state.action_cache.layers[0].key.flatten(), torch.arange(8, dtype=torch.float32)
-    )
 
 
-def test_runtime_action_cache_rewind_clears_cache_before_window() -> None:
-    key = torch.arange(1 * 1 * 12 * 1, dtype=torch.float32).reshape(1, 1, 12, 1)
-    state = DualExpertRuntimeState(
-        action_cache=DualExpertActionCache(
-            layers=(DualExpertActionLayerCache(key=key, value=key + 100),),
-            action_seq_len=12,
-        ),
-        action_cache_start_frame=10,
-    )
-
-    rewind_dual_expert_runtime_action_cache_to_frame(
-        state,
-        absolute_frame_start=8,
-        action_tokens_per_frame=2,
-    )
-
-    assert state.action_cache is None
-    assert state.action_cache_start_frame == 8
 
 
 def test_dual_expert_train_loss_masks_use_objective_specific_metadata() -> None:
@@ -1657,7 +1412,7 @@ def test_dual_expert_prepare_infer_state_appends_deprecated_proprio_context_toke
     )
 
     runtime_state = infer_state.variant_state
-    assert isinstance(runtime_state, DualExpertRuntimeState)
+    assert isinstance(runtime_state, VideoActionRolloutState)
     assert runtime_state.text_context is not None
     expected = encoder(state[:, -1, :]).to(dtype=runtime_state.text_context.dtype)
     assert torch.allclose(runtime_state.proprio_state, state[:, -1, :])
@@ -1732,7 +1487,7 @@ def test_dual_expert_variant_infer_from_latents_smoke(
     assert output.decoder_output.action_pred.shape == (1, 4, 4)
     assert torch.isfinite(output.decoder_output.action_pred).all()
     assert isinstance(
-        output.policy_output.next_state.variant_state, DualExpertRuntimeState
+        output.policy_output.next_state.variant_state, VideoActionRolloutState
     )
 
 
@@ -2004,13 +1759,7 @@ def test_dual_expert_joint_denoise_infer_supports_same_step_couplings(
         output.policy_output.aux["current_block_coupling"]
         == current_block_coupling.value
     )
-    if current_block_coupling in {
-        CurrentBlockCoupling.VIDEO_THEN_ACTION,
-        CurrentBlockCoupling.DECOUPLED_SAME_STEP,
-    }:
-        assert pipeline.policy_variant._split_cache_inference_blocks_restored is True
-    else:
-        assert pipeline.policy_variant._split_cache_inference_blocks_restored is False
+    assert pipeline.policy_variant.packed_block_stack is not None
 
 
 @pytest.mark.parametrize(
@@ -2020,7 +1769,7 @@ def test_dual_expert_joint_denoise_infer_supports_same_step_couplings(
         CurrentBlockCoupling.DECOUPLED_SAME_STEP,
     ],
 )
-def test_dual_expert_split_cache_infer_threads_per_chunk_action_proprio(
+def test_dual_expert_infer_threads_per_chunk_action_proprio(
     current_block_coupling: CurrentBlockCoupling,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2068,7 +1817,7 @@ def test_dual_expert_split_cache_infer_threads_per_chunk_action_proprio(
     captured_attention_geometry: list[tuple[int, int]] = []
     original_pre_dit = pipeline.policy_variant.action_expert.pre_dit
     original_attention_mask = (
-        split_cache_inference_module.build_dual_expert_inference_action_attention_mask
+        inference_module.build_dual_expert_packed_coupling_attention_profile
     )
 
     def capture_pre_dit(*args, **kwargs):
@@ -2082,7 +1831,7 @@ def test_dual_expert_split_cache_infer_threads_per_chunk_action_proprio(
         captured_attention_geometry.append(
             (
                 int(kwargs["chunk_size_frames"]),
-                int(kwargs["window_size_frames"]),
+                int(kwargs["attention_window_size"]),
             )
         )
         return original_attention_mask(**kwargs)
@@ -2091,8 +1840,8 @@ def test_dual_expert_split_cache_infer_threads_per_chunk_action_proprio(
         pipeline.policy_variant.action_expert, "pre_dit", capture_pre_dit
     )
     monkeypatch.setattr(
-        split_cache_inference_module,
-        "build_dual_expert_inference_action_attention_mask",
+        inference_module,
+        "build_dual_expert_packed_coupling_attention_profile",
         capture_attention_mask,
     )
 
@@ -2103,13 +1852,13 @@ def test_dual_expert_split_cache_infer_threads_per_chunk_action_proprio(
     )
 
     assert output.decoder_output.action_pred.shape == (1, 4, 4)
-    assert pipeline.policy_variant._split_cache_inference_blocks_restored is True
+    assert pipeline.policy_variant.packed_block_stack is not None
     assert captured_attention_geometry
     assert set(captured_attention_geometry) == {(2, 30)}
-    assert len(captured_hidden_contexts) == 3
+    assert len(captured_hidden_contexts) == 2
     for hidden_context in captured_hidden_contexts:
         assert hidden_context is not None
-        assert hidden_context.shape == (1, 4, 32)
+        assert hidden_context.shape == (1, 12, 32)
 
 
 def test_dual_expert_generalist_packed_infer_supports_explicit_sigma_coupling(
@@ -2174,8 +1923,8 @@ def test_dual_expert_generalist_packed_infer_supports_explicit_sigma_coupling(
     monkeypatch.setattr(
         pipeline.policy_variant.action_expert, "pre_dit", capture_pre_dit
     )
-    infer_state = PolicyInferState(step_index=1)
-    infer_state.cursor.current_start_frame = 2
+    infer_state = PolicyInferState(cursor=RolloutCursor(block_index=1))
+    infer_state = replace(infer_state, cursor=replace(infer_state.cursor, current_start_frame=2))
     video_latents = torch.randn(1, 48, 2, 8, 8)
     text_context = torch.randn(1, 5, 16)
 
@@ -2199,8 +1948,10 @@ def test_dual_expert_generalist_packed_infer_supports_explicit_sigma_coupling(
         == JointTimestepCoupling.MATCH_SIGMA.value
     )
     assert len(captured_action_timesteps) == 2
-    first_step_noisy_action_t = captured_action_timesteps[0][0, :4]
-    second_step_noisy_action_t = captured_action_timesteps[1][0, :4]
+    # The observed t0 is a clean masked prefix, before the four future actions.
+    assert torch.count_nonzero(captured_action_timesteps[0][0, :2]) == 0
+    first_step_noisy_action_t = captured_action_timesteps[0][0, 2:6]
+    second_step_noisy_action_t = captured_action_timesteps[1][0, 2:6]
     assert torch.allclose(
         first_step_noisy_action_t, torch.full_like(first_step_noisy_action_t, 1000.0)
     )
@@ -2215,12 +1966,12 @@ def test_dual_expert_generalist_packed_infer_supports_explicit_sigma_coupling(
 def test_dual_expert_explicit_sigma_flow_helpers_preserve_endpoint_semantics() -> None:
     scheduler = SimpleNamespace(sigmas=torch.tensor([1.0, 0.5]))
 
-    assert dual_expert_scheduler_next_sigma(scheduler, 0).item() == pytest.approx(0.5)
-    assert dual_expert_scheduler_next_sigma(scheduler, 1).item() == pytest.approx(0.0)
+    assert zero_terminal_next_sigma(scheduler, 0).item() == pytest.approx(0.5)
+    assert zero_terminal_next_sigma(scheduler, 1).item() == pytest.approx(0.0)
 
     sample = torch.tensor([[2.0, 4.0]])
     flow_pred = torch.tensor([[0.5, -1.0]])
-    stepped = step_dual_expert_flow_with_sigmas(
+    stepped = explicit_sigma_euler_step(
         sample,
         flow_pred,
         sigma=torch.tensor(1.0),
@@ -2228,7 +1979,7 @@ def test_dual_expert_explicit_sigma_flow_helpers_preserve_endpoint_semantics() -
     )
     assert torch.equal(stepped, torch.tensor([[1.75, 4.5]]))
 
-    dense_timestep = expand_dual_expert_scalar_timestep(
+    dense_timestep = expand_scalar_timestep(
         torch.tensor(7.0),
         shape=(2, 3),
         device=torch.device("cpu"),
@@ -2295,7 +2046,7 @@ def test_dual_expert_packed_infer_modes_keep_two_chunk_history(
         text_context=text_context,
     )
     first_state = first.policy_output.next_state.variant_state
-    assert isinstance(first_state, DualExpertRuntimeState)
+    assert isinstance(first_state, VideoActionRolloutState)
     assert first_state.past_clean_latents is not None
     assert first_state.past_clean_actions is not None
 
@@ -2314,7 +2065,7 @@ def test_dual_expert_packed_infer_modes_keep_two_chunk_history(
     assert debug["packed_video_frames"] == debug["shared_history_frames"] + 2
     assert debug["packed_action_frames"] == debug["shared_history_frames"] + 2
     second_state = second.policy_output.next_state.variant_state
-    assert isinstance(second_state, DualExpertRuntimeState)
+    assert isinstance(second_state, VideoActionRolloutState)
     assert second_state.past_clean_latents is not None
     assert second_state.past_clean_actions is not None
     assert second_state.past_clean_actions.shape[1] % 2 == 0
@@ -2378,9 +2129,10 @@ def test_dual_expert_packed_infer_chunk0_uses_one_frame_startup_bootstrap() -> N
     assert first.decoder_output.action_pred.shape == (1, 4, 4)
 
     packed_state = first.policy_output.next_state.variant_state
-    assert isinstance(packed_state, DualExpertRuntimeState)
+    assert isinstance(packed_state, VideoActionRolloutState)
     assert packed_state.past_clean_latents.shape[2] == 3
-    assert packed_state.past_clean_actions.shape[1] == 4
+    assert packed_state.past_clean_actions.shape[1] == 6
+    assert not packed_state.past_clean_action_mask[:, :2].any()
     assert first.policy_output.next_state.cursor.current_start_frame == 3
     second_latents = torch.randn(1, 48, 2, 8, 8)
     second = pipeline.forward_infer_step_from_latents(
@@ -2395,8 +2147,8 @@ def test_dual_expert_packed_infer_chunk0_uses_one_frame_startup_bootstrap() -> N
     assert second.policy_output.aux["dual_expert_history_anchor_frames"] >= 1
     history_debug = second.policy_output.aux["dual_expert_packed_history_debug"]
     assert history_debug["past_clean_latent_frames"] == 3
-    assert history_debug["past_clean_action_frames"] == 2
-    assert history_debug["shared_history_frames"] == 2
+    assert history_debug["past_clean_action_frames"] == 3
+    assert history_debug["shared_history_frames"] == 3
     assert history_debug["current_observed_latent_frames"] == 2
     assert history_debug["current_clean_condition_frames"] == 2
 
@@ -2446,12 +2198,12 @@ def test_dual_expert_action_then_video_action_only_rollout_skips_predicted_video
 
     output = pipeline.forward_infer_step_from_latents(
         torch.randn(1, 48, 1, 8, 8),
-        context=PolicyInferContext(extra={"dual_expert_action_only_rollout": True}),
+        context=PolicyInferContext(output_request=PolicyInferenceOutputRequest.action_only()),
         text_context=torch.randn(1, 5, 16),
     )
 
     assert output.decoder_output.action_pred.shape == (1, 4, 4)
-    assert output.policy_output.aux["dual_expert_action_only_rollout"] is True
+    assert output.policy_output.aux["action_only_rollout"] is True
     assert output.policy_output.aux["predicted_latents"].shape[2] == 0
     assert output.policy_output.decoder_artifacts is not None
     infer_artifacts = output.policy_output.decoder_artifacts.require(
@@ -2462,12 +2214,13 @@ def test_dual_expert_action_then_video_action_only_rollout_skips_predicted_video
     assert infer_artifacts.predicted_latents is not None
     assert infer_artifacts.predicted_latents.shape[2] == 0
     packed_state = output.policy_output.next_state.variant_state
-    assert isinstance(packed_state, DualExpertRuntimeState)
+    assert isinstance(packed_state, VideoActionRolloutState)
     assert packed_state.pending_predicted_video_frames == 0
     assert packed_state.past_clean_latents is not None
     assert packed_state.past_clean_latents.shape[2] == 1
     assert packed_state.past_clean_actions is not None
-    assert packed_state.past_clean_actions.shape[1] == 4
+    assert packed_state.past_clean_actions.shape[1] == 6
+    assert not packed_state.past_clean_action_mask[:, :2].any()
 
 
 def test_dual_expert_action_then_video_action_only_rollout_preserves_hidden_proprio_alignment() -> (
@@ -2517,12 +2270,12 @@ def test_dual_expert_action_then_video_action_only_rollout_preserves_hidden_prop
         torch.randn(1, 48, 1, 8, 8),
         context=PolicyInferContext(
             state=torch.ones(1, 1, 4),
-            extra={"dual_expert_action_only_rollout": True},
+            output_request=PolicyInferenceOutputRequest.action_only(),
         ),
         text_context=torch.randn(1, 5, 16),
     )
     first_state = first.policy_output.next_state.variant_state
-    assert isinstance(first_state, DualExpertRuntimeState)
+    assert isinstance(first_state, VideoActionRolloutState)
     assert first_state.past_hidden_proprio_states is not None
     assert first_state.past_clean_latents is not None
     assert (
@@ -2530,45 +2283,29 @@ def test_dual_expert_action_then_video_action_only_rollout_preserves_hidden_prop
         == first_state.past_clean_latents.shape[2]
     )
 
-    warmed_state = first_state
-    warmed_state.past_clean_latents = torch.cat(
-        [
-            warmed_state.past_clean_latents,
-            torch.randn(1, 48, 4, 8, 8),
-        ],
-        dim=2,
-    )
-    warmed_state.past_clean_actions = torch.cat(
-        [
-            warmed_state.past_clean_actions,
-            torch.randn(1, 4, 4),
-        ],
-        dim=1,
-    )
-    warmed_state.past_hidden_proprio_states = torch.cat(
-        [
-            warmed_state.past_hidden_proprio_states,
-            torch.full((1, 4, 4), 2.0),
-        ],
-        dim=1,
-    )
-    warmed_infer_state = first.policy_output.next_state
-    warmed_infer_state.variant_state = warmed_state
-    warmed_infer_state.step_index = 2
-    warmed_infer_state.cursor.current_start_frame = 5
+    warmed_infer_state = pipeline.reconcile_observed_history(
+        PolicyObservedHistory(
+            video_latents=torch.randn(1, 48, 2, 8, 8),
+            action_history=torch.randn(1, 4, 4),
+            proprio_history=torch.full((1, 2, 4), 2.0),
+            observation_frame_count=4,
+            execution_commit=PolicyExecutionCommit(PolicyTemporalSpan(1, 2), 2),
+        ),
+        first.policy_output.next_state,
+    ).next_state
 
     second = pipeline.forward_infer_step_from_latents(
         torch.randn(1, 48, 4, 8, 8),
         context=PolicyInferContext(
             state=torch.full((1, 1, 4), 3.0),
-            extra={"dual_expert_action_only_rollout": True},
+            output_request=PolicyInferenceOutputRequest.action_only(),
         ),
         infer_state=warmed_infer_state,
         text_context=torch.randn(1, 5, 16),
     )
 
     second_state = second.policy_output.next_state.variant_state
-    assert isinstance(second_state, DualExpertRuntimeState)
+    assert isinstance(second_state, VideoActionRolloutState)
     assert second_state.past_clean_latents is not None
     assert second_state.past_hidden_proprio_states is not None
     assert (
@@ -2578,7 +2315,7 @@ def test_dual_expert_action_then_video_action_only_rollout_preserves_hidden_prop
     assert second.policy_output.aux["predicted_latents"].shape[2] == 0
 
 
-def test_dual_expert_action_only_rollout_rejects_video_then_action() -> None:
+def test_action_only_rollout_rejects_video_then_action() -> None:
     config = ExperimentConfig(
         data=RobotWinDataConfig(
             num_frames=4,
@@ -2619,10 +2356,10 @@ def test_dual_expert_action_only_rollout_rejects_video_then_action() -> None:
     )
     pipeline = build_variant_pipeline_from_config(config)
 
-    with pytest.raises(ValueError, match="action_then_video.*decoupled_same_step"):
+    with pytest.raises(ValueError, match="does not support the requested inference outputs"):
         pipeline.forward_infer_step_from_latents(
             torch.randn(1, 48, 1, 8, 8),
-            context=PolicyInferContext(extra={"dual_expert_action_only_rollout": True}),
+            context=PolicyInferContext(output_request=PolicyInferenceOutputRequest.action_only()),
             text_context=torch.randn(1, 5, 16),
         )
 
@@ -2687,7 +2424,7 @@ def test_dual_expert_video_producer_mode_skips_action_expert(
     pipeline = build_variant_pipeline_from_config(config)
     assert (
         pipeline.policy_variant.inference_capabilities.recurrent_history_policy
-        is PolicyRecurrentHistoryPolicy.NEXT_OBSERVATION
+        is PolicyRecurrentHistoryPolicy.EXPLICIT_RECONCILIATION
     )
 
     def fail_action_stage(*args, **kwargs):
@@ -2711,9 +2448,8 @@ def test_dual_expert_video_producer_mode_skips_action_expert(
     assert first.policy_output.aux["action_pred_executable"] is False
     assert first.policy_output.aux["predicted_latents"].shape[2] == 2
     state = first.policy_output.next_state.variant_state
-    assert isinstance(state, DualExpertRuntimeState)
-    assert state.action_cache is None
-    assert state.split_cache_output_request == request
+    assert isinstance(state, VideoActionRolloutState)
+    assert not state.past_clean_action_mask.any()
     assert first.policy_output.generated_video is not None
     assert first.policy_output.generated_video.latents.shape[2] == 2
 
@@ -2727,13 +2463,15 @@ def test_dual_expert_video_producer_mode_skips_action_expert(
     assert second.policy_output.aux["generation_frame_start"] == 3
     assert second.policy_output.generation_frame_start == 3
 
-    with pytest.raises(ValueError, match="cannot switch from video-only"):
-        pipeline.forward_infer_step_from_latents(
-            torch.randn(1, 48, 2, 8, 8),
-            context=PolicyInferContext(),
-            infer_state=second.policy_output.next_state,
-            text_context=torch.randn(1, 5, 16),
-        )
+    monkeypatch.undo()
+    full = pipeline.forward_infer_step_from_latents(
+        torch.randn(1, 48, 2, 8, 8),
+        context=PolicyInferContext(),
+        infer_state=second.policy_output.next_state,
+        text_context=torch.randn(1, 5, 16),
+    )
+    assert torch.isfinite(full.decoder_output.action_pred).all()
+    assert full.decoder_output.action_pred.shape == (1, 4, 4)
 
 
 @pytest.mark.parametrize("next_observation_frames", (1, 2))
@@ -2872,24 +2610,13 @@ def test_dual_expert_vta_native_and_two_model_composition_are_exactly_equal(
     native_runtime = native_state.variant_state
     producer_runtime = producer_state.variant_state
     consumer_runtime = consumer_state.variant_state
-    assert isinstance(native_runtime, DualExpertRuntimeState)
-    assert isinstance(producer_runtime, DualExpertRuntimeState)
-    assert isinstance(consumer_runtime, DualExpertRuntimeState)
-    assert native_runtime.split_cache_output_request is None
-    assert producer_runtime.split_cache_output_request == (
-        PolicyInferenceOutputRequest.video_only()
-    )
-    assert consumer_runtime.split_cache_output_request is None
-    assert native_runtime.action_cache is not None
-    assert producer_runtime.action_cache is None
-    assert consumer_runtime.action_cache is not None
-    for native_layer, consumer_layer in zip(
-        native_runtime.action_cache.layers,
-        consumer_runtime.action_cache.layers,
-        strict=True,
-    ):
-        assert torch.equal(native_layer.key, consumer_layer.key)
-        assert torch.equal(native_layer.value, consumer_layer.value)
+    assert isinstance(native_runtime, VideoActionRolloutState)
+    assert isinstance(producer_runtime, VideoActionRolloutState)
+    assert isinstance(consumer_runtime, VideoActionRolloutState)
+    assert not producer_runtime.past_clean_action_mask.any()
+    assert torch.equal(native_runtime.past_clean_actions, consumer_runtime.past_clean_actions)
+    assert torch.equal(native_runtime.past_clean_latents, consumer_runtime.past_clean_latents)
+    assert torch.equal(native_runtime.past_clean_action_mask, consumer_runtime.past_clean_action_mask)
 
     next_latents = torch.randn(
         1,
@@ -2902,6 +2629,22 @@ def test_dual_expert_vta_native_and_two_model_composition_are_exactly_equal(
     next_context = PolicyInferContext(
         state=torch.tensor([[[0.5, 0.6, 0.7, 0.8]]])
     )
+    updated_states = []
+    for pipeline, state in ((native_pipeline, native_state), (producer_pipeline, producer_state), (consumer_pipeline, consumer_state)):
+        update = pipeline.policy_variant.reconcile_observed_history(
+            PolicyObservedHistory(
+                video_latents=next_latents,
+                action_history=native.decoder_output.action_pred[:, :next_observation_frames * 2],
+                proprio_history=next_context.state.expand(-1, next_observation_frames, -1),
+                observation_frame_count=next_observation_frames,
+                execution_commit=PolicyExecutionCommit(
+                    speculative_span=PolicyTemporalSpan(start_frame=1, frame_count=2),
+                    executed_frame_count=next_observation_frames,
+                ),
+            ), state,
+        )
+        updated_states.append(update.next_state)
+    native_state, producer_state, consumer_state = updated_states
     torch.manual_seed(37)
     native_next = native_pipeline.forward_infer_step_from_latents(
         next_latents,
@@ -2955,23 +2698,17 @@ def test_dual_expert_vta_native_and_two_model_composition_are_exactly_equal(
     ) == 1 + next_observation_frames
     native_next_runtime = native_next.policy_output.next_state.variant_state
     consumer_next_runtime = composed_next.policy_output.next_state.variant_state
-    assert isinstance(native_next_runtime, DualExpertRuntimeState)
-    assert isinstance(consumer_next_runtime, DualExpertRuntimeState)
-    assert native_next_runtime.action_cache is not None
-    assert consumer_next_runtime.action_cache is not None
-    expected_cached_action_tokens = (next_observation_frames + 2) * 2
+    assert isinstance(native_next_runtime, VideoActionRolloutState)
+    assert isinstance(consumer_next_runtime, VideoActionRolloutState)
+    expected_cached_action_tokens = (1 + next_observation_frames + 2) * 2
     assert (
-        native_next_runtime.action_cache.action_seq_len
-        == consumer_next_runtime.action_cache.action_seq_len
+        native_next_runtime.past_clean_actions.shape[1]
+        == consumer_next_runtime.past_clean_actions.shape[1]
         == expected_cached_action_tokens
     )
-    for native_layer, consumer_layer in zip(
-        native_next_runtime.action_cache.layers,
-        consumer_next_runtime.action_cache.layers,
-        strict=True,
-    ):
-        assert torch.equal(native_layer.key, consumer_layer.key)
-        assert torch.equal(native_layer.value, consumer_layer.value)
+    assert torch.equal(native_next_runtime.past_clean_actions, consumer_next_runtime.past_clean_actions)
+    assert torch.equal(native_next_runtime.past_clean_latents, consumer_next_runtime.past_clean_latents)
+    assert torch.equal(native_next_runtime.past_clean_action_mask, consumer_next_runtime.past_clean_action_mask)
 
 
 @pytest.mark.parametrize(
@@ -3015,7 +2752,7 @@ def test_dual_expert_conditional_consumer_owns_strict_idm_semantics(
     source = PolicyInferContext(
         state=torch.randn(1, 1, 4),
         previous_action=torch.randn(1, 4, 4),
-        extra={"task_text": ("move the object",)},
+        task_text=("move the object",),
         temporal_geometry=PolicyTemporalGeometry(
             frame_chunk_size=4,
             attention_window_size=30,
@@ -3028,7 +2765,8 @@ def test_dual_expert_conditional_consumer_owns_strict_idm_semantics(
 
     assert resolved.state is source.state
     assert resolved.previous_action is source.previous_action
-    assert resolved.extra is source.extra
+    assert resolved.task_text is source.task_text
+    assert resolved.metadata is source.metadata
     assert resolved.video_conditioned_action is None
     assert resolved.dynamics is not None
     assert resolved.dynamics.objective is DynamicsObjective.VIDEO_CONDITIONED_ACTION
@@ -3047,36 +2785,20 @@ def test_dual_expert_conditional_consumer_owns_strict_idm_semantics(
 
 def test_dual_expert_video_producer_honors_typed_chunk_geometry() -> None:
     from open_wam.models.policy_variants.dual_expert.rollout_geometry import (
-        resolve_dual_expert_rollout_frame_chunk_size,
+        resolve_rollout_frame_chunk_size,
     )
 
     context = PolicyInferContext(
         video_generation=PolicyVideoGenerationRequest(frame_count=2)
     )
 
-    assert resolve_dual_expert_rollout_frame_chunk_size(
+    assert resolve_rollout_frame_chunk_size(
         context,
         default_frame_chunk_size=4,
         base_action_horizon=16,
     ) == (2, 8, 4)
 
 
-def test_dual_expert_video_producer_rejects_conflicting_chunk_geometry() -> None:
-    from open_wam.models.policy_variants.dual_expert.rollout_geometry import (
-        resolve_dual_expert_rollout_frame_chunk_size,
-    )
-
-    context = PolicyInferContext(
-        video_generation=PolicyVideoGenerationRequest(frame_count=2),
-        extra={"dual_expert_rollout_frame_chunk_size": 3},
-    )
-
-    with pytest.raises(ValueError, match="conflicts with the typed video request"):
-        resolve_dual_expert_rollout_frame_chunk_size(
-            context,
-            default_frame_chunk_size=4,
-            base_action_horizon=16,
-        )
 
 
 def test_dual_expert_video_only_rejects_joint_coupling() -> None:
@@ -3084,7 +2806,7 @@ def test_dual_expert_video_only_rejects_joint_coupling() -> None:
         resolve_dual_expert_inference_output_request,
     )
 
-    with pytest.raises(ValueError, match="requires a video-independent coupling"):
+    with pytest.raises(ValueError, match="requires independently generated outputs"):
         resolve_dual_expert_inference_output_request(
             PolicyInferContext(
                 output_request=PolicyInferenceOutputRequest.video_only()
@@ -3168,25 +2890,14 @@ def test_dual_expert_decoupled_action_only_rollout_skips_split_cache_video_denoi
 
     output = pipeline.forward_infer_step_from_latents(
         torch.randn(1, 48, 1, 8, 8),
-        context=PolicyInferContext(extra={"dual_expert_action_only_rollout": True}),
+        context=PolicyInferContext(output_request=PolicyInferenceOutputRequest.action_only()),
         text_context=torch.randn(1, 5, 16),
     )
 
     assert output.decoder_output.action_pred.shape == (1, 4, 4)
-    assert output.policy_output.aux["dual_expert_action_only_rollout"] is True
+    assert output.policy_output.aux["action_only_rollout"] is True
     assert output.policy_output.aux["predicted_latents"].shape[2] == 0
-    assert (
-        output.policy_output.aux["dual_expert_cache_debug"][
-            "dual_expert_action_only_rollout"
-        ]
-        is True
-    )
-    assert (
-        output.policy_output.aux["dual_expert_cache_debug"][
-            "video_commit_before_action"
-        ]
-        is False
-    )
+    assert output.policy_output.next_state.variant_state.pending_predicted_video_frames == 0
     assert output.policy_output.decoder_artifacts is not None
     infer_artifacts = output.policy_output.decoder_artifacts.require(
         contract=DUAL_EXPERT_DECODER_ARTIFACT_CONTRACT,
@@ -3242,10 +2953,8 @@ def test_dual_expert_action_then_video_rollout_frame_chunk_override_shortens_int
     output = pipeline.forward_infer_step_from_latents(
         torch.randn(1, 48, 1, 8, 8),
         context=PolicyInferContext(
-            extra={
-                "dual_expert_action_only_rollout": True,
-                "dual_expert_rollout_frame_chunk_size": 1,
-            }
+            output_request=PolicyInferenceOutputRequest.action_only(),
+            temporal_geometry=PolicyTemporalGeometry(frame_chunk_size=1, attention_window_size=config.inference.attention_window_size)
         ),
         text_context=torch.randn(1, 5, 16),
     )
@@ -3264,9 +2973,10 @@ def test_dual_expert_action_then_video_rollout_frame_chunk_override_shortens_int
         == 2
     )
     state = output.policy_output.next_state.variant_state
-    assert isinstance(state, DualExpertRuntimeState)
+    assert isinstance(state, VideoActionRolloutState)
     assert state.past_clean_actions is not None
-    assert state.past_clean_actions.shape[1] == 2
+    assert state.past_clean_actions.shape[1] == 4
+    assert not state.past_clean_action_mask[:, :2].any()
     assert output.policy_output.next_state.cursor.current_start_frame == 2
 
 
@@ -3316,25 +3026,23 @@ def test_dual_expert_decoupled_rollout_frame_chunk_override_shortens_split_cache
     output = pipeline.forward_infer_step_from_latents(
         torch.randn(1, 48, 1, 8, 8),
         context=PolicyInferContext(
-            extra={
-                "dual_expert_action_only_rollout": True,
-                "dual_expert_rollout_frame_chunk_size": 1,
-            }
+            output_request=PolicyInferenceOutputRequest.action_only(),
+            temporal_geometry=PolicyTemporalGeometry(frame_chunk_size=1, attention_window_size=config.inference.attention_window_size)
         ),
         text_context=torch.randn(1, 5, 16),
     )
 
     assert output.decoder_output.action_pred.shape == (1, 2, 4)
     assert (
-        output.policy_output.aux["dual_expert_cache_debug"]["rollout_frame_chunk_size"]
+        output.policy_output.aux["dual_expert_packed_history_debug"]["rollout_frame_chunk_size"]
         == 1
     )
     assert (
-        output.policy_output.aux["dual_expert_cache_debug"]["rollout_action_horizon"]
+        output.policy_output.aux["dual_expert_packed_history_debug"]["rollout_action_horizon"]
         == 2
     )
     assert (
-        output.policy_output.aux["dual_expert_cache_debug"]["chunk_advance_frames"] == 1
+        output.policy_output.next_state.variant_state.chunk_advance_frames == 1
     )
     assert output.policy_output.decoder_artifacts is not None
     infer_artifacts = output.policy_output.decoder_artifacts.require(
@@ -3424,13 +3132,13 @@ def test_dual_expert_packed_infer_uses_rollout_history_contract_for_cached_conte
     action_tokens_per_frame = (
         config.data.action_schema.action_horizon // config.inference.frame_chunk_size
     )
-    runtime_state = DualExpertRuntimeState(
+    runtime_state = VideoActionRolloutState(
         past_clean_latents=torch.randn(1, 48, 12, 8, 8),
         past_clean_actions=torch.randn(1, 12 * action_tokens_per_frame, 4),
     )
     infer_state = PolicyInferState(
-        step_index=6,
-        cursor=RolloutCursor(current_start_frame=12, chunk_size=2),
+        cursor=replace(RolloutCursor(current_start_frame=12, chunk_size=2), block_index=6),
+
         variant_state=runtime_state,
     )
 
@@ -3446,7 +3154,7 @@ def test_dual_expert_packed_infer_uses_rollout_history_contract_for_cached_conte
     assert history_debug["max_history_frames"] == 8
     assert history_debug["shared_history_frames"] == 8
     next_state = output.policy_output.next_state.variant_state
-    assert isinstance(next_state, DualExpertRuntimeState)
+    assert isinstance(next_state, VideoActionRolloutState)
     assert next_state.past_clean_latents is not None
     assert next_state.past_clean_actions is not None
     assert next_state.past_clean_latents.shape[2] == 10
@@ -3767,7 +3475,7 @@ def test_dual_expert_packed_infer_tracks_per_chunk_hidden_proprio_history() -> N
         text_context=torch.randn(1, 5, 16),
     )
     first_state = first.policy_output.next_state.variant_state
-    assert isinstance(first_state, DualExpertRuntimeState)
+    assert isinstance(first_state, VideoActionRolloutState)
     assert first_state.past_hidden_proprio_states is not None
     assert first_state.past_hidden_proprio_states.shape == (1, 3, 4)
 
@@ -3778,7 +3486,7 @@ def test_dual_expert_packed_infer_tracks_per_chunk_hidden_proprio_history() -> N
         text_context=torch.randn(1, 5, 16),
     )
     second_state = second.policy_output.next_state.variant_state
-    assert isinstance(second_state, DualExpertRuntimeState)
+    assert isinstance(second_state, VideoActionRolloutState)
     assert second_state.past_hidden_proprio_states is not None
     assert (
         second_state.past_hidden_proprio_states.shape[1]

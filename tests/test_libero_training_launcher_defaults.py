@@ -290,9 +290,9 @@ def _launcher_realtime_result(
 
 
 def _load_dual_expert_visualization_module():
-    from open_wam.evals import libero_dual_expert_rollout
+    from open_wam.evals import libero_policy_rollout
 
-    return libero_dual_expert_rollout
+    return libero_policy_rollout
 
 
 def _set_override_tokens(argv: list[str]) -> list[str]:
@@ -1159,12 +1159,12 @@ def test_legacy_m5_gjd_realtime_launcher_delegates_named_ablation_overrides() ->
     )
 
     assert argv[:3] == [
-        str(REPO_ROOT / "scripts/run_libero_dual_expert_visualization.py"),
+        str(REPO_ROOT / "scripts/run_libero_policy.py"),
         "--cfg",
         "configs/experiments/dual_expert_libero_generalist_joint_denoising.yaml",
     ]
     assert _arg_value(argv, "--frontend-encode-mode") == "lingbot_streaming_vae"
-    assert _arg_value(argv, "--dual-expert-inference-window-size") == "30"
+    assert _arg_value(argv, "--inference-window-size") == "30"
     assert _arg_value(argv, "--startup-model-obs-frames") == "1"
     assert _arg_value(argv, "--startup-env-init-steps") == "5"
     assert _arg_value(argv, "--max-timestep") == "1500"
@@ -1219,7 +1219,7 @@ def test_unified_gjd_realtime_launcher_covers_architecture_and_ablation_surfaces
             expected_script = (
                 str(REPO_ROOT / "scripts/run_libero_realtime_sandbox.py")
                 if architecture == "parallel_stream"
-                else str(REPO_ROOT / "scripts/run_libero_dual_expert_visualization.py")
+                else str(REPO_ROOT / "scripts/run_libero_policy.py")
             )
             assert argv[:3] == [
                 expected_script,
@@ -1228,7 +1228,7 @@ def test_unified_gjd_realtime_launcher_covers_architecture_and_ablation_surfaces
             ]
             if architecture == "dual_expert":
                 assert _arg_value(argv, "--frontend-encode-mode") == "lingbot_streaming_vae"
-                assert _arg_value(argv, "--dual-expert-inference-window-size") == "30"
+                assert _arg_value(argv, "--inference-window-size") == "30"
                 assert _arg_value(argv, "--startup-model-obs-frames") == "1"
                 assert _arg_value(argv, "--startup-env-init-steps") == "5"
                 assert _arg_value(argv, "--max-timestep") == "1500"
@@ -1256,7 +1256,7 @@ def test_dual_expert_gjd_realtime_launcher_rejects_deprecated_frontend_encode_mo
         "--ablation=pure_joint",
         "--frontend-encode-mode",
         "rolling_offline",
-        "--dual-expert-inference-window-size=64",
+        "--inference-window-size=64",
         "--max-chunks",
         "7",
     )
@@ -1280,20 +1280,20 @@ def test_dual_expert_gjd_realtime_launcher_rejects_deprecated_frontend_encode_mo
 
 
 def test_dual_expert_visualization_deprecates_non_streaming_frontend_encode_modes() -> None:
-    from open_wam.evals import libero_dual_expert_runtime
+    from open_wam.evals import libero_policy_runtime
 
-    libero_dual_expert_runtime._require_current_frontend_encode_mode(
+    libero_policy_runtime._require_current_frontend_encode_mode(
         "lingbot_streaming_vae",
         allow_deprecated=False,
         source="test",
     )
     with pytest.raises(ValueError, match="rolling_offline.*deprecated"):
-        libero_dual_expert_runtime._require_current_frontend_encode_mode(
+        libero_policy_runtime._require_current_frontend_encode_mode(
             "rolling_offline",
             allow_deprecated=False,
             source="test",
         )
-    libero_dual_expert_runtime._require_current_frontend_encode_mode(
+    libero_policy_runtime._require_current_frontend_encode_mode(
         "rolling_offline",
         allow_deprecated=True,
         source="test",

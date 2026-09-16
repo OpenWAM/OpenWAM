@@ -8,7 +8,7 @@ import pytest
 
 from open_wam.models.common.rollout_history import resolve_execute_action_steps
 
-MODULE_PATH = Path(__file__).resolve().parents[1] / "scripts" / "run_libero_dual_expert_batch_visualization.py"
+MODULE_PATH = Path(__file__).resolve().parents[1] / "scripts" / "run_libero_policy_batch.py"
 
 
 def _load_functions(*names: str) -> SimpleNamespace:
@@ -78,13 +78,13 @@ def test_acquire_rollout_env_reuses_env_within_task_and_closes_on_task_switch() 
     helpers = _load_functions("_acquire_rollout_env", "_close_reused_env")
     constructed: list[_FakeEnv] = []
 
-    def construct_dual_expert_libero_env(task_spec, **_):
+    def construct_libero_policy_env(task_spec, **_):
         env = _FakeEnv(str(task_spec))
         constructed.append(env)
         return env
 
-    helpers._acquire_rollout_env.__globals__["dual_expert_viz"] = SimpleNamespace(
-        construct_dual_expert_libero_env=construct_dual_expert_libero_env
+    helpers._acquire_rollout_env.__globals__["policy_rollout"] = SimpleNamespace(
+        construct_libero_policy_env=construct_libero_policy_env
     )
     args = SimpleNamespace(reuse_env_per_task=True)
     resources = SimpleNamespace(
@@ -112,13 +112,13 @@ def test_acquire_rollout_env_does_not_reuse_when_disabled() -> None:
     helpers = _load_functions("_acquire_rollout_env", "_close_reused_env")
     constructed: list[_FakeEnv] = []
 
-    def construct_dual_expert_libero_env(task_spec, **_):
+    def construct_libero_policy_env(task_spec, **_):
         env = _FakeEnv(str(task_spec))
         constructed.append(env)
         return env
 
-    helpers._acquire_rollout_env.__globals__["dual_expert_viz"] = SimpleNamespace(
-        construct_dual_expert_libero_env=construct_dual_expert_libero_env
+    helpers._acquire_rollout_env.__globals__["policy_rollout"] = SimpleNamespace(
+        construct_libero_policy_env=construct_libero_policy_env
     )
     args = SimpleNamespace(reuse_env_per_task=False)
     resources = SimpleNamespace(
@@ -150,9 +150,9 @@ def test_loaded_rollout_forwards_policy_and_execution_chunk_overrides() -> None:
                 task_spec="task-spec"
             ),
             "_acquire_rollout_env": lambda *args, **kwargs: ("env", True),
-            "dual_expert_viz": SimpleNamespace(
-                DualExpertLiberoEpisodeOptions=episode_options,
-                run_dual_expert_libero_episode=lambda *args, **kwargs: {
+            "policy_rollout": SimpleNamespace(
+                LiberoPolicyEpisodeOptions=episode_options,
+                run_libero_policy_episode=lambda *args, **kwargs: {
                     "episode": args[0],
                     "video_action_composition": kwargs.get(
                         "video_action_composition"
@@ -167,10 +167,10 @@ def test_loaded_rollout_forwards_policy_and_execution_chunk_overrides() -> None:
         max_chunks=3,
         execute_action_steps=8,
         execute_frame_chunk_size=None,
-        dual_expert_rollout_frame_chunk_size=2,
-        dual_expert_inference_window_size=30,
-        dual_expert_action_only_rollout=False,
-        dual_expert_gjd_action_route="joint",
+        rollout_frame_chunk_size=2,
+        inference_window_size=30,
+        action_only_rollout=False,
+        policy_action_route="native",
         reset_policy_state_each_chunk=False,
         max_imagined_latent_frames=12,
         output_dir="outputs",
@@ -194,9 +194,9 @@ def test_loaded_rollout_forwards_policy_and_execution_chunk_overrides() -> None:
     )
 
     assert captured["seeded"] == 11
-    assert captured["dual_expert_rollout_frame_chunk_size"] == 2
+    assert captured["rollout_frame_chunk_size"] == 2
     assert captured["execute_action_steps"] == 8
-    assert captured["dual_expert_inference_window_size"] == 30
+    assert captured["inference_window_size"] == 30
     assert result["episode"].task_id == 4
     assert result["episode"].episode_idx == 7
     assert result["video_action_composition"] == "composition"

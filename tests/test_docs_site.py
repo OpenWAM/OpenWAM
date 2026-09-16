@@ -26,7 +26,7 @@ def test_docs_site_stages_curated_public_docs_only(tmp_path: Path) -> None:
     summary = builder.build_docs_site(output)
 
     assert summary["public_pages"] == len(builder.PUBLIC_MARKDOWN_PATHS) == 33
-    assert summary["public_assets"] == len(builder.PUBLIC_ASSET_PATHS) == 7
+    assert summary["public_assets"] == len(builder.PUBLIC_ASSET_PATHS) == 8
     assert summary["notes_published"] is False
     assert summary["broken_local_links"] == 0
     assert summary["missing_repository_paths"] == 0
@@ -46,6 +46,9 @@ def test_docs_site_stages_curated_public_docs_only(tmp_path: Path) -> None:
         REPO_ROOT / "docs/assets/affiliations/stanford-src.webp"
     ).read_bytes()
     assert (output / "assets/stylesheets/openwam.css").is_file()
+    assert (output / "assets/robot-teaser.gif").read_bytes() == (
+        REPO_ROOT / "docs/assets/robot-teaser.gif"
+    ).read_bytes()
     assert not (output / "m5_gjd_uva_libero10_comparison.md").exists()
     assert not (output / "engineering-notes").exists()
     assert not (output / "CHECKPOINT.md").exists()

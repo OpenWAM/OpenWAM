@@ -17,7 +17,7 @@ from open_wam.models.policy_variants.contracts import (
     PolicyTrainBatch,
     PolicyTrainOutput,
 )
-from open_wam.models.policy_variants.dual_expert.decoder_artifacts import (
+from open_wam.models.decoder_artifacts import (
     DUAL_EXPERT_DECODER_ARTIFACT_CONTRACT,
     DualExpertInferArtifacts,
     DualExpertTrainArtifacts,
@@ -255,7 +255,7 @@ class DualExpertActionDecoder(ActionDecoder):
             aux["predicted_latents"] = infer_artifacts.predicted_latents
             aux["predicted_video_latents"] = infer_artifacts.predicted_latents
         return ActionDecoderInferOutput(
-            action_pred=self._apply_action_sampler_mask(infer_artifacts.action_pred),
+            action_pred=infer_artifacts.action_pred,
             next_state=None,
             aux=aux,
         )

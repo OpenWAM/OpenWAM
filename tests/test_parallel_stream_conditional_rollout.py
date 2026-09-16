@@ -16,7 +16,6 @@ from open_wam.models.common.dynamics_objectives import (
     resolve_dynamics_objective,
     resolve_dynamics_rollout_geometry,
 )
-from open_wam.models.policy_variants.parallel_stream import reference_runtime
 from open_wam.models.policy_variants.parallel_stream.conditional_rollout import (
     dynamics_rollout_prefix_visibility_mode,
     select_dynamics_warmup_history_suffix,
@@ -44,28 +43,6 @@ def _rollout_geometry(
     )
 
 
-def test_reference_runtime_conditional_rollout_names_alias_canonical_contract() -> None:
-    aliases = {
-        "_rollout_chunk_size_for_generalist_conditioning": (
-            dynamics_objective_rollout_chunk_size
-        ),
-        "_generalist_mode_for_action_conditioning": (resolve_dynamics_objective),
-        "_is_conditional_joint_denoise_mode": is_conditional_dynamics_objective,
-        "_prefix_visibility_mode_for_generalist_conditioning": (
-            dynamics_rollout_prefix_visibility_mode
-        ),
-        "_select_conditional_warmup_history_suffix": (
-            select_dynamics_warmup_history_suffix
-        ),
-        "_slice_conditioning_chunk": slice_dynamics_conditioning_chunk,
-        "_uses_generalist_mode_text_token": uses_dynamics_mode_text_token,
-        "_window_size_for_generalist_conditioning": (
-            dynamics_objective_attention_window_size
-        ),
-    }
-
-    for legacy_name, canonical in aliases.items():
-        assert getattr(reference_runtime, legacy_name) is canonical
 
 
 @pytest.mark.parametrize(

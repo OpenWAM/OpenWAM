@@ -69,7 +69,7 @@ def test_variant_pipeline_train_and_infer_shapes(
     train_output = pipeline.forward_train(batch.views, sequence_train_batch)
     infer_output = pipeline.forward_infer_step(
         batch.views,
-        PolicyInferContext(state=batch.state, extra={"task_text": batch.task_text}),
+        PolicyInferContext(state=batch.state, task_text=batch.task_text),
     )
 
     assert train_output.decoder_output.action_pred.shape == (
@@ -79,7 +79,7 @@ def test_variant_pipeline_train_and_infer_shapes(
     )
     assert infer_output.decoder_output.action_pred.shape == (
         2,
-        expected_horizon,
+        config.inference.frame_chunk_size * pipeline.policy_variant.rollout_contract.action_tokens_per_frame,
         config.action_decoder.action_dim,
     )
 
@@ -105,7 +105,7 @@ def test_raw_libero_variant_pipeline_train_and_infer_shapes(
     train_output = pipeline.forward_train(batch.views, sequence_train_batch)
     infer_output = pipeline.forward_infer_step(
         batch.views,
-        PolicyInferContext(state=batch.state, extra={"task_text": batch.task_text}),
+        PolicyInferContext(state=batch.state, task_text=batch.task_text),
     )
 
     assert train_output.decoder_output.action_pred.shape == (
@@ -200,10 +200,7 @@ def test_causal_video_prediction_pipeline_trains_from_latents(tmp_path: Path) ->
         infer_batch.video_latents,
         PolicyInferContext(
             state=infer_batch.state,
-            extra={
-                "task_text": infer_batch.task_text,
-                "metadata": infer_batch.metadata,
-            },
+            task_text=infer_batch.task_text, metadata=infer_batch.metadata,
         ),
         canonical_video=infer_batch.canonical_video,
         text_context=infer_batch.text_context,

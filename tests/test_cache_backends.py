@@ -1,9 +1,9 @@
 from __future__ import annotations
+from open_wam.models.visual_tower.exact_runtime import prepare_exact_single_stream_input as prepare_reference_single_stream_input
 
 import pytest
 import torch
 
-from open_wam.configs.enums import CurrentBlockCoupling, HistoryStreamVisibility
 from open_wam.models.common import (
     AttentionProfileSpec,
     apply_attention_backend,
@@ -18,12 +18,6 @@ from open_wam.models.common import (
     resolve_slot_pool_prefix_visibility,
     retained_slot_pool_indices_for_current_write,
     update_slot_pool_layer_state,
-)
-from open_wam.models.policy_variants.parallel_stream.cache_execution import (
-    build_joint_clean_cache_attention_mask,
-)
-from open_wam.models.policy_variants.parallel_stream.reference_runtime import (
-    prepare_reference_single_stream_input,
 )
 from open_wam.models.video_backbone.config import SharedVideoTransformerConfig
 from open_wam.models.visual_tower import (
@@ -446,104 +440,10 @@ def test_slot_pool_update_write_attends_after_non_mutating_eviction(
     assert torch.equal(layer_state.stream_ids[ordered], torch.tensor([1, 0]))
 
 
-def test_joint_clean_cache_commit_mask_matches_preserved_history_rule() -> None:
-    backbone_config = SharedVideoTransformerConfig(
-        implementation="shared_transformer",
-        attn_mode="torch",
-        hidden_size=32,
-        num_layers=1,
-        num_heads=4,
-        attention_head_dim=8,
-        ffn_dim=64,
-        text_dim=16,
-        freq_dim=8,
-        patch_size_t=1,
-        patch_size_h=1,
-        patch_size_w=1,
-    )
-    latents = torch.randn(1, backbone_config.latent_channels, 1, 1, 1)
-    actions = torch.randn(1, 4, 1, 1, 1)
-
-    mask = build_joint_clean_cache_attention_mask(
-        latents=latents,
-        actions=actions,
-        text_token_count=1,
-        backbone_config=backbone_config,
-        chunk_size=1,
-        window_size=4,
-        current_block_coupling=CurrentBlockCoupling.JOINT,
-        history_stream_visibility=(HistoryStreamVisibility.VIDEO_QUERIES_VIDEO_ONLY),
-    )
-
-    assert mask.shape == (2, 2)
-    assert bool(mask[0, 0].item()) is True
-    assert bool(mask[0, 1].item()) is False
-    assert bool(mask[1, 0].item()) is True
-    assert bool(mask[1, 1].item()) is True
 
 
-def test_joint_clean_cache_commit_mask_counts_action_width() -> None:
-    backbone_config = SharedVideoTransformerConfig(
-        implementation="shared_transformer",
-        attn_mode="torch",
-        hidden_size=32,
-        num_layers=1,
-        num_heads=4,
-        attention_head_dim=8,
-        ffn_dim=64,
-        text_dim=16,
-        freq_dim=8,
-        patch_size_t=1,
-        patch_size_h=1,
-        patch_size_w=1,
-    )
-    latents = torch.randn(1, backbone_config.latent_channels, 1, 1, 1)
-    actions = torch.randn(1, 4, 1, 2, 3)
-
-    mask = build_joint_clean_cache_attention_mask(
-        latents=latents,
-        actions=actions,
-        text_token_count=1,
-        backbone_config=backbone_config,
-        chunk_size=1,
-        window_size=4,
-        current_block_coupling=CurrentBlockCoupling.JOINT,
-        history_stream_visibility=(HistoryStreamVisibility.VIDEO_QUERIES_VIDEO_ONLY),
-    )
-
-    assert mask.shape == (7, 7)
 
 
-def test_joint_clean_cache_commit_mask_is_batch_local() -> None:
-    backbone_config = SharedVideoTransformerConfig(
-        implementation="shared_transformer",
-        attn_mode="torch",
-        hidden_size=32,
-        num_layers=1,
-        num_heads=4,
-        attention_head_dim=8,
-        ffn_dim=64,
-        text_dim=16,
-        freq_dim=8,
-        patch_size_t=1,
-        patch_size_h=1,
-        patch_size_w=1,
-    )
-    latents = torch.randn(2, backbone_config.latent_channels, 1, 1, 1)
-    actions = torch.randn(2, 4, 1, 1, 1)
-
-    mask = build_joint_clean_cache_attention_mask(
-        latents=latents,
-        actions=actions,
-        text_token_count=1,
-        backbone_config=backbone_config,
-        chunk_size=1,
-        window_size=4,
-        current_block_coupling=CurrentBlockCoupling.JOINT,
-        history_stream_visibility=(HistoryStreamVisibility.VIDEO_QUERIES_VIDEO_ONLY),
-    )
-
-    assert mask.shape == (2, 2)
 
 
 def test_exact_replica_core_uses_slot_pool_cache_backend() -> None:

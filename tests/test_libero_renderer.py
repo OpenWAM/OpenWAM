@@ -9,12 +9,12 @@ from open_wam.configs import (
     LiberoRendererBackend,
     LiberoRendererProfile,
 )
-from open_wam.evals.libero_dual_expert_rollout import (
-    DualExpertLiberoEpisodeOptions,
-    run_dual_expert_libero_episode,
+from open_wam.evals.libero_policy_rollout import (
+    LiberoPolicyEpisodeOptions,
+    run_libero_policy_episode,
 )
-from open_wam.evals.libero_dual_expert_runtime import (
-    DualExpertActionRoute,
+from open_wam.evals.libero_policy_runtime import (
+    PolicyActionRoute,
 )
 from open_wam.integrations.libero_rendering import (
     DEFAULT_LIBERO_RENDERER_CONFIG,
@@ -210,9 +210,9 @@ def test_activation_is_idempotent_after_renderer_stack_loads() -> None:
 
 
 def _episode_options(
-    route: DualExpertActionRoute = DualExpertActionRoute.JOINT,
-) -> DualExpertLiberoEpisodeOptions:
-    return DualExpertLiberoEpisodeOptions(
+    route: PolicyActionRoute = PolicyActionRoute.NATIVE,
+) -> LiberoPolicyEpisodeOptions:
+    return LiberoPolicyEpisodeOptions(
         benchmark="libero_10",
         task_id=0,
         episode_idx=0,
@@ -220,10 +220,10 @@ def _episode_options(
         max_chunks=1,
         execute_action_steps=None,
         execute_frame_chunk_size=None,
-        dual_expert_rollout_frame_chunk_size=None,
-        dual_expert_inference_window_size=None,
-        dual_expert_action_only_rollout=False,
-        dual_expert_gjd_action_route=route.value,
+        rollout_frame_chunk_size=None,
+        inference_window_size=None,
+        action_only_rollout=False,
+        policy_action_route=route.value,
         reset_policy_state_each_chunk=False,
         max_imagined_latent_frames=0,
         output_dir="outputs",
@@ -233,9 +233,9 @@ def _episode_options(
     )
 
 
-@pytest.mark.parametrize("route", tuple(DualExpertActionRoute))
+@pytest.mark.parametrize("route", tuple(PolicyActionRoute))
 def test_dual_expert_online_routes_share_renderer_profile(
-    route: DualExpertActionRoute,
+    route: PolicyActionRoute,
 ) -> None:
     options = _episode_options(route)
 
@@ -251,7 +251,7 @@ def test_dual_expert_episode_rejects_active_renderer_mismatch(
     monkeypatch.setitem(sys.modules, "mujoco", object())
 
     with pytest.raises(RuntimeError, match="active_backend='osmesa'"):
-        run_dual_expert_libero_episode(
+        run_libero_policy_episode(
             _episode_options(),
             SimpleNamespace(),
             SimpleNamespace(),

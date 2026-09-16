@@ -303,8 +303,8 @@ class SingleDeviceStrategy:
 class DistributedStrategy(SingleDeviceStrategy):
     """Distributed strategy that can wrap a model in DDP or FSDP.
 
-    When launched without distributed environment variables, this degrades
-    cleanly to the single-device behavior so config changes remain low-risk.
+    FSDP also applies at world size one, where offload and mixed precision
+    still matter. DDP needs no wrapper for a single process.
     """
 
     kind: StrategyName = StrategyName.DDP
@@ -334,24 +334,29 @@ class DistributedStrategy(SingleDeviceStrategy):
         )
         self.grad_scaler = torch.amp.GradScaler("cuda", enabled=self._use_fp16_scaler)
         self._owns_process_group = False
-        if self.distributed and not dist.is_initialized():
+        if self._uses_process_group and not dist.is_initialized():
             backend = "nccl" if self.device.type == "cuda" else "gloo"
             dist.init_process_group(
                 backend=backend,
                 rank=self.rank,
                 world_size=self.world_size,
                 timeout=timedelta(seconds=int(self.distributed_timeout_seconds)),
+                **({"store": dist.HashStore()} if self.world_size == 1 else {}),
             )
             self._owns_process_group = True
         self._device_mesh = (
             init_device_mesh(self.device.type, (self.world_size,))
-            if self.distributed and self.device.type != "cpu"
+            if self._uses_process_group and self.device.type != "cpu"
             else None
         )
 
+    @property
+    def _uses_process_group(self) -> bool:
+        return self.distributed or self.kind == StrategyName.FSDP
+
     def prepare_model(self, model: nn.Module) -> nn.Module:
         model.to(device=self.device)
-        if not self.distributed:
+        if not self._uses_process_group:
             return model
         if self.kind == StrategyName.DDP:
             return DistributedDataParallel(
@@ -390,11 +395,11 @@ class DistributedStrategy(SingleDeviceStrategy):
         return getattr(model, "module", model)
 
     def barrier(self) -> None:
-        if self.distributed and dist.is_initialized():
+        if self._uses_process_group and dist.is_initialized():
             dist.barrier()
 
     def set_gradient_sync(self, model: nn.Module, enabled: bool) -> None:
-        if not self.distributed:
+        if not self._uses_process_group:
             return
         _set_gradient_sync_recursive(model, enabled)
 
@@ -406,6 +411,7 @@ class DistributedStrategy(SingleDeviceStrategy):
     def close(self) -> None:
         if self._owns_process_group and dist.is_initialized():
             dist.destroy_process_group()
+        self._owns_process_group = False
 
 
 def build_training_strategy(

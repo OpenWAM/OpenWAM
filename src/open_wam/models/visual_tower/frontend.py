@@ -47,6 +47,17 @@ class SharedVideoFrontend(nn.Module):
         self.token_embed = nn.Linear(patch_dim, self.config.hidden_size)
 
     @property
+    def temporal_stride(self) -> int:
+        """Raw observations per subsequent latent frame, owned by the encoder."""
+        from open_wam.models.common.video_geometry import WAN_TEMPORAL_CHUNK_SIZE
+
+        return (
+            WAN_TEMPORAL_CHUNK_SIZE
+            if self.reference_assets.has_vae
+            else int(self.latentizer.stride[0])
+        )
+
+    @property
     def latent_space_identity(self) -> VideoLatentSpaceIdentity | None:
         """Return the path-independent identity of the active video encoder."""
 

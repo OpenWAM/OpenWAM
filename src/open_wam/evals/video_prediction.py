@@ -99,25 +99,21 @@ def rollout_causal_video_prediction(
             step = runner.infer_step(
                 session=session,
                 context=PolicyInferContext(
-                    extra={
-                        "task_text": batch.task_text,
-                        "metadata": (
+                    task_text=batch.task_text, metadata=(
                             {
                                 "observed_prefix_frames": context_frames,
                                 "future_suffix_frames": future_frames,
                             },
-                        ),
-                    }
+                        )
                 ),
                 video_latents=model_input,
             )
             session = step.session
             output = step.infer_output
-            predicted = output.decoder_output.aux.get("predicted_latents")
-            if not isinstance(predicted, torch.Tensor):
-                raise TypeError(
-                    "Causal video decoder did not emit `predicted_latents`."
-                )
+            generated = output.policy_output.generated_video
+            if generated is None:
+                raise TypeError("The video policy did not publish generated video.")
+            predicted = torch.cat([context_latents, generated.latents], dim=2)
             expected_frames = context_frames + future_frames
             if int(predicted.shape[2]) != expected_frames:
                 raise ValueError(
@@ -189,9 +185,7 @@ def _rollout_chunked_conditioned_video(
         step = runner.infer_step(
             session=session,
             context=PolicyInferContext(
-                extra={
-                    "task_text": batch.task_text,
-                    "metadata": (
+                task_text=batch.task_text, metadata=(
                         {
                             "observed_prefix_frames": 1,
                             "future_suffix_frames": target_frames,
@@ -200,16 +194,14 @@ def _rollout_chunked_conditioned_video(
                                 sample_metadata.get("chunk_origin_frame", 0)
                             ),
                         },
-                    ),
-                }
+                    )
             ),
             video_latents=model_input,
         )
-    predicted = step.infer_output.decoder_output.aux.get("predicted_latents")
-    if not isinstance(predicted, torch.Tensor):
-        raise TypeError(
-            "Chunked conditioned-video decoder did not emit `predicted_latents`."
-        )
+    generated = step.infer_output.policy_output.generated_video
+    if generated is None:
+        raise TypeError("The video policy did not publish generated video.")
+    predicted = torch.cat([observed_prefix, generated.latents], dim=2)
     expected_shape = tuple(model_input.shape)
     if tuple(predicted.shape) != expected_shape:
         raise ValueError(

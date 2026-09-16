@@ -1,4 +1,5 @@
 from __future__ import annotations
+from open_wam.models.visual_tower.exact_runtime import build_reference_mesh_id as get_mesh_id
 
 import hashlib
 import json
@@ -21,9 +22,6 @@ from open_wam.models.common.packed_token_layout import (
     PackedTokenStream,
     build_exact_conditioned_video_token_layout,
     build_exact_video_action_token_layout,
-)
-from open_wam.models.policy_variants.parallel_stream.reference_runtime import (
-    get_mesh_id,
 )
 from open_wam.models.video_backbone.config import SharedVideoTransformerConfig
 from open_wam.models.visual_tower.replica_core import SharedVideoTransformerCore

@@ -115,7 +115,7 @@ _REPORT_KEY_ALIASES = {
     "mot_action_context_invalid_tokens": (
         "dual_expert_action_context_invalid_tokens"
     ),
-    "mot_action_only_rollout": "dual_expert_action_only_rollout",
+    "mot_action_only_rollout": "action_only_rollout",
     "mot_attention_focus": "dual_expert_attention_focus",
     "mot_cache_debug": "dual_expert_cache_debug",
     "mot_diagnostic_zero_current_action_noise": (
@@ -131,7 +131,7 @@ _REPORT_KEY_ALIASES = {
     ),
     "mot_generalist_rollout_mode": "action_conditioning_mode",
     "dual_expert_generalist_rollout_mode": "action_conditioning_mode",
-    "mot_gjd_action_route": "dual_expert_gjd_action_route",
+    "mot_gjd_action_route": "policy_action_route",
     "mot_history_anchor_frames": "dual_expert_history_anchor_frames",
     "mot_history_frames": "dual_expert_history_frames",
     "mot_infer_artifacts": "dual_expert_infer_artifacts",
@@ -153,7 +153,7 @@ _REPORT_STRING_ALIASES = {
     "legacy_split_cache": "split_cache",
     "native_packed_coupling": "packed_coupling",
     "split_cache_non_joint": "split_cache",
-    "MoTRuntimeState": "DualExpertRuntimeState",
+    "MoTRuntimeState": "VideoActionRolloutState",
     "MoTActionCache": "DualExpertActionCache",
     "MoTActionLayerCache": "DualExpertActionLayerCache",
     "MoTVideoCache": "DualExpertVideoCache",
@@ -939,6 +939,31 @@ def _file_content_probe_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _canonicalize_feature_cache_paths(value: dict[str, Any]) -> dict[str, Any]:
+    """Compare every cache value across the session/feature ownership move."""
+    prefix = "next_state.variant_state."
+    aliases = {
+        "features.video": "video_cache",
+        "features.action": "action_cache",
+        "features.action_start_frame": "action_cache_start_frame",
+    }
+    projected = {}
+    for key, item in value.items():
+        if key == prefix + "features" and item == {
+            "kind": "dataclass", "type": "DualExpertFeatureCache"
+        }:
+            continue
+        for source, target in aliases.items():
+            source = prefix + source
+            if key == source or key.startswith(source + "."):
+                key = prefix + target + key[len(source):]
+                break
+        if key in projected:
+            raise ValueError(f"Duplicate cache report path after ownership mapping: {key}")
+        projected[key] = item
+    return projected
+
+
 def _comparison_projection(
     value: Any,
     *,
@@ -947,13 +972,25 @@ def _comparison_projection(
     if isinstance(value, dict):
         if _path == ("checkpoint_provenance",):
             value = _canonicalize_gjd_provenance_schema(value)
+        if _path and _path[-1] in {"state_schema", "state_fingerprints"}:
+            value = _canonicalize_feature_cache_paths(value)
         value = _canonicalize_pruned_resume_model_rank(value, path=_path)
         tensor_fingerprint = _is_tensor_fingerprint(value)
         projected: dict[str, Any] = {}
         for raw_key, item in value.items():
+            canonical_key = _REPORT_KEY_ALIASES.get(str(raw_key), str(raw_key))
             if (
                 raw_key in VOLATILE_REPORT_KEYS
                 or raw_key == "nonzero_elements"
+                or (
+                    # Ownership restoration was removed. These describe module
+                    # placement, not numerical execution or session semantics.
+                    _path in {("backend",), ("backend", "route")}
+                    and canonical_key in {
+                        "block_restore_ready", "block_restore_required",
+                        "block_restore_performed", "requires_block_restore",
+                    }
+                )
                 or (
                     _path == ("backend", "route")
                     and raw_key

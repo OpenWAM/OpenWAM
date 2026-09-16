@@ -19,28 +19,17 @@ warnings.warn(
 )
 
 _SUBMODULES = (
-    "attention",
-    "attention_cached",
     "attention_packed",
     "attention_unpacked",
-    "cache_execution",
-    "cache_state",
     "conditioning",
-    "contracts",
     "coupling_semantics",
     "dual_stream_execution",
     "inference_backend",
-    "inference_layout",
     "modules",
-    "observed_history",
     "packed_block",
-    "packed_inference",
     "packed_training",
     "rollout_geometry",
-    "runtime",
-    "runtime_routes",
     "sequence_layout",
-    "split_cache_inference",
     "variant",
 )
 

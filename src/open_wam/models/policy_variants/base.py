@@ -2,16 +2,41 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
+from dataclasses import replace
 
 import torch
 from torch import nn
 
 from open_wam.configs.policy_video_action import VideoActionPolicyConfig
-from open_wam.configs.enums import BatchingMode
+from open_wam.configs.enums import (
+    BatchingMode,
+    CurrentBlockCoupling,
+    FeatureCacheScope,
+    DynamicsObjective,
+)
+from open_wam.configs.policy_video_action import (
+    supports_dynamics_routing,
+    supports_video_conditioned_action,
+)
+from open_wam.models.common.denoising import independently_generated_modalities
+from open_wam.models.common.observed_history import (
+    commit_video_action_observed_history,
+    reconcile_video_action_observed_history,
+)
+from open_wam.models.common.rollout import RolloutCursor
+from open_wam.models.common.video_action_state import VideoActionRolloutState
+from open_wam.contracts.action_space import ActionSpaceAdapter
+from .output_semantics import video_action_program_output_modalities
 from open_wam.models.visual_tower import VisualStageOutputs, VisualTower
 
 from .contracts import (
     PolicyInferContext,
+    PolicyTemporalGeometry,
+    PolicyTemporalSpan,
+    DynamicsRolloutRequest,
+    PolicyCompositionCapability,
+    PolicyCompositionRngPolicy,
+    PolicyRecurrentHistoryPolicy,
     PolicyInferenceCapabilities,
     PolicyInferenceOutputRequest,
     PolicyInferOutput,
@@ -23,6 +48,7 @@ from .contracts import (
     PolicyPipelineRequirements,
     PolicyPreparedInputs,
     PolicyRolloutContract,
+    PolicyObservationWindowSessionPolicy,
     PolicyTrainBatch,
     PolicyTrainOutput,
     PolicyVisualStage,
@@ -31,6 +57,11 @@ from .contracts import (
 
 class PolicyVariant(nn.Module, ABC):
     """Policy-owned training, inference, and module-topology interface."""
+
+    @property
+    def source_action_adapter(self) -> ActionSpaceAdapter | None:
+        """Optional pretrained action convention used at the data boundary."""
+        return None
 
     @property
     def decoder_artifact_contract(self) -> str | None:
@@ -57,16 +88,6 @@ class PolicyVariant(nn.Module, ABC):
             native_modalities=frozenset({PolicyOutputModality.ACTION})
         )
 
-    def build_rollout_infer_extra(
-        self,
-        *,
-        runtime_device: torch.device | None,
-    ) -> dict[str, object]:
-        """Return backend-owned fields for one rollout inference context."""
-
-        del runtime_device
-        return {}
-
     def validate_inference_output_request(
         self,
         request: PolicyInferenceOutputRequest | None,
@@ -87,6 +108,15 @@ class PolicyVariant(nn.Module, ABC):
             f"{sorted(item.value for item in capabilities.native_modalities)}."
         )
 
+    def resolve_inference_output_request(
+        self,
+        context: PolicyInferContext,
+    ) -> PolicyInferenceOutputRequest:
+        self.validate_inference_output_request(context.output_request)
+        return context.output_request or PolicyInferenceOutputRequest(
+            modalities=self.inference_capabilities.native_modalities,
+        )
+
     def validate_inference_context(self, context: PolicyInferContext) -> None:
         """Validate ordinary output selection and transferable artifact inputs."""
 
@@ -99,9 +129,8 @@ class PolicyVariant(nn.Module, ABC):
                 "Video-conditioned action inference cannot also request dynamics "
                 "routing or video generation in the same policy call."
             )
-        if (
-            context.output_request is not None
-            and not context.output_request.requests(PolicyOutputModality.ACTION)
+        if context.output_request is not None and not context.output_request.requests(
+            PolicyOutputModality.ACTION
         ):
             raise ValueError(
                 "Video-conditioned action inference requires an action output."
@@ -258,6 +287,197 @@ class VideoActionPolicyVariant(PolicyVariant, ABC):
     config: VideoActionPolicyConfig
     action_dim: int
     action_horizon: int
+
+    @property
+    @abstractmethod
+    def action_tokens_per_frame(self) -> int:
+        """Action density of the model's temporal representation."""
+
+    def reconcile_observed_history(
+        self,
+        history: PolicyObservedHistory,
+        infer_state: PolicyInferState | None,
+    ) -> PolicyObservedHistoryOutput:
+        density = self.rollout_contract.action_tokens_per_frame
+        if infer_state is None and history.execution_commit is None:
+            video = history.video_latents
+            if video.ndim != 5 or video.shape[2] == 0:
+                raise ValueError("History seeds require nonempty BCTHW video latents.")
+            span = PolicyTemporalSpan(history.start_frame, video.shape[2])
+            actions = history.action_history
+            if actions is None:
+                actions = video.new_zeros(
+                    video.shape[0], span.frame_count * density, self.action_dim
+                )
+                history = replace(
+                    history,
+                    action_history=actions,
+                    action_mask=actions.new_zeros((*actions.shape[:2], 1)),
+                )
+            if (
+                actions is not None
+                and actions.ndim == 3
+                and actions.shape[1] == (span.frame_count - 1) * density
+            ):
+                # An observed seed's anchor has no reaching action in this interval.
+                mask = history.action_mask
+                if mask is None:
+                    mask = actions.new_ones((*actions.shape[:2], 1))
+                if mask.shape != (*actions.shape[:2], 1):
+                    raise ValueError(
+                        "History seed action validity must match its action tokens."
+                    )
+                history = replace(
+                    history,
+                    action_history=torch.cat(
+                        [
+                            actions.new_zeros(
+                                actions.shape[0], density, actions.shape[-1]
+                            ),
+                            actions,
+                        ],
+                        dim=1,
+                    ),
+                    action_mask=torch.cat(
+                        [mask.new_zeros(mask.shape[0], density, 1), mask], dim=1
+                    ),
+                )
+            proprio = history.proprio_history
+            if proprio is not None:
+                if proprio.ndim == 2:
+                    proprio = proprio.unsqueeze(0)
+                if proprio.ndim != 3 or proprio.shape[:2] != (
+                    video.shape[0],
+                    span.frame_count,
+                ):
+                    raise ValueError(
+                        "History seed proprio must align with every video frame."
+                    )
+            state = PolicyInferState(
+                cursor=RolloutCursor(current_start_frame=span.start_frame),
+                temporal_geometry=PolicyTemporalGeometry(
+                    frame_chunk_size=self.inference_config.frame_chunk_size,
+                    attention_window_size=self.inference_config.attention_window_size,
+                ),
+                variant_state=VideoActionRolloutState(
+                    proprio_state=proprio,
+                    hidden_proprio_state=None if proprio is None else proprio[:, -1],
+                    past_hidden_proprio_states=None
+                    if proprio is None
+                    else proprio[:, :0],
+                ),
+            )
+            return commit_video_action_observed_history(
+                policy_state=state,
+                history=history,
+                observed_span=span,
+                action_tokens_per_frame=density,
+                action_dim=self.action_dim,
+            )
+        return reconcile_video_action_observed_history(
+            policy_state=infer_state,
+            history=history,
+            action_tokens_per_frame=density,
+            action_dim=self.action_dim,
+        )
+
+    @property
+    def rollout_contract(self) -> PolicyRolloutContract:
+        return PolicyRolloutContract(
+            observation_window_session_policy=PolicyObservationWindowSessionPolicy.REBUILD_FROM_OBSERVATION_WINDOW,
+            action_tokens_per_frame=self.action_tokens_per_frame,
+            supports_speculative_continuation=True,
+        )
+
+    def resolve_inference_context(
+        self, context: PolicyInferContext
+    ) -> PolicyInferContext:
+        geometry = context.require_temporal_geometry()
+        request = context.video_conditioned_action
+        count = (
+            context.video_generation.frame_count
+            if context.video_generation is not None
+            else request.generated_video.latents.shape[2]
+            if request is not None
+            else geometry.frame_chunk_size
+        )
+        if count > self.inference_config.frame_chunk_size:
+            raise ValueError(
+                "Requested chunk exceeds the configured inference chunk size."
+            )
+        context = replace(
+            context,
+            temporal_geometry=PolicyTemporalGeometry(
+                frame_chunk_size=count,
+                attention_window_size=geometry.attention_window_size,
+            ),
+        )
+        if (
+            request is not None
+            and self.config.current_block_coupling
+            is not CurrentBlockCoupling.VIDEO_THEN_ACTION
+        ):
+            context = replace(
+                context,
+                dynamics=DynamicsRolloutRequest(
+                    objective=DynamicsObjective.VIDEO_CONDITIONED_ACTION,
+                    clean_video=request.generated_video.latents,
+                    frame_chunk_size=count,
+                ),
+                video_conditioned_action=None,
+            )
+        return context
+
+    @property
+    def inference_capabilities(self) -> PolicyInferenceCapabilities:
+        native = video_action_program_output_modalities(self.config.program)
+        coupling = self.config.current_block_coupling
+        fixed_objective = self.config.fixed_conditioning_mode
+        routed = supports_dynamics_routing(self.config.program)
+        selective: list[PolicyInferenceOutputRequest] = []
+        independent = independently_generated_modalities(coupling) & native
+        if PolicyOutputModality.VIDEO in independent:
+            selective.append(PolicyInferenceOutputRequest.video_only())
+        if PolicyOutputModality.ACTION in independent:
+            selective.append(PolicyInferenceOutputRequest.action_only())
+        return PolicyInferenceCapabilities(
+            native_modalities=native,
+            required_training_objective=(
+                (fixed_objective or DynamicsObjective.JOINT) if routed else None
+            ),
+            required_future_modalities=(
+                frozenset({PolicyOutputModality.ACTION})
+                if fixed_objective is DynamicsObjective.ACTION_CONDITIONED_VIDEO
+                else frozenset({PolicyOutputModality.VIDEO})
+                if fixed_objective is DynamicsObjective.VIDEO_CONDITIONED_ACTION
+                else frozenset()
+            ),
+            selective_requests=tuple(selective),
+            composition_capabilities=(
+                (
+                    PolicyCompositionCapability.video_to_action(
+                        required_training_objective=(
+                            DynamicsObjective.VIDEO_CONDITIONED_ACTION
+                            if routed
+                            else None
+                        ),
+                        rng_policy=(
+                            PolicyCompositionRngPolicy.CALLER_STREAM
+                            if coupling is CurrentBlockCoupling.VIDEO_THEN_ACTION
+                            else PolicyCompositionRngPolicy.ISOLATED_STEP_SEED
+                        )
+                    ),
+                )
+                if supports_video_conditioned_action(self.config.program)
+                else ()
+            ),
+            recurrent_history_policy=PolicyRecurrentHistoryPolicy.EXPLICIT_RECONCILIATION,
+            feature_cache_scope=(
+                FeatureCacheScope.DENOISING_CALL
+                if self.inference_config.use_cache
+                else FeatureCacheScope.NONE
+            ),
+        )
 
     @property
     def source_action_channel_ids(self) -> tuple[int, ...]:

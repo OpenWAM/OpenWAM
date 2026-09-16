@@ -338,6 +338,13 @@ consumer an independent per-step stream. See
 [Video/Action Composition](video_action_composition.md) for the complete
 contract and parity gates.
 
+Feature reuse is a separate capability:
+`PolicyInferenceCapabilities.feature_cache_scope` uses `FeatureCacheScope` from
+`open_wam.sdk.policy`. Report `none`, `denoising_call`, or `rollout_session`
+according to the implementation. A cache scope must not imply that selective
+outputs, composition, or speculative-history reconciliation are supported.
+Declare those contracts independently.
+
 ```python
 from open_wam.sdk.config import ExtensionPolicyConfig
 from open_wam.sdk.policy import register_policy_variant
@@ -481,30 +488,86 @@ Built-in DualExpert checkpoint layouts are narrower policy-internal contracts:
 - `open_wam.models.policy_variants.dual_expert.attention_unpacked` owns dense
   diagnostic and checkpoint-compatibility layout builders; it is not a
   maintained training or GJD execution path;
-- `open_wam.models.policy_variants.dual_expert.attention_packed` owns the exact
-  packed coupling profiles used by maintained training; and
-- `open_wam.models.policy_variants.dual_expert.attention_cached` owns split-cache
-  action inference layouts.
+- `open_wam.models.policy_variants.dual_expert.attention_packed` adapts the
+  canonical coupling profiles to paired expert tensors in training and inference.
 
 Extensions implementing a new attention paradigm should normally
 construct a common `PreparedAttentionProfile`; depend on a DualExpert role only when
 the extension deliberately implements that exact built-in sequence layout.
 
-Built-in DualExpert runtime controls are also split by parameter-free role:
+Inference execution is organized by role, not by a program-to-backend registry:
 
-- `open_wam.models.policy_variants.dual_expert.runtime_routes` selects a typed runtime
-  route;
-- `open_wam.models.policy_variants.dual_expert.rollout_geometry` resolves chunk,
-  history, cache, and action-execution geometry;
+- `open_wam.models.common.denoising` derives required stages;
+- `open_wam.models.common.video_action_inference` handles their clocks,
+  clean-conditioning transitions, and guidance;
+- `open_wam.models.common.denoising_cache` reuses only attention-closed,
+  invariant features under the supplied attention profile;
+- `open_wam.models.common.video_action_layout` prepares aligned model-space
+  history, startup validity, proprio, and future chunks for both architectures;
 - `open_wam.models.policy_variants.dual_expert.coupling_semantics` resolves block and
   timestep coupling; and
-- `open_wam.models.policy_variants.dual_expert.inference_backend` validates and
-  restores the inference backend selected by a route.
+- `open_wam.models.policy_variants.dual_expert.inference_backend` validates the
+  assembled blocks for paired numerical execution; it never moves parameters
+  between module owners.
 
-These modules document the fixed built-in checkpoint contract; they are not a
-registration API. A custom policy should express its behavior through its
+Architecture adapters supply embeddings, model blocks, and projections; they
+do not duplicate the denoising loop or select another runner by method name.
+A custom policy should express its behavior through its
 `PolicyVariant`, runtime program, prepared attention profile, and decoder
-rather than adding architecture-specific branches to these Dual Expert owners.
+rather than adding architecture-specific branches to shared execution.
+
+For a new environment, implement `simulators.contracts.SimulatorBackend` and
+reuse `SimulatorPolicyAdapter` for normalized camera/state observations.
+`materialize_control(source_action, data_config=...)` takes dataset-source
+actions, not normalized model predictions, and returns `ControlCommand`:
+native environment controls plus the same command in dataset-source form.
+Record any clipping or gripper conversion in both representations. Pose-target
+controllers retain the commanded pose, not an unrelated raw motor-control vector.
+The pipeline's action adapter alone owns normalization and dimension mapping.
+
+For specialized observation encoding, implement `runtime.policy_planner.RolloutAdapter`:
+prepare observations, construct a `PolicyObservedHistory` commit, convert
+decoder plans through `pipeline.action_adapter`, and materialize controls.
+`controls(plan, observation, action_start, source, ready_at, *, step_index)`
+receives an `ActionDecoderRolloutPlan`, not model internals. Use the derived
+`ResolvedRolloutTemporalContract` for observation and control index conversion.
+Assemble `RolloutEngine(PolicyPlanner(runner, adapter), adapter, options)` and
+reuse `run(..., step=...)` for blocking/fixed-rate execution, or
+drive `control_stream()` with `send(ControlTransition(...))` in an external
+control API. Save `result = stream.close()` when resetting; do not retain speculative history
+as a substitute for actual observations. The default accepts complete candidates
+only, never partially stale suffixes. For a new policy, implement the existing
+`PolicyVariant` hooks and declare `inference_capabilities` and `rollout_contract`;
+publish a new immutable `PolicyInferState` instead of mutating its input.
+The engine does not inspect the policy or checkpoint name.
+
+For independent model composition or a streaming frontend, implement the narrow
+`runtime.planning_contracts.RolloutPlanner[Session, Observation]` contract instead of writing another control
+loop. Supply the derived `temporal` contract, declare whether speculative continuation
+and asynchronous planning are safe, and implement `plan(request)` and
+`observe(request)`. The latter reconciles actual executed controls without predicting
+more, including at a blocking plan budget. Sessions can contain separate model states;
+the engine treats their contents as opaque. Stateful streaming encoders must declare
+`supports_async=false`. LIBERO's blocking planner is an example, not a required base
+class. Keep benchmark rendering and artifact collection outside the engine.
+
+Closing cancels queued work and waits for any running model call to finish,
+preventing the old call from racing a new episode on the same pipeline. Unused
+planner failures and drain latency are teardown telemetry; they do not override
+a terminal simulator outcome. `RolloutResult.lifecycle` retains both the
+accepted policy session and the still-uncommitted executed observation interval.
+`close()` is idempotent and returns that result even on cancellation; normal
+completion retains its terminal outcome. Before the first control, close runs
+no model work and has no planner receipt. CALVIN's official `reset()` keeps its
+`None` return convention and exposes the result as `model.last_rollout_result`.
+Only transitions supplied to the stream count as executed; a final action whose
+observation was never sent is not invented in the completion record.
+
+Independent video/action composition uses
+`PolicyVideoActionConsumerPlan.infer(...)`. It validates latent identity and
+geometry, transfers the video product, and applies the consumer's declared RNG
+policy. The consumer owns its history and language visibility. New benchmarks
+do not need a second composition implementation.
 
 ### Shared Transformer Primitives
 
@@ -531,7 +594,9 @@ genuinely new reusable block outside the built-in core.
 
 ### Cache Policy
 
-The parameter-free cache API is split by role:
+Maintained policy inference uses call-local `denoising_cache` feature reuse.
+For lower-level transformer integrations, the parameter-free cache API is
+split by role:
 
 - `open_wam.models.common.cache_backend_contracts` defines backend specs,
   payload records, and backend selection;

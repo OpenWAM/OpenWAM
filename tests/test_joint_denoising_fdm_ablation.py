@@ -12,7 +12,6 @@ import pytest
 import torch
 
 from open_wam.configs import (
-    CurrentBlockCoupling,
     DynamicsObjective,
     ParallelStreamPolicyConfig,
     VideoActionProgram,
@@ -38,8 +37,7 @@ from scripts.research_dynamics.metrics import (
     summarize_metric_rows,
 )
 from scripts.research_dynamics.rollout import (
-    DualExpertDynamicsRollout,
-    ParallelStreamDynamicsRollout,
+    DynamicsRollout,
     build_diagnostic_dynamics_request,
     build_dynamics_rollout_adapter,
     resolve_action_per_frame,
@@ -245,63 +243,12 @@ class DummyDataset:
         raise AssertionError("The explicit indexed task contract should win.")
 
 
-class _FakeDualExpertVisualTower:
-    config = SimpleNamespace(max_text_tokens=4, text_dim=8)
-
-    def __init__(self) -> None:
-        self.reset_calls = 0
-
-    def reset_runtime_state(self) -> None:
-        self.reset_calls += 1
 
 
-class _FakeDualExpertPolicyVariant:
-    action_horizon = 4
-    action_dim = 7
-    inference_config = SimpleNamespace(frame_chunk_size=2)
-    config = SimpleNamespace(
-        name="dual_expert",
-        program=VideoActionProgram.GENERALIST_JOINT_DENOISING,
-        current_block_coupling=CurrentBlockCoupling.JOINT,
-    )
 
 
-class _FakeDualExpertPipeline:
-    def __init__(self) -> None:
-        self.visual_tower = _FakeDualExpertVisualTower()
-        self.policy_variant = _FakeDualExpertPolicyVariant()
 
 
-class _FakeDualExpertRunner:
-    def __init__(self) -> None:
-        self.pipeline = _FakeDualExpertPipeline()
-        self.seen_contexts = []
-        self.seen_video_latents = []
-
-    def reset(self, *, task_text=None, text_context=None, negative_text_context=None):
-        return SimpleNamespace(
-            policy_state=None,
-            task_text=task_text,
-            text_context=text_context,
-            negative_text_context=negative_text_context,
-        )
-
-    def infer_step(self, *, session, context, video_latents, canonical_video=None):
-        del canonical_video
-        self.seen_contexts.append(context)
-        self.seen_video_latents.append(video_latents)
-        predicted_latents = torch.zeros_like(video_latents)
-        action_pred = torch.zeros(1, 4, 7)
-        return SimpleNamespace(
-            session=session,
-            infer_output=SimpleNamespace(
-                decoder_output=SimpleNamespace(
-                    action_pred=action_pred,
-                    aux={"predicted_latents": predicted_latents},
-                ),
-                policy_output=SimpleNamespace(aux={"runtime_mode": "fake"}),
-            ),
-        )
 
 
 def test_select_early_middle_windows_is_deterministic_and_chunk_aligned() -> None:
@@ -340,116 +287,17 @@ def test_select_early_middle_windows_rejects_non_chunk_aligned_horizon() -> None
         )
 
 
-def test_dual_expert_dynamics_rollout_adapter_threads_conditional_mode_controls() -> (
-    None
-):
-    runner = _FakeDualExpertRunner()
-    rollout = DualExpertDynamicsRollout(runner)
-    video_context = torch.randn(1, 3, 3, 2, 2)
-    action_context = torch.randn(1, 6, 7)
-    session = rollout.reset_and_warmup(
-        task_text=("task",),
-        video_context=video_context,
-        action_context=action_context,
-        text_context=torch.randn(1, 4, 8),
-        negative_text_context=None,
-        context_start_frame=5,
-        mode=FdmAblationMode.FORCED_ACTION_JOINT_FDM,
-    )
-
-    assert runner.pipeline.visual_tower.reset_calls == 1
-    assert session.policy_state.step_index == 1
-    assert session.policy_state.cursor.current_start_frame == 8
-    torch.testing.assert_close(
-        session.policy_state.variant_state.past_clean_latents, video_context
-    )
-    torch.testing.assert_close(
-        session.policy_state.variant_state.past_clean_actions, action_context
-    )
-
-    raw_action_chunk = torch.randn(1, 4, 7)
-    rollout.infer_chunk(
-        session=session,
-        mode=FdmAblationMode.FORCED_ACTION_JOINT_FDM,
-        raw_action_chunk=raw_action_chunk,
-    )
-    fdm_request = runner.seen_contexts[-1].dynamics
-    assert fdm_request.objective == DynamicsObjective.ACTION_CONDITIONED_VIDEO
-    assert fdm_request.clean_action is raw_action_chunk
-    assert fdm_request.history_action is raw_action_chunk
-    assert fdm_request.clean_video is None
-
-    video_condition = torch.randn(1, 3, 2, 2, 2)
-    rollout.infer_chunk(
-        session=session,
-        mode=FdmAblationMode.VIDEO_CONDITIONED_ACTION,
-        raw_action_chunk=raw_action_chunk,
-        video_condition_latents=video_condition,
-    )
-    idm_request = runner.seen_contexts[-1].dynamics
-    assert idm_request.objective == DynamicsObjective.VIDEO_CONDITIONED_ACTION
-    assert idm_request.clean_video is video_condition
-    assert idm_request.history_action is raw_action_chunk
-    assert idm_request.clean_action is None
-    assert runner.seen_video_latents[-1] is video_condition
 
 
-@pytest.mark.parametrize(
-    "program",
-    (
-        VideoActionProgram.FORWARD_DYNAMICS,
-        VideoActionProgram.INVERSE_DYNAMICS,
-    ),
-)
-def test_dynamics_rollout_adapters_accept_fixed_programs(
-    program: VideoActionProgram,
-) -> None:
-    dual_runner = _FakeDualExpertRunner()
-    dual_runner.pipeline.policy_variant.config = SimpleNamespace(
-        name="dual_expert",
-        program=program,
-        current_block_coupling=CurrentBlockCoupling.JOINT,
-    )
-    DualExpertDynamicsRollout(dual_runner)
-
-    parallel_runner = SimpleNamespace(
-        policy_variant=SimpleNamespace(
-            config=ParallelStreamPolicyConfig(
-                program=program,
-                hidden_size=32,
-            )
-        )
-    )
-    ParallelStreamDynamicsRollout(parallel_runner)
 
 
-def test_dynamics_rollout_adapters_reject_planning_programs() -> None:
-    dual_runner = _FakeDualExpertRunner()
-    dual_runner.pipeline.policy_variant.config = SimpleNamespace(
-        name="dual_expert",
-        program=VideoActionProgram.JOINT,
-        current_block_coupling=CurrentBlockCoupling.JOINT,
-    )
-    with pytest.raises(ValueError, match="requires a GJD"):
-        DualExpertDynamicsRollout(dual_runner)
-
-    parallel_runner = SimpleNamespace(
-        policy_variant=SimpleNamespace(
-            config=ParallelStreamPolicyConfig(
-                program=VideoActionProgram.JOINT,
-                hidden_size=32,
-            )
-        )
-    )
-    with pytest.raises(ValueError, match="requires a GJD"):
-        ParallelStreamDynamicsRollout(parallel_runner)
 
 
 @pytest.mark.parametrize(
     ("architecture", "runner_name", "adapter_name"),
     (
-        ("dual_expert", "VariantRolloutRunner", "DualExpertDynamicsRollout"),
-        ("parallel_stream", "LingbotExactRunner", "ParallelStreamDynamicsRollout"),
+        ("dual_expert", "VariantRolloutRunner", "DynamicsRollout"),
+        ("parallel_stream", "VariantRolloutRunner", "DynamicsRollout"),
     ),
 )
 def test_dynamics_adapter_builder_applies_one_checkpoint_and_device_contract(
@@ -1188,56 +1036,6 @@ def test_counterfactual_drops_text_for_fdm_mode_even_without_flag() -> None:
     )
 
 
-def test_fdm_rollout_warmup_receives_rollout_mode() -> None:
-    captured: dict[str, object] = {}
-
-    class FakeRunner:
-        pipeline = SimpleNamespace(
-            visual_tower=SimpleNamespace(
-                config=SimpleNamespace(max_text_tokens=5, text_dim=6),
-            )
-        )
-        policy_variant = SimpleNamespace(
-            config=ParallelStreamPolicyConfig(
-                program=VideoActionProgram.GENERALIST_JOINT_DENOISING,
-                hidden_size=32,
-            )
-        )
-
-        def reset(self, **_kwargs):
-            return SimpleNamespace(
-                policy_state=SimpleNamespace(
-                    cache={},
-                    cursor=SimpleNamespace(block_index=0, chunk_size=2),
-                )
-            )
-
-        def warmup_cache(self, **kwargs):
-            captured.update(kwargs)
-            return SimpleNamespace(session="warmed")
-
-    rollout = ParallelStreamDynamicsRollout(FakeRunner())
-    text_context = torch.randn(1, 5, 6)
-    negative_text_context = torch.randn(1, 5, 6)
-    hidden_proprio_history = torch.randn(1, 2, 4)
-    session = rollout.reset_and_warmup(
-        task_text=("task",),
-        video_context=torch.zeros(1, 4, 2, 2, 2),
-        action_context=torch.zeros(1, 4, 3),
-        text_context=text_context,
-        negative_text_context=negative_text_context,
-        context_start_frame=3,
-        mode=FdmAblationMode.FORCED_ACTION_JOINT_FDM,
-        drop_text_conditioning=True,
-        hidden_proprio_history=hidden_proprio_history,
-    )
-
-    assert session == "warmed"
-    request = captured["dynamics"]
-    assert request.objective == DynamicsObjective.ACTION_CONDITIONED_VIDEO
-    assert torch.count_nonzero(captured["text_context"]) == 0
-    assert torch.count_nonzero(captured["negative_text_context"]) == 0
-    assert captured["hidden_proprio_history"] is hidden_proprio_history
 
 
 def test_fdm_cli_accepts_training_style_set_overrides() -> None:
@@ -1559,7 +1357,7 @@ def test_fdm_eval_target_only_offset_predicts_future_from_current_action(
     captured_videos: list[torch.Tensor] = []
     captured_proprio: list[torch.Tensor | None] = []
 
-    class FakeRollout(DualExpertDynamicsRollout):
+    class FakeRollout(DynamicsRollout):
         action_per_frame = 2
         frame_chunk_size = 2
         runner = SimpleNamespace(pipeline=None)
@@ -1676,7 +1474,7 @@ def test_fdm_eval_m5_vanilla_ignores_selection_fit_target_offset(
 
     captured_warmup: dict[str, object] = {}
 
-    class FakeRollout(DualExpertDynamicsRollout):
+    class FakeRollout(DynamicsRollout):
         action_per_frame = 2
         frame_chunk_size = 2
         runner = SimpleNamespace(pipeline=None)
@@ -1775,7 +1573,7 @@ def test_m5_gjd_offline_rollout_seeds_per_chunk_proprio_history(
     object.__setattr__(
         pipeline.policy_variant.inference_config, "action_num_inference_steps", 25
     )
-    rollout = DualExpertDynamicsRollout(VariantRolloutRunner(pipeline))
+    rollout = DynamicsRollout(VariantRolloutRunner(pipeline))
     video_context = torch.randn(1, 48, 2, 8, 8)
     action_context = torch.randn(1, 4, 4)
     hidden_proprio_history = torch.randn(1, 2, 4)
@@ -1821,81 +1619,6 @@ def test_m5_gjd_offline_rollout_seeds_per_chunk_proprio_history(
     )
 
 
-def test_idm_rollout_threads_video_condition_and_drops_text() -> None:
-    captured: dict[str, object] = {}
-    reference_transformer = torch.nn.Linear(1, 1, bias=False)
-
-    class FakeVisualTower:
-        def get_runtime_backbone(self, *, action_dim: int):
-            assert action_dim == 3
-            return reference_transformer
-
-    class FakeActionAdapter:
-        def to_model_action_sequence(
-            self,
-            raw_action_chunk,
-            *,
-            action_space,
-            device,
-            dtype,
-        ):
-            del action_space
-            return raw_action_chunk.to(device=device, dtype=dtype)
-
-    class FakeRunner:
-        def __init__(self) -> None:
-            self.pipeline = SimpleNamespace(visual_tower=FakeVisualTower())
-            self.policy_variant = SimpleNamespace(
-                config=ParallelStreamPolicyConfig(
-                    program=VideoActionProgram.GENERALIST_JOINT_DENOISING,
-                    hidden_size=32,
-                ),
-                inference_config=SimpleNamespace(frame_chunk_size=4),
-                action_dim=3,
-                exact_action_adapter=FakeActionAdapter(),
-            )
-
-        def infer_chunk(self, **kwargs):
-            captured.update(kwargs)
-            request = kwargs["dynamics"]
-            return SimpleNamespace(
-                session=kwargs["session"],
-                predicted_latents=request.clean_video.detach().clone(),
-                chunk_action_pred=torch.ones(1, 4, 3),
-                raw_chunk_action_pred=torch.ones(1, 4, 3),
-                debug={"rollout_window_size": 3},
-            )
-
-    rollout = ParallelStreamDynamicsRollout(FakeRunner())
-    session = SimpleNamespace()
-    video_condition_latents = torch.randn(1, 4, 1, 2, 2)
-
-    output = rollout.infer_chunk(
-        session=session,
-        mode=FdmAblationMode.VIDEO_CONDITIONED_ACTION,
-        raw_action_chunk=torch.full((1, 4, 3), 7.0),
-        video_condition_latents=video_condition_latents,
-        drop_text_conditioning=True,
-    )
-
-    assert output.predicted_latents.shape == video_condition_latents.shape
-    request = captured["dynamics"]
-    assert request.objective == DynamicsObjective.VIDEO_CONDITIONED_ACTION
-    assert torch.equal(request.clean_video, video_condition_latents)
-    assert request.clean_action is None
-    assert request.history_action is not None
-    assert torch.all(request.history_action == 7.0)
-    assert output.debug["drop_text_conditioning"] is True
-    assert torch.all(output.raw_action_sequence == 1.0)
-
-    rollout.infer_chunk(
-        session=session,
-        mode=FdmAblationMode.VIDEO_CONDITIONED_ACTION,
-        raw_action_chunk=None,
-        video_condition_latents=video_condition_latents,
-        allow_generated_action_commit=True,
-    )
-    assert captured["dynamics"].history_action is None
 
 
 def test_latent_and_rgb_mse_per_frame() -> None:
@@ -1985,3 +1708,49 @@ def test_idm_metric_rows_report_action_without_video_scores() -> None:
     assert rows[0]["action_mse"] == 0.25
     assert summary[0]["latent_mse_mean"] is None
     assert summary[0]["action_mse_mean"] == 0.25
+
+
+@pytest.mark.parametrize("architecture", ["dual_expert", "parallel_stream"])
+@pytest.mark.parametrize("program,mode", [
+    (VideoActionProgram.FORWARD_DYNAMICS, FdmAblationMode.FORCED_ACTION_JOINT_FDM),
+    (VideoActionProgram.INVERSE_DYNAMICS, FdmAblationMode.VIDEO_CONDITIONED_ACTION),
+    (VideoActionProgram.GENERALIST_JOINT_DENOISING, FdmAblationMode.FORCED_ACTION_JOINT_FDM),
+    (VideoActionProgram.GENERALIST_JOINT_DENOISING, FdmAblationMode.VIDEO_CONDITIONED_ACTION),
+])
+@torch.no_grad()
+def test_offline_dynamics_uses_public_history_and_conditioning_contracts(architecture, program, mode):
+    from open_wam.pipelines import VariantRolloutRunner
+    from tests.test_unified_policy_inference import pipeline_for
+
+    pipeline = pipeline_for(architecture, program)
+    rollout = DynamicsRollout(VariantRolloutRunner(pipeline))
+    video = torch.ones(1, 48, 3, 4, 4)
+    proprio = torch.arange(12, dtype=torch.float32).reshape(1, 3, 4)
+    session = rollout.reset_and_warmup(
+        task_text=("not available to the conditional objective",), video_context=video,
+        action_context=torch.ones(1, 6, 4), text_context=torch.ones(1, 3, 16),
+        negative_text_context=None, context_start_frame=5, mode=mode,
+        hidden_proprio_history=proprio, proprio_state=proprio[:, -1],
+    )
+    assert session.policy_state.observed_frame_end == 8
+    assert session.policy_state.cursor.current_start_frame == 8
+    torch.testing.assert_close(session.policy_state.variant_state.past_hidden_proprio_states, proprio)
+    supplied = torch.full((1, 48, 1, 4, 4), .75) if mode is FdmAblationMode.VIDEO_CONDITIONED_ACTION else None
+    output = rollout.infer_chunk(
+        session=session, mode=mode, raw_action_chunk=torch.ones(1, 2, 4),
+        video_condition_latents=supplied, proprio_state=proprio[:, -1],
+    )
+    assert output.predicted_latents.shape == (1, 48, 1, 4, 4)
+    assert output.session.policy_state.cursor.current_start_frame == 9
+    assert session.policy_state.cursor.current_start_frame == 8
+    assert torch.isfinite(output.predicted_latents).all()
+    if supplied is not None:
+        torch.testing.assert_close(output.predicted_latents, supplied, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("architecture", ["dual_expert", "parallel_stream"])
+def test_offline_dynamics_rejects_a_planning_only_policy(architecture):
+    from open_wam.pipelines import VariantRolloutRunner
+    from tests.test_unified_policy_inference import pipeline_for
+    with pytest.raises(ValueError, match="requires a GJD"):
+        DynamicsRollout(VariantRolloutRunner(pipeline_for(architecture, VideoActionProgram.JOINT)))

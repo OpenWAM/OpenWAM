@@ -4,41 +4,11 @@ import torch
 
 from open_wam.configs import SharedVideoTransformerConfig
 from open_wam.models.common.video_geometry import unpatchify_video_sequence
-from open_wam.models.policy_variants.parallel_stream import reference_runtime
 from open_wam.models.visual_tower.exact_runtime import (
-    build_reference_mesh_id,
-    clear_exact_prediction_cache,
-    initialize_exact_runtime_cache,
-    prepare_exact_single_stream_forward_input,
     prepare_exact_single_stream_input,
-    repeat_exact_single_stream_input_for_cfg,
-    resolve_runtime_module_dtype,
-    run_exact_single_stream_forward,
 )
 
 
-def test_reference_runtime_compatibility_names_alias_canonical_owners() -> None:
-    assert reference_runtime.data_seq_to_patch is unpatchify_video_sequence
-    assert reference_runtime.get_mesh_id is build_reference_mesh_id
-    assert reference_runtime._clear_exact_prediction_cache is clear_exact_prediction_cache
-    assert reference_runtime.initialize_reference_cache is initialize_exact_runtime_cache
-    assert (
-        reference_runtime.prepare_reference_forward_input
-        is prepare_exact_single_stream_forward_input
-    )
-    assert (
-        reference_runtime.prepare_reference_single_stream_input
-        is prepare_exact_single_stream_input
-    )
-    assert (
-        reference_runtime.repeat_input_for_cfg
-        is repeat_exact_single_stream_input_for_cfg
-    )
-    assert reference_runtime.reference_runtime_dtype is resolve_runtime_module_dtype
-    assert (
-        reference_runtime.run_reference_single_stream_forward
-        is run_exact_single_stream_forward
-    )
 
 
 def test_unpatchify_video_sequence_preserves_values_and_gradients() -> None:

@@ -190,10 +190,7 @@ def _policy_train_batch(batch: WAMBatch | LatentWAMBatch) -> PolicyTrainBatch:
 def _policy_infer_context(batch: WAMBatch | LatentWAMBatch) -> PolicyInferContext:
     return PolicyInferContext(
         state=batch.state,
-        extra={
-            "task_text": batch.task_text,
-            "metadata": batch.metadata,
-        },
+        task_text=batch.task_text, metadata=batch.metadata,
     )
 
 
@@ -333,10 +330,7 @@ def _run_rollout_style_infer(
             context = PolicyInferContext(
                 state=batch.state,
                 previous_action=previous_action,
-                extra={
-                    "task_text": batch.task_text,
-                    "metadata": batch.metadata,
-                },
+                task_text=batch.task_text, metadata=batch.metadata,
             )
             start = time.perf_counter()
             if isinstance(batch, LatentWAMBatch):

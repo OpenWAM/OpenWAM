@@ -81,7 +81,7 @@ def _run_packaged_extension_smoke() -> None:
     train_output.decoder_output.loss.backward()
     infer_output = pipeline.forward_infer_step(
         batch.views,
-        PolicyInferContext(state=batch.state, extra={"task_text": batch.task_text}),
+        PolicyInferContext(state=batch.state, task_text=batch.task_text),
     )
     if train_output.decoder_output.action_pred.shape != (1, 2, 4):
         raise SystemExit("Packaged extension produced an invalid training action shape.")

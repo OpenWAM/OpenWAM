@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 
-@dataclass
+@dataclass(frozen=True)
 class RolloutCursor:
     """Minimal rollout position metadata shared across variants and towers."""
 

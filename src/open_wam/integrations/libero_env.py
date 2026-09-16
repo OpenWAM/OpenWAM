@@ -9,6 +9,8 @@ from typing import Any
 import numpy as np
 import torch
 
+from open_wam.runtime.control import ControlCommand, ControlTransition
+
 from open_wam.configs import (
     ActionTargetRepresentation,
     DataConfig,
@@ -17,14 +19,12 @@ from open_wam.configs import (
     LiberoRendererProfile,
 )
 from open_wam.data.action_normalization import (
-    denormalize_action_targets,
     denormalize_joint_positions,
 )
 from open_wam.data.action_pose import (
     PoseSequence,
     axis_angle_to_quaternion,
 )
-from open_wam.data.action_mapping import inverse_action_mapping
 from open_wam.integrations.libero_gripper_control import (
     gripper_command_for_substep as _raw_gripper_command_for_substep,
     gripper_qpos_tracking_command as _gripper_qpos_tracking_command,
@@ -71,7 +71,7 @@ from open_wam.integrations.simulator_configs import (
     LiberoControlConfig,
     LiberoEnvConfig as LiberoEnvConfig,
 )
-from open_wam.simulators import EpisodeSpec, SimulatorCapabilities, SimulatorObservation, SimulatorStepResult
+from open_wam.simulators import EpisodeSpec, SimulatorCapabilities, SimulatorObservation
 
 
 _LIBERO_TASK_COMPATIBILITY_EXPORTS = (
@@ -245,8 +245,14 @@ class LiberoBenchmarkAdapter:
             gripper=None,
         )
 
-    def action_from_model_action(self, model_action: np.ndarray, *, data_config: DataConfig) -> np.ndarray:
-        source_action = _source_action_from_model_action(model_action, data_config=data_config)
+    def materialize_control(self, source_action: np.ndarray, *, data_config: DataConfig) -> ControlCommand:
+        source_action = np.asarray(source_action, dtype=np.float32).reshape(-1).copy()
+        action = self._control_from_source_action(source_action, data_config=data_config)
+        history_action = (action if data_config.action_target.representation is ActionTargetRepresentation.RAW
+                          and self.config.action_mode != "integrated_eef6d_osc" else source_action)
+        return ControlCommand(action=action, source_action=history_action)
+
+    def _control_from_source_action(self, source_action: np.ndarray, *, data_config: DataConfig) -> np.ndarray:
         if data_config.action_target.representation == ActionTargetRepresentation.ABSOLUTE_JOINT_POSITION:
             if self._last_obs is None:
                 raise RuntimeError("LIBERO adapter must be reset before converting absolute joint targets.")
@@ -330,7 +336,7 @@ class LiberoBenchmarkAdapter:
 
         return source_action.astype(np.float32, copy=False)
 
-    def step(self, action: np.ndarray) -> SimulatorStepResult:
+    def step(self, action: np.ndarray) -> ControlTransition:
         if self._env is None:
             raise RuntimeError("LIBERO adapter must be reset before step().")
         if (
@@ -346,7 +352,7 @@ class LiberoBenchmarkAdapter:
             obs, reward, done, info = self._env.step(np.asarray(action, dtype=np.float32))
         self._last_obs = obs
         success = bool(self._env.check_success()) if hasattr(self._env, "check_success") else False
-        return SimulatorStepResult(
+        return ControlTransition(
             observation=self._normalize_observation(obs),
             reward=float(reward) if reward is not None else None,
             done=bool(done),
@@ -491,20 +497,3 @@ class LiberoBenchmarkAdapter:
         if self._joint_delta_limit is not None:
             return _joint_scale_array(self._joint_delta_limit, joint_dim=joint_dim)
         return _joint_scale_array(0.05, joint_dim=joint_dim)
-
-
-def _source_action_from_model_action(
-    model_action: np.ndarray,
-    *,
-    data_config: DataConfig,
-) -> np.ndarray:
-    tensor = torch.as_tensor(model_action, dtype=torch.float32)
-    if tensor.ndim == 1:
-        tensor = tensor.unsqueeze(0)
-        squeeze = True
-    else:
-        squeeze = False
-    source = inverse_action_mapping(tensor, data_config.action_mapping)
-    source = denormalize_action_targets(source, normalization=data_config.action_target.normalization)
-    array = source.detach().cpu().numpy().astype(np.float32)
-    return array[0] if squeeze else array

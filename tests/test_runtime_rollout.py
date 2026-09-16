@@ -4,16 +4,9 @@ from types import SimpleNamespace
 
 import torch
 
-from open_wam.models.policy_variants import (
-    PolicyGenerationActionOrigin,
-    PolicyRolloutContract,
-)
 from open_wam.runtime.rollout import (
-    build_sequence_rollout_infer_extra,
     prepare_rollout_observation_inputs,
-    resolve_initial_generation_action_start,
     resolve_runtime_devices,
-    uses_zero_based_generation_start,
 )
 
 
@@ -73,49 +66,6 @@ def test_prepare_rollout_observation_inputs_uses_reset_cache_encoding() -> None:
             "reset_cache": True,
         }
     ]
-
-
-def test_sequence_rollout_metadata_uses_typed_policy_choices() -> None:
-    policy_variant = SimpleNamespace(
-        rollout_contract=PolicyRolloutContract(
-            generation_action_origin=PolicyGenerationActionOrigin.ZERO,
-        ),
-        build_rollout_infer_extra=lambda *, runtime_device: {
-            "action_device": str(runtime_device)
-        },
-    )
-
-    infer_extra = build_sequence_rollout_infer_extra(
-        policy_variant=policy_variant,
-        prompt="task",
-        runtime_device=torch.device("cpu"),
-    )
-
-    assert infer_extra == {
-        "task_text": ("task",),
-        "action_device": "cpu",
-    }
-    assert uses_zero_based_generation_start(policy_variant) is True
-
-
-def test_initial_generation_start_defaults_to_observation_count() -> None:
-    observations = [{"frame": index} for index in range(5)]
-
-    assert (
-        resolve_initial_generation_action_start(
-            observations,
-            initial_generation_action_start=None,
-        )
-        == 5
-    )
-    assert (
-        resolve_initial_generation_action_start(
-            observations,
-            initial_generation_action_start=None,
-            rollout_starts_at_action_zero=True,
-        )
-        == 0
-    )
 
 
 def test_runtime_device_resolution_validates_operator_input() -> None:

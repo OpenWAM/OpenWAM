@@ -13,9 +13,8 @@ from open_wam.models.policy_variants.contracts import (
     PolicyTrainBatch,
     PolicyTrainOutput,
 )
-from open_wam.models.policy_variants.parallel_stream.decoder_artifacts import (
+from open_wam.models.decoder_artifacts import (
     PARALLEL_STREAM_DECODER_ARTIFACT_CONTRACT,
-    ParallelDecoderInferArtifacts,
     ParallelDecoderTrainArtifacts,
 )
 
@@ -23,7 +22,6 @@ from .base import (
     ActionDecoder,
     ActionDecoderInferOutput,
     ActionDecoderTrainOutput,
-    align_policy_features,
     require_decoder_artifact_payload,
 )
 
@@ -509,31 +507,13 @@ class ParallelStreamActionDecoder(ActionDecoder):
         previous_state: object | None = None,
     ) -> ActionDecoderInferOutput:
         del previous_state
-        action_pred = align_policy_features(
-            policy_output.policy_features, self.action_horizon
-        )
-        action_pred = self._apply_action_sampler_mask(action_pred)
+        # Inference already emits the requested temporal span. Resampling to
+        # the training horizon would invent controls for partial/conditional chunks.
+        action_pred = policy_output.policy_features
         aux = {
             "decoder": self.__class__.__name__,
             "action_space": "model",
-            "model_action_pred": action_pred,
         }
-        if policy_output.decoder_artifacts is None:
-            raw_chunk_action_pred = policy_output.aux.get("raw_chunk_action_pred")
-        else:
-            decoder_payload = require_decoder_artifact_payload(
-                policy_output,
-                contract=PARALLEL_STREAM_DECODER_ARTIFACT_CONTRACT,
-                payload_type=ParallelDecoderInferArtifacts,
-            )
-            raw_chunk_action_pred = decoder_payload.raw_chunk_action_pred
-        if isinstance(raw_chunk_action_pred, torch.Tensor):
-            raw_action_pred = align_policy_features(
-                raw_chunk_action_pred, self.action_horizon
-            )
-            aux["raw_action_pred"] = raw_action_pred
-            aux["raw_chunk_action_pred"] = raw_action_pred
-            aux["raw_action_space"] = "raw"
         return ActionDecoderInferOutput(
             action_pred=action_pred,
             aux=aux,
