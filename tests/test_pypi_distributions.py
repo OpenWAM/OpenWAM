@@ -25,6 +25,7 @@ from scripts.build_pypi_distributions import (
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PYPROJECT = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 PROJECT = PYPROJECT["project"]
+PUBLISHABLE_PROJECTS = (PROJECT["name"], "openwam-sdk", "open-wam-sdk")
 PUBLISH_WORKFLOW = yaml.load(
     (REPO_ROOT / ".github/workflows/publish-pypi.yml").read_text(), Loader=yaml.BaseLoader
 )
@@ -94,7 +95,7 @@ def test_publishing_is_manual_production_only_and_separated_from_builds() -> Non
     project = workflow["on"]["workflow_dispatch"]["inputs"]["project"]
     assert project["type"] == "choice"
     assert project["default"] == PROJECT["name"]
-    assert project["options"] == [PROJECT["name"], *INSTALLATION_ALIASES]
+    assert project["options"] == list(PUBLISHABLE_PROJECTS)
     assert publish["environment"]["name"] == (
         "${{ inputs.project == 'openwam' && inputs.index || "
         "format('{0}-{1}', inputs.index, inputs.project) }}"
@@ -107,7 +108,7 @@ def test_publishing_is_manual_production_only_and_separated_from_builds() -> Non
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("name", (PROJECT["name"], *INSTALLATION_ALIASES))
+@pytest.mark.parametrize("name", PUBLISHABLE_PROJECTS)
 @pytest.mark.parametrize("version", (PROJECT["version"], "0.2.0a1"))
 def test_publishing_selects_only_requested_project_and_tag(
     tmp_path: Path, name: str, version: str,
@@ -135,14 +136,33 @@ def test_publishing_selects_only_requested_project_and_tag(
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("name", ("open-wam", "open_wam", "Open-WAM", "open.wam"))
+def test_publishing_rejects_blocked_alias_even_with_complete_artifacts(
+    tmp_path: Path, name: str,
+) -> None:
+    directory = tmp_path / "dist/aliases"
+    directory.mkdir(parents=True)
+    (directory / "open_wam-1.2.3-py3-none-any.whl").touch()
+    (directory / "open_wam-1.2.3.tar.gz").touch()
+    selection, = [step for step in PUBLISH_WORKFLOW["jobs"]["publish"]["steps"] if "run" in step]
+    result = subprocess.run(
+        ["bash", "-c", selection["run"]], cwd=tmp_path, capture_output=True, text=True,
+        env={**os.environ, "RELEASE_TAG": "v1.2.3", "RELEASE_PROJECT": name},
+    )
+    assert result.returncode != 0
+    assert "Unsupported release project" in result.stderr
+    assert not (tmp_path / "upload").exists()
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize("failure", (
     "unknown_project", "missing_wheel", "missing_sdist", "multiple_wheels", "existing_upload",
 ))
 def test_publishing_refuses_incomplete_or_ambiguous_payloads(tmp_path: Path, failure: str) -> None:
     directory = tmp_path / "dist/aliases"
     directory.mkdir(parents=True)
-    wheel = directory / "open_wam-1.2.3-py3-none-any.whl"
-    sdist = directory / "open_wam-1.2.3.tar.gz"
+    wheel = directory / "openwam_sdk-1.2.3-py3-none-any.whl"
+    sdist = directory / "openwam_sdk-1.2.3.tar.gz"
     wheel.touch()
     sdist.touch()
     if failure == "missing_wheel":
@@ -150,7 +170,7 @@ def test_publishing_refuses_incomplete_or_ambiguous_payloads(tmp_path: Path, fai
     elif failure == "missing_sdist":
         sdist.unlink()
     elif failure == "multiple_wheels":
-        (directory / "open_wam-1.2.3-py2.py3-none-any.whl").touch()
+        (directory / "openwam_sdk-1.2.3-py2.py3-none-any.whl").touch()
     elif failure == "existing_upload":
         (tmp_path / "upload").mkdir()
         (tmp_path / "upload/unrelated.whl").touch()
@@ -159,7 +179,7 @@ def test_publishing_refuses_incomplete_or_ambiguous_payloads(tmp_path: Path, fai
         ["bash", "-c", selection["run"]], cwd=tmp_path, capture_output=True,
         env={
             **os.environ, "RELEASE_TAG": "v1.2.3",
-            "RELEASE_PROJECT": "unknown" if failure == "unknown_project" else "open-wam",
+            "RELEASE_PROJECT": "unknown" if failure == "unknown_project" else "openwam-sdk",
         },
     )
     assert result.returncode != 0

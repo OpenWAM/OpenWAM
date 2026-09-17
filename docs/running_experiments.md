@@ -661,6 +661,22 @@ uv run --extra sim python scripts/run_libero_policy.py \
   --decode-device cuda:0
 ```
 
+Full-size checkpoints can exceed one GPU's memory as the history window fills,
+even when a short startup smoke fits. On a two-GPU host, keep the packed video
+and action experts together and place the VAE/text frontend and decoding on
+the second GPU:
+
+```text
+--runtime-device cuda:0 --action-device cuda:0
+--frontend-device cuda:1 --decode-device cuda:1
+--set backbone.reference_assets_device_policy=runtime
+```
+
+These are logical device indices after `CUDA_VISIBLE_DEVICES` filtering. This
+placement preserves the model window, denoising settings, and action chunk;
+it is not CPU offload. Packed dual-expert inference does not support placing
+its video and action experts on different devices.
+
 The six standard non-GJD dual-expert rollout programs use an `800` timestep and
 `50` chunk limit. Conditional FDM/IDM programs are offline diagnostics by
 default. The composition route below makes IDM usable online by supplying clean
