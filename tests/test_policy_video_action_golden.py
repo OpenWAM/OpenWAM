@@ -195,7 +195,7 @@ def test_real_vta_external_idm_rollout_matches_golden(
             "1",
             "--startup-env-init-steps",
             "5",
-            "--dual-expert-inference-window-size",
+            "--inference-window-size",
             "30",
             "--runtime-device",
             producer_device,
@@ -276,7 +276,7 @@ def test_real_vta_native_and_two_model_rollouts_are_bitwise_equal(
     episode_idx = "0"
     common = [
         str(python_executable),
-        str(REPO_ROOT / "scripts" / "run_libero_dual_expert_visualization.py"),
+        str(REPO_ROOT / "scripts" / "run_libero_policy.py"),
         "--cfg",
         str(config),
         "--checkpoint",
@@ -311,7 +311,7 @@ def test_real_vta_native_and_two_model_rollouts_are_bitwise_equal(
             "2",
             "--frontend-encode-mode",
             "lingbot_streaming_vae",
-            "--dual-expert-inference-window-size",
+            "--inference-window-size",
             "30",
             "--startup-model-obs-frames",
             "1",
@@ -343,7 +343,7 @@ def test_real_vta_native_and_two_model_rollouts_are_bitwise_equal(
     )
     outputs: dict[str, Path] = {}
     cases = (
-        ("native", "joint", ()),
+        ("native", "native", ()),
         (
             "two_model",
             "generated_video_then_action",

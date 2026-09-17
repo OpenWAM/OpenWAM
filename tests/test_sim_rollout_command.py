@@ -25,7 +25,7 @@ def test_sim_rollout_parser_defaults_match_runtime_contract() -> None:
 
     args = parser.parse_args(["--cfg", "experiment.yaml", "--benchmark", "calvin"])
     assert vars(args) == {
-        "action_commit_mode": SimActionCommitMode.FIRST_ACTION.value,
+        "action_commit_mode": SimActionCommitMode.FIRST_FRAME.value,
         "allow_partial_checkpoint": False,
         "benchmark": "calvin",
         "calvin_dataset_root": None,
@@ -95,6 +95,8 @@ def test_sim_rollout_command_preserves_controls_cleanup_and_result_envelope(
     monkeypatch.setattr(runtime, "_build_adapter", lambda args: adapter)
 
     def fake_rollout(**kwargs):
+        from open_wam.runtime.control import RolloutTermination, RolloutTerminationReason
+
         captured.update(kwargs)
         return SimRolloutResult(
             benchmark="calvin",
@@ -103,15 +105,17 @@ def test_sim_rollout_command_preserves_controls_cleanup_and_result_envelope(
             steps=2,
             target_action_hz=4.0,
             wall_time_s=0.5,
+            live_wall_time_s=0.5,
             mean_policy_step_s=0.01,
             mean_env_step_s=0.02,
             achieved_action_hz=4.0,
             policy_action_shapes=((1, 2, 4),),
             action_records=({"action_index": 0},),
             video_frames=(),
+            termination=RolloutTermination(RolloutTerminationReason.SUCCESS, 2),
         )
 
-    monkeypatch.setattr(runtime, "run_closed_loop_sim_rollout", fake_rollout)
+    monkeypatch.setattr(runtime, "run_zero_control_smoke", fake_rollout)
     config_path = REPO_ROOT / "configs" / "examples" / "public_tiny_synthetic_contract.yaml"
     args = cli.build_arg_parser().parse_args(
         [
@@ -144,7 +148,7 @@ def test_sim_rollout_command_preserves_controls_cleanup_and_result_envelope(
     assert captured["seed"] == 7
     assert captured["task_id"] is None
     assert captured["episode_idx"] == 0
-    assert isinstance(captured["rollout_runner"], runtime._ZeroActionRolloutRunner)
+    assert "rollout_runner" not in captured
 
     summary_path = tmp_path / "calvin_contract.json"
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
@@ -199,7 +203,7 @@ def test_sim_rollout_command_closes_adapter_when_rollout_fails(monkeypatch, tmp_
         del kwargs
         raise RuntimeError("simulator step failed")
 
-    monkeypatch.setattr(runtime, "run_closed_loop_sim_rollout", fail_rollout)
+    monkeypatch.setattr(runtime, "run_zero_control_smoke", fail_rollout)
     config_path = REPO_ROOT / "configs" / "examples" / "public_tiny_synthetic_contract.yaml"
     args = cli.build_arg_parser().parse_args(
         [

@@ -5,6 +5,7 @@ import math
 import torch
 
 from open_wam.configs.backbone import SharedVideoTransformerConfig
+from open_wam.models.common.runtime_controls import combine_cfg_prediction
 
 from .reference_transformer import preferred_reference_dtype
 from .runtime_programs import (
@@ -228,7 +229,9 @@ def run_exact_single_stream_forward(
     if use_cfg and combine_cfg:
         cond_output = output[:batch_size]
         uncond_output = output[batch_size:]
-        return uncond_output + guidance_scale * (cond_output - uncond_output)
+        return combine_cfg_prediction(
+            cond_output, uncond_output, guidance_scale=guidance_scale
+        )
     return output
 
 

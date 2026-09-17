@@ -362,7 +362,7 @@ def test_persist_rollout_artifacts_preserves_legacy_schema_and_paths(
         "execute_frame_chunk_size": None,
         "action_count": 2,
         "checkpoint_file": "/checkpoint/model_state.pt",
-        "dual_expert_gjd_action_route": "joint",
+        "policy_action_route": "native",
     }
     output = artifacts.persist_libero_rollout_artifacts(
         pipeline=SimpleNamespace(),  # type: ignore[arg-type]

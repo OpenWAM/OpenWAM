@@ -15,6 +15,7 @@ from open_wam.models.common import (
     PreparedAttentionProfile,
     unpatchify_video_tokens,
 )
+from open_wam.models.common.block_sequence import TransformerBlockSequence
 from open_wam.models.common.cache_backend_contracts import (
     cache_backend_uses_slot_pool,
     resolve_cache_backend_spec,
@@ -42,6 +43,7 @@ from open_wam.models.common.cache_layout_policy import (
 from open_wam.models.common.cache_layout_policy import (
     retained_slot_pool_indices_for_current_write as _retained_slot_pool_indices_for_current_write,
 )
+from open_wam.models.common.denoising_cache import DenoisingCache
 from open_wam.models.video_backbone.contracts import (
     AttentionCacheEntry,
     CacheBranchState,
@@ -124,7 +126,7 @@ _COMPATIBILITY_EXPORTS = (
 )
 
 
-class SharedVideoTransformerCore(nn.Module):
+class SharedVideoTransformerCore(TransformerBlockSequence):
     """Shared Wan-style transformer core for all policy variants."""
 
     def __init__(
@@ -276,7 +278,7 @@ class SharedVideoTransformerCore(nn.Module):
                 continue
             module.to(device=input_device)
 
-        for layer_index, block in enumerate(self.blocks):
+        for layer_index, block in enumerate(self.execution_blocks):
             block.to(device=normalized[layer_index % len(normalized)])
 
         self.norm_out.to(device=output_device)
@@ -576,7 +578,7 @@ class SharedVideoTransformerCore(nn.Module):
         backend_spec = resolve_cache_backend_spec(backend_name)
         backend_payload = init_cache_backend_payload(
             backend_spec.name,
-            num_layers=len(self.blocks),
+            num_layers=len(self.execution_blocks),
             total_tokens=total_tokens,
             num_heads=self.config.num_heads,
             head_dim=self.config.hidden_size // self.config.num_heads,
@@ -838,7 +840,7 @@ class SharedVideoTransformerCore(nn.Module):
             tuple[str, torch.device, torch.dtype | None], torch.Tensor
         ] = {}
 
-        for layer_index, block in enumerate(self.blocks):
+        for layer_index, block in enumerate(self.execution_blocks):
             block_device = (
                 self._runtime_block_devices[
                     layer_index % len(self._runtime_block_devices)
@@ -1004,7 +1006,7 @@ class SharedVideoTransformerCore(nn.Module):
             torch.device, PreparedAttentionProfile | None
         ] = {}
 
-        for layer_index, block in enumerate(self.blocks):
+        for layer_index, block in enumerate(self.execution_blocks):
             block_device = (
                 self._runtime_block_devices[
                     layer_index % len(self._runtime_block_devices)
@@ -1120,11 +1122,27 @@ class SharedVideoTransformerCore(nn.Module):
         return video_prediction, action_prediction
 
     def _forward_exact_train_sequence(
-        self, prepared: PreparedExactTrainSequence
+        self,
+        prepared: PreparedExactTrainSequence,
+        *,
+        denoising_cache: DenoisingCache | None = None,
+        required_tokens: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, ...]:
         """Execute one prepared packed sequence through the shared video core."""
 
         hidden_states = prepared.hidden_states
+        if denoising_cache is not None:
+            if torch.is_grad_enabled():
+                raise ValueError("Denoising cache reuse is inference-only.")
+            if not denoising_cache.bound:
+                profile = prepared.attention_profile
+                denoising_cache.bind(
+                    profile=profile,
+                    invariant_tokens=profile.token_layout.noise_id == 1,
+                    stream_lengths=(hidden_states.shape[1],),
+                    num_layers=len(self.execution_blocks),
+                    required_tokens=required_tokens,
+                )
 
         def forward_block(
             current_hidden_states: torch.Tensor,
@@ -1132,16 +1150,27 @@ class SharedVideoTransformerCore(nn.Module):
             timestep_proj: torch.Tensor,
             rotary_emb: torch.Tensor,
             current_block: nn.Module,
+            block_index: int,
         ) -> torch.Tensor:
+            invariant_cache = (
+                None
+                if denoising_cache is None
+                else denoising_cache.layers[block_index][0]
+            )
+            attention_profile = (
+                (denoising_cache.query_profile if invariant_cache.ready else denoising_cache.prefill_profile)
+                if invariant_cache is not None else prepared.attention_profile
+            )
             return current_block(
                 current_hidden_states,
                 encoder_hidden_states=text_hidden_states,
                 temb=timestep_proj,
                 rotary_emb=rotary_emb,
-                attention_profile=prepared.attention_profile,
+                attention_profile=attention_profile,
+                invariant_cache=invariant_cache,
             )[0]
 
-        for block in self.blocks:
+        for block_index, block in enumerate(self.execution_blocks):
             checkpoint_active = (
                 prepared.use_activation_checkpointing
                 and torch.is_grad_enabled()
@@ -1157,6 +1186,7 @@ class SharedVideoTransformerCore(nn.Module):
                 prepared.timestep_proj,
                 prepared.rotary_emb,
                 block,
+                block_index,
             )
             if checkpoint_active:
                 hidden_states = torch.utils.checkpoint.checkpoint(
@@ -1167,9 +1197,9 @@ class SharedVideoTransformerCore(nn.Module):
             else:
                 hidden_states = forward_block(*block_args)
 
-        temb_scale_shift_table = self.scale_shift_table[None] + prepared.temb[
-            :, :, None, ...
-        ]
+        temb_scale_shift_table = (
+            self.scale_shift_table[None] + prepared.temb[:, :, None, ...]
+        )
         shift, scale = _select_chunk_slices(temb_scale_shift_table, 2)
         hidden_states = (
             self.norm_out(hidden_states.float())
@@ -1210,6 +1240,7 @@ class SharedVideoTransformerCore(nn.Module):
                     ),
                     rope=self.rope,
                     encode_proprio_context=self.encode_proprio_hidden_context,
+                    attention_profile=step_input.attention_profile,
                 )
             ),
             conditioned_video_preparer=lambda payload: (
@@ -1240,6 +1271,12 @@ class SharedVideoTransformerCore(nn.Module):
                 )
             ),
         )
+        if step_input.denoising_cache is not None and prepared.mode not in {
+            "exact_train", "exact_conditioned_video"
+        }:
+            raise ValueError(
+                "Call-local denoising cache requires packed prepared sequence execution."
+            )
         if prepared.mode == "core_input":
             if prepared.core_input is None:
                 raise ValueError(
@@ -1269,7 +1306,11 @@ class SharedVideoTransformerCore(nn.Module):
                     "Exact-train runtime step requires prepared exact-train state."
                 )
             latent_hidden_states, _, action_hidden_states, _, _ = (
-                self._forward_exact_train_sequence(prepared.exact_train)
+                self._forward_exact_train_sequence(
+                    prepared.exact_train,
+                    denoising_cache=step_input.denoising_cache,
+                    required_tokens=step_input.required_tokens,
+                )
             )
             video_prediction = self.proj_out(latent_hidden_states)
             video_prediction = rearrange(
@@ -1300,7 +1341,7 @@ class SharedVideoTransformerCore(nn.Module):
                     "Conditioned-video runtime step requires prepared video state."
                 )
             video_hidden_states, _, _ = self._forward_exact_train_sequence(
-                prepared.exact_conditioned_video
+                prepared.exact_conditioned_video, denoising_cache=step_input.denoising_cache
             )
             video_prediction = self.proj_out(video_hidden_states)
             video_prediction = rearrange(
@@ -1584,7 +1625,7 @@ class SharedVideoTransformerCore(nn.Module):
         )
         incoming_self_attention_kv = incoming_branch_state.self_attention_kv
         incoming_cross_attention_kv = incoming_branch_state.cross_attention_kv
-        for layer_index, block in enumerate(self.blocks):
+        for layer_index, block in enumerate(self.execution_blocks):
             block_device = (
                 self._runtime_block_devices[
                     layer_index % len(self._runtime_block_devices)

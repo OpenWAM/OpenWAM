@@ -1,25 +1,8 @@
-"""FSDP-friendly packed video+action block for dual-expert six-coupling experiments.
+"""Owned video/action layer pairs with shared attention and native FSDP hooks.
 
-The legacy ``_packed_block_step`` closure inside
-``forward_dual_expert_packed_coupling_denoise`` calls ``_linear_with_materialized_params``
-and similar helpers that bypass FSDP's standard pre/post-forward hooks. Under
-FSDP2 with per-block ``fully_shard``, those helpers manually call
-``param.full_tensor()``; the materialized view's storage is freed when the
-surrounding ``with unshard_runtime_parameters(...)`` exits, so backward fails with
-``setStorage: ... out of bounds for storage of size 0``.
-
-``DualExpertPackedBlock`` wraps one ``(video_block, action_block)`` pair so that the
-joint attention runs inside a single ``nn.Module.forward``. When this module is
-passed to ``fully_shard``, the standard FSDP hook lifecycle takes over: params
-all_gather at module entry, register backward hooks for re-gather during
-backward, then reshard after the optimizer step. No manual ``full_tensor``
-calls are needed.
-
-The packed block inlines the self-attention preparation and post-attention
-residual/cross-attention/FFN path with native ``nn.Module`` calls. That keeps
-all q/k/v, output projection, layer norm, cross-attention, and FFN parameters
-on the standard autograd/FSDP hook path instead of using manual materialized
-parameter views.
+Each pair remains one parameter owner and one FSDP unit during training and
+inference. Call-local cache reuse changes attention work, not ownership,
+visibility or residual order. Inference can skip invariant feature rows.
 """
 
 from __future__ import annotations
@@ -28,9 +11,15 @@ from typing import Any
 
 import torch
 import torch.nn.functional as F
+import torch.utils.checkpoint
 from torch import nn
 
 from open_wam.models.common.attention_backends import apply_attention_backend
+from open_wam.models.common.denoising_cache import (
+    DenoisingCache,
+    InvariantTokenCache,
+    select_block_mask,
+)
 from open_wam.models.visual_tower.shared_transformer_embeddings import apply_rotary_emb
 from open_wam.models.visual_tower.shared_transformer_layout import select_chunk_slices
 
@@ -86,14 +75,25 @@ def _prepare_self_attention_inputs_native(
     temb: torch.Tensor,
     rotary_emb: torch.Tensor | None,
 ) -> dict[str, torch.Tensor]:
-    temb_scale_shift_table = block.scale_shift_table.to(device=temb.device, dtype=temb.dtype)[None] + temb.float()
-    shift_msa, scale_msa, gate_msa, c_shift_msa, c_scale_msa, c_gate_msa = select_chunk_slices(
-        temb_scale_shift_table,
-        6,
+    temb_scale_shift_table = (
+        block.scale_shift_table.to(device=temb.device, dtype=temb.dtype)[None]
+        + temb.float()
     )
-    norm_hidden_states = (block.norm1(hidden_states.float()) * (1.0 + scale_msa) + shift_msa).type_as(hidden_states)
-    query = block.attn1.norm_q(block.attn1.to_q(norm_hidden_states)).unflatten(2, (block.attn1.heads, -1))
-    key = block.attn1.norm_k(block.attn1.to_k(norm_hidden_states)).unflatten(2, (block.attn1.heads, -1))
+    shift_msa, scale_msa, gate_msa, c_shift_msa, c_scale_msa, c_gate_msa = (
+        select_chunk_slices(
+            temb_scale_shift_table,
+            6,
+        )
+    )
+    norm_hidden_states = (
+        block.norm1(hidden_states.float()) * (1.0 + scale_msa) + shift_msa
+    ).type_as(hidden_states)
+    query = block.attn1.norm_q(block.attn1.to_q(norm_hidden_states)).unflatten(
+        2, (block.attn1.heads, -1)
+    )
+    key = block.attn1.norm_k(block.attn1.to_k(norm_hidden_states)).unflatten(
+        2, (block.attn1.heads, -1)
+    )
     value = block.attn1.to_v(norm_hidden_states).unflatten(2, (block.attn1.heads, -1))
     if rotary_emb is not None:
         query = apply_rotary_emb(query, rotary_emb)
@@ -123,7 +123,9 @@ def _apply_post_attention_native(
     cross_attention_mask: torch.Tensor | None = None,
     cross_attention_block_mask: Any | None = None,
 ) -> torch.Tensor:
-    hidden_states = (hidden_states.float() + mixed_attn_output.float() * gate_msa).type_as(hidden_states)
+    hidden_states = (
+        hidden_states.float() + mixed_attn_output.float() * gate_msa
+    ).type_as(hidden_states)
     norm_hidden_states = block.norm2(hidden_states.float()).type_as(hidden_states)
     hidden_states = hidden_states + _native_attention(
         block.attn2,
@@ -133,9 +135,13 @@ def _apply_post_attention_native(
         attention_mask=cross_attention_mask,
         block_mask=cross_attention_block_mask,
     )
-    norm_hidden_states = (block.norm3(hidden_states.float()) * (1.0 + c_scale_msa) + c_shift_msa).type_as(hidden_states)
+    norm_hidden_states = (
+        block.norm3(hidden_states.float()) * (1.0 + c_scale_msa) + c_shift_msa
+    ).type_as(hidden_states)
     ff_output = block.ffn(norm_hidden_states)
-    return (hidden_states.float() + ff_output.float() * c_gate_msa).type_as(hidden_states)
+    return (hidden_states.float() + ff_output.float() * c_gate_msa).type_as(
+        hidden_states
+    )
 
 
 class DualExpertPackedBlock(nn.Module):
@@ -155,50 +161,89 @@ class DualExpertPackedBlock(nn.Module):
     def forward(
         self,
         video_hidden_states: torch.Tensor,
-        action_hidden_states: torch.Tensor,
+        action_hidden_states: torch.Tensor | None,
         *,
         video_timestep_proj: torch.Tensor,
         video_rotary_emb: torch.Tensor | None,
-        action_temb: torch.Tensor,
+        action_temb: torch.Tensor | None,
         action_rotary_emb: torch.Tensor | None,
         video_attention_mask: torch.Tensor | None,
         action_attention_mask: torch.Tensor | None,
         video_text_hidden_states: torch.Tensor,
-        action_text_hidden_states: torch.Tensor,
+        action_text_hidden_states: torch.Tensor | None,
         video_cross_attention_mask: torch.Tensor | None = None,
         action_cross_attention_mask: torch.Tensor | None = None,
         video_cross_attention_block_mask: Any | None = None,
         action_cross_attention_block_mask: Any | None = None,
         block_mask: Any | None = None,
         flex_kernel_options: dict[str, Any] | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        video_attn_inputs = _prepare_self_attention_inputs_native(
-            self.video_block,
-            video_hidden_states,
-            temb=video_timestep_proj,
-            rotary_emb=video_rotary_emb,
+        token_cache: tuple[InvariantTokenCache, InvariantTokenCache] | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        streams = (
+            (
+                self.video_block,
+                video_hidden_states,
+                video_timestep_proj,
+                video_rotary_emb,
+                video_attention_mask,
+                video_text_hidden_states,
+                video_cross_attention_mask,
+                video_cross_attention_block_mask,
+            ),
+            (
+                self.action_block,
+                action_hidden_states,
+                action_temb,
+                action_rotary_emb,
+                action_attention_mask,
+                action_text_hidden_states,
+                action_cross_attention_mask,
+                action_cross_attention_block_mask,
+            ),
         )
-        action_attn_inputs = _prepare_self_attention_inputs_native(
-            self.action_block,
-            action_hidden_states,
-            temb=action_temb,
-            rotary_emb=action_rotary_emb,
-        )
-
-        joint_key = torch.cat(
-            [video_attn_inputs["key"], action_attn_inputs["key"]],
-            dim=2,
-        )
-        joint_value = torch.cat(
-            [video_attn_inputs["value"], action_attn_inputs["value"]],
-            dim=2,
-        )
-
-        if block_mask is not None:
-            joint_query = torch.cat(
-                [video_attn_inputs["query"], action_attn_inputs["query"]],
-                dim=2,
+        if token_cache is not None and torch.is_grad_enabled():
+            raise ValueError(
+                "Invariant feature reuse is only supported without autograd."
             )
+        prepared = []
+        for index, (
+            block,
+            hidden,
+            temb,
+            rope,
+            mask,
+            text,
+            cross_mask,
+            cross_block,
+        ) in enumerate(streams):
+            if hidden is None:
+                continue
+            cache = None if token_cache is None else token_cache[index]
+            if cache is not None:
+                mask = cache.select(mask, dim=-2)
+                hidden = cache.select(hidden)
+                temb = cache.select(temb)
+                rope = cache.select(rope)
+                cross_mask = cache.select(cross_mask, dim=-2)
+                cross_block = select_block_mask(
+                    cross_block,
+                    cache.active_indices if cache.ready else cache.computed_indices,
+                )
+            inputs = _prepare_self_attention_inputs_native(
+                block, hidden, temb=temb, rotary_emb=rope
+            )
+            if cache is not None:
+                inputs["key"], inputs["value"] = cache.key_value(
+                    inputs["key"], inputs["value"]
+                )
+            prepared.append(
+                (index, block, inputs, mask, text, cross_mask, cross_block, cache)
+            )
+
+        joint_key = torch.cat([item[2]["key"] for item in prepared], dim=2)
+        joint_value = torch.cat([item[2]["value"] for item in prepared], dim=2)
+        if block_mask is not None:
+            joint_query = torch.cat([item[2]["query"] for item in prepared], dim=2)
             mixed = apply_attention_backend(
                 query=joint_query,
                 key=joint_key,
@@ -206,67 +251,41 @@ class DualExpertPackedBlock(nn.Module):
                 block_mask=block_mask,
                 kernel_options=flex_kernel_options,
             )
-            video_seq_len = int(video_attn_inputs["query"].shape[2])
-            action_seq_len = int(action_attn_inputs["query"].shape[2])
-            mixed_video, mixed_action = torch.split(
-                mixed, [video_seq_len, action_seq_len], dim=2
+            mixed_streams = torch.split(
+                mixed, [item[2]["query"].shape[2] for item in prepared], dim=2
             )
-            mixed_video = mixed_video.transpose(1, 2).flatten(2, 3)
-            mixed_action = mixed_action.transpose(1, 2).flatten(2, 3)
         else:
-            mixed_video = (
+            mixed_streams = [
                 F.scaled_dot_product_attention(
-                    video_attn_inputs["query"],
+                    item[2]["query"],
                     joint_key,
                     joint_value,
-                    attn_mask=video_attention_mask,
+                    attn_mask=item[3],
                     dropout_p=0.0,
                     is_causal=False,
                 )
-                .transpose(1, 2)
-                .flatten(2, 3)
-            )
-            mixed_action = (
-                F.scaled_dot_product_attention(
-                    action_attn_inputs["query"],
-                    joint_key,
-                    joint_value,
-                    attn_mask=action_attention_mask,
-                    dropout_p=0.0,
-                    is_causal=False,
-                )
-                .transpose(1, 2)
-                .flatten(2, 3)
-            )
+                for item in prepared
+            ]
 
-        video_self_out = self.video_block.attn1.to_out[1](self.video_block.attn1.to_out[0](mixed_video))
-        action_self_out = self.action_block.attn1.to_out[1](self.action_block.attn1.to_out[0](mixed_action))
-
-        new_video = _apply_post_attention_native(
-            self.video_block,
-            video_attn_inputs["hidden_states"],
-            mixed_attn_output=video_self_out,
-            encoder_hidden_states=video_text_hidden_states,
-            gate_msa=video_attn_inputs["gate_msa"],
-            c_shift_msa=video_attn_inputs["c_shift_msa"],
-            c_scale_msa=video_attn_inputs["c_scale_msa"],
-            c_gate_msa=video_attn_inputs["c_gate_msa"],
-            cross_attention_mask=video_cross_attention_mask,
-            cross_attention_block_mask=video_cross_attention_block_mask,
-        )
-        new_action = _apply_post_attention_native(
-            self.action_block,
-            action_attn_inputs["hidden_states"],
-            mixed_attn_output=action_self_out,
-            encoder_hidden_states=action_text_hidden_states,
-            gate_msa=action_attn_inputs["gate_msa"],
-            c_shift_msa=action_attn_inputs["c_shift_msa"],
-            c_scale_msa=action_attn_inputs["c_scale_msa"],
-            c_gate_msa=action_attn_inputs["c_gate_msa"],
-            cross_attention_mask=action_cross_attention_mask,
-            cross_attention_block_mask=action_cross_attention_block_mask,
-        )
-        return new_video, new_action
+        results = [None, None]
+        for item, mixed in zip(prepared, mixed_streams, strict=True):
+            index, block, inputs, _, text, cross_mask, cross_block, cache = item
+            mixed = mixed.transpose(1, 2).flatten(2, 3)
+            attention_output = block.attn1.to_out[1](block.attn1.to_out[0](mixed))
+            hidden = _apply_post_attention_native(
+                block,
+                inputs["hidden_states"],
+                mixed_attn_output=attention_output,
+                encoder_hidden_states=text,
+                gate_msa=inputs["gate_msa"],
+                c_shift_msa=inputs["c_shift_msa"],
+                c_scale_msa=inputs["c_scale_msa"],
+                c_gate_msa=inputs["c_gate_msa"],
+                cross_attention_mask=cross_mask,
+                cross_attention_block_mask=cross_block,
+            )
+            results[index] = hidden if cache is None else cache.output(hidden)
+        return results[0], results[1]
 
 
 class DualExpertPackedBlockStack(nn.Module):
@@ -290,13 +309,48 @@ class DualExpertPackedBlockStack(nn.Module):
     def forward(
         self,
         video_hidden_states: torch.Tensor,
-        action_hidden_states: torch.Tensor,
+        action_hidden_states: torch.Tensor | None,
+        *,
+        use_activation_checkpointing: bool = False,
+        denoising_cache: DenoisingCache | None = None,
         **kwargs,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        for packed_block in self.packed_blocks:
-            video_hidden_states, action_hidden_states = packed_block(
-                video_hidden_states,
-                action_hidden_states,
-                **kwargs,
-            )
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        if denoising_cache is not None and len(denoising_cache.layers) != len(
+            self.packed_blocks
+        ):
+            raise ValueError("Denoising cache layer count must match its executor.")
+        checkpoint_active = use_activation_checkpointing and torch.is_grad_enabled()
+        for index, packed_block in enumerate(self.packed_blocks):
+            block_kwargs = kwargs
+            if denoising_cache is not None:
+                token_cache = denoising_cache.layers[index]
+                block_kwargs = {**kwargs, "token_cache": token_cache}
+                for name in ("video_attention_mask", "action_attention_mask"):
+                    if kwargs.get(name) is not None:
+                        block_kwargs[name] = kwargs[name].index_select(
+                            -1, denoising_cache.key_indices
+                        )
+                if kwargs.get("block_mask") is not None:
+                    profile = (
+                        denoising_cache.query_profile
+                        if token_cache[0].ready
+                        else denoising_cache.prefill_profile
+                    )
+                    block_kwargs["block_mask"] = profile.self_attention_block_mask
+            if checkpoint_active:
+                video_hidden_states, action_hidden_states = (
+                    torch.utils.checkpoint.checkpoint(
+                        packed_block,
+                        video_hidden_states,
+                        action_hidden_states,
+                        use_reentrant=False,
+                        **block_kwargs,
+                    )
+                )
+            else:
+                video_hidden_states, action_hidden_states = packed_block(
+                    video_hidden_states,
+                    action_hidden_states,
+                    **block_kwargs,
+                )
         return video_hidden_states, action_hidden_states

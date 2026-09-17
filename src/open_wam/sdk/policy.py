@@ -1,8 +1,11 @@
 """Stable policy, decoder, and registration contracts."""
 
+from open_wam.configs.enums import FeatureCacheScope
+from open_wam.contracts.action_space import ActionSpaceAdapter
 from open_wam.models.action_decoders.base import (
     ActionDecoder,
     ActionDecoderInferOutput,
+    ActionDecoderRolloutPlan,
     ActionDecoderTrainOutput,
 )
 from open_wam.models.common.attention_contracts import (
@@ -14,6 +17,7 @@ from open_wam.models.policy_variants.contracts import (
     DecoderArtifactEnvelope,
     PolicyCompositionCapability,
     PolicyCompositionRngPolicy,
+    PolicyExecutionCommit,
     PolicyGeneratedVideo,
     PolicyInferContext,
     PolicyInferenceCapabilities,
@@ -26,7 +30,10 @@ from open_wam.models.policy_variants.contracts import (
     PolicyPipelineRequirements,
     PolicyPreparedInputs,
     PolicyRecurrentHistoryPolicy,
+    PolicyRolloutContract,
+    PolicyRolloutTelemetry,
     PolicyTemporalGeometry,
+    PolicyTemporalSpan,
     PolicyTrainBatch,
     PolicyTrainOutput,
     PolicyVideoConditionedActionRequest,
@@ -56,11 +63,15 @@ from open_wam.pipelines.registries import (
 __all__ = [
     "ActionDecoder",
     "ActionDecoderInferOutput",
+    "ActionDecoderRolloutPlan",
     "ActionDecoderTrainOutput",
+    "ActionSpaceAdapter",
     "AttentionProfileSpec",
     "DecoderArtifactEnvelope",
+    "FeatureCacheScope",
     "PolicyCompositionCapability",
     "PolicyCompositionRngPolicy",
+    "PolicyExecutionCommit",
     "PolicyGeneratedVideo",
     "PolicyInferContext",
     "PolicyInferenceCapabilities",
@@ -73,7 +84,10 @@ __all__ = [
     "PolicyPipelineRequirements",
     "PolicyPreparedInputs",
     "PolicyRecurrentHistoryPolicy",
+    "PolicyRolloutContract",
+    "PolicyRolloutTelemetry",
     "PolicyTemporalGeometry",
+    "PolicyTemporalSpan",
     "PolicyTrainBatch",
     "PolicyTrainOutput",
     "PolicyVariant",

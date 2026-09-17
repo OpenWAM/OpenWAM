@@ -17,6 +17,7 @@ from open_wam.models.common.cache_backend_contracts import cache_backend_uses_sl
 from open_wam.models.common.cache_backend_lifecycle import (
     materialize_cache_backend_entries,
 )
+from open_wam.models.common.runtime_controls import combine_cfg_prediction
 from open_wam.models.video_backbone.contracts import CacheState
 from open_wam.models.visual_tower import (
     RuntimeStepInput,
@@ -27,7 +28,6 @@ from open_wam.models.visual_tower.sequence_adapters import (
     prepare_exact_dual_stream_train_sequence,
 )
 
-from .exact_cache import build_dual_stream_cache_stream_ids
 from .inference_conditioning import repeat_parallel_exact_input_for_cfg
 
 
@@ -320,11 +320,11 @@ def run_parallel_action_conditioned_forward(
         expected_tokens=expected_action_tokens,
         name="action",
     )
-    combined_video_pred = uncond_video_pred + video_guidance_scale * (
-        cond_video_pred - uncond_video_pred
+    combined_video_pred = combine_cfg_prediction(
+        cond_video_pred, uncond_video_pred, guidance_scale=video_guidance_scale
     )
-    combined_action_pred = uncond_action_pred + action_guidance_scale * (
-        cond_action_pred - uncond_action_pred
+    combined_action_pred = combine_cfg_prediction(
+        cond_action_pred, uncond_action_pred, guidance_scale=action_guidance_scale
     )
     return combined_video_pred, combined_action_pred
 
@@ -360,3 +360,22 @@ def run_parallel_action_conditioned_train(
     # execution path; the joint-denoise variant changes inference rollout
     # semantics, not the backbone's train-time sequence contract.
     return run_parallel_exact_train(transformer, input_dict)
+
+
+def build_dual_stream_cache_stream_ids(
+    split_list: list[int] | tuple[int, ...],
+    *,
+    device: torch.device,
+) -> torch.Tensor:
+    """Label packed video, action, and padding tokens for exact-cache writes."""
+
+    return torch.cat(
+        [
+            torch.zeros(int(split_list[0]), device=device, dtype=torch.long),
+            torch.zeros(int(split_list[1]), device=device, dtype=torch.long),
+            torch.ones(int(split_list[2]), device=device, dtype=torch.long),
+            torch.ones(int(split_list[3]), device=device, dtype=torch.long),
+            torch.full((int(split_list[4]),), -1, device=device, dtype=torch.long),
+        ],
+        dim=0,
+    )

@@ -17,7 +17,6 @@ from open_wam.models.policy_variants import PolicyTrainBatch
 from open_wam.models.policy_variants.dual_expert.conditioning import (
     DualExpertConditioning,
 )
-from open_wam.models.policy_variants.parallel_stream import reference_runtime
 from open_wam.models.policy_variants.parallel_stream.conditioning import (
     ParallelStreamConditioning,
 )
@@ -81,19 +80,6 @@ def test_policy_architectures_reject_noncanonical_condition_layout_equally() -> 
             )
 
 
-def test_reference_runtime_video_conditioning_names_alias_canonical_contract() -> None:
-    assert (
-        reference_runtime._build_clean_video_condition_from_anchor
-        is build_repeated_first_frame_condition
-    )
-    assert (
-        reference_runtime._resolve_full_condition_latents
-        is resolve_full_window_condition_latents
-    )
-    assert (
-        reference_runtime._select_first_frame_condition_latents
-        is select_first_frame_condition_latents
-    )
 
 
 def test_first_frame_fallback_is_a_view_and_repeat_preserves_exact_gradients() -> None:

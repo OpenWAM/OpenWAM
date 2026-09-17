@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from datetime import timedelta
 from types import SimpleNamespace
 
@@ -116,6 +117,259 @@ def test_distributed_strategy_uses_configured_process_group_timeout(
             "timeout": timedelta(seconds=42),
         }
     ]
+
+
+@pytest.mark.parametrize("torch_launch", [False, True])
+def test_single_rank_fsdp_keeps_sharding_and_offload(monkeypatch, torch_launch):
+    from open_wam.training import strategies
+
+    for key in ("RANK", "LOCAL_RANK", "WORLD_SIZE", "LOCAL_WORLD_SIZE"):
+        monkeypatch.delenv(key, raising=False)
+    if torch_launch:
+        for key, value in {"RANK": "0", "LOCAL_RANK": "0", "WORLD_SIZE": "1"}.items():
+            monkeypatch.setenv(key, value)
+    for key in ("MASTER_ADDR", "MASTER_PORT"):
+        monkeypatch.delenv(key, raising=False)
+    calls = []
+    monkeypatch.setattr(dist, "is_initialized", lambda: False)
+    monkeypatch.setattr(dist, "init_process_group", lambda **kw: calls.append(kw))
+    monkeypatch.setattr(
+        strategies, "_resolve_device", lambda *a, **kw: torch.device("cuda:0")
+    )
+    monkeypatch.setattr(torch.cuda, "set_device", lambda *_: None)
+    mesh = object()
+    monkeypatch.setattr(strategies, "init_device_mesh", lambda *a: mesh)
+    monkeypatch.setenv("OPEN_WAM_FSDP_CPU_OFFLOAD", "1")
+    shards = []
+    monkeypatch.setattr(
+        "torch.distributed.fsdp.fully_shard", lambda module, **kw: shards.append(kw)
+    )
+    model = _Pipeline()
+    monkeypatch.setattr(model, "to", lambda **kw: model)
+    strategy = build_training_strategy(
+        TrainerConfig(
+            accelerator=TrainerAccelerator.GPU,
+            strategy=StrategyName.FSDP,
+        )
+    )
+
+    assert strategy.distributed is False
+    assert calls[0]["world_size"] == 1
+    assert isinstance(calls[0]["store"], dist.HashStore)
+    assert strategy.prepare_model(model) is model
+    assert shards and all(kw["mesh"] is mesh for kw in shards)
+    assert all(
+        isinstance(kw["offload_policy"], torch.distributed.fsdp.CPUOffloadPolicy)
+        for kw in shards
+    )
+    sync = []
+    monkeypatch.setattr(
+        strategies,
+        "_set_gradient_sync_recursive",
+        lambda m, enabled: sync.append(enabled),
+    )
+    strategy.set_gradient_sync(model, False)
+    strategy.set_gradient_sync(model, True)
+    assert sync == [False, True]
+    monkeypatch.setattr(dist, "is_initialized", lambda: True)
+    closed = []
+    monkeypatch.setattr(dist, "destroy_process_group", lambda: closed.append(True))
+    strategy.close()
+    assert closed == [True]
+
+
+def test_single_rank_ddp_remains_unwrapped(monkeypatch):
+    for key in ("RANK", "LOCAL_RANK", "WORLD_SIZE", "LOCAL_WORLD_SIZE"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setattr(dist, "is_initialized", lambda: False)
+    monkeypatch.setattr(
+        dist,
+        "init_process_group",
+        lambda **kw: pytest.fail("DDP initialized a single-rank group"),
+    )
+    strategy = build_training_strategy(
+        TrainerConfig(
+            accelerator=TrainerAccelerator.CPU,
+            strategy=StrategyName.DDP,
+        )
+    )
+    model = _Pipeline()
+    assert strategy.prepare_model(model) is model
+    assert not strategy._owns_process_group
+
+
+@pytest.mark.parametrize("borrowed_process_group", [False, True])
+def test_single_rank_fsdp_accumulation_and_group_ownership(
+    monkeypatch, borrowed_process_group
+):
+    from torch.distributed.checkpoint.state_dict import (
+        StateDictOptions,
+        get_model_state_dict,
+    )
+
+    class Projection(torch.nn.Linear):
+        def module_topology(self):
+            return PolicyModuleTopology(visual_runtime_modules=())
+
+    for key in ("RANK", "LOCAL_RANK", "WORLD_SIZE", "LOCAL_WORLD_SIZE",
+                "MASTER_ADDR", "MASTER_PORT"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("OPEN_WAM_FSDP_CPU_OFFLOAD", "0")
+    if borrowed_process_group:
+        dist.init_process_group("gloo", store=dist.HashStore(), rank=0, world_size=1)
+    strategy = None
+    try:
+        strategy = build_training_strategy(
+            TrainerConfig(
+                accelerator=TrainerAccelerator.CPU,
+                strategy=StrategyName.FSDP,
+                precision=TrainerPrecision.FP32,
+            )
+        )
+        assert strategy._owns_process_group is not borrowed_process_group
+        assert not strategy.distributed
+        plain = Projection(4, 4)
+        sharded = strategy.prepare_model(deepcopy(plain))
+        optimizers = [torch.optim.AdamW(m.parameters(), lr=1e-3)
+                      for m in (plain, sharded)]
+        inputs = torch.arange(8, dtype=torch.float32).reshape(2, 4) / 8
+        for _ in range(2):
+            for optimizer in optimizers:
+                optimizer.zero_grad(set_to_none=True)
+            for index in range(3):
+                strategy.set_gradient_sync(sharded, enabled=index == 2)
+                batch = inputs + index / 10
+                (plain(batch).square().mean() / 3).backward()
+                strategy.backward(sharded(batch).square().mean() / 3)
+            expected_norm = torch.nn.utils.clip_grad_norm_(plain.parameters(), 0.5)
+            actual_norm = strategy.clip_grad_norm_(sharded.parameters(), 0.5)
+            torch.testing.assert_close(actual_norm, expected_norm)
+            for optimizer in optimizers:
+                strategy.optimizer_step(optimizer)
+            torch.testing.assert_close(
+                get_model_state_dict(sharded, options=StateDictOptions(full_state_dict=True)),
+                plain.state_dict(), rtol=1e-6, atol=1e-7,
+            )
+        strategy.barrier()
+        strategy.close()
+        strategy.close()
+        assert dist.is_initialized() is borrowed_process_group
+        if not borrowed_process_group:
+            dist.init_process_group("gloo", store=dist.HashStore(), rank=0, world_size=1)
+            strategy.close()
+            assert dist.is_initialized(), "A closed strategy must not destroy a later run's group."
+    finally:
+        if strategy is not None:
+            strategy.close()
+        if dist.is_initialized():
+            dist.destroy_process_group()
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+@pytest.mark.parametrize("sharded_source", [False, True])
+def test_single_rank_fsdp_offload_full_state_resume(
+    tmp_path, monkeypatch, sharded_source
+):
+    import json
+    from copy import deepcopy
+
+    from torch.distributed.checkpoint.state_dict import (
+        StateDictOptions,
+        get_model_state_dict,
+        get_optimizer_state_dict,
+    )
+
+    from open_wam.configs import CheckpointMode
+    from open_wam.training.state import TrainState
+    from tests.test_checkpoint_protocol import _manager
+
+    class Projection(torch.nn.Linear):
+        def module_topology(self):
+            return PolicyModuleTopology(visual_runtime_modules=())
+
+    for key in ("RANK", "LOCAL_RANK", "WORLD_SIZE", "LOCAL_WORLD_SIZE"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("OPEN_WAM_FSDP_CPU_OFFLOAD", "1")
+    strategy = build_training_strategy(
+        TrainerConfig(
+            accelerator=TrainerAccelerator.GPU,
+            strategy=StrategyName.FSDP,
+            precision=TrainerPrecision.FP32,
+        )
+    )
+    manager = _manager(tmp_path, checkpoint_mode=CheckpointMode.FULL_TRAINING_STATE)
+    inputs = torch.ones(2, 4, device="cuda")
+    options = StateDictOptions(full_state_dict=True, cpu_offload=True)
+
+    def update(model, optimizer):
+        optimizer.zero_grad(set_to_none=True)
+        model(inputs).square().mean().backward()
+        optimizer.step()
+
+    try:
+        model = (
+            strategy.prepare_model(Projection(4, 4))
+            if sharded_source
+            else Projection(4, 4).cuda()
+        )
+        optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
+        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, 1, gamma=0.9)
+        update(model, optimizer)
+        scheduler.step()
+        checkpoint = manager.save(
+            step=1,
+            model=model,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            train_state=TrainState(optimizer_step=1),
+        )
+        saved_optimizer = deepcopy(
+            get_optimizer_state_dict(model, optimizer, options=options)
+        )
+        update(model, optimizer)
+        expected = get_model_state_dict(model, options=options)
+        resumed = strategy.prepare_model(Projection(4, 4))
+        restored_optimizer = torch.optim.AdamW(resumed.parameters(), lr=1e-3)
+        restored_scheduler = torch.optim.lr_scheduler.StepLR(
+            restored_optimizer, 1, gamma=0.9
+        )
+        state, _ = manager.load(
+            path=checkpoint,
+            model=resumed,
+            optimizer=restored_optimizer,
+            scheduler=restored_scheduler,
+        )
+        assert state.optimizer_step == 1
+        assert restored_scheduler.state_dict() == scheduler.state_dict()
+        restored_state = get_optimizer_state_dict(
+            resumed, restored_optimizer, options=options
+        )
+        # DCP normalizes the Adam betas tuple to a list without changing values.
+        assert json.dumps(restored_state["param_groups"], sort_keys=True) == json.dumps(
+            saved_optimizer["param_groups"], sort_keys=True
+        )
+        torch.testing.assert_close(
+            restored_state["state"],
+            saved_optimizer["state"],
+            rtol=0,
+            atol=0,
+        )
+        assert all(p.device.type == "cpu" for p in resumed.parameters())
+        assert all(
+            v.device.type == "cpu"
+            for s in restored_optimizer.state.values()
+            for v in s.values()
+            if isinstance(v, torch.Tensor)
+        )
+        update(resumed, restored_optimizer)
+        torch.testing.assert_close(
+            get_model_state_dict(resumed, options=options),
+            expected,
+            rtol=1e-6,
+            atol=1e-7,
+        )
+    finally:
+        strategy.close()
 
 
 def test_distributed_strategy_rejects_initialized_group_coordinate_mismatch(

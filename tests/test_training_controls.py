@@ -22,9 +22,6 @@ from open_wam.configs.enums import (
 )
 from open_wam.data import build_synthetic_latent_batch
 from open_wam.models.policy_variants import PolicyTrainBatch
-from open_wam.models.policy_variants.dual_expert.packed_block import (
-    DualExpertPackedBlockStack,
-)
 from open_wam.models.video_backbone.config import SharedVideoTransformerConfig
 from open_wam.models.visual_tower import VisualTower
 from open_wam.models.visual_tower.replica_core import SharedVideoTransformerCore
@@ -461,41 +458,6 @@ def test_packed_coupling_freeze_video_train_action() -> None:
     assert all(
         parameter.requires_grad
         for parameter in pipeline.policy_variant.action_expert.action_embedder.parameters()
-    )
-
-
-def test_split_cache_restore_transfers_block_ownership_once() -> None:
-    _, pipeline = _build_dual_expert_packed_smoke_pipeline()
-    packed_stack = pipeline.policy_variant.packed_block_stack
-    assert packed_stack is not None
-    video_block_ids = [
-        id(packed_block.video_block) for packed_block in packed_stack.packed_blocks
-    ]
-    action_block_ids = [
-        id(packed_block.action_block) for packed_block in packed_stack.packed_blocks
-    ]
-    assert len(pipeline.visual_tower.core.blocks) == 0
-    assert len(pipeline.policy_variant.action_expert.blocks) == 0
-
-    restored = pipeline.policy_variant.restore_packed_blocks_for_split_cache_inference(
-        pipeline.visual_tower
-    )
-
-    assert restored is True
-    assert pipeline.policy_variant.packed_block_stack is None
-    assert [id(block) for block in pipeline.visual_tower.core.blocks] == video_block_ids
-    assert [
-        id(block) for block in pipeline.policy_variant.action_expert.blocks
-    ] == action_block_ids
-    assert not any(
-        isinstance(module, DualExpertPackedBlockStack) for module in pipeline.modules()
-    )
-    assert not any("packed_block_stack" in key for key in pipeline.state_dict())
-    assert (
-        pipeline.policy_variant.restore_packed_blocks_for_split_cache_inference(
-            pipeline.visual_tower
-        )
-        is False
     )
 
 

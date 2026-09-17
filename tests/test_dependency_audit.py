@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date
+from dataclasses import replace
 
 import pytest
 
@@ -69,6 +70,38 @@ def test_dependency_audit_rejects_stale_exception() -> None:
         validate_audit_report(
             {"dependencies": []},
             (_exception(),),
+            today=date(2026, 8, 6),
+        )
+
+
+@pytest.mark.parametrize("identifier", ("PYSEC-2026-3804", "GHSA-4j2p-28q2-5m79"))
+@pytest.mark.parametrize("mismatch", (None, "package", "version", "expired", "missing_alias"))
+def test_advisory_aliases_preserve_review_scope(identifier, mismatch) -> None:
+    exception = _exception(vulnerability_id="CVE-2026-69112")
+    report = _report(vulnerability_id=identifier)
+    dependency = report["dependencies"][0]
+    dependency["vulns"][0]["aliases"] = ["CVE-2026-69112", identifier]
+    if mismatch in {"package", "version"}:
+        exception = replace(exception, **{mismatch: "other"})
+    elif mismatch == "expired":
+        exception = replace(exception, expires=date(2026, 8, 5))
+    elif mismatch == "missing_alias":
+        dependency["vulns"][0]["aliases"] = []
+    if mismatch is not None:
+        with pytest.raises(ValueError, match="expired|unaccepted vulnerabilities"):
+            validate_audit_report(report, (exception,), today=date(2026, 8, 6))
+    else:
+        result = validate_audit_report(report, (exception,), today=date(2026, 8, 6))
+        assert result.accepted_exceptions == (exception,)
+        assert result.findings[0].vulnerability_id == identifier
+
+
+def test_dependency_audit_rejects_redundant_alias_exceptions() -> None:
+    report = _report()
+    report["dependencies"][0]["vulns"][0]["aliases"] = ["CVE-test"]
+    with pytest.raises(ValueError, match="repeat aliases"):
+        validate_audit_report(
+            report, (_exception(), _exception(vulnerability_id="CVE-test")),
             today=date(2026, 8, 6),
         )
 

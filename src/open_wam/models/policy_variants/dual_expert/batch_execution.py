@@ -7,16 +7,16 @@ from dataclasses import dataclass, fields
 from typing import Any
 
 import torch
-import torch.utils.checkpoint
 
 from open_wam.models.common.attention_contracts import PreparedAttentionProfile
 from open_wam.models.common.sequence_batch_attention import (
     build_sequence_batch_cross_attention,
     build_sequence_batch_self_attention,
 )
+
 from .dual_stream_execution import finish_packed_video, prepare_packed_video_inputs
 from .modules import DualExpertActionPreprocessOutput
-from .packed_block import DualExpertPackedBlock
+from .packed_block import DualExpertPackedBlockStack
 
 
 @dataclass(frozen=True)
@@ -55,11 +55,10 @@ def _join(values: Sequence[torch.Tensor], slots: Sequence[int]) -> torch.Tensor:
 def forward_dual_expert_sequence_batch(
     *,
     visual_tower,
-    action_expert,
     requests: Sequence[DualExpertDenoiseRequest],
     padded: bool,
     use_activation_checkpointing: bool = False,
-    packed_block_stack=None,
+    packed_block_stack: DualExpertPackedBlockStack,
 ) -> tuple[tuple[torch.Tensor, torch.Tensor], ...]:
     """One heavy layer call per layer, never one full forward per sample.
 
@@ -154,26 +153,12 @@ def forward_dual_expert_sequence_batch(
             "BLOCK_N2": 32,
         },
     }
-    blocks = (
-        packed_block_stack.packed_blocks
-        if packed_block_stack is not None
-        else [
-            DualExpertPackedBlock(v, a)
-            for v, a in zip(visual_tower.core.blocks, action_expert.blocks, strict=True)
-        ]
+    video_hidden, action_hidden = packed_block_stack(
+        video_hidden,
+        action_hidden,
+        use_activation_checkpointing=use_activation_checkpointing,
+        **kwargs,
     )
-    checkpoint_active = use_activation_checkpointing and torch.is_grad_enabled()
-    for block in blocks:
-        if checkpoint_active:
-            video_hidden, action_hidden = torch.utils.checkpoint.checkpoint(
-                block,
-                video_hidden,
-                action_hidden,
-                use_reentrant=False,
-                **kwargs,
-            )
-        else:
-            video_hidden, action_hidden = block(video_hidden, action_hidden, **kwargs)
 
     results = []
     video_offset = action_offset = 0

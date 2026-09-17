@@ -6,9 +6,7 @@ import torch
 
 from open_wam.configs import (
     ActionSpace,
-    CurrentBlockCoupling,
     InferenceConfig,
-    ParallelExactCacheWriteMode,
     ParallelRuntimeMode,
     TemporalPositionMode,
     TrainingConfig,
@@ -22,15 +20,13 @@ from open_wam.models.common.dynamics_objectives import (
     resolve_dynamics_rollout_plan,
     resolve_dynamics_sample_plan,
 )
-from open_wam.models.policy_variants.common.layouts import expand_previous_action
-from open_wam.models.video_backbone.contracts import CacheState
 from open_wam.models.visual_tower import VisualStageOutputs, VisualTower
 
 from ..base import VideoActionPolicyVariant
 from ..contracts import (
     DecoderArtifactEnvelope,
-    DynamicsRolloutRequest,
     PolicyInferContext,
+    PolicyGeneratedVideo,
     PolicyInferOutput,
     PolicyInferState,
     PolicyPreparedInputs,
@@ -40,10 +36,10 @@ from ..contracts import (
     PolicyVisualStage,
     RolloutCursor,
 )
-from .action_adapter import LingbotActionAdapter, build_action_adapter_spec
-from .cache_lifecycle import run_parallel_exact_cache_warmup
+from open_wam.models.common.channel_action_adapter import ChannelActionAdapter
+from .action_adapter import build_action_adapter_spec
 from .conditioning import ParallelStreamConditioning
-from .decoder_artifacts import (
+from open_wam.models.decoder_artifacts import (
     PARALLEL_STREAM_DECODER_ARTIFACT_CONTRACT,
     ParallelDecoderInferArtifacts,
     ParallelDecoderTrainArtifacts,
@@ -52,13 +48,13 @@ from .forward_execution import (
     run_parallel_action_conditioned_train,
     run_parallel_exact_train,
 )
-from .packed_rollout import run_parallel_packed_inference_rollout
+from .inference import run_parallel_inference
+from open_wam.models.common.video_action_state import VideoActionRolloutState
 from .reference_profile import (
     LingbotReferenceRuntimeContract,
+    load_reference_profile,
     validate_reference_profile,
 )
-from .runtime_semantics import resolve_parallel_current_block_coupling
-from .staged_rollout import run_parallel_staged_inference_rollout
 from .training_exact_artifacts import (
     prepare_parallel_action_conditioned_train_artifacts,
     prepare_parallel_exact_train_artifacts,
@@ -76,6 +72,10 @@ class ParallelStreamPolicyVariant(VideoActionPolicyVariant):
     shared runtime backbone; this variant intentionally avoids maintaining a
     second local packed-sequence implementation.
     """
+
+    @property
+    def action_tokens_per_frame(self) -> int:
+        return self.config.action_per_frame
 
     def __init__(
         self,
@@ -96,15 +96,15 @@ class ParallelStreamPolicyVariant(VideoActionPolicyVariant):
         self.action_dim = action_dim
         self.action_horizon = action_horizon
         self.num_frames = num_frames
-        self.exact_action_adapter = LingbotActionAdapter(
+        self.action_adapter = ChannelActionAdapter(
             build_action_adapter_spec(config, model_action_dim=action_dim)
         )
-        self.reference_profile = (
-            self.exact_action_adapter.spec.reference_profile
-            if self.exact_action_adapter.spec is not None
-            else None
-        )
+        self.reference_profile = load_reference_profile(config.reference_profile)
         self._validate_reference_runtime_config(self.inference_config)
+
+    @property
+    def source_action_adapter(self):
+        return self.action_adapter if self.action_adapter.spec is not None else None
 
     def _validate_reference_runtime_config(
         self,
@@ -140,7 +140,7 @@ class ParallelStreamPolicyVariant(VideoActionPolicyVariant):
     def source_action_channel_ids(self) -> tuple[int, ...]:
         """Expose the adapter projection through the shared pipeline contract."""
 
-        adapter_spec = self.exact_action_adapter.spec
+        adapter_spec = self.action_adapter.spec
         if adapter_spec is None:
             return ()
         return adapter_spec.used_action_channel_ids
@@ -149,7 +149,7 @@ class ParallelStreamPolicyVariant(VideoActionPolicyVariant):
     def accepted_source_action_shapes(self) -> tuple[tuple[int, int], ...]:
         """Accept raw or already-adapted actions for exact LingBot profiles."""
 
-        adapter_spec = self.exact_action_adapter.spec
+        adapter_spec = self.action_adapter.spec
         if adapter_spec is None:
             return super().accepted_source_action_shapes
         return tuple(
@@ -163,17 +163,6 @@ class ParallelStreamPolicyVariant(VideoActionPolicyVariant):
 
     def _runtime_mode_label(self) -> str:
         return str(self.config.runtime_mode)
-
-    def exact_cache_write_mode(self) -> ParallelExactCacheWriteMode:
-        """Cache write contract selected by the exact runtime program."""
-
-        if resolve_parallel_current_block_coupling(self.config) in {
-            CurrentBlockCoupling.JOINT,
-            CurrentBlockCoupling.VIDEO_NOISY_TO_ACTION,
-            CurrentBlockCoupling.ACTION_NOISY_TO_VIDEO,
-        }:
-            return ParallelExactCacheWriteMode.JOINT_PACKED
-        return ParallelExactCacheWriteMode.SINGLE_STREAM_STAGED
 
     def required_visual_stages(self) -> tuple[PolicyVisualStage, ...]:
         return (PolicyVisualStage.FRONTEND,)
@@ -443,7 +432,7 @@ class ParallelStreamPolicyVariant(VideoActionPolicyVariant):
         device: torch.device,
         dtype: torch.dtype,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
-        if not self.exact_action_adapter.supports_raw_actions:
+        if not self.action_adapter.supports_raw_actions:
             if batch.actions.shape[-1] != self.action_dim:
                 raise ValueError(
                     "Exact LingBot training expects model-space supervision when no action adapter is configured, "
@@ -456,10 +445,8 @@ class ParallelStreamPolicyVariant(VideoActionPolicyVariant):
             )
             return batch.actions.to(device=device, dtype=dtype), action_mask
 
-        resolved_action_space = self.exact_action_adapter.infer_action_space(
-            batch.actions
-        )
-        model_actions = self.exact_action_adapter.to_model_action_sequence(
+        resolved_action_space = self.action_adapter.infer_action_space(batch.actions)
+        model_actions = self.action_adapter.to_model_action_sequence(
             batch.actions,
             action_space=resolved_action_space,
             device=device,
@@ -469,7 +456,7 @@ class ParallelStreamPolicyVariant(VideoActionPolicyVariant):
         if action_mask is None and resolved_action_space == ActionSpace.RAW:
             action_mask = torch.ones_like(batch.actions)
         model_action_mask = (
-            self.exact_action_adapter.to_model_action_mask_sequence(
+            self.action_adapter.to_model_action_mask_sequence(
                 action_mask,
                 action_space=resolved_action_space,
                 device=device,
@@ -486,11 +473,11 @@ class ParallelStreamPolicyVariant(VideoActionPolicyVariant):
         device: torch.device,
         dtype: torch.dtype,
     ) -> torch.Tensor | None:
-        if self.exact_action_adapter.spec is None:
+        if self.action_adapter.spec is None:
             return None
         mask = torch.zeros(self.action_dim, device=device, dtype=dtype)
         used_ids = torch.tensor(
-            self.exact_action_adapter.spec.used_action_channel_ids,
+            self.action_adapter.spec.used_action_channel_ids,
             device=device,
             dtype=torch.long,
         )
@@ -583,6 +570,8 @@ class ParallelStreamPolicyVariant(VideoActionPolicyVariant):
         previous_state: PolicyInferState | None = None,
     ) -> PolicyInferState:
         if previous_state is not None:
+            if isinstance(previous_state.variant_state, VideoActionRolloutState):
+                previous_state.variant_state.require_complete_video_history()
             return previous_state
         del visual_outputs
         temporal_geometry = context.require_temporal_geometry()
@@ -592,398 +581,8 @@ class ParallelStreamPolicyVariant(VideoActionPolicyVariant):
             chunk_size=temporal_geometry.frame_chunk_size,
         )
         return PolicyInferState(
-            step_index=0,
             cursor=cursor,
             temporal_geometry=temporal_geometry,
-            cache={
-                "runtime_mode": self._runtime_mode_label(),
-                "cache_name": "open_wam_exact",
-                "cache_initialized": False,
-                "frame_start": 0,
-                "step_index": 0,
-                "backbone_cache": visual_tower.resolve_runtime_cache_state(
-                    None,
-                    cursor=cursor,
-                    stage="parallel_stream_lingbot_exact",
-                ),
-            },
-        )
-
-    def reset_reference_runtime(
-        self,
-        *,
-        visual_tower: VisualTower,
-        cache_name: str = "open_wam_exact",
-        temporal_geometry: PolicyTemporalGeometry,
-    ) -> PolicyInferState:
-        inference_config = self._resolve_inference_config(temporal_geometry)
-        visual_tower.reset_runtime_backbone_cache(
-            action_dim=self.action_dim, cache_name=cache_name
-        )
-        cursor = RolloutCursor(
-            current_start_frame=0,
-            block_index=0,
-            chunk_size=inference_config.frame_chunk_size,
-        )
-        return PolicyInferState(
-            step_index=0,
-            cursor=cursor,
-            temporal_geometry=temporal_geometry,
-            cache={
-                "runtime_mode": self._runtime_mode_label(),
-                "cache_name": cache_name,
-                "cache_initialized": False,
-                "frame_start": 0,
-                "step_index": 0,
-                "backbone_cache": visual_tower.resolve_runtime_cache_state(
-                    None,
-                    cursor=cursor,
-                    stage="parallel_stream_lingbot_exact",
-                ),
-            },
-        )
-
-    def warm_reference_cache(
-        self,
-        visual_tower: VisualTower,
-        visual_outputs: VisualStageOutputs,
-        *,
-        action_history: torch.Tensor,
-        infer_state: PolicyInferState,
-        action_space: ActionSpace | str = ActionSpace.AUTO,
-        frame_start_override: int | None = None,
-        dynamics: DynamicsRolloutRequest | None = None,
-        proprio_state: torch.Tensor | None = None,
-        hidden_proprio_history: torch.Tensor | None = None,
-        temporal_geometry: PolicyTemporalGeometry,
-    ) -> PolicyInferState:
-        # Warmup mirrors the original LingBot server lifecycle: observed video
-        # and aligned action history are committed to the exact cache before any
-        # new chunk is denoised.
-        reference_transformer = visual_tower.ensure_runtime_backbone_device(
-            action_dim=self.action_dim,
-            device=visual_outputs.frontend.video_latents.device,
-        )
-        observed_video_latents = visual_outputs.frontend.video_latents
-        observed_action_latents = self.exact_action_adapter.to_model_action_latents(
-            action_history,
-            action_per_frame=self.config.action_per_frame,
-            action_space=action_space,
-            device=observed_video_latents.device,
-            dtype=observed_video_latents.dtype,
-        )
-        resolved_proprio_state = self.conditioning.resolve_infer_proprio_context(
-            proprio_state,
-            label="parallel-stream cache warmup",
-            infer_cache=infer_state.cache,
-        )
-        resolved_hidden_proprio_state = (
-            self.conditioning.resolve_infer_hidden_proprio_context(
-                proprio_state,
-                label="parallel-stream cache warmup",
-                infer_cache=infer_state.cache,
-            )
-        )
-        dynamics_plan = resolve_dynamics_rollout_plan(
-            program=self.config.program,
-            request=dynamics,
-        )
-        resolved_inference_config = self._resolve_inference_config(
-            temporal_geometry
-        )
-        next_cache = run_parallel_exact_cache_warmup(
-            transformer=reference_transformer,
-            backbone_config=self.backbone_config,
-            policy_config=self.config,
-            inference_config=resolved_inference_config,
-            observed_video_latents=observed_video_latents,
-            observed_action_latents=observed_action_latents,
-            text_emb=visual_outputs.frontend.conditioning.text_context,
-            negative_text_emb=visual_outputs.frontend.conditioning.negative_text_context,
-            action_channel_mask=self._reference_action_channel_mask(
-                device=observed_video_latents.device,
-                dtype=observed_video_latents.dtype,
-            ),
-            infer_cache=infer_state.cache,
-            cache_write_mode=self.exact_cache_write_mode(),
-            frame_start_override=frame_start_override,
-            dynamics_objective=dynamics_plan.objective,
-            proprio_state=resolved_proprio_state,
-            hidden_proprio_state=resolved_hidden_proprio_state,
-            hidden_proprio_history=(
-                hidden_proprio_history
-                if self.conditioning.uses_per_chunk_proprio_context()
-                else None
-            ),
-        )
-        self.conditioning.cache_infer_proprio_state(
-            next_cache,
-            resolved_proprio_state
-            if resolved_proprio_state is not None
-            else resolved_hidden_proprio_state,
-        )
-        next_cache["backbone_cache"] = visual_tower.resolve_runtime_cache_state(
-            next_cache.get("backbone_cache")
-            if isinstance(next_cache.get("backbone_cache"), CacheState)
-            else None,
-            cursor=infer_state.cursor,
-            stage="parallel_stream_lingbot_exact",
-            payload={
-                "cache_name": str(
-                    next_cache.get(
-                        "cache_name",
-                        infer_state.cache.get("cache_name", "open_wam_exact"),
-                    )
-                )
-            },
-        )
-        frame_start = int(
-            next_cache.get("frame_start", infer_state.cursor.current_start_frame)
-        )
-        return PolicyInferState(
-            step_index=int(next_cache["step_index"]),
-            cursor=RolloutCursor(
-                current_start_frame=frame_start,
-                block_index=int(next_cache.get("step_index", infer_state.step_index)),
-                chunk_size=int(
-                    next_cache.get(
-                        "frame_chunk_size", resolved_inference_config.frame_chunk_size
-                    )
-                ),
-            ),
-            cache=next_cache,
-            temporal_geometry=temporal_geometry,
-        )
-
-    def _pack_dynamics_action(
-        self,
-        value: torch.Tensor | None,
-        *,
-        reference_transformer: torch.nn.Module,
-    ) -> torch.Tensor | None:
-        """Translate the shared model-action sequence into Parallel packing."""
-
-        if value is None:
-            return None
-        parameter = next(reference_transformer.parameters())
-        return self.exact_action_adapter.to_model_action_latents(
-            value,
-            action_per_frame=self.config.action_per_frame,
-            action_space=ActionSpace.MODEL,
-            device=parameter.device,
-            dtype=parameter.dtype,
-        )
-
-    def generate_reference_chunk(
-        self,
-        *,
-        visual_tower: VisualTower,
-        visual_outputs: VisualStageOutputs | None,
-        infer_state: PolicyInferState,
-        text_context: torch.Tensor | None = None,
-        negative_text_context: torch.Tensor | None = None,
-        proprio_state: torch.Tensor | None = None,
-        advance_frame_start: bool = False,
-        skip_video_prediction: bool = False,
-        dynamics: DynamicsRolloutRequest | None = None,
-        temporal_geometry: PolicyTemporalGeometry,
-    ) -> PolicyInferOutput:
-        # Chunk generation stays exact-runtime-native as well. This keeps the
-        # canonical parallel-stream policy variant small: the variant owns rollout
-        # control and adapter conversion, while the exact runtime helper owns
-        # the LingBot denoising schedule itself.
-        resolved_inference_config = self._resolve_inference_config(
-            temporal_geometry
-        )
-        if visual_outputs is not None:
-            reference_transformer = visual_tower.ensure_runtime_backbone_device(
-                action_dim=self.action_dim,
-                device=visual_outputs.frontend.video_latents.device,
-            )
-            condition_latents = visual_outputs.frontend.video_latents
-            text_emb = visual_outputs.frontend.conditioning.text_context
-            negative_text_emb = (
-                visual_outputs.frontend.conditioning.negative_text_context
-            )
-            output_dtype = condition_latents.dtype
-        else:
-            reference_transformer = visual_tower.get_runtime_backbone(
-                action_dim=self.action_dim
-            )
-            parameter = next(reference_transformer.parameters())
-            condition_latents = None
-            text_emb = text_context
-            negative_text_emb = negative_text_context
-            output_dtype = (
-                torch.float32 if parameter.device.type == "cpu" else parameter.dtype
-            )
-        resolved_proprio_state = self.conditioning.resolve_infer_proprio_context(
-            proprio_state,
-            label="parallel-stream inference",
-            infer_cache=infer_state.cache,
-        )
-        resolved_hidden_proprio_state = (
-            self.conditioning.resolve_infer_hidden_proprio_context(
-                proprio_state,
-                label="parallel-stream inference",
-                infer_cache=infer_state.cache,
-            )
-        )
-        dynamics_plan = resolve_dynamics_rollout_plan(
-            program=self.config.program,
-            request=dynamics,
-        )
-        packed_coupling = resolve_parallel_current_block_coupling(self.config) in {
-            CurrentBlockCoupling.JOINT,
-            CurrentBlockCoupling.VIDEO_NOISY_TO_ACTION,
-            CurrentBlockCoupling.ACTION_NOISY_TO_VIDEO,
-        }
-        if packed_coupling:
-            if skip_video_prediction:
-                raise ValueError(
-                    "`skip_video_prediction` is only supported by staged exact parallel-stream rollout modes."
-                )
-            dynamics_plan.require_generation_inputs()
-            clean_action_latents = self._pack_dynamics_action(
-                dynamics_plan.clean_action,
-                reference_transformer=reference_transformer,
-            )
-            commit_action_latents = self._pack_dynamics_action(
-                dynamics_plan.history_action,
-                reference_transformer=reference_transformer,
-            )
-            infer_artifacts = run_parallel_packed_inference_rollout(
-                transformer=reference_transformer,
-                backbone_config=self.backbone_config,
-                policy_config=self.config,
-                training_config=self.training_config,
-                inference_config=resolved_inference_config,
-                action_dim=self.action_dim,
-                condition_latents=condition_latents,
-                text_emb=text_emb,
-                negative_text_emb=negative_text_emb,
-                action_channel_mask=self._reference_action_channel_mask(
-                    device=parameter.device
-                    if visual_outputs is None
-                    else condition_latents.device,
-                    dtype=output_dtype,
-                ),
-                infer_cache=infer_state.cache,
-                advance_frame_start=advance_frame_start,
-                forced_action_latents=clean_action_latents,
-                commit_action_latents=commit_action_latents,
-                forced_video_latents=dynamics_plan.clean_video,
-                dynamics_objective=dynamics_plan.objective,
-                proprio_state=resolved_proprio_state,
-                hidden_proprio_state=resolved_hidden_proprio_state,
-            )
-        else:
-            if any(
-                value is not None
-                for value in (
-                    dynamics_plan.clean_action,
-                    dynamics_plan.clean_video,
-                    dynamics_plan.history_action,
-                )
-            ):
-                raise ValueError(
-                    "Staged Parallel Stream programs do not accept dynamics "
-                    "clean-modality overrides."
-                )
-            infer_artifacts = run_parallel_staged_inference_rollout(
-                transformer=reference_transformer,
-                backbone_config=self.backbone_config,
-                policy_config=self.config,
-                training_config=self.training_config,
-                inference_config=resolved_inference_config,
-                action_dim=self.action_dim,
-                condition_latents=condition_latents,
-                text_emb=text_emb,
-                negative_text_emb=negative_text_emb,
-                action_channel_mask=self._reference_action_channel_mask(
-                    device=parameter.device
-                    if visual_outputs is None
-                    else condition_latents.device,
-                    dtype=output_dtype,
-                ),
-                infer_cache=infer_state.cache,
-                advance_frame_start=advance_frame_start,
-                skip_video_prediction=skip_video_prediction,
-                proprio_state=resolved_proprio_state,
-                hidden_proprio_state=resolved_hidden_proprio_state,
-            )
-        self.conditioning.cache_infer_proprio_state(
-            infer_artifacts.next_cache,
-            resolved_proprio_state
-            if resolved_proprio_state is not None
-            else resolved_hidden_proprio_state,
-        )
-        next_cursor = RolloutCursor(
-            current_start_frame=int(
-                infer_artifacts.next_cache.get(
-                    "frame_start", infer_state.cursor.current_start_frame
-                )
-            ),
-            block_index=int(
-                infer_artifacts.next_cache.get("step_index", infer_state.step_index)
-            ),
-            chunk_size=int(
-                infer_artifacts.next_cache.get(
-                    "frame_chunk_size", resolved_inference_config.frame_chunk_size
-                )
-            ),
-        )
-        infer_artifacts.next_cache["backbone_cache"] = (
-            visual_tower.advance_runtime_cache_state(
-                visual_tower.resolve_runtime_cache_state(
-                    infer_state.cache.get("backbone_cache"),
-                    cursor=infer_state.cursor,
-                    stage="parallel_stream_lingbot_exact",
-                    payload={
-                        "cache_name": str(
-                            infer_state.cache.get("cache_name", "open_wam_exact")
-                        )
-                    },
-                ),
-                next_cursor=next_cursor,
-                payload_updates={
-                    "cache_name": str(
-                        infer_artifacts.next_cache.get(
-                            "cache_name",
-                            infer_state.cache.get("cache_name", "open_wam_exact"),
-                        )
-                    )
-                },
-            )
-        )
-        raw_chunk_action = self.exact_action_adapter.to_raw_action_sequence(
-            infer_artifacts.action_pred
-        )
-        decoder_payload = ParallelDecoderInferArtifacts(
-            predicted_latents=infer_artifacts.predicted_latents,
-            raw_chunk_action_pred=raw_chunk_action,
-        )
-        return PolicyInferOutput(
-            policy_features=infer_artifacts.action_pred.to(dtype=output_dtype),
-            next_state=PolicyInferState(
-                step_index=int(infer_artifacts.next_cache["step_index"]),
-                cursor=next_cursor,
-                cache=infer_artifacts.next_cache,
-                temporal_geometry=temporal_geometry,
-            ),
-            decoder_artifacts=DecoderArtifactEnvelope(
-                contract=PARALLEL_STREAM_DECODER_ARTIFACT_CONTRACT,
-                payload=decoder_payload,
-                dynamics_objective=dynamics_plan.objective,
-            ),
-            aux={
-                "variant": self.config.name,
-                "runtime_mode": self.config.runtime_mode,
-                "predicted_latents": infer_artifacts.predicted_latents,
-                "chunk_action_pred": infer_artifacts.action_pred,
-                "raw_chunk_action_pred": raw_chunk_action,
-                "debug": infer_artifacts.debug,
-            },
         )
 
     def forward_infer_step(
@@ -993,40 +592,81 @@ class ParallelStreamPolicyVariant(VideoActionPolicyVariant):
         context: PolicyInferContext,
         infer_state: PolicyInferState,
     ) -> PolicyInferOutput:
-        temporal_geometry = context.require_temporal_geometry()
-        warmed_state = infer_state
-        condition_outputs: VisualStageOutputs | None = visual_outputs
-        if context.previous_action is not None:
-            batch_size = visual_outputs.frontend.video_latents.shape[0]
-            device = visual_outputs.frontend.video_latents.device
-            previous_actions = expand_previous_action(
-                previous_action=context.previous_action,
-                batch_size=batch_size,
-                action_horizon=self.action_horizon,
-                action_dim=self.action_dim,
-                device=device,
-                dtype=visual_outputs.frontend.video_latents.dtype,
+        transformer = visual_tower.get_runtime_backbone(action_dim=self.action_dim)
+        parameter = next(transformer.parameters())
+        frontend = visual_outputs.frontend
+        if parameter.device != frontend.video_latents.device:
+            raise ValueError(
+                "Place the shared transformer on the observation device before inference."
             )
-            warmed_state = self.warm_reference_cache(
-                visual_tower,
-                visual_outputs,
-                action_history=previous_actions,
-                infer_state=infer_state,
-                action_space=ActionSpace.MODEL,
-                dynamics=context.dynamics,
-                proprio_state=self.conditioning.select_rollout_proprio_state(
-                    context.state
-                ),
-                temporal_geometry=temporal_geometry,
-            )
-            condition_outputs = None
-        return self.generate_reference_chunk(
-            visual_tower=visual_tower,
-            visual_outputs=condition_outputs,
-            infer_state=warmed_state,
-            proprio_state=self.conditioning.select_rollout_proprio_state(context.state),
+        history = infer_state.variant_state or VideoActionRolloutState()
+        state = self.conditioning.select_rollout_proprio_state(context.state)
+        proprio = self.conditioning.resolve_infer_proprio_context(
+            state,
+            label="inference",
+            previous_state=history.proprio_state,
+        )
+        hidden_proprio = self.conditioning.resolve_infer_hidden_proprio_context(
+            state,
+            label="inference",
+            previous_state=history.hidden_proprio_state,
+        )
+        plan = resolve_dynamics_rollout_plan(
+            program=self.config.program,
+            request=context.dynamics,
+        )
+        output_request = self.resolve_inference_output_request(context)
+        artifacts = run_parallel_inference(
+            transformer=transformer,
+            backbone_config=self.backbone_config,
+            policy_config=self.config,
+            training_config=self.training_config,
+            inference_config=self._resolve_inference_config(
+                context.require_temporal_geometry()
+            ),
+            action_dim=self.action_dim,
+            condition_latents=frontend.video_latents,
+            text_emb=frontend.conditioning.text_context,
+            negative_text_emb=frontend.conditioning.negative_text_context,
+            action_channel_mask=self._reference_action_channel_mask(
+                device=parameter.device,
+                dtype=frontend.video_latents.dtype,
+            ),
+            infer_state=infer_state,
             dynamics=context.dynamics,
-            temporal_geometry=temporal_geometry,
+            output_request=output_request,
+            context=context,
+            proprio_state=proprio,
+            hidden_proprio_state=hidden_proprio,
+        )
+        return PolicyInferOutput(
+            policy_features=artifacts.action_pred.to(frontend.video_latents),
+            generation_frame_start=artifacts.generation_frame_start,
+            generated_video=(
+                PolicyGeneratedVideo(
+                    latents=artifacts.predicted_latents,
+                    frame_start=artifacts.generation_frame_start,
+                    latent_space_identity=frontend.latent_space_identity,
+                )
+                if plan.semantics.video_loss_active
+                and artifacts.predicted_latents.shape[2]
+                else None
+            ),
+            next_state=artifacts.next_state,
+            decoder_artifacts=DecoderArtifactEnvelope(
+                contract=PARALLEL_STREAM_DECODER_ARTIFACT_CONTRACT,
+                payload=ParallelDecoderInferArtifacts(
+                    predicted_latents=artifacts.predicted_latents,
+                ),
+                dynamics_objective=plan.objective,
+            ),
+            aux={
+                "variant": self.config.name,
+                "runtime_mode": self.config.runtime_mode,
+                "predicted_latents": artifacts.predicted_latents,
+                "chunk_action_pred": artifacts.action_pred,
+                "debug": artifacts.debug,
+            },
         )
 
     def _resolve_inference_config(

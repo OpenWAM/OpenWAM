@@ -50,7 +50,7 @@ from .coupling_semantics import (
     resolve_dual_expert_current_block_coupling,
     resolve_dual_expert_joint_timestep_coupling,
 )
-from .decoder_artifacts import (
+from open_wam.models.decoder_artifacts import (
     DUAL_EXPERT_DECODER_ARTIFACT_CONTRACT,
     DualExpertActionTrainArtifacts,
     DualExpertTrainArtifacts,
@@ -82,7 +82,7 @@ class DualExpertPackedTrainingProgram:
     conditioning: DualExpertConditioning
     training_layout: DualExpertTrainingLayout
     action_expert: DualExpertActionExpert
-    packed_block_stack: DualExpertPackedBlockStack | None
+    packed_block_stack: DualExpertPackedBlockStack
     initialize_action_expert: Callable[[VisualTower], None]
 
     def _maybe_initialize_action_expert(self, visual_tower: VisualTower) -> None:
@@ -100,7 +100,6 @@ class DualExpertPackedTrainingProgram:
         sample = self.prepare_sample(visual_tower, visual_outputs, prepared_inputs)
         result = forward_dual_expert_packed_coupling_denoise(
             visual_tower=visual_tower,
-            action_expert=self.action_expert,
             packed_block_stack=self.packed_block_stack,
             use_activation_checkpointing=bool(self.config.use_activation_checkpointing),
             **sample.request.as_kwargs(),
@@ -130,7 +129,6 @@ class DualExpertPackedTrainingProgram:
         ]
         results = forward_dual_expert_sequence_batch(
             visual_tower=visual_tower,
-            action_expert=self.action_expert,
             requests=[sample.request for sample in samples],
             padded=mode.execution_mode is BatchingMode.PADDED,
             use_activation_checkpointing=bool(self.config.use_activation_checkpointing),

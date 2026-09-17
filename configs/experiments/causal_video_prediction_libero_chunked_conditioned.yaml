@@ -135,6 +135,7 @@ training:
 inference:
   video_num_inference_steps: 20
   guidance_scale: 5.0
+  # Opt in after validating numerical/task parity for the checkpoint.
   use_cache: false
   frame_chunk_size: 4
   attention_window_size: 30

@@ -6,12 +6,12 @@ from typing import Any, Mapping, Sequence
 
 import numpy as np
 
-from open_wam.integrations.realtime_contracts import (
+from open_wam.runtime.realtime_contracts import (
     PlannedControlStep,
     PlannedFrameAction,
     RealtimeSchedulerDefaults,
 )
-from open_wam.integrations.realtime_plan_queue import (
+from open_wam.runtime.realtime_plan_queue import (
     drop_control_steps_from,
     drop_partial_stale_control_chunk,
     future_control_depth,
@@ -21,7 +21,7 @@ from open_wam.integrations.realtime_plan_queue import (
     missing_control_action_indices,
     required_control_action_indices,
 )
-from open_wam.integrations.realtime_scheduling import (
+from open_wam.runtime.realtime_scheduling import (
     frame_index_to_action_start,
     resolve_realtime_planner_mode,
     resolve_realtime_scheduler_defaults,

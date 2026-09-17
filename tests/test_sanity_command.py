@@ -178,8 +178,10 @@ def test_sanity_command_public_tiny_numerical_contract(tmp_path: Path, capsys) -
     )
     assert summary["batch_infer"]["action_pred_shape"] == [1, 2, 4]
     assert summary["batch_infer"]["target_action_shape"] == [1, 2, 4]
+    # One observed t0 and cache-independent VTA conditioning, not the retired
+    # multi-observation split runner. Training goldens above remain unchanged.
     assert summary["batch_infer"]["masked_action_mse"] == pytest.approx(
-        3.55587100982666,
+        3.5446159839630127,
         rel=0.0,
         abs=_PUBLIC_TINY_CPU_REDUCTION_ATOL,
     )

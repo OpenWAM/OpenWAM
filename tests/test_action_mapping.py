@@ -25,7 +25,7 @@ from open_wam.data.action_transforms import (
     normalize_action_targets,
     reconstruct_absolute_pose_targets,
 )
-from open_wam.models.action_decoders import ActionDecoder
+from open_wam.models.action_decoders import ActionDecoder, ActionDecoderInferOutput
 
 
 class _MaskProbeDecoder(ActionDecoder):
@@ -33,7 +33,7 @@ class _MaskProbeDecoder(ActionDecoder):
         raise NotImplementedError
 
     def forward_infer(self, policy_output, previous_state=None):
-        raise NotImplementedError
+        return ActionDecoderInferOutput(action_pred=policy_output, next_state=previous_state)
 
 
 def test_calvin_7d_sparse_30d_mapping_round_trips_active_channels() -> None:
@@ -324,12 +324,29 @@ def test_sparse_mapping_preserves_inactive_fill_and_builds_sampler_mask() -> Non
     )
 
 
-def test_action_decoder_sampler_mask_pins_inactive_channels_during_inference() -> None:
-    decoder = _MaskProbeDecoder()
-    decoder.configure_action_sampler_mask(
-        torch.tensor([[1.0, 0.0, 1.0, 0.0], [1.0, 0.0, 1.0, 0.0]]),
-        inactive_value=-0.5,
-    )
-    action_pred = decoder._apply_action_sampler_mask(torch.randn(1, 2, 4))
+def test_pipeline_constrains_decoded_actions_once_before_rollout_commit(monkeypatch) -> None:
+    from tests.test_unified_policy_inference import pipeline_for
+    from open_wam.configs import VideoActionProgram
 
-    assert torch.allclose(action_pred[:, :, [1, 3]], torch.full((1, 2, 2), -0.5))
+    pipeline = pipeline_for("dual_expert", VideoActionProgram.VIDEO_THEN_ACTION)
+    decoder = _MaskProbeDecoder()
+    pipeline.action_decoder = decoder
+    pipeline._action_sampler_mask = torch.tensor([[1., 0., 1., 0.]] * 2)
+    pipeline.action_sampler_inactive_value = -0.5
+    raw = torch.randn(1, 2, 4)
+    apply = pipeline._apply_action_sampler_mask
+    calls = []
+
+    def constrained(actions):
+        calls.append(actions)
+        return apply(actions)
+
+    monkeypatch.setattr(pipeline, "_apply_action_sampler_mask", constrained)
+    state = object()
+    output = pipeline.resolve_infer_decoder_output(raw, previous_decoder_state=state)
+    assert len(calls) == 1 and calls[0] is raw
+    assert output.next_state is state
+    torch.testing.assert_close(output.action_pred[:, :, [1, 3]], torch.full((1, 2, 2), -0.5))
+    plan = decoder.build_rollout_plan(output)
+    torch.testing.assert_close(plan.actions, output.action_pred[0], rtol=0, atol=0)
+    assert not hasattr(decoder, "configure_action_sampler_mask")

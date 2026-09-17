@@ -95,7 +95,8 @@ inference:
   frame_chunk_size: 4
   attention_window_size: 30
   use_cache: true
-  guidance_scale: 5.0
+  # No text encoder is loaded in this CPU shape smoke.
+  guidance_scale: 1.0
   action_guidance_scale: 1.0
   video_exec_step: -1
 

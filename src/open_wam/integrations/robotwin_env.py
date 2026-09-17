@@ -13,14 +13,11 @@ from typing import Any, Iterator
 import numpy as np
 import yaml
 
+from open_wam.runtime.control import ControlCommand, ControlTransition
+
 from open_wam.configs import DataConfig
 from open_wam.integrations.simulator_configs import RobotwinEnvConfig as RobotwinEnvConfig
-from open_wam.simulators import (
-    SimStepResult,
-    SimulatorCapabilities,
-    normalize_quaternion_xyzw,
-    source_action_from_model_action,
-)
+from open_wam.simulators import SimulatorCapabilities, normalize_quaternion_xyzw
 
 
 _CUROBO_IMPORT_STUB_SENTINEL = "_open_wam_curobo_import_stub"
@@ -107,26 +104,26 @@ class RobotwinBenchmarkAdapter:
             return np.asarray(joint_action["vector"], dtype=np.float32)
         return _extract_endpose_state(observation)
 
-    def model_action_to_env_action(self, model_action: np.ndarray, *, data_config: DataConfig) -> np.ndarray:
+    def materialize_control(self, source_action: np.ndarray, *, data_config: DataConfig) -> ControlCommand:
         source_action = np.asarray(
-            source_action_from_model_action(model_action, data_config=data_config),
+            source_action,
             dtype=np.float32,
         ).reshape(-1)
         if self.config.action_type == "qpos":
-            return _robotwin_qpos_action(source_action)
+            return ControlCommand(_robotwin_qpos_action(source_action), source_action)
         if source_action.shape[0] == 16:
             env_action = np.array(source_action, copy=True)
             normalize_quaternion_xyzw(env_action, start=3)
             normalize_quaternion_xyzw(env_action, start=11)
-            return env_action
+            return ControlCommand(env_action, env_action)
         if source_action.shape[0] == 14:
-            return _dual_arm_euler14_to_quat16(source_action)
+            return ControlCommand(_dual_arm_euler14_to_quat16(source_action), source_action)
         raise ValueError(
             "RoboTwin env action adapter expects native 16D EEF action or 14D Euler EEF action, "
             f"got {source_action.shape[0]}D."
         )
 
-    def step(self, env_action: np.ndarray) -> SimStepResult:
+    def step(self, env_action: np.ndarray) -> ControlTransition:
         if self._task_env is None:
             raise RuntimeError("RoboTwin adapter must be reset before stepping.")
         with self._robotwin_cwd():
@@ -136,9 +133,10 @@ class RobotwinBenchmarkAdapter:
         step_lim = getattr(self._task_env, "step_lim", None)
         hit_step_limit = step_lim is not None and int(take_action_cnt or 0) >= int(step_lim)
         done = bool(getattr(self._task_env, "eval_success", False)) or hit_step_limit
-        return SimStepResult(
+        return ControlTransition(
             observation=observation,
             done=done,
+            success=self.success(observation, {}),
             info={
                 "eval_success": bool(getattr(self._task_env, "eval_success", False)),
                 "take_action_cnt": None if take_action_cnt is None else int(take_action_cnt),

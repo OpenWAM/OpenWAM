@@ -49,7 +49,6 @@ from open_wam.evals.evaluation_metrics import (
     _masked_action_mse,
     _select_eval_action_prediction,
     _select_eval_video_prediction,
-    _select_rollout_previous_action,
     _video_latent_mse,
 )
 from open_wam.evals.evaluation_reporting import build_evaluation_result
@@ -90,7 +89,6 @@ _EVALUATION_COMPATIBILITY_EXPORTS = (
     _resolve_relative_path,
     _select_eval_action_prediction,
     _select_eval_video_prediction,
-    _select_rollout_previous_action,
     _video_latent_mse,
 )
 
@@ -258,10 +256,7 @@ def run_evaluation(
                     batch = move_wam_batch_to_device(batch, device)
                 infer_context = PolicyInferContext(
                     state=batch.state,
-                    extra={
-                        "task_text": batch.task_text,
-                        "metadata": batch.metadata,
-                    },
+                    task_text=batch.task_text, metadata=batch.metadata,
                 )
                 # `forward_infer_step` already runs the full denoising loop for
                 # the active variant. Batch mode simply evaluates that one-step
@@ -279,7 +274,7 @@ def run_evaluation(
                 action_prediction_source, action_prediction = _select_eval_action_prediction(
                     target_actions=batch.actions,
                     decoder_action_pred=output.decoder_output.action_pred,
-                    policy_aux=output.policy_output.aux,
+                    action_adapter=pipeline.action_adapter,
                 )
                 (
                     action_prediction_source,
@@ -294,8 +289,7 @@ def run_evaluation(
                 )
                 video_prediction_source, video_prediction, aligned_target_video_latents = _select_eval_video_prediction(
                     target_video_latents=output.visual_outputs.frontend.video_latents,
-                    decoder_aux=output.decoder_output.aux,
-                    policy_aux=output.policy_output.aux,
+                    generated_video=output.policy_output.generated_video,
                 )
                 action_prediction_shape = tuple(action_prediction.shape)
                 target_action_shape = tuple(aligned_target_actions.shape)
@@ -395,10 +389,7 @@ def run_evaluation(
                     infer_context = PolicyInferContext(
                         state=batch.state,
                         previous_action=previous_action,
-                        extra={
-                            "task_text": batch.task_text,
-                            "metadata": batch.metadata,
-                        },
+                        task_text=batch.task_text, metadata=batch.metadata,
                     )
                     if request.mode == EvalMode.TRAJECTORY_OPEN_LOOP:
                         if isinstance(batch, LatentWAMBatch):
@@ -483,7 +474,7 @@ def run_evaluation(
                     action_prediction_source, action_prediction = _select_eval_action_prediction(
                         target_actions=batch.actions,
                         decoder_action_pred=output.decoder_output.action_pred,
-                        policy_aux=output.policy_output.aux,
+                        action_adapter=pipeline.action_adapter,
                     )
                     (
                         action_prediction_source,
@@ -498,8 +489,7 @@ def run_evaluation(
                     )
                     video_prediction_source, video_prediction, aligned_target_video_latents = _select_eval_video_prediction(
                         target_video_latents=target_video_latents,
-                        decoder_aux=output.decoder_output.aux,
-                        policy_aux=output.policy_output.aux,
+                        generated_video=output.policy_output.generated_video,
                     )
                     action_prediction_shape = tuple(action_prediction.shape)
                     target_action_shape = tuple(aligned_target_actions.shape)
@@ -518,10 +508,7 @@ def run_evaluation(
                         step_video_mse = _video_latent_mse(video_prediction, aligned_target_video_latents)
                         video_mse_values.append(step_video_mse)
                         step_video_mse_values.append(step_video_mse)
-                    previous_action = _select_rollout_previous_action(
-                        decoder_action_pred=output.decoder_output.action_pred,
-                        policy_aux=output.policy_output.aux,
-                    ).detach()
+                    previous_action = output.decoder_output.action_pred.detach()
                     if video_prediction is not None:
                         rollout_latents = video_prediction.detach()
                     if request.mode == EvalMode.TRAJECTORY_OPEN_LOOP:

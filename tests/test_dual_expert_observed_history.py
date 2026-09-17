@@ -1,4 +1,7 @@
 from __future__ import annotations
+from dataclasses import replace
+
+import copy
 
 import pytest
 import torch
@@ -11,9 +14,9 @@ from open_wam.models.policy_variants import (
     PolicyTemporalSpan,
     RolloutCursor,
 )
-from open_wam.models.policy_variants.dual_expert.contracts import DualExpertRuntimeState
-from open_wam.models.policy_variants.dual_expert.observed_history import (
-    reconcile_dual_expert_observed_history,
+from open_wam.models.common.video_action_state import VideoActionRolloutState
+from open_wam.models.common.observed_history import (
+    reconcile_video_action_observed_history,
 )
 
 
@@ -22,7 +25,7 @@ def _video(values: list[float]) -> torch.Tensor:
 
 
 def _reconcile(
-    runtime_state: DualExpertRuntimeState,
+    runtime_state: VideoActionRolloutState,
     *,
     real_latents: torch.Tensor,
     step_index: int = 2,
@@ -35,8 +38,8 @@ def _reconcile(
     current_start_frame: int = 0,
 ):
     policy_state = PolicyInferState(
-        step_index=step_index,
-        cursor=RolloutCursor(current_start_frame=current_start_frame),
+        cursor=replace(RolloutCursor(current_start_frame=current_start_frame), block_index=step_index),
+
         variant_state=runtime_state,
         temporal_geometry=PolicyTemporalGeometry(
             frame_chunk_size=(
@@ -47,7 +50,7 @@ def _reconcile(
             attention_window_size=inference_window_size,
         ),
     )
-    return reconcile_dual_expert_observed_history(
+    return reconcile_video_action_observed_history(
         policy_state=policy_state,
         history=PolicyObservedHistory(
             video_latents=real_latents,
@@ -56,19 +59,63 @@ def _reconcile(
             proprio_history=proprio_history,
             execution_commit=execution_commit,
         ),
-        action_horizon=16,
         action_tokens_per_frame=4,
         action_dim=7,
     )
 
 
+@pytest.mark.parametrize("executed", [1, 2, 4])
+def test_missing_proprio_retains_only_the_executed_prefix(executed):
+    runtime_state = VideoActionRolloutState(
+        past_clean_latents=_video([0, 1, 2, 3, 4]),
+        past_clean_actions=torch.zeros(1, 20, 7),
+        past_hidden_proprio_states=torch.arange(5.0).reshape(1, 5, 1),
+        pending_predicted_video_frames=4,
+        chunk_advance_frames=4,
+    )
+    runtime_state = _reconcile(
+        runtime_state,
+        real_latents=_video([9] * executed),
+        execution_commit=PolicyExecutionCommit(PolicyTemporalSpan(1, 4), executed),
+        current_start_frame=5,
+    ).next_state.variant_state
+    assert runtime_state.past_clean_latents.shape[2] == executed + 1
+    torch.testing.assert_close(
+        runtime_state.past_hidden_proprio_states,
+        torch.arange(executed + 1.0).reshape(1, executed + 1, 1),
+    )
+
+
+def test_missing_proprio_cannot_fabricate_action_only_history():
+    runtime_state = VideoActionRolloutState(
+        past_clean_latents=_video([0]),
+        past_clean_actions=torch.zeros(1, 20, 7),
+        past_hidden_proprio_states=torch.zeros(1, 1, 2),
+        chunk_advance_frames=4,
+    )
+    before = copy.deepcopy(runtime_state)
+    with pytest.raises(ValueError, match="proprio history"):
+        _reconcile(
+            runtime_state,
+            real_latents=_video([1, 2]),
+            execution_commit=PolicyExecutionCommit(PolicyTemporalSpan(1, 4), 2),
+            current_start_frame=5,
+        )
+    for name, value in vars(before).items():
+        actual = getattr(runtime_state, name)
+        if isinstance(value, torch.Tensor):
+            torch.testing.assert_close(actual, value, rtol=0, atol=0)
+        else:
+            assert actual == value
+
+
 def test_first_chunk_keeps_bootstrap_and_replaces_speculative_tail() -> None:
     past_actions = torch.arange(16 * 7, dtype=torch.float32).view(1, 16, 7)
     real_actions = torch.full((1, 8, 7), 500.0)
-    past_proprio = torch.arange(8, dtype=torch.float32).view(1, 4, 2)
+    past_proprio = torch.arange(10, dtype=torch.float32).view(1, 5, 2)
     real_proprio = torch.arange(8, dtype=torch.float32).view(4, 2) + 100.0
-    runtime_state = DualExpertRuntimeState(
-        past_clean_latents=_video([0.0, 1.0, 2.0, 3.0]),
+    runtime_state = VideoActionRolloutState(
+        past_clean_latents=_video([0.0, 1.0, 2.0, 3.0, 4.0]),
         past_clean_actions=past_actions,
         past_hidden_proprio_states=past_proprio,
         pending_predicted_video_frames=4,
@@ -81,6 +128,8 @@ def test_first_chunk_keeps_bootstrap_and_replaces_speculative_tail() -> None:
         action_history=real_actions,
         proprio_history=real_proprio,
     )
+    assert output.next_state.variant_state is not runtime_state
+    runtime_state = output.next_state.variant_state
 
     assert output.next_state is not None
     assert output.next_state.variant_state is runtime_state
@@ -94,7 +143,7 @@ def test_first_chunk_keeps_bootstrap_and_replaces_speculative_tail() -> None:
     )
     torch.testing.assert_close(runtime_state.past_clean_actions, real_actions)
     assert runtime_state.pending_predicted_video_frames == 0
-    assert output.debug["dropped_pred_latent_frames"] == 3
+    assert output.debug["dropped_pred_latent_frames"] == 4
     assert output.debug["dropped_pred_action_tokens"] == 16
     assert output.debug["appended_action_tokens"] == 8
     assert output.debug["past_clean_action_frames_after"] == 2
@@ -105,7 +154,7 @@ def test_later_chunk_replaces_exact_speculative_video_and_action_horizons() -> N
     real_actions = torch.full((1, 16, 7), -4.0)
     past_proprio = torch.arange(20, dtype=torch.float32).view(1, 10, 2)
     real_proprio = torch.full((1, 4, 2), 9.0)
-    runtime_state = DualExpertRuntimeState(
+    runtime_state = VideoActionRolloutState(
         past_clean_latents=_video([float(index) for index in range(10)]),
         past_clean_actions=past_actions,
         past_hidden_proprio_states=past_proprio,
@@ -118,6 +167,8 @@ def test_later_chunk_replaces_exact_speculative_video_and_action_horizons() -> N
         action_history=real_actions,
         proprio_history=real_proprio,
     )
+    assert output.next_state.variant_state is not runtime_state
+    runtime_state = output.next_state.variant_state
 
     torch.testing.assert_close(
         runtime_state.past_clean_latents,
@@ -136,13 +187,7 @@ def test_later_chunk_replaces_exact_speculative_video_and_action_horizons() -> N
 
 
 def test_partial_execution_rewinds_cursor_to_observed_prefix_end() -> None:
-    runtime_state = DualExpertRuntimeState(
-        past_clean_latents=_video([0.0, 1.0, 2.0, 3.0, 4.0]),
-        past_clean_actions=torch.zeros(1, 16, 7),
-        pending_predicted_video_frames=4,
-        next_condition_frame_start=5,
-        chunk_advance_frames=4,
-    )
+    runtime_state = VideoActionRolloutState(past_clean_latents=_video([0.0, 1.0, 2.0, 3.0, 4.0]), past_clean_actions=torch.zeros(1, 16, 7), pending_predicted_video_frames=4, chunk_advance_frames=4)
     commit = PolicyExecutionCommit(
         speculative_span=PolicyTemporalSpan(start_frame=1, frame_count=4),
         executed_frame_count=3,
@@ -156,10 +201,11 @@ def test_partial_execution_rewinds_cursor_to_observed_prefix_end() -> None:
         execution_commit=commit,
         current_start_frame=5,
     )
+    assert output.next_state.variant_state is not runtime_state
+    runtime_state = output.next_state.variant_state
 
     assert output.next_state is not None
     assert output.next_state.cursor.current_start_frame == 4
-    assert runtime_state.next_condition_frame_start == 4
     assert runtime_state.chunk_advance_frames == 0
     torch.testing.assert_close(
         runtime_state.past_clean_latents,
@@ -176,13 +222,7 @@ def test_short_speculative_chunk_drops_only_its_actual_action_tail() -> None:
     real_history = torch.arange(8 * 7, dtype=torch.float32).view(1, 8, 7)
     speculative_actions = torch.full((1, 12, 7), -100.0)
     executed_actions = torch.full((1, 12, 7), 200.0)
-    runtime_state = DualExpertRuntimeState(
-        past_clean_latents=_video([0.0, 1.0, 2.0, 3.0, 4.0]),
-        past_clean_actions=torch.cat([real_history, speculative_actions], dim=1),
-        pending_predicted_video_frames=3,
-        next_condition_frame_start=5,
-        chunk_advance_frames=3,
-    )
+    runtime_state = VideoActionRolloutState(past_clean_latents=_video([0.0, 1.0, 2.0, 3.0, 4.0]), past_clean_actions=torch.cat([real_history, speculative_actions], dim=1), pending_predicted_video_frames=3, chunk_advance_frames=3)
 
     output = _reconcile(
         runtime_state,
@@ -194,6 +234,8 @@ def test_short_speculative_chunk_drops_only_its_actual_action_tail() -> None:
         ),
         current_start_frame=5,
     )
+    assert output.next_state.variant_state is not runtime_state
+    runtime_state = output.next_state.variant_state
 
     torch.testing.assert_close(
         runtime_state.past_clean_actions,
@@ -204,14 +246,67 @@ def test_short_speculative_chunk_drops_only_its_actual_action_tail() -> None:
     assert output.debug["appended_action_tokens"] == 12
 
 
-def test_full_execution_commit_preserves_speculative_chunk_end() -> None:
-    runtime_state = DualExpertRuntimeState(
-        past_clean_latents=_video([0.0, 1.0, 2.0, 3.0, 4.0]),
-        past_clean_actions=torch.zeros(1, 16, 7),
+def test_multi_chunk_commit_keeps_all_measured_actions() -> None:
+    observed = _video([float(index + 100) for index in range(6)])
+    actions = torch.arange(24 * 7, dtype=torch.float32).view(1, 24, 7)
+    runtime_state = VideoActionRolloutState(
+        past_clean_latents=_video([float(index) for index in range(9)]),
+        past_clean_actions=torch.zeros(1, 36, 7),
+        past_hidden_proprio_states=torch.zeros(1, 9, 2),
         pending_predicted_video_frames=4,
-        next_condition_frame_start=5,
         chunk_advance_frames=4,
     )
+    output = _reconcile(
+        runtime_state,
+        real_latents=observed,
+        action_history=actions,
+        proprio_history=torch.ones(1, 6, 2),
+        execution_commit=PolicyExecutionCommit(PolicyTemporalSpan(1, 8), 6),
+        current_start_frame=9,
+    )
+    assert output.next_state.variant_state is not runtime_state
+    runtime_state = output.next_state.variant_state
+    assert output.next_state.cursor.current_start_frame == 7
+    torch.testing.assert_close(
+        runtime_state.past_clean_latents, torch.cat([_video([0.0]), observed], dim=2)
+    )
+    torch.testing.assert_close(runtime_state.past_clean_actions[:, 4:], actions)
+    assert runtime_state.past_hidden_proprio_states.shape[1] == 7
+    assert output.debug["appended_action_tokens"] == 24
+
+
+@pytest.mark.parametrize("measured_actions", [False, True])
+def test_partial_action_only_commit_preserves_observed_t0(measured_actions) -> None:
+    actions = torch.arange(20 * 7, dtype=torch.float32).view(1, 20, 7)
+    runtime_state = VideoActionRolloutState(
+        past_clean_latents=_video([42.0]),
+        past_clean_actions=actions,
+        past_hidden_proprio_states=torch.zeros(1, 1, 2),
+        pending_predicted_video_frames=0,
+        chunk_advance_frames=4,
+    )
+    output = _reconcile(
+        runtime_state,
+        real_latents=_video([100.0, 101.0]),
+        action_history=torch.ones(1, 8, 7) if measured_actions else None,
+        proprio_history=torch.ones(1, 2, 2),
+        execution_commit=PolicyExecutionCommit(PolicyTemporalSpan(1, 4), 2),
+        current_start_frame=5,
+    )
+    assert output.next_state.variant_state is not runtime_state
+    runtime_state = output.next_state.variant_state
+    assert output.next_state.cursor.current_start_frame == 3
+    torch.testing.assert_close(runtime_state.past_clean_latents, _video([42, 100, 101]))
+    torch.testing.assert_close(runtime_state.past_clean_actions[:, :4], actions[:, :4])
+    torch.testing.assert_close(
+        runtime_state.past_clean_actions[:, 4:],
+        torch.ones(1, 8, 7) if measured_actions else actions[:, 4:12],
+    )
+    assert runtime_state.past_hidden_proprio_states.shape[1] == 3
+
+
+def test_full_execution_commit_preserves_speculative_chunk_end() -> None:
+    runtime_state = VideoActionRolloutState(past_clean_latents=_video([0.0, 1.0, 2.0, 3.0, 4.0]), past_clean_actions=torch.zeros(1, 16, 7), pending_predicted_video_frames=4, chunk_advance_frames=4)
 
     output = _reconcile(
         runtime_state,
@@ -224,15 +319,16 @@ def test_full_execution_commit_preserves_speculative_chunk_end() -> None:
         ),
         current_start_frame=5,
     )
+    assert output.next_state.variant_state is not runtime_state
+    runtime_state = output.next_state.variant_state
 
     assert output.next_state is not None
     assert output.next_state.cursor.current_start_frame == 5
-    assert runtime_state.next_condition_frame_start == 5
     assert runtime_state.chunk_advance_frames == 0
 
 
 def test_fc1_fc2_fc3_execution_keeps_consecutive_chunks_aligned() -> None:
-    runtime_state = DualExpertRuntimeState(
+    runtime_state = VideoActionRolloutState(
         past_clean_latents=_video([0.0]),
         past_clean_actions=torch.empty(1, 0, 7),
     )
@@ -244,19 +340,18 @@ def test_fc1_fc2_fc3_execution_keeps_consecutive_chunks_aligned() -> None:
         predicted_video = _video(
             [100.0 * chunk_index + offset for offset in range(4)]
         )
-        runtime_state.past_clean_latents = torch.cat(
+        runtime_state = replace(runtime_state, past_clean_latents=torch.cat(
             [runtime_state.past_clean_latents, predicted_video], dim=2
-        )
-        runtime_state.past_clean_actions = torch.cat(
+        ))
+        runtime_state = replace(runtime_state, past_clean_actions=torch.cat(
             [
                 runtime_state.past_clean_actions,
                 torch.full((1, 16, 7), -100.0 * chunk_index),
             ],
             dim=1,
-        )
-        runtime_state.pending_predicted_video_frames = 4
-        runtime_state.next_condition_frame_start = speculative_end
-        runtime_state.chunk_advance_frames = 4
+        ))
+        runtime_state = replace(runtime_state, pending_predicted_video_frames=4)
+        runtime_state = replace(runtime_state, chunk_advance_frames=4)
         commit = PolicyExecutionCommit(
             speculative_span=PolicyTemporalSpan(next_start, 4),
             executed_frame_count=executed_frames,
@@ -275,6 +370,8 @@ def test_fc1_fc2_fc3_execution_keeps_consecutive_chunks_aligned() -> None:
             execution_commit=commit,
             current_start_frame=speculative_end,
         )
+        assert output.next_state.variant_state is not runtime_state
+        runtime_state = output.next_state.variant_state
 
         next_start += executed_frames
         expected_action_history = torch.cat(
@@ -282,7 +379,6 @@ def test_fc1_fc2_fc3_execution_keeps_consecutive_chunks_aligned() -> None:
         )
         assert output.next_state is not None
         assert output.next_state.cursor.current_start_frame == next_start
-        assert runtime_state.next_condition_frame_start == next_start
         assert runtime_state.chunk_advance_frames == 0
         assert output.debug["speculative_action_tokens"] == 16
         assert output.debug["dropped_pred_action_tokens"] == 16
@@ -298,13 +394,7 @@ def test_one_execution_commit_aligns_independent_packed_sessions() -> None:
         executed_frame_count=3,
     )
     runtime_states = [
-        DualExpertRuntimeState(
-            past_clean_latents=_video([0.0, 1.0, 2.0, 3.0, 4.0]),
-            past_clean_actions=torch.zeros(1, 16, 7),
-            pending_predicted_video_frames=4,
-            next_condition_frame_start=5,
-            chunk_advance_frames=4,
-        )
+        VideoActionRolloutState(past_clean_latents=_video([0.0, 1.0, 2.0, 3.0, 4.0]), past_clean_actions=torch.zeros(1, 16, 7), pending_predicted_video_frames=4, chunk_advance_frames=4)
         for _ in range(2)
     ]
 
@@ -323,8 +413,8 @@ def test_one_execution_commit_aligns_independent_packed_sessions() -> None:
         4,
         4,
     ]
-    assert [state.next_condition_frame_start for state in runtime_states] == [4, 4]
-    for runtime_state in runtime_states:
+    for output in outputs:
+        runtime_state = output.next_state.variant_state
         torch.testing.assert_close(
             runtime_state.past_clean_latents,
             _video([0.0, 10.0, 11.0, 12.0]),
@@ -333,12 +423,7 @@ def test_one_execution_commit_aligns_independent_packed_sessions() -> None:
 
 def test_execution_commit_rejects_cursor_or_observation_drift_before_mutation() -> None:
     original_latents = _video([0.0, 1.0, 2.0, 3.0, 4.0])
-    runtime_state = DualExpertRuntimeState(
-        past_clean_latents=original_latents.clone(),
-        pending_predicted_video_frames=4,
-        next_condition_frame_start=5,
-        chunk_advance_frames=4,
-    )
+    runtime_state = VideoActionRolloutState(past_clean_latents=original_latents.clone(), pending_predicted_video_frames=4, chunk_advance_frames=4)
     commit = PolicyExecutionCommit(
         speculative_span=PolicyTemporalSpan(1, 4),
         executed_frame_count=3,
@@ -357,7 +442,7 @@ def test_execution_commit_rejects_cursor_or_observation_drift_before_mutation() 
 
 
 def test_history_window_trims_video_proprio_and_action_to_shared_frame_capacity() -> None:
-    runtime_state = DualExpertRuntimeState(
+    runtime_state = VideoActionRolloutState(
         past_clean_latents=_video([float(index) for index in range(10)]),
         past_clean_actions=torch.arange(40 * 7, dtype=torch.float32).view(1, 40, 7),
         past_hidden_proprio_states=torch.arange(20, dtype=torch.float32).view(1, 10, 2),
@@ -375,6 +460,8 @@ def test_history_window_trims_video_proprio_and_action_to_shared_frame_capacity(
         inference_window_size=2,
         rollout_frame_chunk_size=2,
     )
+    assert output.next_state.variant_state is not runtime_state
+    runtime_state = output.next_state.variant_state
 
     assert output.debug["history_window_frames"] == 4
     torch.testing.assert_close(runtime_state.past_clean_latents, real_latents)
@@ -389,18 +476,18 @@ def test_history_window_trims_video_proprio_and_action_to_shared_frame_capacity(
 
 def test_short_proprio_history_repeats_last_state_per_real_latent() -> None:
     past_proprio = torch.arange(10, dtype=torch.float32).view(1, 5, 2)
-    runtime_state = DualExpertRuntimeState(
+    runtime_state = VideoActionRolloutState(
         past_clean_latents=_video([0.0, 1.0, 2.0, 3.0, 4.0]),
         past_hidden_proprio_states=past_proprio,
         pending_predicted_video_frames=2,
     )
     real_proprio = torch.tensor([[100.0, 101.0], [200.0, 201.0]])
 
-    _reconcile(
+    runtime_state = _reconcile(
         runtime_state,
         real_latents=_video([10.0, 11.0, 12.0, 13.0]),
         proprio_history=real_proprio,
-    )
+    ).next_state.variant_state
 
     expected_real = torch.tensor(
         [[[100.0, 101.0], [200.0, 201.0], [200.0, 201.0], [200.0, 201.0]]]
@@ -412,7 +499,7 @@ def test_short_proprio_history_repeats_last_state_per_real_latent() -> None:
 
 
 def test_absent_proprio_cache_is_not_initialized_by_reconciliation() -> None:
-    runtime_state = DualExpertRuntimeState(
+    runtime_state = VideoActionRolloutState(
         past_clean_latents=_video([0.0]),
         past_hidden_proprio_states=None,
     )
@@ -422,20 +509,21 @@ def test_absent_proprio_cache_is_not_initialized_by_reconciliation() -> None:
         real_latents=_video([1.0]),
         proprio_history=torch.ones(1, 2),
     )
+    assert output.next_state.variant_state is not runtime_state
+    runtime_state = output.next_state.variant_state
 
     assert runtime_state.past_hidden_proprio_states is None
     assert output.debug["appended_hidden_proprio_frames"] == 0
 
 
 def test_non_dual_expert_state_is_a_noop() -> None:
-    policy_state = PolicyInferState(step_index=3, variant_state={"owned": "elsewhere"})
-    output = reconcile_dual_expert_observed_history(
+    policy_state = PolicyInferState(cursor=RolloutCursor(block_index=3), variant_state={"owned": "elsewhere"})
+    output = reconcile_video_action_observed_history(
         policy_state=policy_state,
         history=PolicyObservedHistory(
             video_latents=_video([1.0]),
             observation_frame_count=4,
         ),
-        action_horizon=16,
         action_tokens_per_frame=4,
         action_dim=7,
     )
@@ -443,7 +531,7 @@ def test_non_dual_expert_state_is_a_noop() -> None:
     assert output.next_state is policy_state
     assert output.debug == {
         "warmup_skipped": True,
-        "reason": "no_dual_expert_runtime_state",
+        "reason": "no_video_action_runtime_state",
     }
 
 
@@ -458,7 +546,7 @@ def test_non_dual_expert_state_is_a_noop() -> None:
 def test_action_history_requires_policy_action_schema(
     action_history: torch.Tensor,
 ) -> None:
-    runtime_state = DualExpertRuntimeState(past_clean_latents=_video([0.0]))
+    runtime_state = VideoActionRolloutState(past_clean_latents=_video([0.0]))
 
     with pytest.raises(ValueError, match="policy action dimension"):
         _reconcile(
@@ -469,7 +557,7 @@ def test_action_history_requires_policy_action_schema(
 
 
 def test_video_history_requires_nonempty_bcthw_latents() -> None:
-    runtime_state = DualExpertRuntimeState()
+    runtime_state = VideoActionRolloutState()
 
     with pytest.raises(ValueError, match=r"\[B, C, T, H, W\]"):
         _reconcile(

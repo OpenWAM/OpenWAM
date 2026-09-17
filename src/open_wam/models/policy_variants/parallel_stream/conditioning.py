@@ -162,15 +162,13 @@ class ParallelStreamConditioning:
         state: torch.Tensor | None,
         *,
         label: str,
-        infer_cache: dict | None = None,
+        previous_state: torch.Tensor | None = None,
     ) -> torch.Tensor | None:
         if not self.uses_text_proprio_context():
             return None
         selected = select_latest_proprio_state(state)
-        if selected is None and isinstance(infer_cache, dict):
-            cached_state = infer_cache.get("last_proprio_state")
-            if isinstance(cached_state, torch.Tensor):
-                selected = select_latest_proprio_state(cached_state)
+        if selected is None:
+            selected = select_latest_proprio_state(previous_state)
         if selected is None:
             raise ValueError(
                 f"Proprio context mode is enabled but no state was provided for {label}."
@@ -182,28 +180,18 @@ class ParallelStreamConditioning:
         state: torch.Tensor | None,
         *,
         label: str,
-        infer_cache: dict | None = None,
+        previous_state: torch.Tensor | None = None,
     ) -> torch.Tensor | None:
         if not self.uses_per_chunk_proprio_context():
             return None
         selected = select_latest_proprio_state(state)
-        if selected is None and isinstance(infer_cache, dict):
-            cached_state = infer_cache.get("last_proprio_state")
-            if isinstance(cached_state, torch.Tensor):
-                selected = select_latest_proprio_state(cached_state)
+        if selected is None:
+            selected = select_latest_proprio_state(previous_state)
         if selected is None:
             raise ValueError(
                 f"Per-chunk proprio mode is enabled but no state was provided for {label}."
             )
         return selected
-
-    def cache_infer_proprio_state(
-        self,
-        cache: dict,
-        state: torch.Tensor | None,
-    ) -> None:
-        if self.uses_proprio_context() and state is not None:
-            cache["last_proprio_state"] = state.detach().clone()
 
     def resolve_train_condition_latents(
         self,

@@ -7,6 +7,8 @@ import pytest
 import torch
 
 from open_wam.configs import VideoActionProgram
+from open_wam.configs import DynamicsObjective, DynamicsRouteConfig, DynamicsSource
+from open_wam.models.training_provenance import PolicyTrainingProvenance
 from open_wam.contracts import identify_video_latent_space
 from open_wam.models.policy_variants import (
     DynamicsRolloutRequest,
@@ -101,6 +103,44 @@ def test_native_video_only_producer_uses_its_normal_output() -> None:
     assert plan.output_request is None
     assert plan.uses_selective_output is False
     assert plan.to_report()["native_modalities"] == ["video"]
+
+
+@pytest.mark.parametrize("consumer", (False, True))
+@pytest.mark.parametrize("weight", (0.0, 1.0))
+def test_composition_eligibility_uses_declared_provenance_not_policy_names(consumer, weight):
+    from dataclasses import replace
+
+    objective = DynamicsObjective.VIDEO_CONDITIONED_ACTION if consumer else DynamicsObjective.JOINT
+    capability = PolicyCompositionCapability.video_to_action(required_training_objective=objective)
+    policy = _policy(native=frozenset(PolicyOutputModality), compositions=(capability,))
+    if not consumer:
+        policy.inference_capabilities = replace(
+            policy.inference_capabilities, required_training_objective=objective,
+        )
+    training = PolicyTrainingProvenance.from_routes((DynamicsRouteConfig(
+        source=DynamicsSource.REAL_DEMO, mode=objective, weight=weight,
+    ),))
+    resolve = resolve_policy_video_action_consumer_plan if consumer else resolve_policy_video_producer_plan
+    with pytest.raises(ValueError, match="positive.*training route"):
+        resolve(policy)
+    if weight == 0.0:
+        with pytest.raises(ValueError, match="positive.*training route"):
+            resolve(policy, training=training)
+    else:
+        assert resolve(policy, training=training) is not None
+
+
+def test_composition_capabilities_coerce_public_choices():
+    capabilities = PolicyInferenceCapabilities(
+        native_modalities=frozenset({"video"}),
+        required_future_modalities=frozenset({"action"}),
+        required_training_objective="action_conditioned_video",
+    )
+    assert capabilities.required_training_objective is DynamicsObjective.ACTION_CONDITIONED_VIDEO
+    assert next(iter(capabilities.required_future_modalities)) is PolicyOutputModality.ACTION
+    with pytest.raises(ValueError, match="clean future modalities"):
+        capabilities.require_future_inputs(frozenset())
+    capabilities.require_future_inputs(frozenset({PolicyOutputModality.ACTION}))
 
 
 def test_video_generation_request_validates_frame_count() -> None:
@@ -246,14 +286,15 @@ def test_video_conditioned_action_context_preserves_all_available_inputs() -> No
         dynamics=DynamicsRolloutRequest(),
         output_request=PolicyInferenceOutputRequest.video_only(),
         video_generation=PolicyVideoGenerationRequest(frame_count=2),
-        extra={"task_text": ("task",)},
+        task_text=("task",),
     )
 
     context = build_video_conditioned_action_context(source, generated)
 
     assert context.state is source.state
     assert context.previous_action is source.previous_action
-    assert context.extra == source.extra
+    assert context.task_text is source.task_text
+    assert context.metadata is source.metadata
     assert context.dynamics is None
     assert context.video_generation is None
     assert context.output_request is None
@@ -438,10 +479,8 @@ def test_generated_video_extension_preserves_policy_output_positional_aux() -> N
     assert output.generated_video is None
 
 
-def test_infer_context_extensions_preserve_positional_extra() -> None:
-    legacy_extra = {"extension": "legacy-positional-constructor"}
-    context = PolicyInferContext(None, None, None, legacy_extra)
 
-    assert context.extra is legacy_extra
-    assert context.output_request is None
-    assert context.video_generation is None
+
+def test_inference_controls_require_typed_fields():
+    with pytest.raises(TypeError, match="extra"):
+        PolicyInferContext(extra={"action_only_rollout": True})

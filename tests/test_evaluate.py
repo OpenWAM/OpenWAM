@@ -123,21 +123,6 @@ def test_align_eval_action_tensors_tail_aligns_exact_raw_chunk_predictions() -> 
     assert torch.equal(aligned_mask, action_mask[:, -16:])
 
 
-def test_rollout_previous_action_prefers_exact_model_space_chunk() -> None:
-    decoder_action_pred = torch.zeros(1, 16, 30)
-    raw_eval_prediction = torch.ones(1, 16, 7)
-    chunk_action_pred = torch.full((1, 16, 30), 2.0)
-
-    previous_action = evaluate_module._select_rollout_previous_action(
-        decoder_action_pred=decoder_action_pred,
-        policy_aux={
-            "raw_chunk_action_pred": raw_eval_prediction,
-            "chunk_action_pred": chunk_action_pred,
-        },
-    )
-
-    assert previous_action is chunk_action_pred
-    assert previous_action.shape == (1, 16, 30)
 
 
 def test_run_evaluation_on_parallel_stream_robotwin(tmp_path: Path) -> None:
@@ -349,7 +334,7 @@ def test_trajectory_eval_uses_variant_owned_session_lifecycle() -> None:
     parallel = build_variant_pipeline_from_config(parallel_config).policy_variant
 
     assert evaluate_module._requires_observation_window_session_rebuild(dual_expert)
-    assert not evaluate_module._requires_observation_window_session_rebuild(parallel)
+    assert evaluate_module._requires_observation_window_session_rebuild(parallel)
 
 
 def test_run_evaluation_loads_pipeline_prefixed_checkpoint(tmp_path: Path) -> None:

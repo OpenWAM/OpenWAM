@@ -17,9 +17,11 @@ from open_wam.configs import (
     VideoActionProgram,
 )
 from open_wam.contracts import identify_video_latent_space
-from open_wam.evals import libero_dual_expert_composition as composition
-from open_wam.evals.libero_dual_expert_runtime import (
-    DualExpertActionRoute,
+from open_wam.models.training_provenance import PolicyTrainingProvenance
+from open_wam.models.policy_variants.base import VideoActionPolicyVariant
+from open_wam.evals import libero_policy_composition as composition
+from open_wam.evals.libero_policy_runtime import (
+    PolicyActionRoute,
     LiberoPolicyRuntimeRole,
 )
 from open_wam.models.policy_variants import (
@@ -36,6 +38,14 @@ from open_wam.pipelines import (
     PolicyVideoProducerPlan,
     VariantRolloutSession,
 )
+
+
+def _idm_routes():
+    return DynamicsRoutingConfig(routes=(DynamicsRouteConfig(
+        source=DynamicsSource.REAL_DEMO,
+        mode=DynamicsObjective.VIDEO_CONDITIONED_ACTION,
+        weight=1.0,
+    ),))
 
 
 def _producer_plan() -> PolicyVideoProducerPlan:
@@ -74,10 +84,29 @@ def _latent_identity(root, *, weights: bytes = b"weights"):
     )
 
 
+def _validate_training_and_geometry(primary, consumer):
+    # Exercise real capability declarations without materializing either backbone.
+    def policy(config):
+        instance = SimpleNamespace(config=config.policy_variant, inference_config=config.inference)
+        return SimpleNamespace(inference_capabilities=(
+            VideoActionPolicyVariant.inference_capabilities.fget(instance)
+        ))
+
+    producer_plan = composition.resolve_policy_video_producer_plan(
+        policy(primary), training=PolicyTrainingProvenance.from_routes(primary.data.dynamics_routing.routes)
+    )
+    consumer_plan = composition.resolve_policy_video_action_consumer_plan(
+        policy(consumer), training=PolicyTrainingProvenance.from_routes(consumer.data.dynamics_routing.routes)
+    )
+    return composition.validate_video_action_composition_contract(
+        primary, consumer, producer_plan=producer_plan, consumer_plan=consumer_plan,
+    )
+
+
 def _consumer_args(*, route: str, config: str | None, checkpoint: str | None):
     return Namespace(
-        dual_expert_gjd_action_route=route,
-        dual_expert_action_only_rollout=False,
+        policy_action_route=route,
+        action_only_rollout=False,
         action_consumer_cfg=config,
         action_consumer_checkpoint=checkpoint,
         action_consumer_set_overrides=[],
@@ -118,7 +147,7 @@ def test_action_consumer_arguments_use_canonical_cli_surface() -> None:
 
 def test_video_action_consumer_arguments_are_scoped_to_the_composed_route() -> None:
     composed = _consumer_args(
-        route=DualExpertActionRoute.GENERATED_VIDEO_THEN_ACTION.value,
+        route=PolicyActionRoute.GENERATED_VIDEO_THEN_ACTION.value,
         config="idm.yaml",
         checkpoint="checkpoint_step_1",
     )
@@ -133,7 +162,7 @@ def test_video_action_consumer_arguments_are_scoped_to_the_composed_route() -> N
     with pytest.raises(ValueError, match="requires both"):
         composition.validate_action_consumer_arguments(
             _consumer_args(
-                route=DualExpertActionRoute.GENERATED_VIDEO_THEN_ACTION.value,
+                route=PolicyActionRoute.GENERATED_VIDEO_THEN_ACTION.value,
                 config="idm.yaml",
                 checkpoint=None,
             )
@@ -141,18 +170,18 @@ def test_video_action_consumer_arguments_are_scoped_to_the_composed_route() -> N
     with pytest.raises(ValueError, match="only valid"):
         composition.validate_action_consumer_arguments(
             _consumer_args(
-                route=DualExpertActionRoute.JOINT.value,
+                route=PolicyActionRoute.NATIVE.value,
                 config="idm.yaml",
                 checkpoint="checkpoint_step_1",
             )
         )
 
     action_only = _consumer_args(
-        route=DualExpertActionRoute.GENERATED_VIDEO_THEN_ACTION.value,
+        route=PolicyActionRoute.GENERATED_VIDEO_THEN_ACTION.value,
         config="idm.yaml",
         checkpoint="checkpoint_step_1",
     )
-    action_only.dual_expert_action_only_rollout = True
+    action_only.action_only_rollout = True
     with pytest.raises(ValueError, match="cannot be combined"):
         composition.validate_action_consumer_arguments(action_only)
 
@@ -161,7 +190,8 @@ def test_video_action_consumer_contract_accepts_vta_fixed_and_routed_idm() -> No
     primary = ExperimentConfig(
         policy_variant=DualExpertPolicyConfig(
             program=VideoActionProgram.VIDEO_THEN_ACTION
-        )
+        ),
+        data=replace(ExperimentConfig().data, dynamics_routing=_idm_routes()),
     )
     fixed_idm = replace(
         primary,
@@ -169,27 +199,17 @@ def test_video_action_consumer_contract_accepts_vta_fixed_and_routed_idm() -> No
             program=VideoActionProgram.INVERSE_DYNAMICS
         ),
     )
-    fixed_report = composition.validate_video_action_composition_contract(
+    fixed_report = _validate_training_and_geometry(
         primary,
         fixed_idm,
-        producer_plan=_producer_plan(),
-        consumer_plan=_consumer_plan(),
     )
-    assert fixed_report["action_consumer_route_source"] == (
-        "fixed_inverse_dynamics_program"
-    )
+    assert fixed_report["action_consumer"]["required_training_objective"] == "video_conditioned_action"
 
-    vta_report = composition.validate_video_action_composition_contract(
+    vta_report = _validate_training_and_geometry(
         primary,
         primary,
-        producer_plan=_producer_plan(),
-        consumer_plan=_consumer_plan(
-            rng_policy=PolicyCompositionRngPolicy.CALLER_STREAM
-        ),
     )
-    assert vta_report["action_consumer_route_source"] == (
-        "native_video_then_action_program"
-    )
+    assert vta_report["action_consumer"]["required_training_objective"] is None
 
     routed_data = replace(
         primary.data,
@@ -210,35 +230,31 @@ def test_video_action_consumer_contract_accepts_vta_fixed_and_routed_idm() -> No
             program=VideoActionProgram.GENERALIST_JOINT_DENOISING
         ),
     )
-    routed_report = composition.validate_video_action_composition_contract(
+    routed_report = _validate_training_and_geometry(
         primary,
         routed_idm,
-        producer_plan=_producer_plan(),
-        consumer_plan=_consumer_plan(),
     )
-    assert routed_report["action_consumer_route_source"] == (
-        "generalist_joint_denoising_training_route"
-    )
+    assert routed_report["action_consumer"]["required_training_objective"] == "video_conditioned_action"
 
 
 def test_video_action_consumer_contract_rejects_inactive_route_and_geometry_drift() -> None:
     primary = ExperimentConfig(
         policy_variant=DualExpertPolicyConfig(
             program=VideoActionProgram.VIDEO_THEN_ACTION
-        )
+        ),
+        data=replace(ExperimentConfig().data, dynamics_routing=_idm_routes()),
     )
     inactive_gjd = replace(
         primary,
+        data=replace(primary.data, dynamics_routing=DynamicsRoutingConfig()),
         policy_variant=DualExpertPolicyConfig(
             program=VideoActionProgram.GENERALIST_JOINT_DENOISING
         ),
     )
     with pytest.raises(ValueError, match="positive.*video_conditioned_action"):
-        composition.validate_video_action_composition_contract(
+        _validate_training_and_geometry(
             primary,
             inactive_gjd,
-            producer_plan=_producer_plan(),
-            consumer_plan=_consumer_plan(),
         )
 
     mismatched_idm = replace(
@@ -249,11 +265,9 @@ def test_video_action_consumer_contract_rejects_inactive_route_and_geometry_drif
         ),
     )
     with pytest.raises(ValueError, match="data.canonical_width"):
-        composition.validate_video_action_composition_contract(
+        _validate_training_and_geometry(
             primary,
             mismatched_idm,
-            producer_plan=_producer_plan(),
-            consumer_plan=_consumer_plan(),
         )
 
 
@@ -261,7 +275,8 @@ def test_config_preflight_does_not_treat_artifact_paths_as_latent_identity() -> 
     primary = ExperimentConfig(
         policy_variant=DualExpertPolicyConfig(
             program=VideoActionProgram.VIDEO_THEN_ACTION
-        )
+        ),
+        data=replace(ExperimentConfig().data, dynamics_routing=_idm_routes()),
     )
     primary = replace(
         primary,
@@ -283,11 +298,9 @@ def test_config_preflight_does_not_treat_artifact_paths_as_latent_identity() -> 
         ),
     )
 
-    report = composition.validate_video_action_composition_contract(
+    report = _validate_training_and_geometry(
         primary,
         consumer,
-        producer_plan=_producer_plan(),
-        consumer_plan=_consumer_plan(),
     )
 
     assert "backbone.pretrained_model_name_or_path" not in report["validated_fields"]
@@ -307,7 +320,8 @@ def test_composition_rejects_gjd_producer_without_joint_training(
     baseline = ExperimentConfig(
         policy_variant=DualExpertPolicyConfig(
             program=VideoActionProgram.VIDEO_THEN_ACTION
-        )
+        ),
+        data=replace(ExperimentConfig().data, dynamics_routing=_idm_routes()),
     )
     conditional_only_data = replace(
         baseline.data,
@@ -330,7 +344,7 @@ def test_composition_rejects_gjd_producer_without_joint_training(
     )
 
     with pytest.raises(ValueError, match="positive.*`joint` training route"):
-        composition.validate_video_action_composition_contract(
+        _validate_training_and_geometry(
             conditional_only_gjd,
             replace(
                 baseline,
@@ -338,8 +352,6 @@ def test_composition_rejects_gjd_producer_without_joint_training(
                     program=VideoActionProgram.INVERSE_DYNAMICS
                 ),
             ),
-            producer_plan=_producer_plan(),
-            consumer_plan=_consumer_plan(),
         )
 
 
@@ -347,7 +359,8 @@ def test_composition_rejects_fixed_fdm_producer() -> None:
     baseline = ExperimentConfig(
         policy_variant=DualExpertPolicyConfig(
             program=VideoActionProgram.VIDEO_THEN_ACTION
-        )
+        ),
+        data=replace(ExperimentConfig().data, dynamics_routing=_idm_routes()),
     )
     fixed_fdm = replace(
         baseline,
@@ -356,8 +369,8 @@ def test_composition_rejects_fixed_fdm_producer() -> None:
         ),
     )
 
-    with pytest.raises(ValueError, match="FDM-only policy"):
-        composition.validate_video_action_composition_contract(
+    with pytest.raises(ValueError, match="clean future modalities"):
+        _validate_training_and_geometry(
             fixed_fdm,
             replace(
                 baseline,
@@ -365,8 +378,6 @@ def test_composition_rejects_fixed_fdm_producer() -> None:
                     program=VideoActionProgram.INVERSE_DYNAMICS
                 ),
             ),
-            producer_plan=_producer_plan(),
-            consumer_plan=_consumer_plan(),
         )
 
 
@@ -374,7 +385,8 @@ def test_composition_accepts_gjd_producer_with_joint_training() -> None:
     baseline = ExperimentConfig(
         policy_variant=DualExpertPolicyConfig(
             program=VideoActionProgram.VIDEO_THEN_ACTION
-        )
+        ),
+        data=replace(ExperimentConfig().data, dynamics_routing=_idm_routes()),
     )
     joint_gjd = replace(
         baseline,
@@ -395,7 +407,7 @@ def test_composition_accepts_gjd_producer_with_joint_training() -> None:
         ),
     )
 
-    report = composition.validate_video_action_composition_contract(
+    report = _validate_training_and_geometry(
         joint_gjd,
         replace(
             baseline,
@@ -403,21 +415,17 @@ def test_composition_accepts_gjd_producer_with_joint_training() -> None:
                 program=VideoActionProgram.INVERSE_DYNAMICS
             ),
         ),
-        producer_plan=_producer_plan(),
-        consumer_plan=_consumer_plan(),
     )
 
-    assert report["video_producer_route_source"] == (
-        "generalist_joint_denoising_training_route"
-    )
+    assert report["video_producer"]["required_training_objective"] == "joint"
 
 
 def test_video_action_consumer_loader_provides_only_the_clean_video_objective(
     monkeypatch,
     tmp_path,
 ) -> None:
-    primary_config = object()
-    external_config = object()
+    primary_config = ExperimentConfig()
+    external_config = ExperimentConfig()
     primary_runtime = SimpleNamespace(
         config=primary_config,
         runtime_device=torch.device("cpu"),
@@ -426,12 +434,12 @@ def test_video_action_consumer_loader_provides_only_the_clean_video_objective(
         startup_env_init_steps=5,
     )
     primary_options = SimpleNamespace(
-        dual_expert_gjd_action_route=(
-            DualExpertActionRoute.GENERATED_VIDEO_THEN_ACTION.value
+        policy_action_route=(
+            PolicyActionRoute.GENERATED_VIDEO_THEN_ACTION.value
         ),
         source="test",
-        dual_expert_inference_window_size=30,
-        dual_expert_rollout_frame_chunk_size=4,
+        inference_window_size=30,
+        rollout_frame_chunk_size=4,
         execute_action_steps=None,
         execute_frame_chunk_size=None,
         frontend_encode_mode="lingbot_streaming_vae",
@@ -464,16 +472,16 @@ def test_video_action_consumer_loader_provides_only_the_clean_video_objective(
         captured["options"] = options
         return external_runtime
 
-    monkeypatch.setattr(composition, "load_dual_expert_libero_runtime", _load)
+    monkeypatch.setattr(composition, "load_libero_policy_runtime", _load)
     monkeypatch.setattr(
         composition,
         "resolve_policy_video_producer_plan",
-        lambda policy: _producer_plan(),
+        lambda policy, *, training: _producer_plan(),
     )
     monkeypatch.setattr(
         composition,
         "resolve_policy_video_action_consumer_plan",
-        lambda policy: _consumer_plan(),
+        lambda policy, *, training: _consumer_plan(),
     )
     monkeypatch.setattr(
         composition,
@@ -521,19 +529,19 @@ def test_video_action_consumer_loader_provides_only_the_clean_video_objective(
 
 def test_video_action_consumer_loader_rejects_split_packed_devices(monkeypatch) -> None:
     primary_runtime = SimpleNamespace(
-        config=object(),
+        config=ExperimentConfig(),
         runtime_device=torch.device("cpu"),
         raw_window_frames=13,
         startup_model_obs_frames=1,
         startup_env_init_steps=5,
     )
     primary_options = SimpleNamespace(
-        dual_expert_gjd_action_route=(
-            DualExpertActionRoute.GENERATED_VIDEO_THEN_ACTION.value
+        policy_action_route=(
+            PolicyActionRoute.GENERATED_VIDEO_THEN_ACTION.value
         ),
         source="test",
-        dual_expert_inference_window_size=30,
-        dual_expert_rollout_frame_chunk_size=4,
+        inference_window_size=30,
+        rollout_frame_chunk_size=4,
         execute_action_steps=None,
         execute_frame_chunk_size=None,
         frontend_encode_mode="lingbot_streaming_vae",
@@ -544,7 +552,7 @@ def test_video_action_consumer_loader_rejects_split_packed_devices(monkeypatch) 
     )
     monkeypatch.setattr(
         composition,
-        "load_dual_expert_libero_runtime",
+        "load_libero_policy_runtime",
         lambda options: SimpleNamespace(
             config=object(),
             runtime_device=torch.device("cuda:0"),
@@ -554,7 +562,7 @@ def test_video_action_consumer_loader_rejects_split_packed_devices(monkeypatch) 
     monkeypatch.setattr(
         composition,
         "resolve_policy_video_producer_plan",
-        lambda policy: _producer_plan(),
+        lambda policy, *, training: _producer_plan(),
     )
     primary_runtime.pipeline = SimpleNamespace(policy_variant=object())
 
@@ -584,6 +592,8 @@ def test_video_action_consumer_inference_hands_generated_video_to_public_runner(
     expected_seed,
     expect_rng_restore,
 ) -> None:
+    from open_wam.pipelines import video_action_composition as service
+
     calls: dict[str, object] = {}
     built_context = PolicyInferContext()
     rollout_output = SimpleNamespace(
@@ -610,18 +620,18 @@ def test_video_action_consumer_inference_hands_generated_video_to_public_runner(
 
     monkeypatch.setattr(composition, "_build_infer_context", _build_context)
     monkeypatch.setattr(
-        composition,
+        service,
         "seed_everywhere",
         lambda seed: calls.setdefault("seed", seed),
     )
     rng_snapshot = object()
     monkeypatch.setattr(
-        composition,
+        service,
         "snapshot_rng_state",
         lambda: rng_snapshot,
     )
     monkeypatch.setattr(
-        composition,
+        service,
         "restore_rng_state",
         lambda snapshot: calls.setdefault("restored_rng", snapshot),
     )
@@ -688,30 +698,24 @@ def test_video_action_consumer_inference_hands_generated_video_to_public_runner(
     consumer_video = infer_context.video_conditioned_action.generated_video
     assert consumer_video.latents.shape == generated.shape
     assert not consumer_video.latents.requires_grad
-    assert calls["context_args"][1]["dual_expert_rollout_frame_chunk_size"] is None
+    assert calls["context_args"][1]["rollout_frame_chunk_size"] is None
 
 
-def test_video_action_consumer_rejects_latent_coordinate_mismatch() -> None:
+@pytest.mark.parametrize("observed_shape", [(1, 32, 1, 8, 16), (1, 48, 8, 16)])
+def test_video_action_consumer_rejects_latent_coordinate_mismatch(observed_shape) -> None:
     generated = PolicyGeneratedVideo(
         latents=torch.randn(1, 48, 4, 8, 16),
         frame_start=1,
     )
 
-    with pytest.raises(RuntimeError, match="latent batch/channel/spatial geometry"):
-        composition._validate_generated_video_tensor_geometry(
+    with pytest.raises(ValueError, match="latent geometry"):
+        _consumer_plan().infer(
+            runner=None,
+            session=VariantRolloutSession(),
+            context=PolicyInferContext(),
+            visual_outputs=SimpleNamespace(frontend=SimpleNamespace(
+                video_latents=torch.randn(observed_shape),
+            )),
             generated_video=generated,
-            observed_video=torch.randn(1, 32, 1, 8, 16),
-        )
-
-
-def test_video_action_consumer_rejects_non_video_consumer_tensor() -> None:
-    generated = PolicyGeneratedVideo(
-        latents=torch.randn(1, 48, 4, 8, 16),
-        frame_start=1,
-    )
-
-    with pytest.raises(RuntimeError, match=r"\[B, C, T, H, W\]"):
-        composition._validate_generated_video_tensor_geometry(
-            generated_video=generated,
-            observed_video=torch.randn(1, 48, 8, 16),
+            producer_device="cpu", rollout_seed=0, step_index=0,
         )

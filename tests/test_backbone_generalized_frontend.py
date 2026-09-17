@@ -174,7 +174,7 @@ def test_all_policy_variants_consume_shared_frontend_video_latents() -> None:
             batch.views,
             PolicyInferContext(
                 state=batch.state,
-                extra={"task_text": batch.task_text, "metadata": batch.metadata},
+                task_text=batch.task_text, metadata=batch.metadata,
             ),
         )
 

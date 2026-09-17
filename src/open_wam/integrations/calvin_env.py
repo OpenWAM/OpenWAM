@@ -1,27 +1,25 @@
 from __future__ import annotations
 
-from collections import deque
 from contextlib import contextmanager
 import inspect
 import os
 from pathlib import Path
 import sys
-from typing import Any, Iterator, Mapping
+from typing import TYPE_CHECKING, Any, Iterator, Mapping
 
 import numpy as np
 import torch
 
+from open_wam.runtime.policy_planner import PolicyPlanner
+from open_wam.simulators.contracts import SimulatorCapabilities, SimulatorObservation
+from open_wam.runtime.control import ControlCommand, ControlTransition
+
 from open_wam.configs import DataConfig
-from open_wam.models.policy_variants import PolicyInferContext
-from open_wam.pipelines import VariantRolloutRunner
+from open_wam.pipelines import VariantRolloutRunner, VariantRolloutSession
 from open_wam.integrations.simulator_configs import CalvinEnvConfig as CalvinEnvConfig
-from open_wam.simulators import (
-    SimStepResult,
-    SimulatorCapabilities,
-    build_state_history_tensor,
-    build_view_history_batch,
-    source_action_from_model_action,
-)
+
+if TYPE_CHECKING:
+    from open_wam.runtime.rollout_engine import RolloutControlStream, RolloutResult
 
 
 class CalvinBenchmarkAdapter:
@@ -76,23 +74,19 @@ class CalvinBenchmarkAdapter:
             return None
         return np.asarray(robot_obs, dtype=np.float32).reshape(-1)
 
-    def model_action_to_env_action(self, model_action: np.ndarray, *, data_config: DataConfig) -> np.ndarray:
-        source_action = np.asarray(
-            source_action_from_model_action(model_action, data_config=data_config),
-            dtype=np.float32,
-        ).reshape(-1)
-        if source_action.shape[0] != 7:
-            raise ValueError(f"CALVIN env action adapter expects native 7D rel_actions, got {source_action.shape[0]}D.")
-        _binarize_calvin_gripper(source_action)
-        return source_action
+    def materialize_control(self, source_action: np.ndarray, *, data_config: DataConfig) -> ControlCommand:
+        return _materialize_calvin_control(source_action)
 
-    def step(self, env_action: np.ndarray) -> SimStepResult:
+    def step(self, env_action: np.ndarray) -> ControlTransition:
         if self._env is None:
             raise RuntimeError("CALVIN adapter must be reset before stepping.")
         with self._calvin_cwd():
             transition = self._env.step(np.asarray(env_action, dtype=np.float32))
         observation, reward, done, info = _normalize_step_output(transition)
-        return SimStepResult(observation=observation, reward=reward, done=done, info=info)
+        return ControlTransition(
+            observation=observation, reward=reward, done=done,
+            success=self.success(observation, info), info=info,
+        )
 
     def success(self, observation: Any, info: dict[str, Any]) -> bool:
         for key in ("success", "is_success", "task_success", "all_tasks_solved"):
@@ -203,86 +197,62 @@ class CalvinBenchmarkAdapter:
 
 
 class OpenWAMCalvinCustomModel:
-    """Official-CALVIN-compatible `reset()` / `step(obs, goal)` policy wrapper."""
+    """Official-CALVIN-compatible driver of the shared policy control stream."""
 
     def __init__(
-        self,
-        *,
-        rollout_runner: VariantRolloutRunner,
-        data_config: DataConfig,
-        device: torch.device,
-        task_text: str | None = None,
+        self, *, rollout_runner: VariantRolloutRunner, data_config: DataConfig,
+        device: torch.device, task_text: str | None = None,
     ) -> None:
         self.rollout_runner = rollout_runner
         self.data_config = data_config
         self.device = device
         self.task_text = task_text
-        self._session = None
-        self._view_history: dict[str, deque[np.ndarray]] = {}
-        self._state_history: deque[np.ndarray] = deque(maxlen=data_config.action_schema.state_horizon)
-        self._previous_action: torch.Tensor | None = None
+        self._stream: RolloutControlStream[VariantRolloutSession, SimulatorObservation] | None = None
+        self.last_rollout_result: RolloutResult[VariantRolloutSession, SimulatorObservation] | None = None
+        self._active_task = None
 
     def reset(self) -> None:
-        self._session = self.rollout_runner.reset(task_text=(self.task_text,))
-        self._view_history = {
-            camera_name: deque(maxlen=self.data_config.num_frames)
-            for camera_name in self.data_config.camera_names
-        }
-        self._state_history.clear()
-        self._previous_action = None
+        """Drain the previous episode; retain its result for caller diagnostics."""
+        if self._stream is not None:
+            self.last_rollout_result = self._stream.close()
+        self._stream = None
+        self._active_task = None
 
     def step(self, obs: Mapping[str, Any], goal: Any | None = None) -> np.ndarray:
-        if self._session is None:
-            self.reset()
-        task_text = _goal_to_task_text(goal) or self.task_text
-        views_np = {
-            "rgb_static": _extract_rgb(obs, "rgb_static"),
-            "rgb_gripper": _extract_rgb(obs, "rgb_gripper"),
-        }
-        for camera_name in self.data_config.camera_names:
-            if camera_name not in views_np:
-                raise KeyError(
-                    f"CALVIN CustomModel missing required camera '{camera_name}'. "
-                    f"Available cameras: {sorted(views_np)}"
-                )
-            self._view_history[camera_name].append(views_np[camera_name])
-        state = _lookup_nested(obs, ("robot_obs", "state_obs.robot_obs", "observation.robot_obs"))
-        if state is not None:
-            self._state_history.append(np.asarray(state, dtype=np.float32).reshape(-1))
+        from open_wam.runtime.rollout_engine import RolloutEngine, RolloutOptions
+        from open_wam.simulators.policy_adapter import SimulatorPolicyAdapter
 
-        views = build_view_history_batch(
-            self._view_history,
-            camera_names=tuple(self.data_config.camera_names),
-            num_frames=self.data_config.num_frames,
-            device=self.device,
+        task_text = _goal_to_task_text(goal) or self.task_text
+        if task_text != self._active_task:
+            self.reset()
+        state = _lookup_nested(obs, ("robot_obs", "state_obs.robot_obs", "observation.robot_obs"))
+        observation = SimulatorObservation(
+            views={name: _extract_rgb(obs, name) for name in self.data_config.camera_names},
+            state=None if state is None else np.asarray(state, dtype=np.float32).reshape(-1),
+            task_text=task_text, raw=obs,
         )
-        state_tensor = build_state_history_tensor(
-            self._state_history,
-            state_dim=self.data_config.action_schema.state_dim,
-            state_horizon=self.data_config.action_schema.state_horizon,
-            device=self.device,
-        )
-        context = PolicyInferContext(
-            state=state_tensor,
-            previous_action=self._previous_action,
-            extra={"task_text": (task_text,), "metadata": ({"benchmark": "calvin"},)},
-        )
-        with torch.no_grad():
-            output = self.rollout_runner.infer_step(
-                session=self._session,
-                context=context,
-                views=views,
+        if self._stream is None:
+            self._active_task = task_text
+            adapter = SimulatorPolicyAdapter(
+                self.rollout_runner, self.data_config, self.device, _materialize_calvin_control,
             )
-        self._session = output.session
-        action_pred = output.infer_output.decoder_output.action_pred.detach()
-        self._previous_action = action_pred[:, :1].detach()
-        action = action_pred[0, 0].float().cpu().numpy()
-        source_action = source_action_from_model_action(action, data_config=self.data_config)
-        source_action = np.asarray(source_action, dtype=np.float32).reshape(-1)
-        if source_action.shape[0] != 7:
-            raise ValueError(f"CALVIN CustomModel expects native 7D action output, got {source_action.shape[0]}D.")
-        _binarize_calvin_gripper(source_action)
-        return source_action
+            density = self.rollout_runner.pipeline.policy_variant.rollout_contract.action_tokens_per_frame
+            engine = RolloutEngine(PolicyPlanner(self.rollout_runner, adapter), adapter, RolloutOptions(
+                max_actions=sys.maxsize, target_action_hz=None, execute_prefix_actions=density,
+            ))
+            self._stream = engine.control_stream(
+                observation, self.rollout_runner.reset(task_text=(task_text,)),
+            )
+            return next(self._stream)
+        return self._stream.send(ControlTransition(observation=observation))
+
+
+def _materialize_calvin_control(source_action: np.ndarray) -> ControlCommand:
+    action = np.asarray(source_action, dtype=np.float32).reshape(-1).copy()
+    if action.shape[0] != 7:
+        raise ValueError(f"CALVIN expects native 7D rel_actions, got {action.shape[0]}D.")
+    _binarize_calvin_gripper(action)
+    return ControlCommand(action=action, source_action=action)
 
 
 def _normalize_step_output(transition: Any) -> tuple[Any, float | None, bool, dict[str, Any]]:

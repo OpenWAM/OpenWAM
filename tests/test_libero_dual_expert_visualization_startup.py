@@ -12,19 +12,19 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from open_wam.evals import libero_dual_expert_rollout as dual_expert_viz
-from open_wam.evals import libero_dual_expert_inputs as dual_expert_inputs
-from open_wam.evals import libero_dual_expert_runtime as dual_expert_runtime
-from open_wam.models.policy_variants.dual_expert.runtime_routes import (
-    should_use_dual_expert_split_cache_inference,
-)
+from open_wam.evals import libero_policy_rollout as dual_expert_viz
+from open_wam.evals.libero_episode_artifacts import _summarize_policy_debug
+from open_wam.evals.libero_policy_planner import _build_execution_commit
+from open_wam.models.common.rollout_history import build_executed_action_history_tensor
+from open_wam.evals import libero_policy_inputs as dual_expert_inputs
+from open_wam.evals import libero_policy_runtime as dual_expert_runtime
 from open_wam.models.policy_variants.contracts import (
     DecoderArtifactEnvelope,
     PolicyInferOutput,
     PolicyInferState,
     PolicyInferenceOutputRequest,
 )
-from open_wam.models.policy_variants.dual_expert.decoder_artifacts import (
+from open_wam.models.decoder_artifacts import (
     DUAL_EXPERT_DECODER_ARTIFACT_CONTRACT,
     DualExpertInferArtifacts,
 )
@@ -34,10 +34,10 @@ def test_dual_expert_runtime_loading_contract_has_one_canonical_owner() -> None:
     public_names = (
         "CURRENT_FRONTEND_ENCODE_MODE",
         "DEPRECATED_FRONTEND_ENCODE_MODE",
-        "DUAL_EXPERT_GJD_ACTION_ROUTES",
-        "DualExpertLiberoLoadOptions",
-        "DualExpertLiberoRuntime",
-        "load_dual_expert_libero_runtime",
+        "GJD_ACTION_ROUTES",
+        "LiberoPolicyLoadOptions",
+        "LiberoPolicyRuntime",
+        "load_libero_policy_runtime",
         "print_rollout_event",
     )
     for name in public_names:
@@ -62,15 +62,11 @@ def test_policy_debug_summarizes_typed_decoder_artifacts() -> None:
         aux={"architecture": "dual_expert"},
     )
 
-    summary = dual_expert_viz._summarize_policy_debug(output)
+    summary = _summarize_policy_debug(output)
 
     assert summary["architecture"] == "dual_expert"
-    assert summary["dual_expert_infer_artifacts"] == {
-        "action_pred_shape": [1, 16, 7],
-        "predicted_latents_shape": [1, 48, 4, 8, 16],
-        "condition_mode": "teacher_forcing_cond_video",
-        "program": "video_then_action",
-    }
+    assert summary["decoder_artifact_contract"] == DUAL_EXPERT_DECODER_ARTIFACT_CONTRACT
+    assert summary["decoder_artifact_payload_type"] == "DualExpertInferArtifacts"
 
 
 def _obs(index: int) -> dict[str, np.ndarray]:
@@ -84,7 +80,7 @@ def _obs(index: int) -> dict[str, np.ndarray]:
 def test_select_model_obs_window_uses_one_frame_for_chunk0() -> None:
     window = [_obs(index) for index in range(15)]
 
-    selected = dual_expert_viz._select_model_obs_window(
+    selected = dual_expert_inputs._select_model_obs_window(
         window,
         chunk_index=0,
         startup_model_obs_frames=1,
@@ -97,7 +93,7 @@ def test_select_model_obs_window_uses_one_frame_for_chunk0() -> None:
 def test_select_model_obs_window_keeps_full_window_after_chunk0() -> None:
     window = [_obs(index) for index in range(15)]
 
-    selected = dual_expert_viz._select_model_obs_window(
+    selected = dual_expert_inputs._select_model_obs_window(
         window,
         chunk_index=1,
         startup_model_obs_frames=1,
@@ -111,7 +107,7 @@ def test_select_model_obs_window_rejects_invalid_startup_frames(startup_frames: 
     window = [_obs(index) for index in range(15)]
 
     with pytest.raises(ValueError):
-        dual_expert_viz._select_model_obs_window(
+        dual_expert_inputs._select_model_obs_window(
             window,
             chunk_index=0,
             startup_model_obs_frames=startup_frames,
@@ -279,8 +275,8 @@ def test_build_executed_action_history_rejects_bootstrap_zero_actions() -> None:
         np.array([0.25, 0.5, -0.25], dtype=np.float32),
     ]
 
-    with pytest.raises(ValueError, match="deprecated"):
-        dual_expert_viz._build_executed_action_history_tensor(
+    with pytest.raises(TypeError, match="start_frame_group"):
+        build_executed_action_history_tensor(
             executed,
             start_frame_group=1,
             action_per_frame=2,
@@ -289,21 +285,19 @@ def test_build_executed_action_history_rejects_bootstrap_zero_actions() -> None:
 
 
 def test_build_executed_action_history_returns_none_when_nothing_executed() -> None:
-    assert dual_expert_viz._build_executed_action_history_tensor(
+    assert build_executed_action_history_tensor(
         [],
-        start_frame_group=0,
         action_per_frame=2,
         action_dim=3,
     ) is None
 
 
 def test_build_execution_commit_converts_partial_actions_to_model_frames() -> None:
-    commit = dual_expert_viz._build_execution_commit(
+    commit = _build_execution_commit(
         generation_frame_start=1,
         speculative_frame_count=4,
         executed_action_count=12,
         action_per_frame=4,
-        start_frame_group=0,
         terminal=False,
     )
 
@@ -316,63 +310,42 @@ def test_build_execution_commit_converts_partial_actions_to_model_frames() -> No
 
 def test_build_execution_commit_rejects_partial_action_frame() -> None:
     with pytest.raises(ValueError, match="complete model-frame action groups"):
-        dual_expert_viz._build_execution_commit(
+        _build_execution_commit(
             generation_frame_start=1,
             speculative_frame_count=4,
             executed_action_count=11,
             action_per_frame=4,
-            start_frame_group=0,
             terminal=False,
         )
 
 
 @pytest.mark.parametrize(
-    ("executed_action_count", "start_frame_group", "terminal"),
-    [(0, 0, False), (12, 1, False), (12, 0, True)],
+    ("executed_action_count", "terminal"),
+    [(0, False), (12, True)],
 )
 def test_build_execution_commit_skips_non_reconcilable_execution(
     executed_action_count: int,
-    start_frame_group: int,
     terminal: bool,
 ) -> None:
-    assert dual_expert_viz._build_execution_commit(
+    assert _build_execution_commit(
         generation_frame_start=1,
         speculative_frame_count=4,
         executed_action_count=executed_action_count,
         action_per_frame=4,
-        start_frame_group=start_frame_group,
         terminal=terminal,
     ) is None
 
 
-@pytest.mark.parametrize(
-    ("program", "expected"),
-    [
-        ("video_then_action", True),
-        ("decoupled_same_step", True),
-        ("joint", False),
-        ("video_noisy_to_action", False),
-    ],
-)
-def test_should_use_dual_expert_split_cache_inference_is_program_driven(
-    program: str,
-    expected: bool,
-) -> None:
-    config = SimpleNamespace(
-        policy_variant=SimpleNamespace(name="dual_expert", program=program)
-    )
-
-    assert should_use_dual_expert_split_cache_inference(config) is expected
 
 
-def test_prepare_dual_expert_visual_outputs_streaming_path_uses_run_frontend() -> None:
+def test_prepare_policy_visual_outputs_streaming_path_uses_run_frontend() -> None:
     pipeline = _FakePipeline()
     views = {
         dual_expert_viz.LIBERO_OBS_KEYS[0]: torch.zeros(1, 4, 4, 3),
         dual_expert_viz.LIBERO_OBS_KEYS[1]: torch.zeros(1, 4, 4, 3),
     }
 
-    outputs = dual_expert_viz._prepare_dual_expert_visual_outputs(
+    outputs = dual_expert_inputs._prepare_policy_visual_outputs(
         pipeline,
         views=views,
         task_text=("prompt",),
@@ -403,24 +376,22 @@ def test_build_infer_context_uses_joint_dynamics_by_default() -> None:
     )
 
     output_request = PolicyInferenceOutputRequest.video_only()
-    context = dual_expert_viz._build_infer_context(
+    context = dual_expert_inputs._build_infer_context(
         "task",
         action_device=torch.device("cpu"),
         model_obs_window=[obs],
         config=config,
         runtime_device=torch.device("cpu"),
-        dual_expert_inference_window_size=30,
-        dual_expert_action_only_rollout=False,
+        inference_window_size=30,
+        action_only_rollout=False,
         output_request=output_request,
     )
 
-    assert context.extra["task_text"] == ("task",)
+    assert context.task_text == ("task",)
     assert context.temporal_geometry is not None
     assert context.temporal_geometry.frame_chunk_size == 4
     assert context.temporal_geometry.attention_window_size == 30
-    assert "dual_expert_inference_window_size" not in context.extra
-    assert "action_conditioning_mode" not in context.extra
-    assert "dual_expert_action_only_rollout" not in context.extra
+    assert not hasattr(context, "extra")
     assert context.output_request is output_request
     assert context.state.shape == (1, 1, 8)
 

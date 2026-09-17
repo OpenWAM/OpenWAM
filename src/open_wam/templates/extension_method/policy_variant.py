@@ -98,7 +98,9 @@ class TemplatePolicyVariant(PolicyVariant):
         del visual_tower, context
         return PolicyInferOutput(
             policy_features=self._policy_features(visual_outputs),
-            next_state=replace(infer_state, step_index=infer_state.step_index + 1),
+            next_state=replace(infer_state, cursor=replace(
+                infer_state.cursor, block_index=infer_state.step_index + 1,
+            )),
         )
 
     def _policy_features(self, visual_outputs: VisualStageOutputs) -> torch.Tensor:

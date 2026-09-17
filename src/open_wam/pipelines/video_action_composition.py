@@ -9,6 +9,8 @@ from dataclasses import dataclass, replace
 import torch
 
 from open_wam.contracts import require_compatible_video_latent_spaces
+from open_wam.models.training_provenance import PolicyTrainingProvenance
+from open_wam.configs.enums import DynamicsObjective
 from open_wam.models.policy_variants import (
     PolicyCompositionCapability,
     PolicyCompositionRngPolicy,
@@ -23,6 +25,17 @@ from open_wam.models.policy_variants import (
 )
 
 from .variant_pipeline import VariantPipelineInferOutput
+from .rollout import (
+    VariantRolloutRunner,
+    VariantRolloutSession,
+    VariantRolloutStepOutput,
+)
+from open_wam.models.visual_tower import VisualStageOutputs
+from open_wam.utils.seeding import (
+    snapshot_rng_state,
+    restore_rng_state,
+    seed_everywhere,
+)
 
 
 @dataclass(frozen=True)
@@ -32,6 +45,7 @@ class PolicyVideoProducerPlan:
     output_request: PolicyInferenceOutputRequest | None
     native_modalities: frozenset[PolicyOutputModality]
     recurrent_history_policy: PolicyRecurrentHistoryPolicy
+    required_training_objective: DynamicsObjective | None = None
 
     @property
     def uses_selective_output(self) -> bool:
@@ -39,6 +53,11 @@ class PolicyVideoProducerPlan:
 
     def to_report(self) -> dict[str, object]:
         return {
+            "required_training_objective": (
+                None
+                if self.required_training_objective is None
+                else self.required_training_objective.value
+            ),
             "native_modalities": sorted(
                 modality.value for modality in self.native_modalities
             ),
@@ -60,6 +79,65 @@ class PolicyVideoActionConsumerPlan:
 
     capability: PolicyCompositionCapability
     recurrent_history_policy: PolicyRecurrentHistoryPolicy
+
+    def infer(
+        self,
+        runner: VariantRolloutRunner,
+        *,
+        session: VariantRolloutSession,
+        context: PolicyInferContext,
+        visual_outputs: VisualStageOutputs,
+        generated_video: PolicyGeneratedVideo,
+        producer_device: torch.device | str,
+        rollout_seed: int | None,
+        step_index: int,
+    ) -> VariantRolloutStepOutput:
+        """Consume an independent video product with policy-owned context and RNG.
+
+        The caller supplies all available observations, proprio and text. The
+        consumer's objective alone decides which conditioning it can attend to.
+        """
+        observed = visual_outputs.frontend.video_latents
+        predicted = generated_video.latents
+        if observed.ndim != 5 or (
+            observed.shape[0],
+            observed.shape[1],
+            *observed.shape[-2:],
+        ) != (
+            predicted.shape[0],
+            predicted.shape[1],
+            *predicted.shape[-2:],
+        ):
+            raise ValueError(
+                "Generated video does not match the consumer's latent geometry."
+            )
+        require_compatible_video_latent_spaces(
+            generated_video.latent_space_identity,
+            visual_outputs.frontend.latent_space_identity,
+        )
+        context = build_video_conditioned_action_context(
+            context,
+            replace(
+                generated_video,
+                latents=predicted.detach().to(observed),
+            ),
+        )
+        seed = self.resolve_step_seed(rollout_seed=rollout_seed, step_index=step_index)
+        snapshot = snapshot_rng_state() if seed is not None else None
+        try:
+            if seed is not None:
+                seed_everywhere(seed)
+            with self.rng_stream(
+                producer_device=producer_device, consumer_device=observed.device
+            ):
+                return runner.infer_prepared_step(
+                    session=session,
+                    context=context,
+                    visual_outputs=visual_outputs,
+                )
+        finally:
+            if snapshot is not None:
+                restore_rng_state(snapshot)
 
     def resolve_step_seed(
         self,
@@ -87,10 +165,7 @@ class PolicyVideoActionConsumerPlan:
     ) -> Iterator[None]:
         """Preserve one logical random stream across a composed policy call."""
 
-        if (
-            self.capability.rng_policy
-            is not PolicyCompositionRngPolicy.CALLER_STREAM
-        ):
+        if self.capability.rng_policy is not PolicyCompositionRngPolicy.CALLER_STREAM:
             yield
             return
         source = torch.device(producer_device)
@@ -116,6 +191,11 @@ class PolicyVideoActionConsumerPlan:
 
     def to_report(self) -> dict[str, object]:
         return {
+            "required_training_objective": (
+                None
+                if self.capability.required_training_objective is None
+                else self.capability.required_training_objective.value
+            ),
             "input_modalities": sorted(
                 modality.value for modality in self.capability.input_modalities
             ),
@@ -129,6 +209,8 @@ class PolicyVideoActionConsumerPlan:
 
 def resolve_policy_video_action_consumer_plan(
     policy: PolicyVariant,
+    *,
+    training: PolicyTrainingProvenance = PolicyTrainingProvenance(frozenset()),
 ) -> PolicyVideoActionConsumerPlan:
     """Require a policy to support independent generated-video consumption."""
 
@@ -140,6 +222,7 @@ def resolve_policy_video_action_consumer_plan(
             f"{type(policy).__name__} does not declare generated-video to action "
             "composition support."
         )
+    training.require(declared_capability.required_training_objective)
     if (
         capabilities.recurrent_history_policy
         is PolicyRecurrentHistoryPolicy.UNSUPPORTED
@@ -156,13 +239,15 @@ def resolve_policy_video_action_consumer_plan(
 
 def resolve_policy_video_producer_plan(
     policy: PolicyVariant,
+    *,
+    training: PolicyTrainingProvenance = PolicyTrainingProvenance(frozenset()),
 ) -> PolicyVideoProducerPlan:
     """Resolve video production from declared capabilities, never policy names."""
 
     capabilities = policy.inference_capabilities
-    request = capabilities.request_for(
-        frozenset({PolicyOutputModality.VIDEO})
-    )
+    capabilities.require_future_inputs(frozenset())
+    training.require(capabilities.required_training_objective)
+    request = capabilities.request_for(frozenset({PolicyOutputModality.VIDEO}))
     history_policy = capabilities.recurrent_history_policy
     if history_policy is PolicyRecurrentHistoryPolicy.UNSUPPORTED:
         raise ValueError(
@@ -175,6 +260,7 @@ def resolve_policy_video_producer_plan(
         output_request=request,
         native_modalities=capabilities.native_modalities,
         recurrent_history_policy=history_policy,
+        required_training_objective=capabilities.required_training_objective,
     )
 
 
@@ -191,9 +277,8 @@ def require_generated_video(
             "The selected video producer did not publish a future-only "
             "PolicyGeneratedVideo artifact."
         )
-    if (
-        request is not None
-        and int(generated_video.latents.shape[2]) != int(request.frame_count)
+    if request is not None and int(generated_video.latents.shape[2]) != int(
+        request.frame_count
     ):
         raise RuntimeError(
             "The video producer did not honor the requested future chunk geometry: "

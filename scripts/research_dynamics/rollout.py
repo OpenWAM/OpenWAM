@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from open_wam.models.policy_variants import PolicyObservedHistory
+
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
@@ -11,23 +13,20 @@ from open_wam.configs import (
     CurrentBlockCoupling,
     DynamicsObjective,
     ExperimentConfig,
-    PolicyVariantName,
     ProprioContextMode,
 )
 from open_wam.configs.policy_video_action import (
     VideoActionPolicyConfig,
     supports_dynamics_routing,
 )
-from open_wam.models.common import RolloutCursor
 from open_wam.models.common.dynamics_objectives import (
     dynamics_objective_rollout_chunk_size,
 )
 from open_wam.models.policy_variants import (
     DynamicsRolloutRequest,
     PolicyInferContext,
-    PolicyInferState,
 )
-from open_wam.models.policy_variants.dual_expert.contracts import DualExpertRuntimeState
+from open_wam.models.common.video_action_state import VideoActionRolloutState
 from open_wam.runtime.checkpoints import (
     CheckpointCompatibilityPolicy,
     load_pipeline_checkpoint,
@@ -36,7 +35,6 @@ from open_wam.runtime.checkpoints import (
 from .types import FdmAblationMode, dynamics_objective_for_ablation_mode
 
 if TYPE_CHECKING:
-    from open_wam.pipelines.lingbot_exact import LingbotExactSession
     from open_wam.pipelines.variant_pipeline import VariantPipeline
 
 
@@ -117,21 +115,9 @@ def build_dynamics_rollout_adapter(
         pipeline.to(device=runtime_device, dtype=runtime_dtype)
     pipeline.eval()
 
-    architecture = PolicyVariantName(config.policy_variant.name)
-    if architecture == PolicyVariantName.DUAL_EXPERT:
-        from open_wam.pipelines import VariantRolloutRunner
+    from open_wam.pipelines import VariantRolloutRunner
 
-        return DualExpertDynamicsRollout(VariantRolloutRunner(pipeline))
-
-    if architecture == PolicyVariantName.PARALLEL_STREAM:
-        from open_wam.pipelines import LingbotExactRunner
-
-        return ParallelStreamDynamicsRollout(LingbotExactRunner(pipeline))
-
-    raise ValueError(
-        "Dynamics evaluation has no runtime adapter for "
-        f"policy architecture {architecture.value!r}."
-    )
+    return DynamicsRollout(VariantRolloutRunner(pipeline))
 
 
 def resolve_action_per_frame(config: ExperimentConfig) -> int:
@@ -302,162 +288,12 @@ def _resolve_warmup_text_context(
     return text_context, negative_text_context
 
 
-class ParallelStreamDynamicsRollout:
-    """Offline dynamics adapter for the Parallel Stream policy runtime."""
-
-    def __init__(self, runner: Any) -> None:
-        self.runner = runner
-        _validate_dynamics_rollout_policy(runner.policy_variant.config)
-
-    @property
-    def pipeline(self) -> VariantPipeline:
-        return self.runner.pipeline
-
-    @property
-    def action_per_frame(self) -> int:
-        return int(self.runner.policy_variant.config.action_per_frame)
-
-    @property
-    def frame_chunk_size(self) -> int:
-        return int(self.runner.policy_variant.inference_config.frame_chunk_size)
-
-    def reset_and_warmup(
-        self,
-        *,
-        task_text: tuple[str | None, ...],
-        video_context: torch.Tensor,
-        action_context: torch.Tensor,
-        text_context: torch.Tensor | None,
-        negative_text_context: torch.Tensor | None,
-        context_start_frame: int = 0,
-        action_space: ActionSpace | str = ActionSpace.RAW,
-        mode: FdmAblationMode = FdmAblationMode.VANILLA_JOINT_ROLLOUT,
-        drop_text_conditioning: bool = False,
-        proprio_state: torch.Tensor | None = None,
-        hidden_proprio_history: torch.Tensor | None = None,
-    ) -> LingbotExactSession:
-        text_context, negative_text_context = _resolve_warmup_text_context(
-            runner=self.runner,
-            video_context=video_context,
-            text_context=text_context,
-            negative_text_context=negative_text_context,
-            drop_text_conditioning=drop_text_conditioning,
-        )
-        session = self.runner.reset(
-            task_text=task_text,
-            text_context=text_context,
-            negative_text_context=negative_text_context,
-        )
-        if context_start_frame:
-            session.policy_state.cache["frame_start"] = int(context_start_frame)
-            session.policy_state.cursor = RolloutCursor(
-                current_start_frame=int(context_start_frame),
-                block_index=session.policy_state.cursor.block_index,
-                chunk_size=session.policy_state.cursor.chunk_size,
-            )
-        warmup = self.runner.warmup_cache(
-            session=session,
-            video_latents=video_context,
-            action_history=action_context,
-            task_text=task_text,
-            text_context=text_context,
-            negative_text_context=negative_text_context,
-            action_space=action_space,
-            dynamics=DynamicsRolloutRequest(
-                objective=dynamics_objective_for_ablation_mode(mode),
-            ),
-            proprio_state=proprio_state,
-            hidden_proprio_history=hidden_proprio_history,
-        )
-        return warmup.session
-
-    def infer_chunk(
-        self,
-        *,
-        session: Any,
-        mode: FdmAblationMode,
-        raw_action_chunk: torch.Tensor | None,
-        video_condition_latents: torch.Tensor | None = None,
-        seed: int | None = None,
-        drop_text_conditioning: bool = False,
-        proprio_state: torch.Tensor | None = None,
-        allow_generated_action_commit: bool = False,
-    ) -> DynamicsChunkOutput:
-        if seed is not None:
-            torch.manual_seed(int(seed))
-            if torch.cuda.is_available():
-                torch.cuda.manual_seed_all(int(seed))
-        model_action_chunk = (
-            None
-            if raw_action_chunk is None
-            else self._raw_actions_to_model_sequence(raw_action_chunk)
-        )
-        request = build_diagnostic_dynamics_request(
-            mode,
-            model_action_chunk=model_action_chunk,
-            video_condition_latents=video_condition_latents,
-            allow_generated_action_commit=allow_generated_action_commit,
-        )
-        return self._infer_dynamics_chunk(
-            session=session,
-            request=request,
-            drop_text_conditioning=drop_text_conditioning,
-            proprio_state=proprio_state,
-        )
-
-    def _raw_actions_to_model_sequence(
-        self,
-        raw_action_chunk: torch.Tensor,
-    ) -> torch.Tensor:
-        reference_transformer = self.runner.pipeline.visual_tower.get_runtime_backbone(
-            action_dim=self.runner.policy_variant.action_dim
-        )
-        parameter = next(reference_transformer.parameters())
-        return self.runner.policy_variant.exact_action_adapter.to_model_action_sequence(
-            raw_action_chunk,
-            action_space=ActionSpace.RAW,
-            device=parameter.device,
-            dtype=parameter.dtype,
-        )
-
-    def _infer_dynamics_chunk(
-        self,
-        *,
-        session: LingbotExactSession,
-        request: DynamicsRolloutRequest,
-        drop_text_conditioning: bool = False,
-        proprio_state: torch.Tensor | None = None,
-    ) -> DynamicsChunkOutput:
-        chunk = self.runner.infer_chunk(
-            session=session,
-            advance_frame_start=True,
-            dynamics=request,
-            proprio_state=proprio_state,
-        )
-        debug = dict(chunk.debug)
-        debug["drop_text_conditioning"] = bool(drop_text_conditioning)
-        return DynamicsChunkOutput(
-            session=chunk.session,
-            predicted_latents=chunk.predicted_latents,
-            model_action_latents=chunk.chunk_action_pred,
-            raw_action_sequence=chunk.raw_chunk_action_pred,
-            debug=debug,
-        )
-
-
-class DualExpertDynamicsRollout:
-    """Offline dynamics adapter for the Dual Expert policy runtime."""
+class DynamicsRollout:
+    """Offline dynamics adapter over the shared policy session and action contracts."""
 
     def __init__(self, runner: Any) -> None:
         self.runner = runner
         policy_variant = runner.pipeline.policy_variant
-        if (
-            PolicyVariantName(policy_variant.config.name)
-            != PolicyVariantName.DUAL_EXPERT
-        ):
-            raise TypeError(
-                "Dual Expert dynamics rollout requires a dual-expert policy variant."
-            )
         _validate_dynamics_rollout_policy(policy_variant.config)
 
     @property
@@ -466,10 +302,7 @@ class DualExpertDynamicsRollout:
 
     @property
     def action_per_frame(self) -> int:
-        return (
-            int(self.runner.pipeline.policy_variant.action_horizon)
-            // self.frame_chunk_size
-        )
+        return self.pipeline.policy_variant.rollout_contract.action_tokens_per_frame
 
     @property
     def frame_chunk_size(self) -> int:
@@ -492,15 +325,14 @@ class DualExpertDynamicsRollout:
         proprio_state: torch.Tensor | None = None,
         hidden_proprio_history: torch.Tensor | None = None,
     ):
-        del action_space
         if video_context.ndim != 5:
             raise ValueError(
-                "Dual-expert GJD warmup video_context must have shape [B, C, T, H, W], "
+                "Dynamics warmup video_context must have shape [B, C, T, H, W], "
                 f"got {tuple(video_context.shape)}."
             )
         if action_context.ndim != 3:
             raise ValueError(
-                "Dual-expert GJD warmup action_context must have shape [B, T, D], "
+                "Dynamics warmup action_context must have shape [B, T, D], "
                 f"got {tuple(action_context.shape)}."
             )
         text_context, negative_text_context = _resolve_warmup_text_context(
@@ -521,7 +353,7 @@ class DualExpertDynamicsRollout:
         expected_action_tokens = context_frames * action_tokens_per_frame
         if int(action_context.shape[1]) != expected_action_tokens:
             raise ValueError(
-                "Dual-expert GJD warmup action history must align with video context frames, "
+                "Dynamics warmup action history must align with video context frames, "
                 f"got action_tokens={action_context.shape[1]}, context_frames={context_frames}, "
                 f"action_per_frame={action_tokens_per_frame}."
             )
@@ -539,59 +371,48 @@ class DualExpertDynamicsRollout:
         if hidden_proprio_history is not None:
             if hidden_proprio_history.ndim != 3:
                 raise ValueError(
-                    "Dual-expert GJD warmup hidden_proprio_history must have shape "
+                    "Dynamics warmup hidden_proprio_history must have shape "
                     "[B, T, state_dim], "
                     f"got {tuple(hidden_proprio_history.shape)}."
                 )
             if int(hidden_proprio_history.shape[0]) != int(video_context.shape[0]):
                 raise ValueError(
-                    "Dual-expert GJD warmup hidden proprio history batch size must match "
+                    "Dynamics warmup hidden proprio history batch size must match "
                     "video context, "
                     f"got hidden={tuple(hidden_proprio_history.shape)}, video={tuple(video_context.shape)}."
                 )
             if int(hidden_proprio_history.shape[1]) != context_frames:
                 raise ValueError(
-                    "Dual-expert GJD warmup hidden proprio history must align with "
+                    "Dynamics warmup hidden proprio history must align with "
                     "video context frames, "
                     f"got hidden_frames={hidden_proprio_history.shape[1]}, context_frames={context_frames}."
                 )
         elif uses_hidden_proprio and context_frames > 0:
             raise ValueError(
-                "Dual-expert GJD offline rollout with "
+                "Dynamics offline rollout with "
                 "proprio_context_mode=per_chunk_additive requires "
                 "hidden_proprio_history aligned to the warmup video context."
             )
-        current_start_frame = int(context_start_frame) + context_frames
-        rollout_frame_chunk_size = resolve_dynamics_rollout_frame_chunk_size(
-            mode,
-            configured_frame_chunk_size=self.frame_chunk_size,
+        if ActionSpace(action_space) is ActionSpace.RAW:
+            action_context = self.pipeline.action_adapter.to_model(action_context)
+        visual = self.pipeline.prepare_visual_outputs_from_latents(
+            video_context,
+            text_context=text_context,
+            negative_text_context=negative_text_context,
         )
-        state = PolicyInferState(
-            step_index=1,
-            cursor=RolloutCursor(
-                current_start_frame=current_start_frame,
-                block_index=0,
-                chunk_size=rollout_frame_chunk_size,
-            ),
-            variant_state=DualExpertRuntimeState(
-                text_context=text_context,
-                past_clean_latents=video_context.detach().clone(),
-                past_clean_actions=action_context.detach().clone(),
-                video_tokens_per_frame=None,
-                next_condition_frame_start=current_start_frame,
-                chunk_advance_frames=rollout_frame_chunk_size,
+        update = self.runner.reconcile_observed_history(
+            session=session,
+            history=PolicyObservedHistory(
+                video_latents=visual.frontend.video_latents,
+                observation_frame_count=context_frames * self.action_per_frame,
+                action_history=action_context,
+                proprio_history=hidden_proprio_history,
+                start_frame=context_start_frame,
             ),
         )
-        if proprio_state is not None:
-            state.variant_state.proprio_state = proprio_state.detach().clone()
-        if uses_hidden_proprio and proprio_state is not None:
-            state.variant_state.hidden_proprio_state = proprio_state.detach().clone()
-        if uses_hidden_proprio and hidden_proprio_history is not None:
-            state.variant_state.past_hidden_proprio_states = (
-                hidden_proprio_history.detach().clone()
-            )
-        session.policy_state = state
-        return session
+        if not update.applied:
+            raise RuntimeError("Policy refused the initial observed history.")
+        return update.session
 
     def infer_chunk(
         self,
@@ -615,7 +436,11 @@ class DualExpertDynamicsRollout:
         )
         request = build_diagnostic_dynamics_request(
             mode,
-            model_action_chunk=raw_action_chunk,
+            model_action_chunk=(
+                None
+                if raw_action_chunk is None
+                else self.pipeline.action_adapter.to_model(raw_action_chunk)
+            ),
             video_condition_latents=video_condition_latents,
             allow_generated_action_commit=allow_generated_action_commit,
         )
@@ -636,14 +461,13 @@ class DualExpertDynamicsRollout:
                 dynamics=request,
             ),
         )
-        decoder_aux = step.infer_output.decoder_output.aux
-        policy_aux = step.infer_output.policy_output.aux
-        predicted_latents = decoder_aux.get(
-            "predicted_latents", policy_aux.get("predicted_latents")
-        )
+        policy_output = step.infer_output.policy_output
+        policy_aux = policy_output.aux
+        video = policy_output.generated_video
+        predicted_latents = video_condition_latents if video is None else video.latents
         if not isinstance(predicted_latents, torch.Tensor):
             raise TypeError(
-                "Dual-expert GJD FDM rollout did not return predicted video latents."
+                "Dynamics FDM rollout did not return predicted video latents."
             )
         action_pred = step.infer_output.decoder_output.action_pred
         debug = dict(policy_aux)
@@ -652,7 +476,7 @@ class DualExpertDynamicsRollout:
             session=step.session,
             predicted_latents=predicted_latents,
             model_action_latents=action_pred,
-            raw_action_sequence=action_pred,
+            raw_action_sequence=self.pipeline.action_adapter.to_source(action_pred),
             debug=debug,
         )
 
@@ -666,7 +490,7 @@ class DualExpertDynamicsRollout:
         state = session.policy_state
         runtime_state = (
             state.variant_state
-            if isinstance(state.variant_state, DualExpertRuntimeState)
+            if isinstance(state.variant_state, VideoActionRolloutState)
             else None
         )
         past = None if runtime_state is None else runtime_state.past_clean_latents
@@ -675,5 +499,5 @@ class DualExpertDynamicsRollout:
         if fallback is not None:
             return fallback
         raise ValueError(
-            "Dual-expert GJD rollout requires warm video history before infer_chunk."
+            "Dynamics rollout requires warm video history before infer_chunk."
         )

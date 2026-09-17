@@ -1,4 +1,5 @@
 from __future__ import annotations
+from open_wam.models.policy_variants.parallel_stream.forward_execution import run_parallel_exact_train as run_parallel_exact_train
 
 from pathlib import Path
 
@@ -9,8 +10,7 @@ from open_wam.configs import (
     TrainingConfig,
     VideoActionProgram,
 )
-from open_wam.models.policy_variants.parallel_stream.reference_runtime import run_parallel_exact_train
-from open_wam.models.policy_variants.parallel_stream.training_artifacts import (
+from open_wam.models.policy_variants.parallel_stream.training_exact_artifacts import (
     prepare_parallel_exact_train_artifacts,
 )
 from open_wam.models.video_backbone.config import LingbotCompatibleVideoBackboneConfig

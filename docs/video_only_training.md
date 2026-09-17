@@ -257,6 +257,15 @@ next chunk is denoised. This preserves the VTA rollout contract without
 introducing action tokens or action caches. `prefix_suffix` retains its
 existing iterative open-loop behavior.
 
+The maintained chunk-conditioned LIBERO preset defaults to
+`inference.use_cache=false`: trained cache-on/off outputs have not passed strict
+numerical parity. Set `inference.use_cache=true` to opt into call-local reuse
+after validating your checkpoint and task. This reuses invariant features within
+a denoising call; it does not retain a feature cache across calls or change
+training. Compare with identical weights, observations and noise; cache selection
+can affect memory, latency and floating-point rounding. Policy-mode presets are
+unchanged.
+
 Outputs are first written to a temporary sibling and then atomically published.
 The output identity includes the resolved config, checkpoint/reference file
 inventory, sample metadata, latent/text tensor digests, and inference controls.

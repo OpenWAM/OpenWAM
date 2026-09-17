@@ -55,7 +55,6 @@ from .action_decoder_factory import (
 from .factory_validation import (
     validate_experiment_config,
 )
-from .lingbot_exact import LingbotExactRunner
 from .policy_factory import (
     _build_causal_video_prediction_policy_variant,
     _build_dual_expert_policy_variant,
@@ -195,6 +194,8 @@ def build_variant_pipeline_from_config(config: ExperimentConfig) -> VariantPipel
         action_horizon=config.action_decoder.action_horizon,
         target_dim=pipeline_requirements.action_dim,
     )
+    from open_wam.data.action_adapter import ConfiguredActionAdapter
+
     return VariantPipeline(
         visual_tower=visual_tower,
         policy_variant=policy_variant,
@@ -206,16 +207,10 @@ def build_variant_pipeline_from_config(config: ExperimentConfig) -> VariantPipel
         ),
         action_sampler_mask=action_sampler_mask,
         action_sampler_inactive_value=config.data.action_mapping.inactive_value,
+        action_adapter=policy_variant.source_action_adapter
+        or ConfiguredActionAdapter(
+            mapping=config.data.action_mapping,
+            normalization=config.data.action_target.normalization,
+            model_dim=pipeline_requirements.action_dim,
+        ),
     )
-
-
-def build_lingbot_exact_runner_from_config(
-    config: ExperimentConfig,
-) -> LingbotExactRunner:
-    return LingbotExactRunner(build_variant_pipeline_from_config(config))
-
-
-def build_exact_runtime_runner_from_config(
-    config: ExperimentConfig,
-) -> LingbotExactRunner:
-    return build_lingbot_exact_runner_from_config(config)

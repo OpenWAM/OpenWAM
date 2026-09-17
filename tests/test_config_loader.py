@@ -3648,6 +3648,7 @@ def test_chunked_conditioned_video_config_loads_as_vta_video_marginal() -> None:
     assert config.training.action_loss_weight == 0.0
     assert config.action_decoder.name == ActionDecoderName.VIDEO_ONLY
     assert config.policy_variant.use_activation_checkpointing is True
+    assert config.inference.use_cache is False
 
     assert config.data.sample_construction == m5_config.data.sample_construction
     assert replace(

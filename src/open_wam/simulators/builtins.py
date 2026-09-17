@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from .contracts import SimulatorBackend, ensure_simulator_backend
+from .contracts import SimulatorBackend, ObservationAdapterBackend
 from .registry import (
     SIMULATOR_ADAPTER_FACTORIES,
     SimulatorFactoryContext,
@@ -111,7 +111,7 @@ def _build_robotwin(context: SimulatorFactoryContext) -> SimulatorBackend:
             ),
         )
     )
-    return ensure_simulator_backend(adapter)
+    return ObservationAdapterBackend(adapter)
 
 
 def _build_calvin(context: SimulatorFactoryContext) -> SimulatorBackend:
@@ -133,7 +133,7 @@ def _build_calvin(context: SimulatorFactoryContext) -> SimulatorBackend:
             show_gui=_option_bool(context.options.get("show_gui", "false")),
         )
     )
-    return ensure_simulator_backend(adapter)
+    return ObservationAdapterBackend(adapter)
 
 
 def _first_value(*values: str | None) -> str | None:

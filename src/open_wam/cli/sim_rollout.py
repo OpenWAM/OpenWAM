@@ -34,9 +34,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--target-action-hz", type=float, default=None)
     parser.add_argument(
         "--action-commit-mode",
-        choices=("first_action", "full_chunk"),
-        default="first_action",
-        help="Commit only the first predicted action per replan, or blockingly execute the full predicted chunk.",
+        choices=("first_frame", "full_chunk"),
+        default="first_frame",
+        help="Commit only the first complete model frame per replan, or blockingly execute the full predicted chunk.",
     )
     parser.add_argument("--device", type=str, default="auto")
     parser.add_argument("--output-dir", type=str, default="outputs/sim_realtime")

@@ -11,7 +11,7 @@ from open_wam.models.common.dynamics_objectives import (
 )
 
 from .runtime_semantics import resolve_parallel_joint_timestep_coupling
-from .training_artifact_contracts import ParallelTrainArtifacts
+from open_wam.models.decoder_artifacts import ParallelTrainArtifacts
 
 
 def _annotate_dynamics_training_artifacts(

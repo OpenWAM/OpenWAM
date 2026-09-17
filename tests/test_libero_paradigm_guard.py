@@ -167,4 +167,4 @@ def test_libero_script_guard_never_allows_removed_entrypoints(script_name: str) 
 
 def test_libero_script_guard_allows_current_entrypoints_and_explicit_opt_in() -> None:
     require_current_libero_script("scripts/run_libero_realtime_sandbox.py")
-    require_current_libero_script("scripts/run_libero_dual_expert_visualization.py")
+    require_current_libero_script("scripts/run_libero_policy.py")

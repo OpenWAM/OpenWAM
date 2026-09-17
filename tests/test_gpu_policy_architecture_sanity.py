@@ -229,10 +229,7 @@ def _view_train_batch(batch) -> PolicyTrainBatch:
 def _infer_context(batch) -> PolicyInferContext:
     return PolicyInferContext(
         state=batch.state,
-        extra={
-            "task_text": batch.task_text,
-            "metadata": batch.metadata,
-        },
+        task_text=batch.task_text, metadata=batch.metadata,
     )
 
 

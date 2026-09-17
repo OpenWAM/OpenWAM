@@ -1,4 +1,4 @@
-"""Module ownership for the Dual Expert packed and split layouts."""
+"""Stable module ownership for Dual Expert execution."""
 
 from __future__ import annotations
 
@@ -36,14 +36,11 @@ def build_dual_expert_module_topology(
     action_expert: nn.Module,
     packed_block_stack: DualExpertPackedBlockStack | None,
 ) -> PolicyModuleTopology:
-    """Describe Dual Expert module placement after optional block packing."""
+    """Describe placement after assembly establishes the sole block owner."""
 
     if packed_block_stack is None:
-        return PolicyModuleTopology(
-            visual_runtime_modules=(visual_tower.core,),
-            visual_components=visual_tower.component_topology(),
-            action_expert_modules=(action_expert,),
-            fsdp_block_stacks=(visual_tower.core, action_expert),
+        raise RuntimeError(
+            "Dual Expert module topology requires an assembled paired block stack."
         )
 
     packed_blocks = tuple(packed_block_stack.packed_blocks)

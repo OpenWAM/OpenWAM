@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Mapping
 
 import torch
@@ -10,7 +10,6 @@ from open_wam.models.action_decoders import (
     ActionDecoderRolloutPlan,
 )
 from open_wam.models.policy_variants import (
-    PolicyExecutionCommit,
     PolicyInferContext,
     PolicyInferState,
     PolicyObservedHistory,
@@ -20,7 +19,7 @@ from open_wam.models.visual_tower import VisualStageOutputs
 from .variant_pipeline import VariantPipeline, VariantPipelineInferOutput
 
 
-@dataclass
+@dataclass(frozen=True)
 class VariantRolloutSession:
     """Shared rollout session for stateless and cache-aware variants."""
 
@@ -30,15 +29,16 @@ class VariantRolloutSession:
     negative_text_context: torch.Tensor | None = None
 
 
-@dataclass
+@dataclass(frozen=True)
 class VariantRolloutStepOutput:
     """One rollout step plus the next reusable session."""
 
     session: VariantRolloutSession
     infer_output: VariantPipelineInferOutput
+    action_plan: ActionDecoderRolloutPlan | None = None
 
 
-@dataclass
+@dataclass(frozen=True)
 class VariantRolloutHistoryOutput:
     """Updated session and diagnostics after committing observed history."""
 
@@ -74,18 +74,6 @@ class VariantRolloutRunner:
         """Delegate model-space rollout slicing to the configured decoder."""
 
         return self.pipeline.action_decoder.build_rollout_plan(output)
-
-    def commit_action_rollout_plan(
-        self,
-        *,
-        session: VariantRolloutSession,
-        plan: ActionDecoderRolloutPlan,
-    ) -> None:
-        """Commit every action released by `plan` to decoder-owned state."""
-
-        policy_state = session.policy_state
-        decoder_state = None if policy_state is None else policy_state.decoder_state
-        self.pipeline.action_decoder.commit_rollout_plan(decoder_state, plan)
 
     def infer_step(
         self,
@@ -147,41 +135,16 @@ class VariantRolloutRunner:
         self,
         *,
         session: VariantRolloutSession,
-        visual_outputs: VisualStageOutputs,
-        observation_frame_count: int,
-        action_history: torch.Tensor | None = None,
-        proprio_history: torch.Tensor | None = None,
-        execution_commit: PolicyExecutionCommit | None = None,
+        history: PolicyObservedHistory,
     ) -> VariantRolloutHistoryOutput:
-        """Replace speculative policy history with newly observed execution."""
+        """Publish an executed interval without changing task conditioning.
 
-        update = self.pipeline.reconcile_observed_history(
-            PolicyObservedHistory(
-                video_latents=visual_outputs.frontend.video_latents,
-                observation_frame_count=int(observation_frame_count),
-                action_history=action_history,
-                proprio_history=proprio_history,
-                execution_commit=execution_commit,
-            ),
-            session.policy_state,
-        )
-        next_session = VariantRolloutSession(
-            policy_state=update.next_state,
-            task_text=session.task_text,
-            text_context=(
-                visual_outputs.frontend.conditioning.text_context
-                if visual_outputs.frontend.conditioning.text_context is not None
-                else session.text_context
-            ),
-            negative_text_context=(
-                visual_outputs.frontend.conditioning.negative_text_context
-                if visual_outputs.frontend.conditioning.negative_text_context
-                is not None
-                else session.negative_text_context
-            ),
-        )
+        Text belongs to the inference request/session, not the observation
+        commit. All history representations cross the same typed boundary.
+        """
+        update = self.pipeline.reconcile_observed_history(history, session.policy_state)
         return VariantRolloutHistoryOutput(
-            session=next_session,
+            session=replace(session, policy_state=update.next_state),
             debug=dict(update.debug),
             applied=bool(update.applied),
         )
@@ -191,22 +154,15 @@ class VariantRolloutRunner:
         session: VariantRolloutSession,
         context: PolicyInferContext,
     ) -> PolicyInferContext:
-        return PolicyInferContext(
-            state=context.state,
-            previous_action=context.previous_action,
-            dynamics=context.dynamics,
-            output_request=context.output_request,
-            video_generation=context.video_generation,
-            video_conditioned_action=context.video_conditioned_action,
-            temporal_geometry=context.temporal_geometry,
-            extra={
-                **context.extra,
-                "task_text": context.extra.get("task_text", session.task_text),
-            },
+        return replace(
+            context,
+            task_text=context.task_text
+            if context.task_text is not None
+            else session.task_text,
         )
 
-    @staticmethod
     def _build_step_output(
+        self,
         *,
         session: VariantRolloutSession,
         resolved_context: PolicyInferContext,
@@ -214,7 +170,7 @@ class VariantRolloutRunner:
     ) -> VariantRolloutStepOutput:
         next_session = VariantRolloutSession(
             policy_state=infer_output.policy_output.next_state,
-            task_text=resolved_context.extra.get("task_text", session.task_text),
+            task_text=resolved_context.task_text,
             text_context=(
                 infer_output.visual_outputs.frontend.conditioning.text_context
                 if infer_output.visual_outputs.frontend.conditioning.text_context
@@ -228,4 +184,31 @@ class VariantRolloutRunner:
                 else session.negative_text_context
             ),
         )
-        return VariantRolloutStepOutput(session=next_session, infer_output=infer_output)
+        actions = infer_output.decoder_output.action_pred
+        plan = None
+        if actions.shape[1] and actions.shape[-1]:
+            plan = replace(
+                self.build_action_rollout_plan(infer_output.decoder_output),
+                frame_span=infer_output.policy_output.generated_span,
+            )
+            state = next_session.policy_state
+            state = replace(
+                state,
+                decoder_state=self.pipeline.action_decoder.commit_rollout_plan(
+                    state.decoder_state,
+                    plan,
+                ),
+            )
+            next_session = replace(next_session, policy_state=state)
+            infer_output = replace(
+                infer_output,
+                policy_output=replace(
+                    infer_output.policy_output,
+                    next_state=state,
+                ),
+            )
+        return VariantRolloutStepOutput(
+            session=next_session,
+            infer_output=infer_output,
+            action_plan=plan,
+        )

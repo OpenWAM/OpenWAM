@@ -1,6 +1,7 @@
 """Dual Expert coverage for shared joint, FDM, and IDM semantics."""
 
 from __future__ import annotations
+from dataclasses import replace
 
 import random
 from dataclasses import replace as _dataclass_replace
@@ -47,13 +48,13 @@ from open_wam.models.common.flow_matching import (
     build_video_flow_match_train_artifacts,
 )
 from open_wam.models.policy_variants.contracts import PolicyInferContext
-from open_wam.models.policy_variants.dual_expert.attention import (
+from open_wam.models.policy_variants.dual_expert.attention_packed import (
     build_dual_expert_packed_coupling_attention_profile,
 )
 from open_wam.models.policy_variants.dual_expert.coupling_semantics import (
     should_couple_dual_expert_action_to_video_sigmas,
 )
-from open_wam.models.policy_variants.dual_expert.decoder_artifacts import (
+from open_wam.models.decoder_artifacts import (
     DUAL_EXPERT_DECODER_ARTIFACT_CONTRACT,
     DualExpertTrainArtifacts,
 )
@@ -766,9 +767,7 @@ def test_standalone_conditional_offline_inference_matches_explicit_gjd_mode(
 ) -> None:
     from open_wam.models.common import RolloutCursor
     from open_wam.models.policy_variants.contracts import PolicyInferState
-    from open_wam.models.policy_variants.dual_expert.contracts import (
-        DualExpertRuntimeState,
-    )
+    from open_wam.models.common.video_action_state import VideoActionRolloutState
 
     torch.manual_seed(401)
     gjd_pipeline, _, _, _ = _build_tiny_generalist_pipeline(
@@ -799,14 +798,9 @@ def test_standalone_conditional_offline_inference_matches_explicit_gjd_mode(
 
     def make_state() -> PolicyInferState:
         return PolicyInferState(
-            step_index=1,
-            cursor=RolloutCursor(current_start_frame=2, block_index=0, chunk_size=2),
-            variant_state=DualExpertRuntimeState(
-                past_clean_latents=history_video.clone(),
-                past_clean_actions=history_actions.clone(),
-                next_condition_frame_start=2,
-                chunk_advance_frames=2,
-            ),
+            cursor=replace(RolloutCursor(current_start_frame=2, block_index=0, chunk_size=2), block_index=1),
+
+            variant_state=VideoActionRolloutState(past_clean_latents=history_video.clone(), past_clean_actions=history_actions.clone()),
         )
 
     def run_once(pipeline, *, explicit_mode: bool):
@@ -858,12 +852,10 @@ def test_standalone_conditional_offline_inference_matches_explicit_gjd_mode(
 def test_dual_expert_gjd_fdm_inference_matches_conditional_training_contract(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import open_wam.models.policy_variants.dual_expert.packed_inference as dual_expert_packed_inference_module
+    import open_wam.models.policy_variants.dual_expert.inference as dual_expert_packed_inference_module
     from open_wam.models.common import RolloutCursor
     from open_wam.models.policy_variants.contracts import PolicyInferState
-    from open_wam.models.policy_variants.dual_expert.contracts import (
-        DualExpertRuntimeState,
-    )
+    from open_wam.models.common.video_action_state import VideoActionRolloutState
     from open_wam.models.policy_variants.dual_expert.modules import (
         DualExpertActionExpert,
     )
@@ -878,14 +870,9 @@ def test_dual_expert_gjd_fdm_inference_matches_conditional_training_contract(
     forced_actions = torch.randn(1, 4, 4)
     text_context = torch.randn(1, 5, 16)
     infer_state = PolicyInferState(
-        step_index=1,
-        cursor=RolloutCursor(current_start_frame=2, block_index=0, chunk_size=2),
-        variant_state=DualExpertRuntimeState(
-            past_clean_latents=history_video,
-            past_clean_actions=history_actions,
-            next_condition_frame_start=2,
-            chunk_advance_frames=2,
-        ),
+        cursor=replace(RolloutCursor(current_start_frame=2, block_index=0, chunk_size=2), block_index=1),
+
+        variant_state=VideoActionRolloutState(past_clean_latents=history_video, past_clean_actions=history_actions),
     )
     observed_pre: list[dict[str, torch.Tensor]] = []
     observed_profiles: list[dict[str, object]] = []
@@ -969,12 +956,10 @@ def test_dual_expert_gjd_fdm_inference_matches_conditional_training_contract(
 def test_dual_expert_gjd_idm_inference_matches_conditional_training_contract(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import open_wam.models.policy_variants.dual_expert.packed_inference as dual_expert_packed_inference_module
+    import open_wam.models.policy_variants.dual_expert.inference as dual_expert_packed_inference_module
     from open_wam.models.common import RolloutCursor
     from open_wam.models.policy_variants.contracts import PolicyInferState
-    from open_wam.models.policy_variants.dual_expert.contracts import (
-        DualExpertRuntimeState,
-    )
+    from open_wam.models.common.video_action_state import VideoActionRolloutState
     from open_wam.models.policy_variants.dual_expert.modules import (
         DualExpertActionExpert,
     )
@@ -990,14 +975,9 @@ def test_dual_expert_gjd_idm_inference_matches_conditional_training_contract(
     commit_actions = torch.randn(1, 4, 4)
     text_context = torch.randn(1, 5, 16)
     infer_state = PolicyInferState(
-        step_index=1,
-        cursor=RolloutCursor(current_start_frame=2, block_index=0, chunk_size=2),
-        variant_state=DualExpertRuntimeState(
-            past_clean_latents=history_video,
-            past_clean_actions=history_actions,
-            next_condition_frame_start=2,
-            chunk_advance_frames=2,
-        ),
+        cursor=replace(RolloutCursor(current_start_frame=2, block_index=0, chunk_size=2), block_index=1),
+
+        variant_state=VideoActionRolloutState(past_clean_latents=history_video, past_clean_actions=history_actions),
     )
     observed_pre: list[dict[str, torch.Tensor]] = []
     observed_runtime: list[dict[str, torch.Tensor | dict[str, object]]] = []

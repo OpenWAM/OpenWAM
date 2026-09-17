@@ -36,8 +36,7 @@ class _RecordingVideoPredictionPipeline:
         text_context: torch.Tensor | None,
         negative_text_context: torch.Tensor | None,
     ):
-        metadata = context.extra["metadata"][0]
-        observed = int(metadata["observed_prefix_frames"])
+        metadata = context.metadata[0]
         future = int(metadata["future_suffix_frames"])
         call_index = len(self.calls) + 1
         generated = video_latents.new_full(
@@ -50,12 +49,11 @@ class _RecordingVideoPredictionPipeline:
             ),
             float(10 * call_index),
         )
-        predicted = torch.cat([video_latents[:, :, :observed], generated], dim=2)
         self.calls.append(
             {
                 "shape": tuple(video_latents.shape),
                 "metadata": dict(metadata),
-                "task_text": context.extra["task_text"],
+                "task_text": context.task_text,
                 "text_context": text_context,
                 "negative_text_context": negative_text_context,
                 "infer_state": infer_state,
@@ -63,8 +61,10 @@ class _RecordingVideoPredictionPipeline:
             }
         )
         return SimpleNamespace(
-            decoder_output=SimpleNamespace(aux={"predicted_latents": predicted}),
-            policy_output=SimpleNamespace(aux={}, next_state=None),
+            decoder_output=SimpleNamespace(action_pred=torch.empty(1, 0, 0)),
+            policy_output=SimpleNamespace(
+                generated_video=SimpleNamespace(latents=generated), next_state=None,
+            ),
             visual_outputs=SimpleNamespace(
                 frontend=SimpleNamespace(
                     conditioning=SimpleNamespace(

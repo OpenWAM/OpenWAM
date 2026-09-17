@@ -6,6 +6,9 @@ from typing import Any
 
 import torch
 
+from open_wam.models.common.denoising_cache import DenoisingCache
+from open_wam.models.common.attention_contracts import PreparedAttentionProfile
+
 from .contracts import VisualCoreInput, VisualCoreOutput
 
 
@@ -51,10 +54,11 @@ class RuntimeStepInput:
     Only one of the payload surfaces is normally used for a given program:
 
     - `core_input` for the generic dense shared-core path
-    - `payload` for exact-runtime compatibility programs
+    - `payload` for packed sequence programs
 
-    Keeping them on one request object gives dense and exact sequence families
-    the same executor entrypoint while allowing distinct preparation contracts.
+    An optional prepared attention profile avoids rebuilding a caller-owned
+    inference law with training defaults. Required tokens select computation,
+    while denoising_cache controls feature reuse only.
     """
 
     program: RuntimeProgramSpec
@@ -63,6 +67,9 @@ class RuntimeStepInput:
     update_cache: int = 0
     cache_name: str = "open_wam_exact"
     action_mode: bool = False
+    denoising_cache: DenoisingCache | None = None
+    required_tokens: torch.Tensor | None = None
+    attention_profile: PreparedAttentionProfile | None = None
 
 
 @dataclass

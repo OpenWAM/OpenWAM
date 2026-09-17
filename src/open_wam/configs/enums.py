@@ -20,6 +20,21 @@ EnumFieldMap: TypeAlias = Mapping[str, type[EnumT]]
 TransformFieldMap: TypeAlias = Mapping[str, FieldTransform]
 
 
+class PolicyOutputModality(str, Enum):
+    """Model products requested from one policy inference step."""
+
+    VIDEO = "video"
+    ACTION = "action"
+
+
+class FeatureCacheScope(StrEnum):
+    """Maximum lifetime of derived inference features, not semantic history."""
+
+    NONE = "none"
+    DENOISING_CALL = "denoising_call"
+    ROLLOUT_SESSION = "rollout_session"
+
+
 class ActionDecoderName(StrEnum):
     """Final action-decoder family selected by experiment config."""
 
@@ -707,21 +722,6 @@ class ParallelExactCacheWriteMode(StrEnum):
     JOINT_PACKED = "joint_packed"
 
 
-class FallbackHistoryPolicy(StrEnum):
-    """How exact/joint realtime rollouts expose fallback-period history to replanning."""
-
-    INCLUDE_FALLBACK_HISTORY = "include_fallback_history"
-    FREEZE_UNTIL_CLEAN_CHUNK = "freeze_until_clean_chunk"
-
-
-class FallbackHistoryDecision(StrEnum):
-    """How one observed frame/action was handled by fallback quarantine."""
-
-    INCLUDED = "included"
-    FALLBACK = "fallback"
-    WASHOUT = "washout"
-
-
 class DeadlineMissPolicy(StrEnum):
     """Fallback action to execute when a realtime plan misses its deadline."""
 
@@ -751,7 +751,6 @@ class RealtimeSchedulerProfile(StrEnum):
 
     MANUAL = "manual"
     BLOCKING_CONTROL = "blocking_control"
-    FREEZE_UNTIL_CLEAN_CHUNK = "freeze_until_clean_chunk"
     ASYNC_HISTORY_FIRST = "async_history_first"
 
 

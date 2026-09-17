@@ -7,22 +7,12 @@ from open_wam.configs import (
     ParallelStreamPolicyConfig,
     VideoActionProgram,
 )
-from open_wam.models.policy_variants.parallel_stream import reference_runtime
 from open_wam.models.policy_variants.parallel_stream.inference_conditioning import (
     append_generalist_mode_text_context,
     repeat_parallel_exact_input_for_cfg,
 )
 
 
-def test_reference_runtime_inference_conditioning_names_alias_owner() -> None:
-    assert (
-        reference_runtime._inject_generalist_mode_text_context
-        is append_generalist_mode_text_context
-    )
-    assert (
-        reference_runtime._repeat_joint_input_for_cfg
-        is repeat_parallel_exact_input_for_cfg
-    )
 
 
 def test_disabled_mode_context_preserves_text_object_identity() -> None:

@@ -37,6 +37,7 @@ from open_wam.models.common.cache_layout_policy import (
 from open_wam.models.common.cache_layout_policy import (
     retained_slot_pool_indices_for_current_write as _retained_slot_pool_indices_for_current_write,
 )
+from open_wam.models.common.denoising_cache import InvariantTokenCache
 from open_wam.models.video_backbone.contracts import AttentionCacheEntry
 
 from .runtime_parameter_ops import (
@@ -111,7 +112,15 @@ class SharedTransformerAttention(nn.Module):
         cache_backend_state=None,
         cache_backend_update_mode: int = 0,
         cache_backend_stream_ids: torch.Tensor | None = None,
+        invariant_cache: InvariantTokenCache | None = None,
     ) -> tuple[torch.Tensor, AttentionCacheEntry | None]:
+        if invariant_cache is not None and (
+            torch.is_grad_enabled() or is_cross_attention
+            or cached_key_value is not None or kv_cache_override is not None
+            or cache_backend_state is not None or cache_current_token_count
+            or cache_current_token_span is not None or cached_prefix_visibility is not None
+        ):
+            raise ValueError("Call-local feature reuse requires inference self-attention without a persistent cache.")
         q = q.contiguous().clone()
         k = k.contiguous().clone()
         v = v.contiguous().clone()
@@ -327,6 +336,8 @@ class SharedTransformerAttention(nn.Module):
                 )
                 profile_block_mask = None
         sdpa_mask = _prepare_sdpa_mask(resolved_attention_mask, device=query.device)
+        if invariant_cache is not None:
+            key, value = invariant_cache.key_value(key, value)
         hidden_states = apply_attention_backend(
             query=query,
             key=key,
@@ -516,7 +527,14 @@ class SharedTransformerBlock(nn.Module):
         self_attention_cache_update_mode: int = 0,
         self_attention_cache_stream_ids: torch.Tensor | None = None,
         cache_text_context: bool = True,
+        invariant_cache: InvariantTokenCache | None = None,
     ) -> tuple[torch.Tensor, AttentionCacheEntry | None, AttentionCacheEntry | None]:
+        if invariant_cache is not None:
+            hidden_states = invariant_cache.select(hidden_states)
+            temb = invariant_cache.select(temb)
+            rotary_emb = invariant_cache.select(rotary_emb)
+            attention_mask = invariant_cache.select(attention_mask, dim=-2)
+            cross_attention_mask = invariant_cache.select(cross_attention_mask, dim=-2)
         temb_scale_shift_table = self.scale_shift_table[None] + temb.float()
         shift_msa, scale_msa, gate_msa, c_shift_msa, c_scale_msa, c_gate_msa = _select_chunk_slices(
             temb_scale_shift_table,
@@ -541,6 +559,7 @@ class SharedTransformerBlock(nn.Module):
             cache_backend_state=self_attention_cache_backend_state,
             cache_backend_update_mode=self_attention_cache_update_mode,
             cache_backend_stream_ids=self_attention_cache_stream_ids,
+            invariant_cache=invariant_cache,
         )
         hidden_states = (hidden_states.float() + attn_output.float() * gate_msa).type_as(hidden_states)
 
@@ -564,6 +583,8 @@ class SharedTransformerBlock(nn.Module):
         norm_hidden_states = (self.norm3(hidden_states.float()) * (1.0 + c_scale_msa) + c_shift_msa).type_as(hidden_states)
         ff_output = self.ffn(norm_hidden_states)
         hidden_states = (hidden_states.float() + ff_output.float() * c_gate_msa).type_as(hidden_states)
+        if invariant_cache is not None:
+            hidden_states = invariant_cache.output(hidden_states)
         return hidden_states, self_cache_entry, cross_cache_entry
 
 

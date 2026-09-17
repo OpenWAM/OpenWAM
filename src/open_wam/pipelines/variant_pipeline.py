@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from open_wam.contracts.action_space import ActionSpaceAdapter
+
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 
@@ -63,11 +65,13 @@ class VariantPipeline(nn.Module):
         default_temporal_geometry: PolicyTemporalGeometry,
         action_sampler_mask: torch.Tensor | None = None,
         action_sampler_inactive_value: float = 0.0,
+        action_adapter: ActionSpaceAdapter | None = None,
     ) -> None:
         super().__init__()
         self.visual_tower = visual_tower
         self.policy_variant = policy_variant
         self.action_decoder = action_decoder
+        self.action_adapter = action_adapter
         self.default_temporal_geometry = default_temporal_geometry
         self._validate_decoder_artifact_contract()
         self.preprocessor = preprocessor
@@ -80,10 +84,6 @@ class VariantPipeline(nn.Module):
             )
         else:
             self._action_sampler_mask = None
-        self.action_decoder.configure_action_sampler_mask(
-            self._action_sampler_mask,
-            inactive_value=self.action_sampler_inactive_value,
-        )
 
     def _validate_decoder_artifact_contract(self) -> None:
         produced = self.policy_variant.decoder_artifact_contract
@@ -204,6 +204,8 @@ class VariantPipeline(nn.Module):
         *,
         previous_decoder_state: object | None = None,
     ) -> ActionDecoderInferOutput:
+        # Final model-space constraints have one owner, after raw decoding and
+        # before build/commit_rollout_plan observes executable actions.
         return self._apply_action_sampler_mask_to_infer_output(
             self.action_decoder.forward_infer(
                 policy_output, previous_state=previous_decoder_state
@@ -217,18 +219,7 @@ class VariantPipeline(nn.Module):
         if self._action_sampler_mask is None:
             return output
         masked_action_pred = self._apply_action_sampler_mask(output.action_pred)
-        aux = dict(output.aux)
-        current_action = aux.get("current_action")
-        if isinstance(current_action, torch.Tensor):
-            aux["current_action"] = self._apply_action_sampler_mask(
-                current_action,
-                start_index=self._current_action_index_from_aux(aux),
-            )
-        return ActionDecoderInferOutput(
-            action_pred=masked_action_pred,
-            next_state=output.next_state,
-            aux=aux,
-        )
+        return replace(output, action_pred=masked_action_pred)
 
     def _apply_action_sampler_mask(
         self, actions: torch.Tensor, *, start_index: int = 0
@@ -258,16 +249,6 @@ class VariantPipeline(nn.Module):
             mask = mask.unsqueeze(0)
         inactive = actions.new_full((), self.action_sampler_inactive_value)
         return actions * mask + inactive * (1.0 - mask)
-
-    @staticmethod
-    def _current_action_index_from_aux(aux: dict[str, object]) -> int:
-        value = aux.get("current_action_index", 0)
-        if isinstance(value, torch.Tensor):
-            return int(value.detach().float().cpu().item())
-        try:
-            return int(value)  # type: ignore[arg-type]
-        except (TypeError, ValueError):
-            return 0
 
     def forward(
         self,
@@ -380,7 +361,7 @@ class VariantPipeline(nn.Module):
     ) -> VariantPipelineInferOutput:
         visual_outputs = self.prepare_visual_outputs(
             views,
-            task_text=context.extra.get("task_text"),
+            task_text=context.task_text,
         )
         return self.forward_infer_step_from_visual_outputs(
             visual_outputs,
@@ -416,7 +397,7 @@ class VariantPipeline(nn.Module):
         resolved_context = self.policy_variant.resolve_inference_context(context)
         temporal_geometry = resolved_context.require_temporal_geometry()
         if infer_state is not None:
-            infer_state.bind_temporal_geometry(
+            infer_state = infer_state.with_temporal_geometry(
                 temporal_geometry,
                 label="previous inference state",
             )
@@ -426,7 +407,7 @@ class VariantPipeline(nn.Module):
             context=resolved_context,
             previous_state=infer_state,
         )
-        resolved_state.bind_temporal_geometry(
+        resolved_state = resolved_state.with_temporal_geometry(
             temporal_geometry,
             label="prepared inference state",
         )
@@ -436,7 +417,7 @@ class VariantPipeline(nn.Module):
             context=resolved_context,
             infer_state=resolved_state,
         )
-        policy_output.next_state.bind_temporal_geometry(
+        next_state = policy_output.next_state.with_temporal_geometry(
             temporal_geometry,
             label="next inference state",
         )
@@ -448,7 +429,10 @@ class VariantPipeline(nn.Module):
             policy_output,
             previous_decoder_state=resolved_state.decoder_state,
         )
-        policy_output.next_state.decoder_state = decoder_output.next_state
+        policy_output = replace(
+            policy_output,
+            next_state=replace(next_state, decoder_state=decoder_output.next_state),
+        )
         return VariantPipelineInferOutput(
             visual_outputs=visual_outputs,
             policy_output=policy_output,
@@ -484,7 +468,7 @@ class VariantPipeline(nn.Module):
 
         visual_outputs = self.prepare_visual_outputs_from_latents(
             video_latents,
-            task_text=context.extra.get("task_text"),
+            task_text=context.task_text,
             text_context=text_context,
             negative_text_context=negative_text_context,
             canonical_video=canonical_video,

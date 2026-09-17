@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Any, TypeVar
 
@@ -9,6 +9,8 @@ import torch
 
 from open_wam.configs.enums import (
     DynamicsObjective,
+    FeatureCacheScope,
+    PolicyOutputModality,
     ProprioContextMode,
     TextConditioningMode,
 )
@@ -24,13 +26,6 @@ from open_wam.models.visual_tower.contracts import VisualComponentTopology
 _DecoderArtifactT = TypeVar("_DecoderArtifactT")
 
 
-class PolicyGenerationActionOrigin(str, Enum):
-    """Index origin used when a policy starts a generated action sequence."""
-
-    AFTER_OBSERVATION_WINDOW = "after_observation_window"
-    ZERO = "zero"
-
-
 class PolicyObservationWindowSessionPolicy(str, Enum):
     """How recurrent state changes when the observed window advances."""
 
@@ -43,13 +38,6 @@ class PolicyVisualStage(str, Enum):
 
     FRONTEND = "frontend"
     CORE = "core"
-
-
-class PolicyOutputModality(str, Enum):
-    """Model products requested from one policy inference step."""
-
-    VIDEO = "video"
-    ACTION = "action"
 
 
 class PolicyRecurrentHistoryPolicy(str, Enum):
@@ -128,6 +116,7 @@ class PolicyCompositionCapability:
     rng_policy: PolicyCompositionRngPolicy = (
         PolicyCompositionRngPolicy.ISOLATED_STEP_SEED
     )
+    required_training_objective: DynamicsObjective | None = None
 
     def __post_init__(self) -> None:
         inputs = frozenset(
@@ -142,6 +131,12 @@ class PolicyCompositionCapability:
             )
         object.__setattr__(self, "input_modalities", inputs)
         object.__setattr__(self, "output_modalities", outputs)
+        if self.required_training_objective is not None:
+            object.__setattr__(
+                self,
+                "required_training_objective",
+                DynamicsObjective(self.required_training_objective),
+            )
         object.__setattr__(
             self,
             "rng_policy",
@@ -155,11 +150,13 @@ class PolicyCompositionCapability:
         rng_policy: PolicyCompositionRngPolicy = (
             PolicyCompositionRngPolicy.ISOLATED_STEP_SEED
         ),
+        required_training_objective: DynamicsObjective | None = None,
     ) -> PolicyCompositionCapability:
         return cls(
             input_modalities=frozenset({PolicyOutputModality.VIDEO}),
             output_modalities=frozenset({PolicyOutputModality.ACTION}),
             rng_policy=rng_policy,
+            required_training_objective=required_training_objective,
         )
 
     def matches(self, required: PolicyCompositionCapability) -> bool:
@@ -189,13 +186,30 @@ class PolicyInferenceCapabilities:
         PolicyRecurrentHistoryPolicy.UNSUPPORTED
     )
     composition_capabilities: tuple[PolicyCompositionCapability, ...] = ()
+    # Describes effective feature reuse; it never grants reconciliation support.
+    feature_cache_scope: FeatureCacheScope = FeatureCacheScope.NONE
+    # Future modalities required by a native call, not observed history.
+    required_future_modalities: frozenset[PolicyOutputModality] = frozenset()
+    required_training_objective: DynamicsObjective | None = None
+
+    def require_future_inputs(
+        self, available: frozenset[PolicyOutputModality]
+    ) -> None:
+        missing = self.required_future_modalities - available
+        if missing:
+            raise ValueError(
+                "Inference requires clean future modalities that this route does "
+                f"not supply: {sorted(item.value for item in missing)}."
+            )
 
     def __post_init__(self) -> None:
         native = frozenset(
             PolicyOutputModality(modality) for modality in self.native_modalities
         )
         if not native:
-            raise ValueError("A policy must declare at least one native output modality.")
+            raise ValueError(
+                "A policy must declare at least one native output modality."
+            )
         selective = tuple(self.selective_requests)
         seen_selective: set[frozenset[PolicyOutputModality]] = set()
         for request in selective:
@@ -218,13 +232,26 @@ class PolicyInferenceCapabilities:
                 )
             seen_selective.add(request.modalities)
         object.__setattr__(self, "native_modalities", native)
+        object.__setattr__(
+            self,
+            "required_future_modalities",
+            frozenset(
+                PolicyOutputModality(item) for item in self.required_future_modalities
+            ),
+        )
+        if self.required_training_objective is not None:
+            object.__setattr__(
+                self,
+                "required_training_objective",
+                DynamicsObjective(self.required_training_objective),
+            )
+        object.__setattr__(
+            self, "feature_cache_scope", FeatureCacheScope(self.feature_cache_scope)
+        )
         object.__setattr__(self, "selective_requests", selective)
         compositions = tuple(self.composition_capabilities)
         for index, capability in enumerate(compositions):
-            if any(
-                capability.matches(other)
-                for other in compositions[index + 1 :]
-            ):
+            if any(capability.matches(other) for other in compositions[index + 1 :]):
                 raise ValueError(
                     "Policy composition input/output capabilities must be unique."
                 )
@@ -241,9 +268,7 @@ class PolicyInferenceCapabilities:
             "composition_capabilities",
             compositions,
         )
-        history_policy = PolicyRecurrentHistoryPolicy(
-            self.recurrent_history_policy
-        )
+        history_policy = PolicyRecurrentHistoryPolicy(self.recurrent_history_policy)
         object.__setattr__(
             self,
             "recurrent_history_policy",
@@ -367,17 +392,28 @@ class PolicyTemporalSpan:
 
 @dataclass(frozen=True)
 class PolicyExecutionCommit:
-    """Observed prefix committed after executing a speculative model span."""
+    """Observed execution replacing a speculative model span.
+
+    Execution can stop early or continue with fallback controls beyond the
+    prediction. The speculative span identifies the candidate being replaced;
+    the observed span describes what actually happened.
+    """
 
     speculative_span: PolicyTemporalSpan
     executed_frame_count: int
 
     def __post_init__(self) -> None:
-        self.speculative_span.prefix(int(self.executed_frame_count))
+        if int(self.executed_frame_count) <= 0:
+            raise ValueError(
+                "An execution commit requires a positive observed frame count."
+            )
 
     @property
     def executed_span(self) -> PolicyTemporalSpan:
-        return self.speculative_span.prefix(int(self.executed_frame_count))
+        return PolicyTemporalSpan(
+            self.speculative_span.start_frame,
+            int(self.executed_frame_count),
+        )
 
 
 @dataclass(frozen=True)
@@ -474,12 +510,18 @@ class PolicyVideoConditionedActionRequest:
 class PolicyRolloutContract:
     """Variant-owned lifecycle semantics consumed by generic rollout code."""
 
-    generation_action_origin: PolicyGenerationActionOrigin = (
-        PolicyGenerationActionOrigin.AFTER_OBSERVATION_WINDOW
-    )
     observation_window_session_policy: PolicyObservationWindowSessionPolicy = (
         PolicyObservationWindowSessionPolicy.REUSE
     )
+    action_tokens_per_frame: int = 1
+    startup_observation_frames: int = 1
+    supports_speculative_continuation: bool = False
+
+    def __post_init__(self) -> None:
+        if self.action_tokens_per_frame <= 0 or self.startup_observation_frames <= 0:
+            raise ValueError(
+                "Rollout action density and startup context must be positive."
+            )
 
 
 @dataclass(frozen=True)
@@ -727,6 +769,7 @@ class PolicyTrainBatch:
 
     actions: torch.Tensor
     action_mask: torch.Tensor | None = None
+
     state: torch.Tensor | None = None
     extra: dict[str, Any] = field(default_factory=dict)
     source_text_context: torch.Tensor | None = None
@@ -750,24 +793,33 @@ class PolicyTrainOutput:
     aux: dict[str, Any] = field(default_factory=dict)
 
 
-@dataclass
+@dataclass(frozen=True)
 class PolicyInferState:
-    """Per-variant inference state."""
+    """Immutable session publication; variants must also treat tensors as read-only."""
 
-    step_index: int = 0
     cursor: RolloutCursor = field(default_factory=RolloutCursor)
-    cache: Any = field(default_factory=dict)
     variant_state: Any | None = None
     decoder_state: Any | None = None
     temporal_geometry: PolicyTemporalGeometry | None = None
+    revision: int = 0
+    observed_frame_end: int = 0
 
-    def bind_temporal_geometry(
+    @property
+    def step_index(self) -> int:
+        return self.cursor.block_index
+
+    @property
+    def speculative_span(self) -> PolicyTemporalSpan | None:
+        count = self.cursor.current_start_frame - self.observed_frame_end
+        return PolicyTemporalSpan(self.observed_frame_end, count) if count > 0 else None
+
+    def with_temporal_geometry(
         self,
         temporal_geometry: PolicyTemporalGeometry,
         *,
         label: str = "inference state",
-    ) -> PolicyTemporalGeometry:
-        """Bind immutable temporal geometry to this inference session."""
+    ) -> PolicyInferState:
+        """Validate and return a geometry-bound candidate, never mutate a session."""
 
         if (
             self.temporal_geometry is not None
@@ -778,20 +830,21 @@ class PolicyInferState:
                 f"session: {label} has {self.temporal_geometry}, requested "
                 f"{temporal_geometry}."
             )
-        self.temporal_geometry = temporal_geometry
-        return temporal_geometry
+        return replace(self, temporal_geometry=temporal_geometry)
 
 
 @dataclass(frozen=True)
 class PolicyObservedHistory:
-    """Canonical observations committed after executing one policy chunk.
+    """Canonical observations committed after executing a speculative interval.
 
     ``video_latents`` and ``proprio_history`` describe only the newly observed
     window, not the policy's full recurrent cache. ``action_history`` contains
-    the actions actually executed for this commit; a policy decides how much
-    speculative action history they replace. ``observation_frame_count`` is
+    the model-space actions actually executed for this commit; a policy decides
+    how much speculative action history they replace. ``observation_frame_count`` is
     the raw environment-frame count and can differ from latent time.
     ``execution_commit`` identifies the speculative model span being reconciled.
+    ``action_mask`` is optional binary validity [B, T_action, 1], allowing an
+    observed startup frame with no preceding action to remain aligned.
     """
 
     video_latents: torch.Tensor
@@ -799,6 +852,10 @@ class PolicyObservedHistory:
     action_history: torch.Tensor | None = None
     proprio_history: torch.Tensor | None = None
     execution_commit: PolicyExecutionCommit | None = None
+    action_mask: torch.Tensor | None = None
+
+    # Only used to seed a new session; later commits identify their own span.
+    start_frame: int = 0
 
 
 @dataclass(frozen=True)
@@ -810,16 +867,18 @@ class PolicyObservedHistoryOutput:
     applied: bool = False
 
 
-@dataclass
+@dataclass(frozen=True)
 class PolicyInferContext:
     """Inputs required for one policy inference step."""
 
     state: torch.Tensor | None = None
     previous_action: torch.Tensor | None = None
     dynamics: DynamicsRolloutRequest | None = None
-    extra: dict[str, Any] = field(default_factory=dict)
-    # Keep extensions after `extra` so historical positional construction keeps
-    # binding its fourth argument to the same field.
+    task_text: tuple[str | None, ...] | None = None
+    metadata: tuple[dict[str, Any], ...] | None = None
+    sample_seed: int | None = None
+    initial_video_noise: torch.Tensor | None = None
+    initial_action_noise: torch.Tensor | None = None
     output_request: PolicyInferenceOutputRequest | None = None
     video_generation: PolicyVideoGenerationRequest | None = None
     video_conditioned_action: PolicyVideoConditionedActionRequest | None = None
@@ -833,6 +892,17 @@ class PolicyInferContext:
         return self.temporal_geometry
 
 
+@dataclass(frozen=True)
+class PolicyRolloutTelemetry:
+    """Architecture-neutral facts derived from a published inference state."""
+
+    state_revision: int
+    chunk_index: int
+    observed_frame_end: int
+    generated_span: PolicyTemporalSpan | None
+    speculative_span: PolicyTemporalSpan | None
+
+
 @dataclass
 class PolicyInferOutput:
     """Inference-time features emitted by a policy variant."""
@@ -844,10 +914,31 @@ class PolicyInferOutput:
     generated_video: PolicyGeneratedVideo | None = None
     generation_frame_start: int | None = None
 
+    @property
+    def telemetry(self) -> PolicyRolloutTelemetry:
+        return PolicyRolloutTelemetry(
+            state_revision=self.next_state.revision,
+            chunk_index=self.next_state.step_index,
+            observed_frame_end=self.next_state.observed_frame_end,
+            generated_span=self.generated_span,
+            speculative_span=self.next_state.speculative_span,
+        )
+
+    @property
+    def generated_span(self) -> PolicyTemporalSpan | None:
+        """The published cursor is the exclusive end of this prediction."""
+        if self.generation_frame_start is None:
+            return None
+        return PolicyTemporalSpan(
+            self.generation_frame_start,
+            self.next_state.cursor.current_start_frame - self.generation_frame_start,
+        )
+
     def __post_init__(self) -> None:
-        if self.generation_frame_start is not None and int(
-            self.generation_frame_start
-        ) < 0:
+        if (
+            self.generation_frame_start is not None
+            and int(self.generation_frame_start) < 0
+        ):
             raise ValueError(
                 "Policy inference generation_frame_start must be non-negative, "
                 f"got {self.generation_frame_start}."

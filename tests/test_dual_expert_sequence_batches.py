@@ -136,7 +136,6 @@ def test_sequence_batch_forward_gradient_parity_and_single_heavy_call(program, p
     reference = [
         forward_dual_expert_packed_coupling_denoise(
             visual_tower=tower,
-            action_expert=action,
             packed_block_stack=stack,
             prefer_flex_attention=False,
             **request.as_kwargs(),
@@ -152,7 +151,6 @@ def test_sequence_batch_forward_gradient_parity_and_single_heavy_call(program, p
     ]
     actual = forward_dual_expert_sequence_batch(
         visual_tower=tower,
-        action_expert=action,
         packed_block_stack=stack,
         requests=requests,
         padded=padded,
@@ -195,12 +193,11 @@ def test_sequence_batch_forward_gradient_parity_and_single_heavy_call(program, p
 def test_sequence_batch_cannot_read_another_samples_video_action_or_text(
     program, padded
 ):
-    tower, action, stack, requests = _fixture(program)
+    tower, _action, stack, requests = _fixture(program)
 
     def execute(items):
         return forward_dual_expert_sequence_batch(
             visual_tower=tower,
-            action_expert=action,
             packed_block_stack=stack,
             requests=items,
             padded=padded,
@@ -341,7 +338,6 @@ def _cuda_flex_forward_backward_and_sequence_isolation(program, padded):
     reference = [
         forward_dual_expert_packed_coupling_denoise(
             visual_tower=tower,
-            action_expert=action,
             packed_block_stack=stack,
             prefer_flex_attention=False,
             **request.as_kwargs(),
@@ -350,7 +346,6 @@ def _cuda_flex_forward_backward_and_sequence_isolation(program, padded):
     ]
     actual = forward_dual_expert_sequence_batch(
         visual_tower=tower,
-        action_expert=action,
         packed_block_stack=stack,
         requests=requests,
         padded=padded,
@@ -390,7 +385,6 @@ def _cuda_flex_forward_backward_and_sequence_isolation(program, padded):
     )
     after = forward_dual_expert_sequence_batch(
         visual_tower=tower,
-        action_expert=action,
         packed_block_stack=stack,
         requests=[requests[0], changed],
         padded=padded,
@@ -404,7 +398,7 @@ def test_sequence_batch_randomized_geometry_stays_compiled(caplog):
     if not torch.cuda.is_available() or os.getenv("OPEN_WAM_RUN_GPU_SANITY") != "1":
         pytest.skip("Requires an explicitly allocated GPU.")
     torch.compiler.reset()
-    tower, action, stack, requests = _fixture("joint", device="cuda")
+    tower, _action, stack, requests = _fixture("joint", device="cuda")
     with torch.no_grad(), torch.autocast("cuda", dtype=torch.bfloat16):
         for step in range(12):
             varied = []
@@ -424,7 +418,6 @@ def test_sequence_batch_randomized_geometry_stays_compiled(caplog):
                 varied.append(replace(request, attention_profile=profile))
             output = forward_dual_expert_sequence_batch(
                 visual_tower=tower,
-                action_expert=action,
                 packed_block_stack=stack,
                 requests=varied,
                 padded=False,

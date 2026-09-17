@@ -8,11 +8,14 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
+from open_wam.configs.enums import ActionSpace
+
 from open_wam.models.policy_variants.contracts import (
     PolicyInferOutput,
     PolicyPipelineRequirements,
     PolicyTrainBatch,
     PolicyTrainOutput,
+    PolicyTemporalSpan,
 )
 
 _DecoderArtifactT = TypeVar("_DecoderArtifactT")
@@ -71,6 +74,15 @@ class ActionDecoderRolloutPlan:
     rollout_chunk_steps: int | None = None
     commit_start_index: int | None = None
     commit_end_index: int | None = None
+    frame_span: PolicyTemporalSpan | None = None
+    action_space: ActionSpace = ActionSpace.MODEL
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "action_space", ActionSpace(self.action_space))
+        if self.action_space is not ActionSpace.MODEL:
+            raise ValueError("Decoder plans must be model-space; integration adapters own source conversion.")
+        if self.actions.ndim != 2:
+            raise ValueError("Executable actions must have shape [steps, channels].")
 
     def to_metadata(self) -> dict[str, Any]:
         """Serialize the stable rollout trace fields used by integrations."""
@@ -126,115 +138,20 @@ class ActionDecoder(nn.Module, ABC):
         self,
         output: ActionDecoderInferOutput,
     ) -> ActionDecoderRolloutPlan:
-        """Project one inference output into actions released to a rollout.
-
-        The default handles both full-horizon decoders and sequence decoders
-        that expose a cached `current_action`. A custom decoder can override
-        this method without adding method-specific logic to an integration.
-        """
-
-        action_chunk = output.action_pred[0].detach().to(dtype=torch.float32).cpu()
-        current_action = output.aux.get("current_action")
-        if not isinstance(current_action, torch.Tensor):
-            return ActionDecoderRolloutPlan(
-                actions=action_chunk,
-                source="decoder_action_chunk",
-            )
-
-        current_action_index = _resolve_current_action_index(output)
-        rollout_chunk_steps = _resolve_rollout_chunk_steps(output)
-        if current_action_index < 0:
-            raise ValueError(
-                "Decoder current action index must be non-negative, "
-                f"got {current_action_index}."
-            )
-        commit_end_index = min(
-            int(action_chunk.shape[0]),
-            max(int(current_action_index) + 1, int(rollout_chunk_steps)),
-        )
-        planned_chunk = action_chunk[int(current_action_index) : commit_end_index]
-        source = "decoder_current_action_rollout_chunk"
-        if int(planned_chunk.shape[0]) == 0:
-            planned_chunk = _current_action_tensor_to_chunk(current_action)
-            commit_end_index = int(current_action_index) + int(planned_chunk.shape[0])
-            source = "decoder_current_action"
+        """Return model-space controls; custom decoders may override slicing."""
+        if output.action_pred.ndim != 3 or output.action_pred.shape[0] != 1:
+            raise ValueError("An executable plan requires one environment's actions [1, steps, channels].")
         return ActionDecoderRolloutPlan(
-            actions=planned_chunk,
-            source=source,
-            rollout_chunk_steps=int(rollout_chunk_steps),
-            commit_start_index=int(current_action_index),
-            commit_end_index=int(commit_end_index),
+            actions=output.action_pred[0].detach().to(dtype=torch.float32).cpu(),
+            source="decoder_action_chunk",
         )
 
     def commit_rollout_plan(
-        self,
-        state: Any | None,
-        plan: ActionDecoderRolloutPlan,
-    ) -> None:
-        """Advance decoder-owned state past actions released by `plan`."""
+        self, state: Any | None, plan: ActionDecoderRolloutPlan,
+    ) -> Any | None:
+        """Return decoder execution state; overrides must not mutate the input."""
+        return state
 
-        if plan.commit_end_index is None:
-            return
-        if state is None or not hasattr(state, "step_within_chunk"):
-            return
-        state.step_within_chunk = max(
-            int(state.step_within_chunk),
-            int(plan.commit_end_index),
-        )
-
-    def configure_action_sampler_mask(
-        self,
-        sampler_mask: torch.Tensor | None,
-        *,
-        inactive_value: float = 0.0,
-    ) -> None:
-        """Configure optional inference-time channel pinning for mapped action spaces."""
-
-        if sampler_mask is None:
-            self._buffers.pop("_action_sampler_mask", None)
-            self._action_sampler_inactive_value = float(inactive_value)
-            return
-        if sampler_mask.ndim != 2:
-            raise ValueError(
-                f"Action sampler mask must have shape [H, D], got {tuple(sampler_mask.shape)}."
-            )
-        mask = sampler_mask.detach().to(dtype=torch.float32).unsqueeze(0)
-        if "_action_sampler_mask" in self._buffers:
-            self._buffers["_action_sampler_mask"] = mask
-        else:
-            self.register_buffer("_action_sampler_mask", mask, persistent=False)
-        self._action_sampler_inactive_value = float(inactive_value)
-
-    def _apply_action_sampler_mask(
-        self, actions: torch.Tensor, *, start_index: int = 0
-    ) -> torch.Tensor:
-        sampler_mask = getattr(self, "_action_sampler_mask", None)
-        if sampler_mask is None:
-            return actions
-        if actions.ndim not in {2, 3}:
-            raise ValueError(
-                f"Action sampler mask supports [B, D] or [B, H, D], got {tuple(actions.shape)}."
-            )
-        if actions.shape[-1] != sampler_mask.shape[-1]:
-            raise ValueError(
-                f"Action sampler mask dim {sampler_mask.shape[-1]} does not match action dim {actions.shape[-1]}."
-            )
-        horizon = actions.shape[-2] if actions.ndim == 3 else 1
-        end_index = int(start_index) + int(horizon)
-        if end_index > sampler_mask.shape[1]:
-            raise ValueError(
-                "Action sampler mask horizon is shorter than the requested action slice, "
-                f"got mask_horizon={sampler_mask.shape[1]}, start_index={start_index}, horizon={horizon}."
-            )
-        mask = sampler_mask[:, int(start_index) : end_index].to(
-            device=actions.device, dtype=actions.dtype
-        )
-        if actions.ndim == 2:
-            mask = mask[:, 0]
-        inactive = actions.new_full(
-            (), float(getattr(self, "_action_sampler_inactive_value", 0.0))
-        )
-        return actions * mask + inactive * (1.0 - mask)
 
     @abstractmethod
     def forward_train(
@@ -249,47 +166,3 @@ class ActionDecoder(nn.Module, ABC):
         previous_state: Any | None = None,
     ) -> ActionDecoderInferOutput:
         """Decode actions for one inference step."""
-
-
-def _current_action_tensor_to_chunk(current_action: torch.Tensor) -> torch.Tensor:
-    current_action = current_action.detach().to(dtype=torch.float32).cpu()
-    if current_action.ndim == 1:
-        return current_action.unsqueeze(0)
-    if current_action.ndim == 2:
-        return current_action[:1]
-    raise ValueError(
-        "Expected current_action shape [D] or [B, D], "
-        f"got {tuple(current_action.shape)}."
-    )
-
-
-def _resolve_current_action_index(output: ActionDecoderInferOutput) -> int:
-    current_action_index = output.aux.get("current_action_index")
-    if current_action_index is not None:
-        return int(_python_value(current_action_index))
-    next_state = output.next_state
-    if next_state is not None and hasattr(next_state, "step_within_chunk"):
-        return max(0, int(next_state.step_within_chunk) - 1)
-    return 0
-
-
-def _resolve_rollout_chunk_steps(output: ActionDecoderInferOutput) -> int:
-    rollout_chunk_steps = output.aux.get("rollout_chunk_steps")
-    if rollout_chunk_steps is None:
-        next_state = output.next_state
-        rollout_chunk_steps = (
-            getattr(next_state, "aux", {}).get("rollout_chunk_steps")
-            if next_state is not None
-            else None
-        )
-    if rollout_chunk_steps is None:
-        return 1
-    return max(1, int(_python_value(rollout_chunk_steps)))
-
-
-def _python_value(value: Any) -> Any:
-    if isinstance(value, torch.Tensor):
-        if value.numel() == 1:
-            return value.detach().cpu().item()
-        return value.detach().cpu().tolist()
-    return value

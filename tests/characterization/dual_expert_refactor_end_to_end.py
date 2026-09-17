@@ -125,14 +125,14 @@ def build_libero_rollout_command(
     )
     command = [
         sys.executable,
-        str(REPO_ROOT / "scripts" / "run_libero_dual_expert_visualization.py"),
+        str(REPO_ROOT / "scripts" / "run_libero_policy.py"),
         "--cfg",
         str(assets.checkpoint_config_for(method.asset_id)),
         "--checkpoint",
         str(assets.checkpoint_for(method.asset_id)),
         "--frontend-encode-mode",
         contract.frontend_encode_mode,
-        "--dual-expert-inference-window-size",
+        "--inference-window-size",
         str(contract.inference_window_size),
         "--benchmark",
         "libero_10",
@@ -476,7 +476,7 @@ def _project_rollout_chunk(value: Mapping[str, Any]) -> dict[str, Any]:
             "rollout_frame_chunk_size",
             "execute_frame_chunk_size",
             "predicted_latents_shape",
-            "dual_expert_gjd_action_route",
+            "policy_action_route",
             "first_action_preview",
             "policy_debug",
         )

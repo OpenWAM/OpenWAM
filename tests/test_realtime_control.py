@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import pytest
+
 import numpy as np
 
 import open_wam.integrations as integrations
 from open_wam.configs import (
-    FallbackHistoryPolicy,
     RealtimeEmptyPlanPolicy,
     RealtimePlannerJob,
     RealtimePlannerMode,
@@ -56,15 +57,12 @@ def test_realtime_control_contract_is_lazily_exported_by_integrations() -> None:
 def test_realtime_scheduler_profiles_resolve_to_typed_optional_overrides() -> None:
     manual = resolve_realtime_scheduler_defaults(RealtimeSchedulerProfile.MANUAL)
     blocking = resolve_realtime_scheduler_defaults("blocking_control")
-    frozen = resolve_realtime_scheduler_defaults("freeze_until_clean_chunk")
     asynchronous = resolve_realtime_scheduler_defaults("async_history_first")
 
     assert manual.to_override_mapping() == {}
     assert blocking.planner_mode == RealtimePlannerMode.HISTORY_ONLY
     assert blocking.empty_plan_policy == RealtimeEmptyPlanPolicy.WAIT_FOR_REPLAN
-    assert blocking.fallback_history_policy == FallbackHistoryPolicy.INCLUDE_FALLBACK_HISTORY
     assert blocking.replan_low_watermark_actions == 0
-    assert frozen.fallback_history_policy == FallbackHistoryPolicy.FREEZE_UNTIL_CLEAN_CHUNK
     assert asynchronous.planner_mode == RealtimePlannerMode.ASYNC_HISTORY_FIRST
     assert asynchronous.startup_open_loop_chunks == 1
     assert "replan_low_watermark_actions" not in asynchronous.to_override_mapping()
@@ -312,32 +310,18 @@ def test_control_plan_slices_steps_at_replacement_and_execution_boundaries() -> 
     assert list(prefix) == [0, 1, 2, 3, 4]
 
 
-def test_partial_stale_control_chunks_are_atomic_unless_suffix_is_large_enough() -> None:
+@pytest.mark.parametrize("cursor", range(18))
+def test_partial_stale_control_chunks_are_atomic(cursor) -> None:
     planned_steps = [_control_step(index, source="history_replan") for index in range(16)]
-
-    rejected, dropped, accepted_partial = drop_partial_stale_control_chunk(
-        planned_steps,
-        next_action_to_execute=8,
+    mergeable, dropped = drop_partial_stale_control_chunk(
+        planned_steps, next_action_to_execute=cursor,
     )
-    accepted, accepted_dropped, accepted_partial_count = drop_partial_stale_control_chunk(
-        planned_steps,
-        next_action_to_execute=8,
-        min_future_actions_to_accept_stale_chunk=8,
-    )
-    fully_stale, fully_stale_dropped, fully_stale_partial = drop_partial_stale_control_chunk(
-        planned_steps[:4],
-        next_action_to_execute=8,
-    )
-
-    assert rejected == []
-    assert dropped == 8
-    assert accepted_partial == 0
-    assert [step.absolute_action_index for step in accepted] == list(range(8, 16))
-    assert accepted_dropped == 0
-    assert accepted_partial_count == 8
-    assert fully_stale == planned_steps[:4]
-    assert fully_stale_dropped == 0
-    assert fully_stale_partial == 0
+    if 0 < cursor < 16:
+        assert mergeable == []
+        assert dropped == 16 - cursor
+    else:
+        assert mergeable == planned_steps
+        assert dropped == 0
 
 
 def test_build_live_rollout_summary_reports_rates_and_stage_stats() -> None:

@@ -4,7 +4,6 @@ import argparse
 import json
 from dataclasses import replace
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
 import imageio.v2 as imageio
@@ -32,6 +31,7 @@ from open_wam.simulators import (
     run_closed_loop_sim_rollout,
     summarize_sim_rollout,
 )
+from open_wam.simulators.rollout import run_zero_control_smoke
 from open_wam.simulators.builtins import (
     normalize_builtin_simulator_options,
     register_builtin_simulator_adapters,
@@ -71,13 +71,8 @@ def run_simulator_rollout_command(args: argparse.Namespace) -> dict[str, Any]:
 
     adapter = _build_adapter(args)
     checkpoint_report = None
-    if args.zero_policy:
-        rollout_runner = _ZeroActionRolloutRunner(
-            action_dim=config.data.action_schema.action_dim,
-            action_horizon=config.data.action_schema.action_horizon,
-            device=device,
-        )
-    else:
+    rollout_runner = None
+    if not args.zero_policy:
         from open_wam.pipelines import (
             VariantRolloutRunner,
             build_variant_pipeline_from_config,
@@ -106,9 +101,10 @@ def run_simulator_rollout_command(args: argparse.Namespace) -> dict[str, Any]:
     video_path = output_dir / f"{args.benchmark}_{args.suffix}.mp4"
     summary_path = output_dir / f"{args.benchmark}_{args.suffix}.json"
     try:
-        result = run_closed_loop_sim_rollout(
+        rollout = run_zero_control_smoke if args.zero_policy else run_closed_loop_sim_rollout
+        result = rollout(
             adapter=adapter,
-            rollout_runner=rollout_runner,
+            **({} if args.zero_policy else {"rollout_runner": rollout_runner}),
             data_config=config.data,
             device=device,
             task_id=args.task_id,
@@ -177,32 +173,6 @@ def run_simulator_rollout_command(args: argparse.Namespace) -> dict[str, Any]:
     write_result_json(summary_path, summary)
     print(rendered)
     return summary
-
-
-class _ZeroActionRolloutRunner:
-    def __init__(self, *, action_dim: int, action_horizon: int, device: torch.device) -> None:
-        self.action_dim = int(action_dim)
-        self.action_horizon = int(action_horizon)
-        self.device = device
-
-    def reset(self, **_: Any) -> Any:
-        return SimpleNamespace(policy_state=None)
-
-    def infer_step(self, *, session: Any, context: Any, views: Any | None = None, **_: Any) -> Any:
-        del context, views
-        action_pred = torch.zeros(
-            1,
-            self.action_horizon,
-            self.action_dim,
-            dtype=torch.float32,
-            device=self.device,
-        )
-        return SimpleNamespace(
-            session=session,
-            infer_output=SimpleNamespace(
-                decoder_output=SimpleNamespace(action_pred=action_pred),
-            ),
-        )
 
 
 def _build_adapter(args: argparse.Namespace) -> SimulatorBackend:

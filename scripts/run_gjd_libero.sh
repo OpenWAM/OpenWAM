@@ -390,7 +390,7 @@ build_default_dual_expert_rollout_semantic_args() {
   local -n rollout_semantic_args_ref="$1"
   gjd_reject_deprecated_dual_expert_frontend_encode_mode
   gjd_append_default_arg rollout_semantic_args_ref --frontend-encode-mode "${GJD_DUAL_EXPERT_CURRENT_FRONTEND_ENCODE_MODE}"
-  gjd_append_default_arg rollout_semantic_args_ref --dual-expert-inference-window-size "${GJD_DUAL_EXPERT_INFERENCE_WINDOW_SIZE:-${GJD_M5_DUAL_EXPERT_INFERENCE_WINDOW_SIZE:-30}}"
+  gjd_append_default_arg rollout_semantic_args_ref --inference-window-size "${GJD_DUAL_EXPERT_INFERENCE_WINDOW_SIZE:-${GJD_M5_DUAL_EXPERT_INFERENCE_WINDOW_SIZE:-30}}"
   gjd_append_default_arg rollout_semantic_args_ref --startup-model-obs-frames "${GJD_DUAL_EXPERT_STARTUP_MODEL_OBS_FRAMES:-${GJD_M5_STARTUP_MODEL_OBS_FRAMES:-1}}"
   gjd_append_default_arg rollout_semantic_args_ref --startup-env-init-steps "${GJD_DUAL_EXPERT_STARTUP_ENV_INIT_STEPS:-${GJD_M5_STARTUP_ENV_INIT_STEPS:-5}}"
   gjd_append_default_arg rollout_semantic_args_ref --max-timestep "${GJD_DUAL_EXPERT_MAX_TIMESTEP:-${GJD_M5_MAX_TIMESTEP:-1500}}"
@@ -477,7 +477,7 @@ if [[ "${GJD_ARCHITECTURE}" == "dual_expert" ]]; then
   GJD_DUAL_EXPERT_ROLLOUT_SEMANTIC_ARGS=()
   build_default_dual_expert_rollout_semantic_args GJD_DUAL_EXPERT_ROLLOUT_SEMANTIC_ARGS
   GJD_REALTIME_ARGS=(
-    "${REPO_ROOT}/scripts/run_libero_dual_expert_visualization.py"
+    "${REPO_ROOT}/scripts/run_libero_policy.py"
     --cfg "${GJD_CFG_PATH}"
     "${GJD_DEFAULT_ROLLOUT_IDENTITY_ARGS[@]}"
     "${GJD_DUAL_EXPERT_ROLLOUT_SEMANTIC_ARGS[@]}"

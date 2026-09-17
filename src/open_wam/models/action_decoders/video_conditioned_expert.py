@@ -8,6 +8,7 @@ from diffusers.models.attention import FeedForward
 from diffusers.models.normalization import FP32LayerNorm
 from torch import nn
 
+from open_wam.models.common.block_sequence import TransformerBlockSequence
 from open_wam.models.visual_tower.grid_ids import build_sequence_grid_ids
 from open_wam.models.visual_tower.runtime_parameter_ops import (
     feed_forward_with_materialized_params,
@@ -155,7 +156,7 @@ class ConditionedActionTransformerBlock(nn.Module):
         return hidden_states, None
 
 
-class VideoConditionedActionExpert(nn.Module):
+class VideoConditionedActionExpert(TransformerBlockSequence):
     """Reusable action expert for video-conditioned chunk decoding."""
 
     def __init__(
@@ -325,7 +326,7 @@ class VideoConditionedActionExpert(nn.Module):
     def forward_layers(self, preprocessed: ActionExpertPreprocessOutput) -> torch.Tensor:
         hidden_states = preprocessed.tokens
         rotary_emb = preprocessed.freqs[:, :, None]
-        for block in self.blocks:
+        for block in self.execution_blocks:
             attn_inputs = block.prepare_self_attention_inputs(
                 hidden_states,
                 temb=preprocessed.t_mod,

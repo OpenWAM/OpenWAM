@@ -64,7 +64,7 @@ def test_train_hidden_proprio_context_prefers_frame_state_and_applies_mask() -> 
     torch.testing.assert_close(frame_state.grad, frame_mask, rtol=0.0, atol=0.0)
 
 
-def test_rollout_state_selection_and_cache_clone_preserve_m1_semantics() -> None:
+def test_rollout_state_selection_uses_the_most_recent_measurement() -> None:
     state = torch.arange(6, dtype=torch.float32).reshape(1, 3, 2)
     standard = _conditioning()
 
@@ -74,14 +74,6 @@ def test_rollout_state_selection_and_cache_clone_preserve_m1_semantics() -> None
         rtol=0.0,
         atol=0.0,
     )
-    state.requires_grad_()
-    cache: dict[str, torch.Tensor] = {}
-    standard.cache_infer_proprio_state(cache, state)
-    cached = cache["last_proprio_state"]
-    assert cached.data_ptr() != state.data_ptr()
-    assert cached.requires_grad is False
-    torch.testing.assert_close(cached, state, rtol=0.0, atol=0.0)
-
 
 def test_prefix_hidden_proprio_alignment_keeps_condition_frame_separate() -> None:
     conditioning = _conditioning()

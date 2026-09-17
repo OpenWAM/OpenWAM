@@ -47,6 +47,9 @@ The generic helpers live in
 `open_wam.pipelines.video_action_composition`. Benchmark code owns model
 loading, observation adaptation, action execution, and recurrent commits; it
 does not invoke private policy forwards or inspect checkpoint names.
+`PolicyVideoActionConsumerPlan.infer(...)` is the shared execution service for
+transferred video. Use `VariantRolloutRunner` for both sessions and submit actual
+observations through `PolicyObservedHistory`; keep each returned session.
 
 ## Information Flow
 
@@ -77,7 +80,7 @@ model. The orchestrator still supplies prompt, proprioception, and executed
 actions, but the policy's maintained sequence contract decides which streams
 are visible. Producer cache internals never cross the boundary.
 
-For strict IDM, DualExpert maps the neutral request to its existing
+For strict IDM, the policy maps the neutral request to its
 `video_conditioned_action` runtime plan. That plan preserves the maintained
 text-free conditional semantics used by standalone IDM and GJD IDM: only the
 latest clean history frame is visible, while the transferred future keeps its
@@ -103,7 +106,8 @@ Selective output is an optimization, not a compatibility requirement. A
 multimodal producer may run its full native program and have its unused action
 output discarded.
 
-The maintained causal-video policy and DualExpert VTA satisfy this contract.
+The maintained causal-video policy and both video/action architectures satisfy
+this contract when their selected runtime program produces video.
 For `chunked_conditioned_video`, the session temporal geometry's attention
 window physically bounds committed real history as well as attention
 visibility. With W30 and four-frame chunks, each denoise call retains at most
@@ -115,9 +119,9 @@ absolute temporal positions are kept separate throughout reconciliation.
 
 These are producer-owned recurrence semantics. The composition layer only
 passes the typed request and execution commit; it contains no causal-video or
-DualExpert cache arithmetic. Parallel Stream remains fail-closed until it
-publishes the same typed artifact and recurrent-history behavior; no model-name
-exception exists in the generic composition API.
+architecture-specific cache arithmetic. Dual Expert and Parallel Stream publish
+the same typed artifacts and use the same observed-history contract. No
+model-name exception exists in the generic composition API.
 
 Latent-first training checkpoints may deliberately record
 `load_wan_vae_frontend: false` and `load_text_conditioning: false`. An online
@@ -128,10 +132,12 @@ before simulator construction instead of accepting an unverifiable handoff.
 ## Consumer Requirements
 
 A consumer declares a `video -> action` `PolicyCompositionCapability`. The
-declaration owns two independent choices:
+declaration owns three independent choices:
 
 - the transferable input/output modalities;
 - how stochastic sampling obtains its RNG stream.
+- any training objective that must have positive weight in the checkpoint's
+  resolved training configuration.
 
 Two RNG policies are maintained:
 
@@ -156,7 +162,8 @@ Loading fails before simulator construction unless:
   temporal stride, patch geometry, and generated chunk size;
 - both frontends resolve to the same content-derived VAE identity;
 - each generated chunk and consumer output report the same frame origin;
-- the consumer program is VTA, fixed IDM, or GJD with an active IDM route;
+- each declared training objective is present in typed training provenance;
+- the producer does not require clean future inputs unavailable to that route;
 - each runtime declares a supported recurrent-history policy;
 - packed DualExpert action modules share their runtime device.
 
@@ -178,12 +185,19 @@ from open_wam.pipelines import (
     resolve_policy_video_action_consumer_plan,
     resolve_policy_video_producer_plan,
 )
+from open_wam.models.training_provenance import PolicyTrainingProvenance
 
 producer_plan = resolve_policy_video_producer_plan(
-    producer.policy_variant
+    producer.policy_variant,
+    training=PolicyTrainingProvenance.from_routes(
+        producer_config.data.dynamics_routing.active_routes
+    ),
 )
 consumer_plan = resolve_policy_video_action_consumer_plan(
-    consumer.policy_variant
+    consumer.policy_variant,
+    training=PolicyTrainingProvenance.from_routes(
+        consumer_config.data.dynamics_routing.active_routes
+    ),
 )
 generation_request = PolicyVideoGenerationRequest(
     frame_count=4,
@@ -227,6 +241,13 @@ and seed the consumer call. In production, use the LIBERO adapter instead of
 reproducing seed, frontend, execution-commit, and history-reconciliation logic
 around this low-level flow.
 
+Use the loaded checkpoint's resolved training configuration for provenance.
+It declares configured supervision, not measured model quality. Native VTA and
+video-only policies need no routed objective; GJD video production requires
+joint training, and strict/GJD action consumption requires IDM training. A
+custom capable policy can declare the same contracts without adding a program
+name to LIBERO. Missing required provenance fails closed.
+
 ## LIBERO CLI
 
 The canonical route is `generated_video_then_action`:
@@ -252,7 +273,7 @@ uv run --extra sim python \
   --frontend-encode-mode lingbot_streaming_vae \
   --startup-model-obs-frames 1 \
   --startup-env-init-steps 5 \
-  --dual-expert-inference-window-size 30 \
+  --inference-window-size 30 \
   --runtime-device cuda:0 \
   --action-device cuda:0 \
   --frontend-device cuda:0 \

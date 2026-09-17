@@ -47,12 +47,9 @@ def append_predicted_latent_chunk(
 
 
 def extract_predicted_latents(infer_output: Any) -> torch.Tensor | None:
-    """Read optional imagined latents from decoder or policy diagnostics."""
-
-    predicted_latents = infer_output.decoder_output.aux.get("predicted_latents")
-    if not isinstance(predicted_latents, torch.Tensor):
-        predicted_latents = infer_output.policy_output.aux.get("predicted_latents")
-    return predicted_latents if isinstance(predicted_latents, torch.Tensor) else None
+    """Read the generated-video product; diagnostics never select behavior."""
+    video = infer_output.policy_output.generated_video
+    return None if video is None else video.latents
 
 
 def iter_rollout_video_frames(
@@ -67,7 +64,7 @@ def iter_rollout_video_frames(
         real_row = np.ascontiguousarray(np.hstack([agentview, wrist]))
         titled = with_title(
             Image.fromarray(real_row),
-            "DualExpert Rollout (AgentView / Wrist)",
+            "Policy Rollout (AgentView / Wrist)",
         )
         yield np.ascontiguousarray(np.array(titled, copy=True))
 

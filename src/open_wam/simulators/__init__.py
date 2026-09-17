@@ -15,21 +15,16 @@ from open_wam.runtime.optional_dependencies import load_optional_module
 
 _EXPORTS: dict[str, str] = {
     "EpisodeSpec": "open_wam.simulators.contracts",
-    "LegacyAdapterSimulatorBackend": "open_wam.simulators.contracts",
+    "ObservationAdapterBackend": "open_wam.simulators.contracts",
     "SimulatorBackend": "open_wam.simulators.contracts",
+    "ControlCommand": "open_wam.runtime.control",
     "SimulatorCapabilities": "open_wam.simulators.contracts",
     "SimulatorObservation": "open_wam.simulators.contracts",
-    "SimulatorStepResult": "open_wam.simulators.contracts",
-    "ensure_simulator_backend": "open_wam.simulators.contracts",
+    "ControlTransition": "open_wam.runtime.control",
     "SimActionCommitMode": "open_wam.simulators.rollout",
-    "SimPolicyInferContext": "open_wam.simulators.rollout",
     "SimRolloutResult": "open_wam.simulators.rollout",
-    "SimStepResult": "open_wam.simulators.rollout",
-    "build_state_history_tensor": "open_wam.simulators.rollout",
-    "build_view_history_batch": "open_wam.simulators.rollout",
     "normalize_quaternion_xyzw": "open_wam.simulators.rollout",
     "run_closed_loop_sim_rollout": "open_wam.simulators.rollout",
-    "source_action_from_model_action": "open_wam.simulators.rollout",
     "summarize_sim_rollout": "open_wam.simulators.rollout",
 }
 

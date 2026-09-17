@@ -926,10 +926,6 @@ def _run_inference_scenario(
                     text_context=resolved_text_context,
                     negative_text_context=resolved_negative_text_context,
                 )
-            extra = _inference_extra(
-                fixture=fixture,
-                device=device,
-            )
             dynamics = _inference_dynamics(
                 mode=mode,
                 action_conditioning=action_conditioning,
@@ -940,7 +936,7 @@ def _run_inference_scenario(
                 context=PolicyInferContext(
                     state=state,
                     dynamics=dynamics,
-                    extra=extra,
+                    task_text=fixture.task_text,
                     temporal_geometry=PolicyTemporalGeometry(
                         frame_chunk_size=rollout_contract.model_frame_chunk_size,
                         attention_window_size=rollout_contract.inference_window_size,
@@ -1009,17 +1005,6 @@ def _run_inference_scenario(
         "chunks": chunks,
         "state_progression": progression,
         "cuda_peak_memory_bytes": int(torch.cuda.max_memory_allocated(device)),
-    }
-
-
-def _inference_extra(
-    *,
-    fixture,
-    device: torch.device,
-) -> dict[str, Any]:
-    return {
-        "task_text": fixture.task_text,
-        "action_device": str(device),
     }
 
 
@@ -1158,7 +1143,9 @@ def _inference_chunk_report(
         "state_schema": tensor_tree_schema(
             next_state,
             root="next_state",
-            max_entries=192,
+            # Include the feature grouping node without losing a cache leaf
+            # from the frozen source's 192-entry schema capture.
+            max_entries=193,
         ),
     }
     return report, predicted_latents.detach()

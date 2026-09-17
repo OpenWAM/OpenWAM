@@ -111,20 +111,20 @@ def test_lingbot_reference_transformer_weights_load_as_is(tmp_path: Path) -> Non
     train_output = pipeline.forward_train(batch.views, train_batch)
     infer_output = pipeline.forward_infer_step(
         batch.views,
-        PolicyInferContext(state=batch.state, extra={"task_text": batch.task_text}),
+        PolicyInferContext(state=batch.state, task_text=batch.task_text),
     )
     second_infer_output = pipeline.forward_infer_step(
         batch.views,
         PolicyInferContext(
             state=batch.state,
             previous_action=infer_output.decoder_output.action_pred,
-            extra={"task_text": batch.task_text},
+            task_text=batch.task_text,
         ),
         infer_state=infer_output.policy_output.next_state,
     )
 
     assert train_output.decoder_output.action_pred.shape == (2, 8, 30)
-    assert infer_output.decoder_output.action_pred.shape == (2, 8, 30)
-    assert second_infer_output.decoder_output.action_pred.shape == (2, 8, 30)
+    assert infer_output.decoder_output.action_pred.shape == (2, 4, 30)
+    assert second_infer_output.decoder_output.action_pred.shape == (2, 4, 30)
     assert second_infer_output.policy_output.next_state.step_index == 2
-    assert second_infer_output.policy_output.next_state.cache["cache_initialized"] is True
+    assert second_infer_output.policy_output.next_state.variant_state.past_clean_latents.shape[2] > 1

@@ -3,7 +3,6 @@ from __future__ import annotations
 import pytest
 import torch
 
-from open_wam.models.policy_variants.parallel_stream import reference_runtime
 from open_wam.models.policy_variants.parallel_stream.proprio_conditioning import (
     build_single_stream_hidden_proprio_context,
     build_single_stream_hidden_proprio_history_context,
@@ -36,15 +35,6 @@ def _apply_test_packed_context(
     )
 
 
-def test_reference_runtime_proprio_names_alias_canonical_contract() -> None:
-    assert (
-        reference_runtime._single_stream_hidden_proprio_context
-        is build_single_stream_hidden_proprio_context
-    )
-    assert (
-        reference_runtime._inject_proprio_text_context
-        is inject_deprecated_proprio_text_context
-    )
 
 
 def test_deprecated_text_context_preserves_cfg_values_and_gradients() -> None:

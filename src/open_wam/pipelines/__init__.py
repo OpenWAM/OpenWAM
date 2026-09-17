@@ -16,11 +16,6 @@ _EXPORTS: dict[str, str] = {
     "register_policy_variant": "open_wam.pipelines.registries",
     "registered_action_decoders": "open_wam.pipelines.registries",
     "registered_policy_variants": "open_wam.pipelines.registries",
-    "LingbotExactArtifactBundle": "open_wam.pipelines.lingbot_exact",
-    "LingbotExactChunkOutput": "open_wam.pipelines.lingbot_exact",
-    "LingbotExactRunner": "open_wam.pipelines.lingbot_exact",
-    "LingbotExactSession": "open_wam.pipelines.lingbot_exact",
-    "LingbotExactWarmupOutput": "open_wam.pipelines.lingbot_exact",
     "VariantPipeline": "open_wam.pipelines.variant_pipeline",
     "VariantPipelineInferOutput": "open_wam.pipelines.variant_pipeline",
     "VariantPipelineTrainOutput": "open_wam.pipelines.variant_pipeline",
@@ -33,37 +28,23 @@ _EXPORTS: dict[str, str] = {
     "build_video_conditioned_action_context": "open_wam.pipelines.video_action_composition",
     "build_video_conditioned_action_request": "open_wam.pipelines.video_action_composition",
     "build_action_decoder": "open_wam.pipelines.factory",
-    "build_exact_runtime_runner_from_config": "open_wam.pipelines.factory",
-    "build_lingbot_exact_runner_from_config": "open_wam.pipelines.factory",
     "build_policy_variant": "open_wam.pipelines.factory",
     "build_variant_pipeline_from_config": "open_wam.pipelines.factory",
-    "load_lingbot_exact_artifact_bundle": "open_wam.pipelines.lingbot_exact",
     "require_generated_video": "open_wam.pipelines.video_action_composition",
     "require_compatible_video_latent_spaces": "open_wam.pipelines.video_action_composition",
     "resolve_policy_video_action_consumer_plan": "open_wam.pipelines.video_action_composition",
     "resolve_policy_video_producer_plan": "open_wam.pipelines.video_action_composition",
-    "save_lingbot_exact_artifact_bundle": "open_wam.pipelines.lingbot_exact",
 }
 
-_ALIASES: dict[str, str] = {
-    "ExactRuntimeArtifactBundle": "LingbotExactArtifactBundle",
-    "ExactRuntimeChunkOutput": "LingbotExactChunkOutput",
-    "ExactRuntimeRunner": "LingbotExactRunner",
-    "ExactRuntimeSession": "LingbotExactSession",
-    "ExactRuntimeWarmupOutput": "LingbotExactWarmupOutput",
-}
-
-__all__ = sorted((*_EXPORTS, *_ALIASES))
+__all__ = sorted(_EXPORTS)
 
 
 def __getattr__(name: str) -> Any:
-    resolved_name = _ALIASES.get(name, name)
     try:
-        module_name = _EXPORTS[resolved_name]
+        module_name = _EXPORTS[name]
     except KeyError as exc:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from exc
     module = import_module(module_name)
-    value = getattr(module, resolved_name)
-    globals()[resolved_name] = value
+    value = getattr(module, name)
     globals()[name] = value
     return value

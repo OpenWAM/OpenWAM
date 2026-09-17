@@ -6,6 +6,8 @@ The transformer is small; this is not a pretrained-model benchmark.
 """
 
 import os
+import random
+from dataclasses import replace
 
 import pytest
 import torch
@@ -22,9 +24,11 @@ from open_wam.configs import (
 )
 from open_wam.data.latent_batching import LatentBatchCollator
 from open_wam.data.latent_contracts import LatentWAMSample
+from open_wam.models.common.sharded_execution import unshard_runtime_parameters
+from open_wam.models.policy_variants.contracts import PolicyInferContext
 from open_wam.training.strategies import DistributedStrategy
-from tests.test_variable_batch_pipeline import _tiny_pipeline
 from tests.test_sequence_batch_dynamics import dynamics_samples
+from tests.test_variable_batch_pipeline import _collate, _samples, _tiny_pipeline
 
 
 @pytest.fixture(scope="module")
@@ -121,3 +125,59 @@ def test_sequence_batch_fsdp_training(program, mode, frame_counts, fsdp_strategy
         assert gradients and all(torch.isfinite(value).all() for value in gradients)
         assert any(value.abs().sum() > 0 for value in gradients)
         optimizer.step()
+
+
+@pytest.mark.gpu
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    "program",
+    (VideoActionProgram.VIDEO_THEN_ACTION, VideoActionProgram.DECOUPLED_SAME_STEP),
+)
+def test_sharded_owner_survives_split_inference(program, fsdp_strategy):
+    strategy = fsdp_strategy
+    torch.manual_seed(89)
+    pipeline, executor = _tiny_pipeline(program, attention_head_dim=32)
+    variant = pipeline.policy_variant
+    variant.inference_config = replace(
+        variant.inference_config,
+        video_num_inference_steps=2,
+        action_num_inference_steps=2,
+    )
+    executor.pipeline = strategy.prepare_model(pipeline)
+    owner = variant.packed_block_stack
+    parameters = dict(pipeline.named_parameters())
+    batch = executor.batch_adapter.move_to_device(
+        _collate(_samples(program), BatchingMode.PADDED), strategy.device
+    )
+
+    def train_step():
+        pipeline.train()
+        pipeline.zero_grad(set_to_none=True)
+        random.seed(91)
+        torch.manual_seed(91)
+        with strategy.autocast_context():
+            result = executor.forward_train(batch)
+        result.loss.backward()
+        return result.loss.detach().clone(), {
+            name: parameter.grad.to_local().detach().clone()
+            for name, parameter in pipeline.named_parameters()
+            if parameter.grad is not None
+        }
+
+    loss, gradients = train_step()
+    pipeline.eval()
+    # Custom inference methods bypass the root FSDP forward hook. Materialize
+    # the root-owned frontend/projection parameters as well as paired blocks.
+    with torch.no_grad(), strategy.autocast_context(), unshard_runtime_parameters(pipeline):
+        pipeline.forward_infer_step_from_latents(
+            torch.randn(1, 48, 1, 4, 4, device=strategy.device),
+            PolicyInferContext(state=torch.randn(1, 1, 4, device=strategy.device)),
+            text_context=torch.randn(1, 3, 16, device=strategy.device),
+        )
+    assert variant.packed_block_stack is owner
+    assert all(dict(pipeline.named_parameters())[name] is parameter for name, parameter in parameters.items())
+    repeated_loss, repeated_gradients = train_step()
+    torch.testing.assert_close(repeated_loss, loss, rtol=0, atol=0)
+    assert repeated_gradients.keys() == gradients.keys()
+    for name, gradient in gradients.items():
+        torch.testing.assert_close(repeated_gradients[name], gradient, rtol=0, atol=0)

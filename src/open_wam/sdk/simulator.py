@@ -5,8 +5,8 @@ from open_wam.simulators.contracts import (
     SimulatorBackend,
     SimulatorCapabilities,
     SimulatorObservation,
-    SimulatorStepResult,
 )
+from open_wam.runtime.control import ControlCommand, ControlTransition
 from open_wam.simulators.registry import (
     SimulatorAdapterFactory,
     SimulatorFactoryContext,
@@ -15,13 +15,14 @@ from open_wam.simulators.registry import (
 )
 
 __all__ = [
+    "ControlCommand",
     "EpisodeSpec",
     "SimulatorAdapterFactory",
     "SimulatorBackend",
     "SimulatorCapabilities",
     "SimulatorFactoryContext",
     "SimulatorObservation",
-    "SimulatorStepResult",
+    "ControlTransition",
     "register_simulator_adapter",
     "registered_simulator_adapters",
 ]
