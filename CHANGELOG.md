@@ -3,7 +3,7 @@
 OpenWAM follows semantic-versioned public surfaces for configs, CLI flags,
 result schemas, artifact manifests, and checkpoint layout expectations.
 
-## 0.2.0 - Unreleased
+## 0.2.0 - 2026-09-17
 
 This is an explicit pre-1.0 compatibility boundary, not a drop-in patch for
 0.1.1. See the [migration guide](docs/migration_0_2.md). Model weights,
@@ -57,11 +57,14 @@ datasets, and simulator installations remain separate artifacts.
 - The characterized third-party dependency lock is unchanged. The proposed
   Torch/Setuptools upgrade is deferred, not a vulnerability fix.
 - Existing dependency-audit exceptions retain their scope and expiry.
-  Reassess the Accelerate acceptance before publication and before 2026-10-09;
-  the other current exceptions expire 2026-11-06. Only trusted artifacts are
+  The maintainer renewed the Accelerate acceptance for 0.2.0; reassess before
+  2026-10-09. The other current exceptions expire 2026-11-06. Only trusted artifacts are
   supported under the [artifact-trust policy](SECURITY.md#artifact-trust).
-- This entry is a release draft, not a claim that final GPU/simulator release
-  gates have passed. Numerical reproducibility requires the recorded dependency
+- Release validation passed 3,551 distinct tests plus 18 subtests, including
+  all 38 fresh-cache two-rank FSDP cases. A full VTA checkpoint completed one
+  representative LIBERO rollout successfully using split frontend placement;
+  this is not an aggregate benchmark claim. Another 44 external-asset/opt-in
+  tests were not run. Numerical reproducibility requires the recorded dependency
   and hardware stack, not just a matching package version.
 
 ## 0.1.1 - 2026-09-09

@@ -37,8 +37,7 @@ OpenWAM separates model topology, video/action conditioning, sequence
 semantics, visual execution, and action decoding so that controlled experiments
 share the same trainer and visual stack.
 
-> **Release status:** This checkout prepares OpenWAM 0.2.0 (unreleased).
-> The latest published version is 0.1.1. OpenWAM remains alpha-stage Linux
+> **Version 0.2.0:** OpenWAM remains alpha-stage Linux
 > research software; see the [0.2 migration guide](docs/migration_0_2.md) before upgrading.
 > The public CPU lifecycle and synthetic artifacts are self-contained. Large
 > benchmark runs use separately provisioned datasets and checkpoints described

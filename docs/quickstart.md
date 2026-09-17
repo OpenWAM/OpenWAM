@@ -22,7 +22,7 @@ openwam-sanity \
 
 The distribution is named `openwam`; Python code uses `import open_wam`.
 The optional `openwam-sdk` installation alias provides the same implementation
-and extras. To pin a version, use `openwam[train,eval]==0.1.1`; see
+and extras. To pin a version, use `openwam[train,eval]==0.2.0`; see
 [Releases](release.md) for reproducibility guidance.
 
 The base `pip install openwam` needs only PyYAML and supports config/metadata

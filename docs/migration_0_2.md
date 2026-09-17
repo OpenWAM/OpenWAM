@@ -1,6 +1,6 @@
 # Migrating From 0.1.x To 0.2
 
-**Status: release draft; 0.2.0 is not published.** This is an explicit pre-1.0
+**Version 0.2.0** is an explicit pre-1.0
 compatibility boundary. Keep 0.1.1 pinned until downstream extensions and
 recorded experiments have been validated against the new contracts.
 
