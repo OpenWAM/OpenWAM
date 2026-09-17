@@ -25,7 +25,7 @@ def test_docs_site_stages_curated_public_docs_only(tmp_path: Path) -> None:
 
     summary = builder.build_docs_site(output)
 
-    assert summary["public_pages"] == len(builder.PUBLIC_MARKDOWN_PATHS) == 33
+    assert summary["public_pages"] == len(builder.PUBLIC_MARKDOWN_PATHS) == 34
     assert summary["public_assets"] == len(builder.PUBLIC_ASSET_PATHS) == 8
     assert summary["notes_published"] is False
     assert summary["broken_local_links"] == 0
@@ -33,6 +33,7 @@ def test_docs_site_stages_curated_public_docs_only(tmp_path: Path) -> None:
     assert (output / "index.md").is_file()
     assert (output / builder.OUTPUT_SENTINEL).is_file()
     assert (output / "quickstart.md").is_file()
+    assert (output / "migration_0_2.md").is_file()
     assert (output / "architecture.md").is_file()
     assert (output / "policy_architectures.md").is_file()
     assert (output / "benchmarks.md").is_file()

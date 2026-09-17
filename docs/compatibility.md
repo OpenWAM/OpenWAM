@@ -50,6 +50,11 @@ by the CPU suite.
 
 ## Compatibility Policy
 
+Version 0.2.0 is an explicit pre-1.0 SDK and rollout migration, not a
+backward-compatible 0.1.x patch. The [migration guide](migration_0_2.md)
+lists the removed interfaces, replacements, and intentional behavior changes.
+Pin 0.1.1 when an extension still needs those older contracts.
+
 Typed config fields, checkpoint compatibility, result schemas, and SDK exports
 are fail-closed. The low-level checkpoint loader is strict by default. Standard
 evaluation accepts a checkpoint superset: every current runtime tensor must be
