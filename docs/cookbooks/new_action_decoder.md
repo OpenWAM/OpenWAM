@@ -48,13 +48,15 @@ The decoder owns final supervised outputs and losses. It should not own visual
 execution or policy-variant semantics.
 
 `ActionDecoder.build_rollout_plan()` is the inference-to-environment boundary.
-The default implementation releases the full `[H_action, D_action]` prediction
-and also supports the standard cached `current_action` output. A decoder with a
-different cache or commit policy should override `build_rollout_plan()` and
-return an `ActionDecoderRolloutPlan` containing detached float32 CPU actions.
+The default implementation requires `[1, H_action, D_action]` and releases the
+full `[H_action, D_action]` prediction; it does not read `aux["current_action"]`.
+A decoder with a different cache or commit policy should override
+`build_rollout_plan()` and return an `ActionDecoderRolloutPlan` containing
+detached float32 CPU actions.
 Override `commit_rollout_plan()` when releasing multiple actions must advance
-decoder-owned state. Benchmark integrations consume this typed plan and must
-not interpret decoder-private `aux` keys.
+decoder-owned state, returning the new state without mutating the input.
+Benchmark integrations consume this typed plan and must not interpret
+decoder-private `aux` keys.
 
 Required checks:
 

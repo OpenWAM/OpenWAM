@@ -230,6 +230,8 @@ def test_single_rank_fsdp_accumulation_and_group_ownership(
         assert not strategy.distributed
         plain = Projection(4, 4)
         sharded = strategy.prepare_model(deepcopy(plain))
+        assert strategy._device_mesh.device_type == "cpu"
+        assert all(parameter.device.type == "cpu" for parameter in sharded.parameters())
         optimizers = [torch.optim.AdamW(m.parameters(), lr=1e-3)
                       for m in (plain, sharded)]
         inputs = torch.arange(8, dtype=torch.float32).reshape(2, 4) / 8

@@ -5,6 +5,10 @@ role-based components without modifying the OpenWAM source tree.
 
 ## Compatibility Boundary
 
+Extensions written against 0.1.x must follow the
+[0.2 migration guide](migration_0_2.md), particularly the immutable inference
+state, decoder commit, and simulator control contracts.
+
 New integrations should import from these role-specific modules:
 
 - `open_wam.sdk.config`: typed config envelopes, loading, and resource resolution

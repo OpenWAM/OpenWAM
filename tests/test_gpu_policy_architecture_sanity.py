@@ -243,19 +243,22 @@ def _clear_cuda_between_tests():
 
 
 @pytest.mark.parametrize(
-    ("case_name", "expected_horizon"),
+    ("case_name", "expected_train_horizon", "expected_infer_horizon"),
     [
-        ("parallel_exact", 8),
-        ("parallel_action_conditioned", 8),
-        ("dual_expert_vta", 8),
-        ("dual_expert_joint", 8),
-        ("dual_expert_decoupled", 8),
+        # Parallel returns one inference chunk (2 frames x 2 actions), not
+        # the full eight-action training sample.
+        ("parallel_exact", 8, 4),
+        ("parallel_action_conditioned", 8, 4),
+        ("dual_expert_vta", 8, 8),
+        ("dual_expert_joint", 8, 8),
+        ("dual_expert_decoupled", 8, 8),
     ],
 )
 def test_gpu_policy_architecture_pipeline_train_and_infer_matrix(
     tmp_path: Path,
     case_name: str,
-    expected_horizon: int,
+    expected_train_horizon: int,
+    expected_infer_horizon: int,
 ) -> None:
     config_path = _pipeline_case_path(case_name, tmp_path)
     config = _prepare_pipeline_config(config_path)
@@ -267,8 +270,12 @@ def test_gpu_policy_architecture_pipeline_train_and_infer_matrix(
     train_output = pipeline.forward_train(batch.views, train_batch)
     infer_output = pipeline.forward_infer_step(batch.views, _infer_context(batch))
 
-    assert train_output.decoder_output.action_pred.shape == (1, expected_horizon, config.action_decoder.action_dim)
-    assert infer_output.decoder_output.action_pred.shape == (1, expected_horizon, config.action_decoder.action_dim)
+    assert train_output.decoder_output.action_pred.shape == (
+        1, expected_train_horizon, config.action_decoder.action_dim
+    )
+    assert infer_output.decoder_output.action_pred.shape == (
+        1, expected_infer_horizon, config.action_decoder.action_dim
+    )
 
 @pytest.mark.parametrize(
     "case_name",

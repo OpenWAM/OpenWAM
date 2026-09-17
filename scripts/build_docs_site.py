@@ -30,6 +30,7 @@ PUBLIC_MARKDOWN_PATHS = (
     Path("extension_sdk.md"),
     Path("index.md"),
     Path("lingbot_va_baseline_libero10.md"),
+    Path("migration_0_2.md"),
     Path("policy_architectures.md"),
     Path("pretraining/index.md"),
     Path("pretraining/batching.md"),

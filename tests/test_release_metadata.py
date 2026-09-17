@@ -10,9 +10,11 @@ import pytest
 
 from scripts.check_release_metadata import (
     private_distribution_violations,
+    validate_release_build_config,
     validate_public_consortium_snapshot,
     validate_project_metadata,
     validate_public_model_artifacts,
+    validate_version_state,
 )
 
 
@@ -26,6 +28,76 @@ def _pyproject() -> dict[str, object]:
 @pytest.mark.unit
 def test_public_project_metadata_is_complete() -> None:
     validate_project_metadata(_pyproject())
+
+
+@pytest.mark.unit
+def test_checkout_release_metadata_is_consistent() -> None:
+    pyproject = _pyproject()
+    validate_release_build_config(pyproject)
+    validate_version_state(
+        version=pyproject["project"]["version"],
+        changelog=(REPO_ROOT / "CHANGELOG.md").read_text(encoding="utf-8"),
+        citation=(REPO_ROOT / "CITATION.cff").read_text(encoding="utf-8"),
+        require_released=False,
+    )
+
+
+@pytest.mark.unit
+def test_undated_release_draft_is_valid_but_cannot_be_published() -> None:
+    metadata = {
+        "version": "0.2.0",
+        "changelog": "## 0.2.0 - Unreleased\n",
+        "citation": 'version: "0.2.0"\n',
+    }
+    validate_version_state(**metadata, require_released=False)
+    with pytest.raises(ValueError, match="dated changelog"):
+        validate_version_state(**metadata, require_released=True)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("changelog", "citation", "require_released", "message"),
+    [
+        (
+            "## 0.2.0 - Unreleased",
+            'version: "0.1.1"',
+            False,
+            "version must match",
+        ),
+        (
+            "## 0.2.0 - Unreleased",
+            'version: "0.2.0"\ndate-released: "2026-09-09"',
+            False,
+            "omit date-released",
+        ),
+        (
+            "## 0.2.0 - 2026-09-09",
+            'version: "0.2.0"\ndate-released: "2026-09-08"',
+            True,
+            "date-released must match",
+        ),
+    ],
+)
+def test_release_metadata_rejects_partial_version_or_date_updates(
+    changelog: str, citation: str, require_released: bool, message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        validate_version_state(
+            version="0.2.0",
+            changelog=changelog,
+            citation=citation,
+            require_released=require_released,
+        )
+
+
+@pytest.mark.unit
+def test_dated_consistent_metadata_passes_publication_gate() -> None:
+    validate_version_state(
+        version="0.2.0",
+        changelog="## 0.2.0 - 2026-09-09",
+        citation='version: "0.2.0"\ndate-released: "2026-09-09"',
+        require_released=True,
+    )
 
 
 @pytest.mark.unit

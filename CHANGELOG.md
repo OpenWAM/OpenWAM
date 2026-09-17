@@ -3,6 +3,67 @@
 OpenWAM follows semantic-versioned public surfaces for configs, CLI flags,
 result schemas, artifact manifests, and checkpoint layout expectations.
 
+## 0.2.0 - Unreleased
+
+This is an explicit pre-1.0 compatibility boundary, not a drop-in patch for
+0.1.1. See the [migration guide](docs/migration_0_2.md). Model weights,
+datasets, and simulator installations remain separate artifacts.
+
+### Changed
+
+- Unified video/action inference under shared denoising, layout, history, and
+  call-local feature-cache owners for Parallel Stream, Dual Expert, GJD,
+  conditional dynamics, and chunk-conditioned causal video.
+- Maintained closed-loop rollouts share a typed planner, immutable session,
+  control lifecycle, and engine. Benchmark I/O stays outside model execution.
+- Inference uses explicit per-stream CFG and stage-ordered noise draws.
+  Equal seeds do not imply identical traces from retired runners. Parallel
+  inference preserves the generated chunk extent instead of interpolating
+  actions to the training horizon; training decoding is unchanged.
+- Single-rank `trainer.strategy=fsdp` now uses FSDP, including configured mixed
+  precision and optional CPU offload. Select `single_device` explicitly to
+  retain the previous unwrapped execution path.
+
+### Breaking SDK And Rollout Changes
+
+- `PolicyInferContext.extra` is replaced by typed input fields.
+  `PolicyInferState` is immutable; its cursor owns `step_index`, and the generic
+  `cache` field is removed.
+- Simulator adapters return `ControlTransition` instead of
+  `SimulatorStepResult` and implement `materialize_control` returning both
+  executable and dataset-source actions in a `ControlCommand`.
+- Decoder rollout commits return new state instead of mutating their input.
+  The default plan consumes a single environment's full predicted action chunk,
+  not the legacy `aux["current_action"]` convention.
+- The architecture-owned exact runner and old private inference executors are
+  retired. Use the shared policy runner and maintained LIBERO policy commands.
+- Realtime fallback-freeze/quarantine options are removed. Actually executed
+  controls and observations enter history; blocking and fixed-rate scheduling
+  remain explicit alternatives, not equivalent replacements for hiding fallback.
+
+### Fixed
+
+- Single-rank FSDP no longer silently ignores CPU offload; process-group
+  ownership and teardown are explicit.
+- Explicit CPU FSDP training retains a CPU device mesh even on CUDA hosts,
+  rather than letting PyTorch choose an accelerator implicitly.
+- LIBERO action-budget termination retains its budget reason rather than
+  reporting it as native environment termination.
+- GPU architecture tests distinguish the Parallel training horizon from the
+  shorter inference chunk.
+
+### Security And Validation
+
+- The characterized third-party dependency lock is unchanged. The proposed
+  Torch/Setuptools upgrade is deferred, not a vulnerability fix.
+- Existing dependency-audit exceptions retain their scope and expiry.
+  Reassess the Accelerate acceptance before publication and before 2026-10-09;
+  the other current exceptions expire 2026-11-06. Only trusted artifacts are
+  supported under the [artifact-trust policy](SECURITY.md#artifact-trust).
+- This entry is a release draft, not a claim that final GPU/simulator release
+  gates have passed. Numerical reproducibility requires the recorded dependency
+  and hardware stack, not just a matching package version.
+
 ## 0.1.1 - 2026-09-09
 
 ### Added

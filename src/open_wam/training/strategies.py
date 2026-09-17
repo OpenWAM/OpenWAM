@@ -344,9 +344,11 @@ class DistributedStrategy(SingleDeviceStrategy):
                 **({"store": dist.HashStore()} if self.world_size == 1 else {}),
             )
             self._owns_process_group = True
+        # Without an explicit CPU mesh, FSDP may select a visible accelerator.
         self._device_mesh = (
             init_device_mesh(self.device.type, (self.world_size,))
-            if self._uses_process_group and self.device.type != "cpu"
+            if self._uses_process_group
+            and (self.device.type != "cpu" or self.kind == StrategyName.FSDP)
             else None
         )
 
