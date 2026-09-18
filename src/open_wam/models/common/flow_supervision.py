@@ -132,6 +132,46 @@ def denoised_actions_from_flow(
     return noisy_actions - sigma[:, :, None].to(noisy_actions.dtype) * flow_pred
 
 
+def masked_video_flow_match_loss(
+    *,
+    flow_pred: torch.Tensor,
+    targets: torch.Tensor,
+    timesteps: torch.Tensor,
+    scheduler: FlowMatchScheduler,
+    future_loss_mask: torch.Tensor,
+) -> torch.Tensor:
+    """Reduce video flow error globally using a ``[B, 1, F, 1, 1]`` frame mask."""
+
+    per_token_loss = torch.nn.functional.mse_loss(flow_pred.float(), targets.float().detach(), reduction="none")
+    timestep_weight = scheduler.training_weight(timesteps.flatten()).reshape(timesteps.shape)
+    per_token_loss = per_token_loss * timestep_weight[:, None, :, None, None]
+    per_token_loss = per_token_loss * future_loss_mask.float()
+    denom = future_loss_mask.float().sum().clamp_min(1.0) * float(
+        flow_pred.shape[1] * flow_pred.shape[3] * flow_pred.shape[4]
+    )
+    return per_token_loss.sum() / denom
+
+
+def masked_video_latent_mse(
+    *,
+    predicted_latents: torch.Tensor,
+    target_latents: torch.Tensor,
+    future_loss_mask: torch.Tensor,
+) -> torch.Tensor:
+    """Reduce latent MSE globally using a ``[B, 1, F, 1, 1]`` frame mask."""
+
+    per_token = torch.nn.functional.mse_loss(
+        predicted_latents.float(),
+        target_latents.float(),
+        reduction="none",
+    )
+    per_token = per_token * future_loss_mask.float()
+    denom = future_loss_mask.float().sum().clamp_min(1.0) * float(
+        predicted_latents.shape[1] * predicted_latents.shape[3] * predicted_latents.shape[4]
+    )
+    return per_token.sum() / denom
+
+
 def reduce_video_flow_match_loss(
     *,
     flow_pred: torch.Tensor,
@@ -216,6 +256,8 @@ __all__ = [
     "build_video_frame_loss_mask",
     "denoised_video_latents_from_flow",
     "denoised_actions_from_flow",
+    "masked_video_flow_match_loss",
+    "masked_video_latent_mse",
     "reduce_video_flow_match_loss",
     "reduce_frame_aligned_action_flow_match_loss",
     "reduce_slot_aligned_action_flow_match_loss",

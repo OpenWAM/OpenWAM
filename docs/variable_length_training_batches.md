@@ -30,7 +30,7 @@ sorting; samples are not discarded separately from each bucket.
 
 ## What Remains Independent
 
-All three new modes retain each sample's true tensor lengths, metadata,
+Padded, bucketed, and packed modes retain each sample's true tensor lengths, metadata,
 supervision boundaries, and action masks. Predictions and losses are computed
 only over the original sample extent. Padding introduced by collation cannot
 contribute a supervised target.
@@ -246,22 +246,13 @@ OPEN_WAM_RUN_GPU_SANITY=1 uv run pytest -q \
   tests/test_dual_expert_sequence_batches.py tests/test_sequence_batch_dynamics.py -m gpu
 ```
 
-Confirm that CUDA tests ran rather than skipped. The kernel gate checks FP32 for
-all six policy programs, retains the original VTA/Joint BF16 thresholds, and
-checks self/cross-attention, backward gradients, and sample isolation. The
-full-pipeline gate covers all programs in FP32 and BF16. It
-does not promise bitwise agreement between differently shaped BF16 GEMMs. The
-end-to-end gate additionally compares against FP32: batched BF16
-maximum and RMS errors must stay within twice the independently measured B1 BF16
-error plus the FP32 comparison tolerance, for outputs and gradients. This does
-not relax the existing kernel parity thresholds or strict-mode baseline. It
-does not replace a representative multi-GPU FSDP run with the intended precision,
-activation checkpointing, and real sequence lengths.
+Confirm that CUDA tests ran rather than skipped. They compare independent and
+batched execution, including gradients and sample isolation. Differently shaped
+BF16 matrix operations need not be bitwise identical; the tests use explicit
+tolerances against FP32 and independent-execution references.
 
-A separate two-rank smoke uses a small transformer with unequal 9-17-frame
-sequences at latent resolution 8x16, four actions per frame, and independently
-varying chunks/windows. It covers six policy programs, mixed GJD, and strict
-IDM/FDM, performing two BF16 FSDP optimizer updates with activation checkpointing:
+Run the two-rank FSDP smoke to check distributed execution with mixed lengths
+and activation checkpointing:
 
 ```bash
 OPEN_WAM_RUN_GPU_SANITY=1 torchrun --standalone --nproc-per-node=2 \

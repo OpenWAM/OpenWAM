@@ -19,6 +19,7 @@ from .lerobot_v2 import EpisodeWindow, LeRobotEpisodeRecord
 from .row_action_targets import resolve_row_key
 from .replay_status import load_replay_status_records, split_episode_indices_by_replay_status
 from .sequence_packing import pack_temporal_sequence
+from .window_indexing import observation_window_starts
 
 
 @dataclass(frozen=True)
@@ -240,20 +241,17 @@ class LeRobotV2VideoWindowDataset(Dataset[WAMSample]):
         )
 
     def _build_sample_index(self) -> list[EpisodeWindow]:
-        num_frames = self.data_config.num_frames
-        frame_stride = self.data_config.frame_stride
-        action_horizon = self.data_config.action_schema.action_horizon
-        sample_stride = self.data_config.sample_stride
-        required_span = (num_frames - 1) * frame_stride + action_horizon
-        windows: list[EpisodeWindow] = []
-        for episode_index in self.episodes:
-            record = self.episode_records[episode_index]
-            max_start = record.length - required_span
-            if max_start < 0:
-                continue
-            for start in range(0, max_start + 1, sample_stride):
-                windows.append(EpisodeWindow(episode_index=episode_index, observation_start=start))
-        return windows
+        return [
+            EpisodeWindow(episode_index=episode_index, observation_start=start)
+            for episode_index in self.episodes
+            for start in observation_window_starts(
+                episode_length=self.episode_records[episode_index].length,
+                num_frames=self.data_config.num_frames,
+                frame_stride=self.data_config.frame_stride,
+                action_horizon=self.data_config.action_schema.action_horizon,
+                sample_stride=self.data_config.sample_stride,
+            )
+        ]
 
 
 def build_lerobot_v2_video_train_val_datasets(
