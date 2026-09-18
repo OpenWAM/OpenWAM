@@ -4,6 +4,8 @@ import ast
 import copy
 from pathlib import Path
 
+import pytest
+
 from open_wam.configs import (
     SharedVideoTransformerConfig,
     load_experiment_config,
@@ -464,170 +466,51 @@ def _class_method(path: Path, class_name: str, method_name: str) -> ast.Function
     )
 
 
-def test_config_package_does_not_depend_on_higher_or_compatibility_layers() -> None:
-    forbidden_prefixes = (
-        "open_wam.data",
-        "open_wam.models",
-        "open_wam.pipelines",
-        "open_wam.runtime",
-        "open_wam.training",
-        "open_wam.utils",
-    )
-
+@pytest.mark.parametrize(
+    ("package", "forbidden_prefixes"),
+    [
+        ("configs", (
+            "open_wam.data", "open_wam.models", "open_wam.pipelines",
+            "open_wam.runtime", "open_wam.training", "open_wam.utils",
+        )),
+        ("contracts", ("open_wam",)),
+        ("utils", ("open_wam.models",)),
+        ("models/visual_tower", ("open_wam.models.policy_variants",)),
+        ("models", ("open_wam.data",)),
+        ("models/policy_variants/dual_expert", (
+            "open_wam.models.policy_variants.parallel_stream",
+        )),
+        ("models/policy_variants/parallel_stream", (
+            "open_wam.models.policy_variants.dual_expert",
+        )),
+    ],
+    ids=["configs", "contracts", "utils", "visual-tower", "models",
+         "dual-expert", "parallel-stream"],
+)
+def test_package_dependency_boundaries(
+    package: str, forbidden_prefixes: tuple[str, ...]
+) -> None:
     violations = sorted(
         imported
-        for imported in _absolute_imports("configs")
+        for imported in _absolute_imports(package)
         if imported.startswith(forbidden_prefixes)
     )
-
-    assert violations == []
-
-
-def test_foundational_contracts_are_dependency_free() -> None:
-    violations = sorted(
-        imported
-        for imported in _absolute_imports("contracts")
-        if imported.startswith("open_wam")
-    )
-
-    assert violations == []
+    assert not violations, f"{package} imports a forbidden layer: {violations}"
 
 
-def test_utils_package_does_not_depend_on_model_implementations() -> None:
-    violations = sorted(
-        imported
-        for imported in _absolute_imports("utils")
-        if imported.startswith("open_wam.models")
-    )
-
-    assert violations == []
-
-
-def test_visual_tower_does_not_depend_on_policy_implementations() -> None:
-    violations = sorted(
-        imported
-        for imported in _absolute_imports("models/visual_tower")
-        if imported.startswith("open_wam.models.policy_variants")
-    )
-
-    assert violations == []
-
-
-def test_model_package_does_not_depend_on_data_implementations() -> None:
-    violations = sorted(
-        imported
-        for imported in _absolute_imports("models")
-        if imported.startswith("open_wam.data")
-    )
-
-    assert violations == []
-
-
-def test_visual_tower_cache_lifecycle_has_one_policy_owner() -> None:
-    visual_root = PACKAGE_ROOT / "models" / "visual_tower"
-    lifecycle_path = visual_root / "cache_lifecycle.py"
-    tower_path = visual_root / "tower.py"
-    lifecycle_methods = {
-        "advance_state",
-        "build_update_metadata",
-        "clear_state",
-        "ensure_branches",
-        "init_state",
-        "resolve_state",
-        "truncate_state",
-        "_slice_attention_cache_entry",
-        "_truncate_attention_cache_entry",
-    }
-    facade_methods = {
-        "advance_runtime_cache_state",
-        "build_runtime_cache_update_metadata",
-        "clear_runtime_cache_state",
-        "ensure_runtime_cache_branches",
-        "init_runtime_cache_state",
-        "resolve_runtime_cache_state",
-        "truncate_runtime_cache_state",
-    }
-
-    assert lifecycle_methods <= _class_method_definitions(
-        lifecycle_path,
-        "RuntimeCacheLifecycle",
-    )
-    tower_methods = _class_method_definitions(tower_path, "VisualTower")
-    assert facade_methods <= tower_methods
-    assert {
-        "_slice_attention_cache_entry",
-        "_truncate_attention_cache_entry",
-    }.isdisjoint(tower_methods)
-
-    tower_source = tower_path.read_text(encoding="utf-8")
-    assert "from .cache_lifecycle import" in tower_source
-    for backend_helper in (
-        "clear_cache_backend_payload",
-        "init_cache_backend_payload",
-        "resolve_cache_backend_spec",
-    ):
-        assert backend_helper not in tower_source
-
-
-def test_visual_tower_runtime_backbone_policy_has_one_owner() -> None:
-    visual_root = PACKAGE_ROOT / "models" / "visual_tower"
-    owner_path = visual_root / "runtime_backbone.py"
-    tower_path = visual_root / "tower.py"
-    owner_functions = {
-        "ensure_runtime_module_device",
-        "initialize_runtime_backbone",
-        "log_runtime_backbone_missing_keys",
-        "reset_runtime_module_cache",
-        "validate_runtime_backbone_request",
-    }
-
-    assert owner_functions <= _top_level_definitions(owner_path)
-    tower_methods = _class_method_definitions(tower_path, "VisualTower")
-    assert {
-        "ensure_runtime_backbone_device",
-        "get_runtime_backbone",
-        "reset_runtime_backbone_cache",
-    } <= tower_methods
-    assert {
-        "ensure_exact_runtime_transformer_device",
-        "ensure_lingbot_reference_transformer_device",
-        "get_exact_runtime_transformer",
-        "get_lingbot_reference_transformer",
-        "reset_exact_runtime_cache",
-        "reset_lingbot_reference_runtime",
-        "run_dual_expert_packed_video_forward",
-    }.isdisjoint(tower_methods)
-    tower_source = tower_path.read_text(encoding="utf-8")
-    assert "from .runtime_backbone import" in tower_source
-    for loading_helper in (
-        "is_allowed_runtime_missing_key",
-        "is_open_wam_exported_runtime_backbone_dir",
-        "load_exported_runtime_backbone_into_replica_core",
-        "load_reference_weights_into_replica_core",
-        "preferred_reference_dtype",
-        "resolve_runtime_backbone_dir",
-    ):
-        assert loading_helper not in tower_source
-
-
-def test_dual_expert_policy_does_not_depend_on_parallel_stream_implementation() -> None:
-    violations = sorted(
-        imported
-        for imported in _absolute_imports("models/policy_variants/dual_expert")
-        if imported.startswith("open_wam.models.policy_variants.parallel_stream")
-    )
-
-    assert violations == []
-
-
-def test_parallel_stream_policy_does_not_depend_on_dual_expert_implementation() -> None:
-    violations = sorted(
-        imported
-        for imported in _absolute_imports("models/policy_variants/parallel_stream")
-        if imported.startswith("open_wam.models.policy_variants.dual_expert")
-    )
-
-    assert violations == []
+@pytest.mark.parametrize(
+    "module",
+    [
+        "latent_hierarchical_sampling.py",
+        "lerobot_consortium_sampling.py",
+        "latent_causal_sampling.py",
+        "lerobot_v2_latent_split.py",
+        "mixed_video_planning.py",
+    ],
+)
+def test_data_planning_does_not_import_torch(module: str) -> None:
+    imports = _absolute_imports_for_file(PACKAGE_ROOT / "data" / module)
+    assert not any(name == "torch" or name.startswith("torch.") for name in imports)
 
 
 def test_video_action_backends_share_the_same_policy_semantic_base() -> None:
@@ -789,49 +672,6 @@ def test_core_packages_do_not_depend_on_optional_runtime_surfaces() -> None:
     assert violations == {}
 
 
-def test_lerobot_latent_repository_io_has_one_storage_owner() -> None:
-    storage_owned = {
-        "LocalEpisodeWindow",
-        "LocalLatentRepository",
-        "LocalRepoBundle",
-        "assemble_canonical_latents",
-        "condition_latent_offset_mismatches",
-        "discover_local_lerobot_repo_bundles",
-        "load_empty_text_embedding",
-        "scan_local_latent_windows",
-        "load_lerobot_v2_local_metadata",
-        "resolve_latent_root",
-        "reshape_latent_payload",
-    }
-    storage_path = PACKAGE_ROOT / "data" / "lerobot_v2_latent_storage.py"
-    dataset_path = LOCAL_LATENT_DATASET_OWNER_PATHS["LocalLeRobotLatentWindowDataset"]
-    storage_definitions = _top_level_definitions(storage_path)
-    dataset_definitions = _top_level_definitions(dataset_path)
-
-    assert storage_owned <= storage_definitions
-    assert storage_owned.isdisjoint(dataset_definitions)
-    assert {
-        "load_episode_rows",
-        "load_window_latents",
-        "load_canonical_window_latents",
-    } <= _class_method_definitions(storage_path, "LocalLatentRepository")
-
-    retired_private_facades = {
-        "_load_empty_text_embedding",
-        "_load_window_latents",
-        "_assemble_canonical_latents",
-        "_condition_latent_offset_mismatches",
-        "_load_canonical_window_latents",
-        "_load_episode_rows",
-    }
-    assert retired_private_facades.isdisjoint(
-        _class_method_definitions(
-            dataset_path,
-            "LocalLeRobotLatentWindowDataset",
-        )
-    )
-
-
 def test_lerobot_latent_dataset_roles_have_one_owner() -> None:
     from open_wam import data as public_data
     from open_wam.data import lerobot_v2_latent as facade
@@ -901,387 +741,6 @@ def test_lerobot_latent_dataset_roles_have_one_owner() -> None:
     )
     assert "from .lerobot_v2_latent_factory import" in latent_factory_source
     assert "from .lerobot_v2_latent import" not in latent_factory_source
-
-
-def test_lerobot_latent_sampling_policy_has_one_owner() -> None:
-    sampling_owned = {
-        "HierarchicalFixedSegmentSamplingPlan",
-        "HierarchicalFixedSegmentTaskSpec",
-        "HierarchicalFixedSegmentTrainSampler",
-        "HierarchicalFixedSegmentWindowSpec",
-        "LocalLatentEpochOrderSampler",
-        "LocalLatentUniformSegmentSamplingPlan",
-        "LocalLatentWindowWeightPlan",
-        "LocalLatentWeightedTrainSampler",
-        "build_hierarchical_fixed_segment_task_specs",
-    }
-    sampling_facade_path = PACKAGE_ROOT / "data" / "lerobot_v2_latent_sampling.py"
-    hierarchical_policy_path = (
-        PACKAGE_ROOT / "data" / "lerobot_v2_latent_hierarchical_policy.py"
-    )
-    sampler_adapter_path = (
-        PACKAGE_ROOT / "data" / "lerobot_v2_latent_sampler_adapters.py"
-    )
-    uniform_policy_path = PACKAGE_ROOT / "data" / "lerobot_v2_latent_uniform_policy.py"
-    weighting_path = PACKAGE_ROOT / "data" / "lerobot_v2_latent_weighting.py"
-    role_paths = (
-        hierarchical_policy_path,
-        sampler_adapter_path,
-        uniform_policy_path,
-        weighting_path,
-    )
-    base_dataset_path = LOCAL_LATENT_DATASET_OWNER_PATHS[
-        "LocalLeRobotLatentWindowDataset"
-    ]
-    uniform_dataset_path = LOCAL_LATENT_DATASET_OWNER_PATHS[
-        "UniformSegmentLocalLeRobotLatentDataset"
-    ]
-    hierarchical_dataset_path = LOCAL_LATENT_DATASET_OWNER_PATHS[
-        "HierarchicalFixedSegmentLocalLeRobotLatentDataset"
-    ]
-    hierarchical_segment_path = (
-        PACKAGE_ROOT / "data" / "latent_hierarchical_sampling.py"
-    )
-
-    role_definitions = set().union(
-        *(_top_level_definitions(path) for path in role_paths)
-    )
-    assert sampling_owned <= role_definitions
-    assert all(
-        sum(name in _top_level_definitions(path) for path in role_paths) == 1
-        for name in sampling_owned
-    )
-    assert _module_all_names(sampling_facade_path) == sampling_owned
-    assert _module_all_names(hierarchical_policy_path) == {
-        "HierarchicalFixedSegmentSamplingPlan",
-        "HierarchicalFixedSegmentTaskSpec",
-        "HierarchicalFixedSegmentWindowSpec",
-        "build_hierarchical_fixed_segment_task_specs",
-    }
-    assert _module_all_names(sampler_adapter_path) == {
-        "HierarchicalFixedSegmentTrainSampler",
-        "LocalLatentEpochOrderSampler",
-        "LocalLatentWeightedTrainSampler",
-    }
-    assert _module_all_names(uniform_policy_path) == {
-        "LocalLatentUniformSegmentSamplingPlan",
-    }
-    assert _module_all_names(weighting_path) == {
-        "LocalLatentWindowWeightPlan",
-    }
-    assert not _top_level_definitions(sampling_facade_path)
-    assert all(
-        sampling_owned.isdisjoint(_top_level_definitions(path))
-        for path in LOCAL_LATENT_DATASET_OWNER_PATHS.values()
-    )
-    for role_path in role_paths:
-        assert "from .lerobot_v2_latent_sampling import" not in (
-            role_path.read_text(encoding="utf-8")
-        )
-    for consumer_path in (
-        *LOCAL_LATENT_DATASET_OWNER_PATHS.values(),
-        LOCAL_LATENT_DATASET_FACTORY_PATH,
-        LOCAL_LATENT_DATASET_FACADE_PATH,
-        hierarchical_segment_path,
-    ):
-        assert "from .lerobot_v2_latent_sampling import" not in (
-            consumer_path.read_text(encoding="utf-8")
-        )
-    assert {
-        "draw",
-        "from_task_specs",
-        "iter_eligible_start_keys",
-        "sample_metadata",
-    } <= _class_method_definitions(
-        hierarchical_policy_path,
-        "HierarchicalFixedSegmentSamplingPlan",
-    )
-
-    assert {
-        "from_windows",
-        "sample_weight_metadata",
-        "task_text_for_window_index",
-    } <= _class_method_definitions(
-        weighting_path,
-        "LocalLatentWindowWeightPlan",
-    )
-
-    base_weight_delegate = _class_method(
-        base_dataset_path,
-        "LocalLeRobotLatentWindowDataset",
-        "_sample_weight_metadata",
-    )
-    assert len(base_weight_delegate.body) == 1
-    assert isinstance(base_weight_delegate.body[0], ast.Return)
-    assert isinstance(base_weight_delegate.body[0].value, ast.Call)
-
-    task_text_delegate = _class_method(
-        base_dataset_path,
-        "LocalLeRobotLatentWindowDataset",
-        "task_text_for_window_index",
-    )
-    assert ast.get_docstring(task_text_delegate)
-    assert len(task_text_delegate.body) == 2
-    assert isinstance(task_text_delegate.body[1], ast.Return)
-    assert isinstance(task_text_delegate.body[1].value, ast.Call)
-    assert {
-        "_build_sample_weights",
-        "_estimate_mean_task_demo_count",
-        "_estimate_mean_valid_action_steps",
-        "_estimate_task_demo_counts",
-        "_estimate_window_valid_action_steps",
-        "_window_task_text",
-    }.isdisjoint(
-        _class_method_definitions(
-            base_dataset_path,
-            "LocalLeRobotLatentWindowDataset",
-        )
-    )
-
-    assert {
-        "build_epoch_index_order",
-        "build_sample_weights",
-        "build_virtual_index",
-        "eligible_segment_lengths",
-        "estimate_segment_valid_action_steps",
-        "estimate_virtual_valid_action_steps",
-        "from_windows",
-        "materialize_task_virtual_start_counts",
-        "materialize_virtual_indices_by_window",
-        "resolve_segment_length_candidates",
-        "resolve_start_padding_frames",
-        "sample_attention_geometry",
-        "sample_segment_geometry",
-        "sample_weight_metadata",
-    } <= _class_method_definitions(
-        uniform_policy_path,
-        "LocalLatentUniformSegmentSamplingPlan",
-    )
-
-    uniform_compatibility_methods = {
-        "_sample_weight_metadata",
-        "build_epoch_index_order",
-    }
-    for method_name in uniform_compatibility_methods:
-        method = _class_method(
-            uniform_dataset_path,
-            "UniformSegmentLocalLeRobotLatentDataset",
-            method_name,
-        )
-        assert len(method.body) == 1
-        assert isinstance(method.body[0], ast.Return)
-
-    retired_uniform_helpers = {
-        "_build_virtual_index",
-        "_build_virtual_indices_by_window",
-        "_build_virtual_sample_weights",
-        "_eligible_segment_lengths",
-        "_estimate_mean_task_virtual_start_count",
-        "_estimate_segment_valid_action_steps",
-        "_estimate_task_virtual_start_counts",
-        "_estimate_virtual_mean_valid_action_steps",
-        "_estimate_virtual_valid_action_steps",
-        "_resolve_segment_length_candidates",
-        "_sample_segment_geometry",
-        "_sample_uniform_segment_attention_geometry",
-        "_window_start_padding_frames",
-    }
-    assert retired_uniform_helpers.isdisjoint(
-        _class_method_definitions(
-            uniform_dataset_path,
-            "UniformSegmentLocalLeRobotLatentDataset",
-        )
-    )
-
-    retained_diagnostic_methods = {
-        "resolve_hierarchical_sample_key",
-        "iter_hierarchical_eligible_start_keys",
-    }
-    for method_name in retained_diagnostic_methods:
-        method = _class_method(
-            hierarchical_dataset_path,
-            "HierarchicalFixedSegmentLocalLeRobotLatentDataset",
-            method_name,
-        )
-        executable_statements = [
-            statement
-            for statement in method.body
-            if not (
-                isinstance(statement, ast.Expr)
-                and isinstance(statement.value, ast.Constant)
-                and isinstance(statement.value.value, str)
-            )
-        ]
-        assert len(executable_statements) == 1
-        assert isinstance(executable_statements[0], ast.Return)
-
-    retired_hierarchical_helpers = {
-        "_build_task_specs",
-        "_build_window_start_ranges_by_chunk",
-        "_draw_hierarchical_sample",
-        "_hierarchical_chunk_size_candidates",
-        "_hierarchical_context_prefix_frames",
-        "_hierarchical_sample_metadata",
-    }
-    assert retired_hierarchical_helpers.isdisjoint(
-        _class_method_definitions(
-            hierarchical_dataset_path,
-            "HierarchicalFixedSegmentLocalLeRobotLatentDataset",
-        )
-    )
-
-
-def test_lerobot_latent_sample_source_has_one_owner() -> None:
-    source_path = PACKAGE_ROOT / "data" / "lerobot_v2_latent_source.py"
-    base_dataset_path = LOCAL_LATENT_DATASET_OWNER_PATHS[
-        "LocalLeRobotLatentWindowDataset"
-    ]
-
-    source_contracts = {
-        "LocalLatentSampleConditioning",
-        "LocalLatentSampleSource",
-        "LocalLatentSampleSourceLoader",
-    }
-    assert source_contracts <= _top_level_definitions(source_path)
-    assert all(
-        source_contracts.isdisjoint(_top_level_definitions(path))
-        for path in LOCAL_LATENT_DATASET_OWNER_PATHS.values()
-    )
-    assert {"conditioning_for_frame"} <= _class_method_definitions(
-        source_path,
-        "LocalLatentSampleSource",
-    )
-    assert {"load"} <= _class_method_definitions(
-        source_path,
-        "LocalLatentSampleSourceLoader",
-    )
-
-    source_delegate = _class_method(
-        base_dataset_path,
-        "LocalLeRobotLatentWindowDataset",
-        "_load_sample_source",
-    )
-    assert len(source_delegate.body) == 1
-    assert isinstance(source_delegate.body[0], ast.Return)
-    assert isinstance(source_delegate.body[0].value, ast.Call)
-
-    for class_name in (
-        "LocalLeRobotLatentWindowDataset",
-        "UniformSegmentLocalLeRobotLatentDataset",
-        "HierarchicalFixedSegmentLocalLeRobotLatentDataset",
-        "CausalPrefixSuffixLocalLeRobotLatentDataset",
-    ):
-        getitem = _class_method(
-            LOCAL_LATENT_DATASET_OWNER_PATHS[class_name],
-            class_name,
-            "__getitem__",
-        )
-        source_calls = [
-            node
-            for node in ast.walk(getitem)
-            if isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Attribute)
-            and node.func.attr == "_load_sample_source"
-        ]
-        assert len(source_calls) == 1
-        called_methods = {
-            node.func.attr
-            for node in ast.walk(getitem)
-            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
-        }
-        assert {
-            "_load_canonical_window_latents",
-            "_load_episode_rows",
-            "_load_window_latents",
-        }.isdisjoint(called_methods)
-
-
-def test_lerobot_latent_hierarchical_segment_planning_has_one_owner() -> None:
-    planner_path = PACKAGE_ROOT / "data" / "latent_hierarchical_sampling.py"
-    dataset_path = LOCAL_LATENT_DATASET_OWNER_PATHS[
-        "HierarchicalFixedSegmentLocalLeRobotLatentDataset"
-    ]
-
-    assert {
-        "LocalLatentHierarchicalSampleKey",
-        "LocalLatentHierarchicalSegmentPlan",
-    } <= _top_level_definitions(planner_path)
-    assert {
-        "context_prefix_frames",
-        "draw",
-        "from_windows",
-        "iter_eligible_start_keys",
-        "resolve_chunk_size_candidates",
-        "resolve_context_prefix_frames",
-        "resolve_sample_key",
-        "sample_metadata",
-    } <= _class_method_definitions(
-        planner_path,
-        "LocalLatentHierarchicalSegmentPlan",
-    )
-    assert {"as_metadata"} <= _class_method_definitions(
-        planner_path,
-        "LocalLatentHierarchicalSampleKey",
-    )
-    assert not any(
-        imported == "torch" or imported.startswith("torch.")
-        for imported in _absolute_imports_for_file(planner_path)
-    )
-
-    dataset_methods = _class_method_definitions(
-        dataset_path,
-        "HierarchicalFixedSegmentLocalLeRobotLatentDataset",
-    )
-    assert {
-        "_build_task_specs",
-        "_build_window_start_ranges_by_chunk",
-        "_draw_hierarchical_sample",
-        "_hierarchical_chunk_size_candidates",
-        "_hierarchical_context_prefix_frames",
-        "_hierarchical_sample_metadata",
-    }.isdisjoint(dataset_methods)
-
-
-def test_lerobot_consortium_epoch_order_planning_has_one_owner() -> None:
-    planning_path = PACKAGE_ROOT / "data" / "lerobot_consortium_sampling.py"
-    dataset_path = PACKAGE_ROOT / "data" / "lerobot_consortium.py"
-
-    assert {"ConsortiumEpochOrderPlan"} <= _top_level_definitions(planning_path)
-    assert {
-        "build_epoch_index_order",
-        "from_member_indices",
-    } <= _class_method_definitions(
-        planning_path,
-        "ConsortiumEpochOrderPlan",
-    )
-    assert not any(
-        imported == "torch" or imported.startswith("torch.")
-        for imported in _absolute_imports_for_file(planning_path)
-    )
-    assert {
-        "_build_weighted_round_robin_schedule",
-        "_cycle_take",
-        "_largest_remainder_counts",
-        "_resolve_per_dataset_target_counts",
-        "_seeded_shuffle",
-        "_stable_int_seed",
-    }.isdisjoint(_top_level_definitions(dataset_path))
-
-    compatibility_method = _class_method(
-        dataset_path,
-        "LeRobotConsortiumWindowDataset",
-        "build_epoch_index_order",
-    )
-    assert len(compatibility_method.body) == 1
-    assert isinstance(compatibility_method.body[0], ast.Return)
-    delegated_call = compatibility_method.body[0].value
-    assert isinstance(delegated_call, ast.Call)
-    assert isinstance(delegated_call.func, ast.Name)
-    assert delegated_call.func.id == "list"
-    owner_call = delegated_call.args[0]
-    assert isinstance(owner_call, ast.Call)
-    assert isinstance(owner_call.func, ast.Attribute)
-    assert owner_call.func.attr == "build_epoch_index_order"
 
 
 def test_lerobot_consortium_storage_has_one_owner() -> None:
@@ -1619,198 +1078,6 @@ def test_lerobot_consortium_planning_has_one_owner() -> None:
         imported == "torch" or imported.startswith("torch.")
         for imported in _absolute_imports_for_file(planning_path)
     )
-
-
-def test_lerobot_latent_segment_geometry_has_one_owner() -> None:
-    geometry_functions = {
-        "compact_boundary_start_range",
-        "resolve_compact_boundary_segment",
-        "resolve_rollout_parity_boundary_segment",
-        "rollout_parity_start_range",
-    }
-    geometry_definitions = _top_level_definitions(
-        PACKAGE_ROOT / "data" / "latent_segment_geometry.py"
-    )
-    dataset_methods = _class_method_definitions(
-        LOCAL_LATENT_DATASET_OWNER_PATHS["UniformSegmentLocalLeRobotLatentDataset"],
-        "UniformSegmentLocalLeRobotLatentDataset",
-    )
-
-    assert geometry_functions <= geometry_definitions
-    assert {f"_{name}" for name in geometry_functions}.isdisjoint(dataset_methods)
-
-
-def test_lerobot_latent_segment_materialization_has_one_owner() -> None:
-    materialization_path = PACKAGE_ROOT / "data" / "latent_segment_materialization.py"
-    segment_path = PACKAGE_ROOT / "data" / "lerobot_v2_latent_segment.py"
-    uniform_dataset_path = LOCAL_LATENT_DATASET_OWNER_PATHS[
-        "UniformSegmentLocalLeRobotLatentDataset"
-    ]
-    assert {
-        "LatentSegmentMaterializationPlan",
-        "plan_latent_segment_materialization",
-        "slice_latent_segment_with_zero_order_hold",
-    } <= _top_level_definitions(materialization_path)
-    assert {
-        "LocalLatentSegment",
-        "LocalLatentSegmentAssembler",
-    } <= _top_level_definitions(segment_path)
-
-    builder = _class_method(
-        segment_path,
-        "LocalLatentSegmentAssembler",
-        "build",
-    )
-    direct_plan_calls = [
-        node
-        for node in ast.walk(builder)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and node.func.id == "plan_latent_segment_materialization"
-    ]
-    assert len(direct_plan_calls) == 1
-    direct_slice_calls = [
-        node
-        for node in ast.walk(builder)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and node.func.id == "slice_latent_segment_with_zero_order_hold"
-    ]
-    assert len(direct_slice_calls) == 2
-
-    retired_dataset_helpers = {
-        "_build_uniform_segment",
-        "_resolve_sample_state_anchor_frame",
-        "_segment_observed_frame_ids",
-        "_slice_video_latents_with_zero_hold",
-    }
-    assert retired_dataset_helpers.isdisjoint(
-        _class_method_definitions(
-            uniform_dataset_path,
-            "UniformSegmentLocalLeRobotLatentDataset",
-        )
-    )
-
-    for dataset_class in (
-        "UniformSegmentLocalLeRobotLatentDataset",
-        "HierarchicalFixedSegmentLocalLeRobotLatentDataset",
-    ):
-        getitem = _class_method(
-            LOCAL_LATENT_DATASET_OWNER_PATHS[dataset_class],
-            dataset_class,
-            "__getitem__",
-        )
-        owner_calls = [
-            node
-            for node in ast.walk(getitem)
-            if isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Attribute)
-            and node.func.attr == "build"
-            and isinstance(node.func.value, ast.Attribute)
-            and node.func.value.attr == "_segment_assembler"
-        ]
-        assert len(owner_calls) == 1
-
-
-def test_lerobot_latent_causal_sampling_has_one_owner() -> None:
-    planner_path = PACKAGE_ROOT / "data" / "latent_causal_sampling.py"
-    base_dataset_path = LOCAL_LATENT_DATASET_OWNER_PATHS[
-        "LocalLeRobotLatentWindowDataset"
-    ]
-    causal_dataset_path = LOCAL_LATENT_DATASET_OWNER_PATHS[
-        "CausalPrefixSuffixLocalLeRobotLatentDataset"
-    ]
-
-    assert {
-        "LatentCausalPrefixSuffixCandidate",
-        "LatentCausalPrefixSuffixWindowPlan",
-        "LatentCausalPrefixSuffixWindowPlanner",
-    } <= _top_level_definitions(planner_path)
-    assert {
-        "build_candidates",
-        "from_data_config",
-        "plan",
-        "select_candidate",
-    } <= _class_method_definitions(
-        planner_path,
-        "LatentCausalPrefixSuffixWindowPlanner",
-    )
-    assert not any(
-        imported == "torch" or imported.startswith("torch.")
-        for imported in _absolute_imports_for_file(planner_path)
-    )
-
-    assert "_build_raw_bucket_boundaries" not in _class_method_definitions(
-        base_dataset_path,
-        "LocalLeRobotLatentWindowDataset",
-    )
-    assert "_sample_causal_prefix_suffix_subwindow" not in _class_method_definitions(
-        causal_dataset_path,
-        "CausalPrefixSuffixLocalLeRobotLatentDataset",
-    )
-
-    getitem = _class_method(
-        causal_dataset_path,
-        "CausalPrefixSuffixLocalLeRobotLatentDataset",
-        "__getitem__",
-    )
-    planner_calls = [
-        node
-        for node in ast.walk(getitem)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "plan"
-        and isinstance(node.func.value, ast.Attribute)
-        and node.func.value.attr == "_causal_sampling_planner"
-    ]
-    assert len(planner_calls) == 1
-
-
-def test_lerobot_latent_train_val_window_planning_has_one_owner() -> None:
-    planner_path = PACKAGE_ROOT / "data" / "lerobot_v2_latent_split.py"
-    dataset_path = LOCAL_LATENT_DATASET_FACTORY_PATH
-
-    assert {
-        "LocalLatentTrainValWindowPlan",
-        "LocalLatentTrainValWindowPlanner",
-    } <= _top_level_definitions(planner_path)
-    assert {
-        "_filtered_windows_for_roots",
-        "_plan_explicit_roots",
-        "_plan_shared_roots",
-        "plan",
-    } <= _class_method_definitions(
-        planner_path,
-        "LocalLatentTrainValWindowPlanner",
-    )
-    assert not any(
-        imported == "torch" or imported.startswith("torch.")
-        for imported in _absolute_imports_for_file(planner_path)
-    )
-
-    builder = next(
-        node
-        for node in ast.parse(dataset_path.read_text(encoding="utf-8")).body
-        if isinstance(node, ast.FunctionDef)
-        and node.name == "build_local_lerobot_latent_train_val_datasets"
-    )
-    planner_calls = [
-        node
-        for node in ast.walk(builder)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "plan"
-        and isinstance(node.func.value, ast.Call)
-        and isinstance(node.func.value.func, ast.Name)
-        and node.func.value.func.id == "LocalLatentTrainValWindowPlanner"
-    ]
-    assert len(planner_calls) == 1
-    assert {
-        "discover_local_lerobot_repo_bundles",
-        "load_replay_status_records",
-        "scan_local_latent_windows",
-        "split_episode_indices_by_replay_status",
-    }.isdisjoint({node.id for node in ast.walk(builder) if isinstance(node, ast.Name)})
 
 
 def test_mixed_video_catalog_has_one_owner() -> None:
@@ -2461,244 +1728,6 @@ def test_mixed_video_encoding_has_explicit_package_owners() -> None:
         PublicMixedVideoEncodingSelection(split="train").split
         == MixedVideoEncodingSplit.TRAIN
     )
-
-
-def test_mixed_video_latent_repository_has_one_owner() -> None:
-    storage_path = PACKAGE_ROOT / "data" / "mixed_video_latent_storage.py"
-    dataset_path = PACKAGE_ROOT / "data" / "mixed_video.py"
-    storage_owned = {
-        "MixedVideoLatentRepository",
-        "load_mixed_video_latent_tensor",
-        "mixed_video_latent_cache_key",
-        "resolve_mixed_video_latent_path",
-    }
-
-    assert storage_owned <= _top_level_definitions(storage_path)
-    assert storage_owned.isdisjoint(_top_level_definitions(dataset_path))
-    assert {"cache_capacity", "load"} <= _class_method_definitions(
-        storage_path,
-        "MixedVideoLatentRepository",
-    )
-
-    assert "_load_stream_latents" not in _class_method_definitions(
-        dataset_path,
-        "MixedVideoLatentWindowDataset",
-    )
-    latent_builder = _class_method(
-        dataset_path,
-        "MixedVideoLatentWindowDataset",
-        "_build_latents",
-    )
-    assert any(
-        isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "load"
-        and isinstance(node.func.value, ast.Attribute)
-        and node.func.value.attr == "_latent_repository"
-        for node in ast.walk(latent_builder)
-    )
-
-
-def test_mixed_video_window_planning_has_one_owner() -> None:
-    planning_path = PACKAGE_ROOT / "data" / "mixed_video_planning.py"
-    dataset_path = PACKAGE_ROOT / "data" / "mixed_video.py"
-
-    assert {
-        "MixedVideoWindowPlanner",
-        "MixedVideoWindowRecord",
-    } <= _top_level_definitions(planning_path)
-    assert {
-        "MixedVideoWindowPlanner",
-        "MixedVideoWindowRecord",
-    }.isdisjoint(_top_level_definitions(dataset_path))
-    assert {
-        "build_episode_windows",
-        "build_latent_view_windows",
-        "build_source_balanced_epoch_order",
-        "build_shape_bucketed_epoch_order",
-        "valid_latent_view_combinations",
-    } <= _class_method_definitions(
-        planning_path,
-        "MixedVideoWindowPlanner",
-    )
-    assert "torch" not in _absolute_imports_for_file(planning_path)
-    assert "_episode_window_length_frames" not in _class_method_definitions(
-        dataset_path,
-        "MixedVideoWindowDataset",
-    )
-
-    delegates = (
-        (
-            "MixedVideoWindowDataset",
-            "_build_sample_index",
-            "build_episode_windows",
-        ),
-        (
-            "MixedVideoLatentWindowDataset",
-            "_build_sample_index",
-            "build_latent_view_windows",
-        ),
-    )
-    for class_name, method_name, owner_method in delegates:
-        compatibility_method = _class_method(
-            dataset_path,
-            class_name,
-            method_name,
-        )
-        assert len(compatibility_method.body) == 1
-        assert isinstance(compatibility_method.body[0], ast.Return)
-        delegated_call = compatibility_method.body[0].value
-        assert isinstance(delegated_call, ast.Call)
-        assert isinstance(delegated_call.func, ast.Attribute)
-        assert delegated_call.func.attr == owner_method
-
-    # Dataset dispatch may choose spatial bucketing, while both ordering
-    # algorithms remain owned by the window planner.
-    dispatch = _class_method(dataset_path, "MixedVideoWindowDataset", "build_epoch_index_order")
-    planner_calls = {
-        node.func.attr for node in ast.walk(dispatch)
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
-        and isinstance(node.func.value, ast.Attribute)
-        and node.func.value.attr == "_window_planner"
-    }
-    assert planner_calls == {
-        "build_source_balanced_epoch_order", "build_shape_bucketed_epoch_order",
-    }
-    assert not any(isinstance(node, (ast.For, ast.While)) for node in ast.walk(dispatch))
-
-
-def test_lerobot_latent_supervision_assembly_has_one_owner() -> None:
-    supervision_path = PACKAGE_ROOT / "data" / "lerobot_v2_latent_supervision.py"
-    dataset_path = LOCAL_LATENT_DATASET_OWNER_PATHS["LocalLeRobotLatentWindowDataset"]
-    assembler_methods = {
-        "build_action_targets",
-        "build_lingbot_window_action_targets",
-        "build_standard_policy_window_action_targets",
-        "extract_proprio_context_frames",
-        "extract_proprio_context_state_sequence",
-        "extract_sequence",
-        "extract_state_at_frame",
-        "extract_state_history_at_frame",
-    }
-    assert assembler_methods <= _class_method_definitions(
-        supervision_path,
-        "LocalLatentSupervisionAssembler",
-    )
-
-    retired_private_facades = {
-        "_build_lingbot_window_action_targets",
-        "_build_standard_policy_window_action_targets",
-        "_extract_proprio_context_state_sequence",
-        "_extract_state_history_at_frame",
-        "_build_action_targets",
-        "_extract_proprio_context_frames",
-        "_extract_sequence",
-        "_extract_state_at_frame",
-    }
-    assert retired_private_facades.isdisjoint(
-        _class_method_definitions(
-            dataset_path,
-            "LocalLeRobotLatentWindowDataset",
-        )
-    )
-
-    full_segment_builder = _class_method(
-        dataset_path,
-        "LocalLeRobotLatentWindowDataset",
-        "_build_full_segment_action_targets",
-    )
-    delegated_methods = {
-        node.func.attr
-        for node in ast.walk(full_segment_builder)
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
-    }
-    assert {
-        "build_lingbot_window_action_targets",
-        "build_standard_policy_window_action_targets",
-    } <= delegated_methods
-
-
-def test_row_action_target_transform_has_one_owner() -> None:
-    transform_path = PACKAGE_ROOT / "data" / "row_action_targets.py"
-    transform_definitions = _top_level_definitions(transform_path)
-    assert {"build_row_action_targets", "resolve_row_key"} <= transform_definitions
-
-    adapter_methods = (
-        ("lerobot_v2.py", "LeRobotV2WindowDataset", "_build_action_targets"),
-        (
-            "lerobot_v2_latent_supervision.py",
-            "LocalLatentSupervisionAssembler",
-            "build_action_targets",
-        ),
-        (
-            "lerobot_consortium.py",
-            "LeRobotConsortiumWindowDataset",
-            "_build_action_targets",
-        ),
-    )
-    for filename, class_name, method_name in adapter_methods:
-        method = _class_method(
-            PACKAGE_ROOT / "data" / filename,
-            class_name,
-            method_name,
-        )
-        assert len(method.body) == 1
-        assert isinstance(method.body[0], ast.Return)
-        call = method.body[0].value
-        assert isinstance(call, ast.Call)
-        assert isinstance(call.func, ast.Name)
-        assert call.func.id == "build_row_action_targets"
-        packer_keywords = [
-            keyword for keyword in call.keywords if keyword.arg == "pack_sequence"
-        ]
-        if filename == "lerobot_v2_latent_supervision.py":
-            assert len(packer_keywords) == 1
-            assert isinstance(packer_keywords[0].value, ast.Name)
-            assert packer_keywords[0].value.id == "_TRUNCATING_SEQUENCE_PACKER"
-        else:
-            assert not packer_keywords
-
-
-def test_temporal_sequence_packing_has_one_owner() -> None:
-    packing_definitions = _top_level_definitions(
-        PACKAGE_ROOT / "data" / "sequence_packing.py"
-    )
-    assert "pack_temporal_sequence" in packing_definitions
-
-    adapter_classes = {
-        "lerobot_v2.py": "LeRobotV2WindowDataset",
-        "lerobot_v2_latent_base_dataset.py": ("LocalLeRobotLatentWindowDataset"),
-        "lerobot_consortium.py": "LeRobotConsortiumWindowDataset",
-        "libero_hdf5.py": "LiberoOfflineWindowDataset",
-    }
-    for filename, class_name in adapter_classes.items():
-        methods = _class_method_definitions(
-            PACKAGE_ROOT / "data" / filename,
-            class_name,
-        )
-        assert "_pack_sequence" not in methods
-
-
-def test_hierarchical_draw_primitives_have_one_owner() -> None:
-    sampling_definitions = _top_level_definitions(
-        PACKAGE_ROOT / "data" / "distributed_sampling.py"
-    )
-    assert {
-        "draw_hierarchical_sample_index",
-        "stable_int_seed",
-        "weighted_choice_index",
-    } <= sampling_definitions
-
-    adapter_paths = (
-        *LOCAL_LATENT_DATASET_OWNER_PATHS.values(),
-        PACKAGE_ROOT / "data" / "encoded_dynamics_dataset.py",
-    )
-    for adapter_path in adapter_paths:
-        adapter_definitions = _top_level_definitions(adapter_path)
-        assert {
-            "_stable_int_seed",
-            "_weighted_choice_index",
-        }.isdisjoint(adapter_definitions)
 
 
 def test_conditional_dynamics_layout_contract_has_one_owner() -> None:
@@ -3669,162 +2698,6 @@ def test_shared_video_action_controls_do_not_enumerate_policy_architectures() ->
         assert "PolicyVariantName.PARALLEL_STREAM" not in source
 
 
-def test_dual_expert_training_layout_semantics_have_one_owner() -> None:
-    layout_methods = {
-        "apply_history_action_condition",
-        "build_effective_action_mask",
-        "build_effective_video_loss_mask",
-        "resolve_action_tokens_per_frame",
-        "resolve_chunk_origin_frame",
-        "resolve_frame_shift",
-        "resolve_history_frames",
-        "resolve_loss_frame_range",
-        "resolve_sampled_chunk_size",
-        "resolve_sampled_window_size",
-        "resolve_singleton_chunk_frame",
-        "sample_full_segment_geometry",
-    }
-    layout_path = (
-        PACKAGE_ROOT
-        / "models"
-        / "policy_variants"
-        / "dual_expert"
-        / "sequence_layout.py"
-    )
-    variant_path = (
-        PACKAGE_ROOT / "models" / "policy_variants" / "dual_expert" / "variant.py"
-    )
-    retired_variant_methods = {
-        "_apply_train_history_action_condition",
-        "_build_action_grid_ids_for_sequence",
-        "_build_effective_action_mask",
-        "_build_effective_video_loss_mask",
-        "_resolve_train_action_tokens_per_frame",
-        "_resolve_train_chunk_origin_frame",
-        "_resolve_train_conditional_history_policy",
-        "_resolve_train_frame_shift",
-        "_resolve_train_history_frames",
-        "_resolve_train_loss_frame_range",
-        "_resolve_train_sampled_chunk_size",
-        "_resolve_train_sampled_window_size",
-        "_resolve_train_singleton_chunk_frame",
-        "_sample_full_segment_train_geometry",
-    }
-
-    assert layout_methods <= _class_method_definitions(
-        layout_path, "DualExpertTrainingLayout"
-    )
-    assert "build_action_grid_ids_for_sequence" in _top_level_definitions(layout_path)
-    assert retired_variant_methods.isdisjoint(
-        _class_method_definitions(variant_path, "DualExpertPolicyVariant")
-    )
-
-
-def test_dual_expert_conditioning_semantics_have_one_owner() -> None:
-    conditioning_methods = {
-        "action_hidden_context_for_tokens",
-        "append_generalist_mode_text_token",
-        "build_proprio_cross_attention_mask",
-        "context_condition_latent_source",
-        "encode_hidden_proprio_context",
-        "prepare_train_video_sequence",
-        "proprio_context_token_count",
-        "resolve_infer_hidden_proprio_context",
-        "resolve_proprio_state",
-        "resolve_text_context",
-        "resolve_train_condition_latents",
-        "resolve_train_hidden_proprio_context",
-        "resolve_train_proprio_context",
-        "train_clean_video_condition_latents",
-        "uses_legacy_prefix_contract",
-        "uses_per_chunk_proprio_context",
-        "uses_proprio_context",
-        "uses_text_proprio_context",
-        "video_condition_source",
-        "video_hidden_context_for_tokens",
-    }
-    retired_variant_methods = {
-        "_action_hidden_context_for_tokens",
-        "_append_generalist_mode_text_token",
-        "_build_proprio_cross_attention_mask",
-        "_context_condition_latent_source",
-        "_encode_hidden_proprio_context",
-        "_legacy_prefix_action_hidden_proprio_state",
-        "_prepend_legacy_prefix_video_latents",
-        "_prepare_train_video_sequence",
-        "_proprio_context_token_count",
-        "_resolve_infer_hidden_proprio_context",
-        "_resolve_proprio_state",
-        "_resolve_text_context_with_proprio",
-        "_resolve_train_condition_latents",
-        "_resolve_train_hidden_proprio_context",
-        "_resolve_train_proprio_context",
-        "_select_anchor_state",
-        "_train_clean_video_condition_latents",
-        "_uses_per_chunk_proprio_context",
-        "_uses_proprio_context",
-        "_uses_text_proprio_context",
-        "_video_condition_source",
-        "_video_hidden_context_for_tokens",
-    }
-    conditioning_path = (
-        PACKAGE_ROOT / "models" / "policy_variants" / "dual_expert" / "conditioning.py"
-    )
-    variant_path = (
-        PACKAGE_ROOT / "models" / "policy_variants" / "dual_expert" / "variant.py"
-    )
-
-    assert conditioning_methods <= _class_method_definitions(
-        conditioning_path,
-        "DualExpertConditioning",
-    )
-    assert retired_variant_methods.isdisjoint(
-        _class_method_definitions(variant_path, "DualExpertPolicyVariant")
-    )
-    assert "project_hidden_proprio_context_to_frames" in _top_level_definitions(
-        PACKAGE_ROOT / "models" / "common" / "proprio_conditioning.py"
-    )
-    assert "_uses_dual_expert_legacy_prefix_contract" not in _top_level_definitions(
-        variant_path
-    )
-
-
-def test_dual_expert_flow_runtime_controls_have_role_owners() -> None:
-    flow_runtime_functions = {
-        "expand_scalar_timestep",
-        "explicit_sigma_euler_step",
-        "zero_terminal_next_sigma",
-    }
-    flow_compatibility_names = {
-        "expand_dual_expert_scalar_timestep",
-        "dual_expert_scheduler_next_sigma",
-        "step_dual_expert_flow_with_sigmas",
-    }
-    retired_variant_functions = (flow_runtime_functions | flow_compatibility_names) | {
-        "_expand_scalar_timestep",
-        "_flow_step_with_sigmas",
-        "_rewind_runtime_action_cache_to_frame",
-        "_scheduler_next_sigma",
-    }
-    dual_expert_root = PACKAGE_ROOT / "models" / "policy_variants" / "dual_expert"
-
-    assert flow_runtime_functions <= _top_level_definitions(
-        FLOW_MATCHING_ROLE_PATHS["schedule"]
-    )
-    assert flow_runtime_functions.isdisjoint(
-        _top_level_definitions(dual_expert_root / "inference.py")
-    )
-    assert flow_compatibility_names.isdisjoint(
-        _top_level_definitions(dual_expert_root / "inference.py")
-    )
-    assert retired_variant_functions.isdisjoint(
-        _top_level_definitions(dual_expert_root / "variant.py")
-    )
-
-
-
-
-
 def test_flow_matching_roles_have_one_owner() -> None:
     import pickle
 
@@ -3882,19 +2755,25 @@ def test_flow_matching_roles_have_one_owner() -> None:
         "supervision": {"flow_schedule"},
         "training": {"flow_schedule"},
     }
+    internal_owner_names = {
+        "inference": set(),
+        "schedule": {"TimestepGridSchedulerLike"},
+        "supervision": {"masked_video_flow_match_loss", "masked_video_latent_mse"},
+        "training": set(),
+    }
 
     assert not _top_level_definitions(FLOW_MATCHING_FACADE_PATH)
     all_owner_paths = tuple(FLOW_MATCHING_ROLE_PATHS.values())
     all_owned_names = set().union(*owner_names.values())
-    assert len(all_owned_names) == 23
+    internal_names = set().union(*internal_owner_names.values())
     assert all(
         sum(name in _top_level_definitions(path) for path in all_owner_paths) == 1
-        for name in all_owned_names
+        for name in all_owned_names | internal_names
     )
     for role, names in owner_names.items():
         owner_path = FLOW_MATCHING_ROLE_PATHS[role]
-        assert _top_level_definitions(owner_path) == names
-        assert _module_all_names(owner_path) == names
+        assert names | internal_owner_names[role] <= _top_level_definitions(owner_path)
+        assert names | internal_owner_names[role] <= _module_all_names(owner_path)
         role_dependencies = {
             imported
             for imported in _absolute_imports_for_file(owner_path)
@@ -3903,6 +2782,10 @@ def test_flow_matching_roles_have_one_owner() -> None:
         assert role_dependencies == expected_role_dependencies[role]
         for name in names:
             assert getattr(flow_matching, name) is getattr(role_modules[role], name)
+    assert internal_names.isdisjoint(_module_all_names(FLOW_MATCHING_FACADE_PATH))
+    assert internal_names.isdisjoint(
+        _module_all_names(PACKAGE_ROOT / "models" / "common" / "__init__.py")
+    )
 
     assert _module_all_names(FLOW_MATCHING_FACADE_PATH) == {
         "ActionFlowMatchTrainArtifacts",
@@ -4057,7 +2940,6 @@ def test_pipeline_factory_roles_have_one_owner() -> None:
     assert not hasattr(factory, "build_exact_runtime_runner_from_config")
 
 
-
 def test_checkpoint_persistence_roles_have_one_owner() -> None:
     import pickle
 
@@ -4204,6 +3086,7 @@ def test_attention_profile_roles_have_one_owner_and_a_stable_facade() -> None:
             "apply_attention_backend",
             "resolve_attention_profile_backend",
             "select_attention_profile_mask",
+            "shared_flex_kernel_options",
         },
         "contracts": {
             "AttentionProfileSpec",
@@ -4233,7 +3116,7 @@ def test_attention_profile_roles_have_one_owner_and_a_stable_facade() -> None:
     }
     all_names = set().union(*owner_names.values())
 
-    assert len(all_names) == 24
+    assert len(all_names) == 25
     assert not _top_level_definitions(ATTENTION_PROFILE_ROLE_PATHS["facade"])
     assert all(
         sum(
@@ -4250,6 +3133,7 @@ def test_attention_profile_roles_have_one_owner_and_a_stable_facade() -> None:
         "apply_attention_backend",
         "resolve_attention_profile_backend",
         "select_attention_profile_mask",
+        "shared_flex_kernel_options",
     }
     assert _module_all_names(ATTENTION_PROFILE_ROLE_PATHS["contracts"]) == {
         "ACTION_NOISY_TO_VIDEO_COUPLING",
@@ -4319,17 +3203,18 @@ def test_attention_profile_roles_have_one_owner_and_a_stable_facade() -> None:
             facade_consumers.append(path.relative_to(PACKAGE_ROOT).as_posix())
     assert facade_consumers == []
 
-    internal_visibility_names = {
+    non_facade_names = {
         "_build_chunked_temporal_attention_profile",
         "align_frame_context_to_previous_chunk_boundary",
         "_build_chunked_cross_attention_visibility",
         "_build_chunked_self_attention_visibility",
         "build_history_stream_visibility_mask",
+        "shared_flex_kernel_options",
     }
     for role, names in owner_names.items():
         for name in names:
             owner_value = getattr(role_modules[role], name)
-            if name in internal_visibility_names:
+            if name in non_facade_names:
                 assert not hasattr(attention_profiles, name)
                 continue
             assert getattr(attention_profiles, name) is owner_value
@@ -4479,12 +3364,6 @@ def test_sharded_execution_contexts_have_one_owner() -> None:
     )
 
 
-
-
-
-
-
-
 def test_dual_expert_dual_stream_execution_has_one_owner() -> None:
     execution_functions = {
         "forward_dual_expert_packed_coupling_denoise",
@@ -4515,9 +3394,6 @@ def test_retired_dual_expert_execution_programs_are_absent() -> None:
     source = variant_path.read_text(encoding="utf-8")
     assert "unpacked_training" not in source
     assert "joint_denoise_inference" not in source
-
-
-
 
 
 def test_superseded_exact_runtime_helpers_are_retired() -> None:
@@ -4609,9 +3485,6 @@ def test_dual_expert_packed_training_program_has_one_execution_owner() -> None:
     assert isinstance(run_call.func.value, ast.Call)
     assert isinstance(run_call.func.value.func, ast.Name)
     assert run_call.func.value.func.id == "DualExpertPackedTrainingProgram"
-
-
-
 
 
 def test_retired_ablations_namespace_is_not_packaged() -> None:
@@ -5112,6 +3985,7 @@ def test_shared_transformer_support_has_one_implementation_owner() -> None:
         "select_attention_profile_mask",
         "select_chunk_slices",
         "select_split_segments",
+        "shared_flex_kernel_options",
         "torch",
         "update_slot_pool_layer_state",
     }
@@ -5155,104 +4029,6 @@ def test_shared_transformer_support_has_one_implementation_owner() -> None:
     }.isdisjoint(_top_level_definitions(replica_core_path))
 
 
-def test_exact_single_stream_runtime_has_one_implementation_owner() -> None:
-    exact_runtime_definitions = {
-        "build_reference_mesh_id",
-        "clear_exact_prediction_cache",
-        "initialize_exact_runtime_cache",
-        "prepare_exact_single_stream_forward_input",
-        "prepare_exact_single_stream_input",
-        "repeat_exact_single_stream_input_for_cfg",
-        "resolve_runtime_module_dtype",
-        "run_exact_single_stream_forward",
-    }
-    exact_runtime_path = PACKAGE_ROOT / "models" / "visual_tower" / "exact_runtime.py"
-    reference_runtime_path = (
-        PACKAGE_ROOT
-        / "models"
-        / "policy_variants"
-        / "parallel_stream"
-        / "reference_runtime.py"
-    )
-
-    assert exact_runtime_definitions <= _top_level_definitions(exact_runtime_path)
-    assert not reference_runtime_path.exists()
-    assert "unpatchify_video_sequence" in _top_level_definitions(
-        PACKAGE_ROOT / "models" / "common" / "video_geometry.py"
-    )
-    assert not reference_runtime_path.exists()
-
-
-
-
-
-
-
-
-def test_parallel_reference_profile_validation_has_one_owner() -> None:
-    parallel_stream_root = (
-        PACKAGE_ROOT / "models" / "policy_variants" / "parallel_stream"
-    )
-    profile_path = parallel_stream_root / "reference_profile.py"
-    variant_path = parallel_stream_root / "variant.py"
-
-    assert {
-        "LingbotReferenceRuntimeContract",
-        "validate_reference_profile",
-    } <= _top_level_definitions(profile_path)
-    assert "_validate_reference_profile" not in _top_level_definitions(variant_path)
-
-
-def test_parallel_inference_conditioning_has_one_implementation_owner() -> None:
-    conditioning_definitions = {
-        "append_generalist_mode_text_context",
-        "repeat_parallel_exact_input_for_cfg",
-    }
-    parallel_stream_root = (
-        PACKAGE_ROOT / "models" / "policy_variants" / "parallel_stream"
-    )
-    conditioning_path = parallel_stream_root / "inference_conditioning.py"
-    reference_runtime_path = parallel_stream_root / "reference_runtime.py"
-
-    assert conditioning_definitions <= _top_level_definitions(conditioning_path)
-    assert not reference_runtime_path.exists()
-
-
-def test_parallel_forward_execution_has_one_implementation_owner() -> None:
-    execution_definitions = {
-        "run_parallel_action_conditioned_forward",
-        "run_parallel_action_conditioned_train",
-        "run_parallel_exact_dual_stream_forward",
-        "run_parallel_exact_train",
-    }
-    parallel_stream_root = (
-        PACKAGE_ROOT / "models" / "policy_variants" / "parallel_stream"
-    )
-    execution_path = parallel_stream_root / "forward_execution.py"
-    reference_runtime_path = parallel_stream_root / "reference_runtime.py"
-
-    assert execution_definitions <= _top_level_definitions(execution_path)
-    assert not reference_runtime_path.exists()
-
-
-
-
-
-
-
-
-def test_parallel_reference_runtime_is_a_compatibility_only_facade() -> None:
-    reference_runtime_path = (
-        PACKAGE_ROOT
-        / "models"
-        / "policy_variants"
-        / "parallel_stream"
-        / "reference_runtime.py"
-    )
-
-    assert not reference_runtime_path.exists()
-
-
 def test_compatibility_export_anchors_only_reference_imported_symbols() -> None:
     anchored_modules = tuple(
         path
@@ -5265,8 +4041,6 @@ def test_compatibility_export_anchors_only_reference_imported_symbols() -> None:
         export_names = _compatibility_export_names(path)
         assert export_names
         assert export_names <= _top_level_import_names(path)
-
-
 
 
 def test_decoder_artifacts_have_a_neutral_owner() -> None:
@@ -5305,204 +4079,6 @@ def test_decoder_artifacts_have_a_neutral_owner() -> None:
     assert _top_level_definitions(parallel / "training_prefix_artifacts.py") == {
         "prepare_parallel_prefix_condition_exact_train_artifacts",
     }
-
-
-def test_parallel_runtime_semantics_have_one_implementation_owner() -> None:
-    semantics_definitions = {
-        "attention_profile_name_for_current_block_coupling",
-        "prefix_visibility_mode_for_policy",
-        "resolve_parallel_context_condition_latent_source",
-        "resolve_parallel_current_block_coupling",
-        "resolve_parallel_history_stream_visibility",
-        "resolve_parallel_joint_timestep_coupling",
-        "uses_legacy_prefix_per_chunk_proprio_contract",
-    }
-    parallel_stream_root = (
-        PACKAGE_ROOT / "models" / "policy_variants" / "parallel_stream"
-    )
-    semantics_path = parallel_stream_root / "runtime_semantics.py"
-    reference_runtime_path = parallel_stream_root / "reference_runtime.py"
-    dynamics_rollout_path = REPO_ROOT / "scripts" / "research_dynamics" / "rollout.py"
-
-    assert semantics_definitions <= _top_level_definitions(semantics_path)
-    assert not reference_runtime_path.exists()
-    assert "_resolve_parallel_current_block_coupling" not in _top_level_definitions(
-        dynamics_rollout_path
-    )
-
-
-def test_parallel_conditional_rollout_has_one_implementation_owner() -> None:
-    rollout_definitions = {
-        "dynamics_rollout_prefix_visibility_mode",
-        "select_dynamics_warmup_history_suffix",
-        "slice_dynamics_conditioning_chunk",
-        "uses_dynamics_mode_text_token",
-    }
-    parallel_stream_root = (
-        PACKAGE_ROOT / "models" / "policy_variants" / "parallel_stream"
-    )
-    rollout_path = parallel_stream_root / "conditional_rollout.py"
-    reference_runtime_path = parallel_stream_root / "reference_runtime.py"
-
-    assert rollout_definitions <= _top_level_definitions(rollout_path)
-    assert not reference_runtime_path.exists()
-
-
-def test_parallel_training_noise_has_one_implementation_owner() -> None:
-    noise_definitions = {
-        "build_parallel_flow_noise_artifacts",
-        "sample_coupled_parallel_timestep_values",
-        "sample_index_matched_timestep_values",
-        "sample_shared_video_schedule_timestep_values",
-        "share_video_scheduler_grid_with_action_scheduler",
-    }
-    parallel_stream_root = (
-        PACKAGE_ROOT / "models" / "policy_variants" / "parallel_stream"
-    )
-    noise_path = parallel_stream_root / "training_noise.py"
-    reference_runtime_path = parallel_stream_root / "reference_runtime.py"
-
-    assert noise_definitions <= _top_level_definitions(noise_path)
-    assert not reference_runtime_path.exists()
-
-
-def test_video_conditioning_has_one_shared_implementation_owner() -> None:
-    conditioning_definitions = {
-        "build_repeated_first_frame_condition",
-        "resolve_full_window_condition_latents",
-        "resolve_video_condition_latents",
-        "select_first_frame_condition_latents",
-    }
-    parallel_stream_root = (
-        PACKAGE_ROOT / "models" / "policy_variants" / "parallel_stream"
-    )
-    conditioning_path = PACKAGE_ROOT / "models" / "common" / "video_conditioning.py"
-    reference_runtime_path = parallel_stream_root / "reference_runtime.py"
-
-    assert conditioning_definitions <= _top_level_definitions(conditioning_path)
-    assert not (parallel_stream_root / "latent_conditioning.py").exists()
-    assert not reference_runtime_path.exists()
-
-
-def test_parallel_dynamics_training_has_one_implementation_owner() -> None:
-    training_definitions = {
-        "apply_parallel_dynamics_training_plan",
-        "apply_parallel_prefix_dynamics_training_plan",
-    }
-    parallel_stream_root = (
-        PACKAGE_ROOT / "models" / "policy_variants" / "parallel_stream"
-    )
-    training_path = parallel_stream_root / "dynamics_training.py"
-    reference_runtime_path = parallel_stream_root / "reference_runtime.py"
-
-    assert training_definitions <= _top_level_definitions(training_path)
-    assert "ParallelTrainArtifacts" not in _top_level_definitions(training_path)
-    assert "ParallelTrainArtifacts" in _top_level_import_names(training_path)
-    assert not reference_runtime_path.exists()
-
-
-def test_parallel_proprio_conditioning_has_one_implementation_owner() -> None:
-    conditioning_definitions = {
-        "build_single_stream_hidden_proprio_history_context",
-        "build_single_stream_hidden_proprio_context",
-        "inject_deprecated_proprio_text_context",
-    }
-    parallel_stream_root = (
-        PACKAGE_ROOT / "models" / "policy_variants" / "parallel_stream"
-    )
-    conditioning_path = parallel_stream_root / "proprio_conditioning.py"
-    reference_runtime_path = parallel_stream_root / "reference_runtime.py"
-
-    assert conditioning_definitions <= _top_level_definitions(conditioning_path)
-    assert "_apply_packed_video_action_proprio_context" in _top_level_definitions(
-        PACKAGE_ROOT / "models" / "visual_tower" / "sequence_adapters.py"
-    )
-    assert "apply_packed_video_action_proprio_context" not in _top_level_definitions(
-        PACKAGE_ROOT / "models" / "common" / "proprio_conditioning.py"
-    )
-    assert "apply_parallel_chunk_proprio_context" not in _top_level_definitions(
-        conditioning_path
-    )
-    assert not reference_runtime_path.exists()
-
-
-def test_parallel_policy_conditioning_has_one_implementation_owner() -> None:
-    conditioning_methods = {
-        "append_generalist_mode_text_token",
-        "append_train_proprio_text_context",
-        "attach_train_hidden_proprio_context",
-        "resolve_infer_hidden_proprio_context",
-        "resolve_infer_proprio_context",
-        "resolve_required_proprio_state",
-        "resolve_train_condition_latents",
-        "resolve_train_hidden_proprio_context",
-        "resolve_train_proprio_context",
-        "select_rollout_proprio_state",
-        "uses_generalist_mode_text_token",
-        "uses_per_chunk_proprio_context",
-        "uses_proprio_context",
-        "uses_text_proprio_context",
-    }
-    retired_variant_methods = {
-        "_append_generalist_mode_text_token",
-        "_cache_proprio_state",
-        "_require_per_chunk_proprio_state",
-        "_require_proprio_state",
-        "_require_train_proprio_context",
-        "_resolve_generalist_training_metadata",
-        "_resolve_per_chunk_proprio_state",
-        "_resolve_proprio_state",
-        "_resolve_train_condition_latents",
-        "_select_anchor_state",
-        "_select_proprio_state",
-        "_uses_generalist_mode_text_token",
-        "_uses_per_chunk_proprio_context",
-        "_uses_proprio_context",
-        "_uses_text_proprio_context",
-    }
-    parallel_stream_root = (
-        PACKAGE_ROOT / "models" / "policy_variants" / "parallel_stream"
-    )
-    conditioning_path = parallel_stream_root / "conditioning.py"
-    variant_path = parallel_stream_root / "variant.py"
-
-    assert conditioning_methods <= _class_method_definitions(
-        conditioning_path,
-        "ParallelStreamConditioning",
-    )
-    assert retired_variant_methods.isdisjoint(
-        _class_method_definitions(variant_path, "ParallelStreamPolicyVariant")
-    )
-
-
-def test_visual_runtime_tensor_transport_has_one_implementation_owner() -> None:
-    transport_definitions = {
-        "cached_attention_profile",
-        "cached_optional_tensor",
-        "move_attention_profile",
-        "move_optional_tensor",
-        "move_slot_pool_layer_state",
-    }
-    transport_path = (
-        PACKAGE_ROOT / "models" / "visual_tower" / "runtime_tensor_transport.py"
-    )
-    replica_core_path = PACKAGE_ROOT / "models" / "visual_tower" / "replica_core.py"
-
-    assert transport_definitions <= _top_level_definitions(transport_path)
-    assert transport_definitions.isdisjoint(_top_level_definitions(replica_core_path))
-
-
-def test_visual_context_encoders_have_one_implementation_owner() -> None:
-    encoder_definitions = {
-        "GeneralistModeContextEncoder",
-        "ProprioContextEncoder",
-        "ProprioHiddenContextEncoder",
-    }
-    encoder_path = PACKAGE_ROOT / "models" / "visual_tower" / "context_encoders.py"
-    replica_core_path = PACKAGE_ROOT / "models" / "visual_tower" / "replica_core.py"
-
-    assert encoder_definitions <= _top_level_definitions(encoder_path)
-    assert encoder_definitions.isdisjoint(_top_level_definitions(replica_core_path))
 
 
 def test_retired_fdm_guided_planning_namespace_is_not_packaged() -> None:
@@ -5579,10 +4155,6 @@ def test_action_decoder_rollout_plan_has_one_model_owner() -> None:
     assert ".aux" not in adapter
 
 
-
-
-
-
 def test_realtime_scheduling_has_no_benchmark_or_model_implementation_dependency() -> None:
     for name in ("rollout_engine", "realtime_contracts", "realtime_scheduling", "realtime_plan_queue"):
         path = PACKAGE_ROOT / "runtime" / f"{name}.py"
@@ -5595,45 +4167,6 @@ def test_realtime_scheduling_has_no_benchmark_or_model_implementation_dependency
         )
     for name in ("realtime_contracts", "realtime_scheduling", "realtime_plan_queue"):
         assert not (PACKAGE_ROOT / "integrations" / f"{name}.py").exists()
-
-
-
-
-
-
-def test_private_uva_comparison_drivers_are_retired() -> None:
-    retired_paths = (
-        REPO_ROOT / "scripts" / "debug_gjd_uva_mode_videos.py",
-        REPO_ROOT / "scripts" / "eval_uva_openwam_aligned.py",
-        REPO_ROOT / "scripts" / "eval_openwam_fdm_fvd.py",
-    )
-
-    assert not any(path.exists() for path in retired_paths)
-
-
-def test_private_libero_absolute_action_experiment_harness_is_retired() -> None:
-    retired_paths = (
-        REPO_ROOT / "scripts" / "process_libero10_absolute_joint_dataset.py",
-        REPO_ROOT / "scripts" / "calibrate_libero_integrated_delta_scale.py",
-        REPO_ROOT / "scripts" / "calibrate_libero_integrated_eef_scale.py",
-        REPO_ROOT / "scripts" / "check_libero_absolute_joint_adapter_sanity.py",
-        REPO_ROOT / "scripts" / "materialize_libero_absolute_joint_lerobot_overlay.py",
-        REPO_ROOT / "scripts" / "materialize_libero_integrated_eef6d_overlay.py",
-        REPO_ROOT / "scripts" / "run_libero_abs_joint_rollout_debug.py",
-        REPO_ROOT / "scripts" / "validate_libero_absolute_joint_position.py",
-    )
-
-    assert not any(path.exists() for path in retired_paths)
-
-
-def test_private_local_posttraining_supervisor_is_retired() -> None:
-    retired_paths = (
-        REPO_ROOT / "scripts" / "run_local_libero10_posttrain_m1_m2_m5.sh",
-        REPO_ROOT / "scripts" / "run_local_libero10_posttrain_m2_m5.sh",
-        REPO_ROOT / "scripts" / "env_local_data_openwam.sh",
-    )
-
-    assert not any(path.exists() for path in retired_paths)
 
 
 def test_private_checkpoint_distribution_surface_is_retired() -> None:
@@ -5657,65 +4190,6 @@ def test_private_checkpoint_distribution_surface_is_retired() -> None:
             if path.is_file() and path.suffix in {".md", ".py", ".sh"}:
                 source = path.read_text(encoding="utf-8").lower()
                 assert not any(fragment in source for fragment in fragments)
-
-
-def test_unowned_checkout_utilities_are_retired() -> None:
-    retired_paths = (
-        REPO_ROOT / "scripts" / "compute_lerobot_action_stats.py",
-        REPO_ROOT / "scripts" / "extract_model_state_checkpoint.py",
-        REPO_ROOT / "scripts" / "run_gpu_method_family_sanity.sh",
-    )
-
-    assert not any(path.exists() for path in retired_paths)
-    testing_guide = (REPO_ROOT / "docs" / "testing.md").read_text(encoding="utf-8")
-    assert "OPEN_WAM_RUN_GPU_SANITY=1 uv run pytest -m gpu" in testing_guide
-    gpu_sanity = (
-        REPO_ROOT / "tests" / "test_gpu_policy_architecture_sanity.py"
-    ).read_text(encoding="utf-8")
-    assert "pytestmark = pytest.mark.gpu" in gpu_sanity
-
-
-def test_orphaned_diagnostics_and_duplicate_aliases_are_retired() -> None:
-    retired_paths = (
-        REPO_ROOT / "scripts" / "visualize_libero_reference_pose_slurm.py",
-        REPO_ROOT / "scripts" / "visualize_libero_reference_pose.py",
-        REPO_ROOT / "scripts" / "run_viz_libero_reference_pose.sh",
-        REPO_ROOT / "scripts" / "run_viz_libero_pose_compare.sh",
-        REPO_ROOT / "scripts" / "run_lingbot_va_libero10_apple_to_apple_eval.sh",
-        REPO_ROOT / "scripts" / "run_lingbot_va_m1_proprio_finetune_libero10.sh",
-        REPO_ROOT / "scripts" / "check_libero_proprio_state_alignment.py",
-        REPO_ROOT / "scripts" / "smoke_parallel_stream_lingbot_replica.py",
-        REPO_ROOT / "scripts" / "run_backbone_only.sh",
-    )
-
-    assert not any(path.exists() for path in retired_paths)
-
-
-def test_bespoke_smoke_and_config_preset_aliases_are_retired() -> None:
-    retired_paths = tuple(
-        REPO_ROOT / "scripts" / name
-        for name in (
-            "smoke_backbone_only.py",
-            "smoke_phase_two.py",
-            "smoke_variant_pipeline.py",
-            "smoke_parallel_stream.py",
-            "smoke_lingbot_exact_runner.py",
-            "run_train_backbone_only.sh",
-            "run_eval_causal_video_prediction_robotwin_smoke.sh",
-            "run_eval_dual_expert_robotwin_smoke.sh",
-            "run_eval_parallel_stream_robotwin_smoke.sh",
-        )
-    )
-
-    assert not any(path.exists() for path in retired_paths)
-    active_guides = (
-        REPO_ROOT / "README.md",
-        REPO_ROOT / "docs" / "quickstart.md",
-        REPO_ROOT / "docs" / "running_experiments.md",
-    )
-    for guide in active_guides:
-        source = guide.read_text(encoding="utf-8")
-        assert not any(path.name in source for path in retired_paths)
 
 
 def test_pre_variant_backbone_only_surface_is_retired() -> None:

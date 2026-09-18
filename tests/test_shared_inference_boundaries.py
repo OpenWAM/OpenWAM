@@ -23,6 +23,7 @@ ROOT = Path(__file__).resolve().parents[1] / "src" / "open_wam"
         "dual_expert/contracts.py",
         "parallel_stream/staged_rollout.py",
         "parallel_stream/packed_rollout.py",
+        "parallel_stream/reference_runtime.py",
     ),
 )
 def test_retired_inference_routes_have_no_compatibility_module(relative):

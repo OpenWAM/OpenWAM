@@ -15,6 +15,7 @@ from open_wam.models.common import (
     apply_attention_backend,
     select_attention_profile_mask,
 )
+from open_wam.models.common.attention_backends import shared_flex_kernel_options
 from open_wam.models.common.cache_backend_contracts import (
     SLOT_POOL_ALLOW_VIDEO_TO_ACTION_PREFIX_TAIL_TOKENS,
     cache_backend_uses_slot_pool,
@@ -344,14 +345,7 @@ class SharedTransformerAttention(nn.Module):
             value=value,
             attention_mask=sdpa_mask,
             block_mask=profile_block_mask,
-            kernel_options={
-                "BLOCK_M": 64,
-                "BLOCK_N": 64,
-                "BLOCK_M1": 32,
-                "BLOCK_N1": 64,
-                "BLOCK_M2": 64,
-                "BLOCK_N2": 32,
-            }
+            kernel_options=shared_flex_kernel_options()
             if profile_block_mask is not None
             else None,
         )

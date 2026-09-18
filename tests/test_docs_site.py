@@ -25,38 +25,28 @@ def test_docs_site_stages_curated_public_docs_only(tmp_path: Path) -> None:
 
     summary = builder.build_docs_site(output)
 
-    assert summary["public_pages"] == len(builder.PUBLIC_MARKDOWN_PATHS) == 34
-    assert summary["public_assets"] == len(builder.PUBLIC_ASSET_PATHS) == 8
+    assert summary["public_pages"] == len(builder.PUBLIC_MARKDOWN_PATHS)
+    assert summary["public_assets"] == len(builder.PUBLIC_ASSET_PATHS)
     assert summary["notes_published"] is False
     assert summary["broken_local_links"] == 0
     assert summary["missing_repository_paths"] == 0
-    assert (output / "index.md").is_file()
-    assert (output / builder.OUTPUT_SENTINEL).is_file()
-    assert (output / "quickstart.md").is_file()
-    assert (output / "migration_0_2.md").is_file()
-    assert (output / "architecture.md").is_file()
-    assert (output / "policy_architectures.md").is_file()
-    assert (output / "benchmarks.md").is_file()
-    assert (output / "running_experiments.md").is_file()
-    assert (output / "variable_length_training_batches.md").is_file()
-    assert (output / "video_only_training.md").is_file()
-    assert (output / "assets/affiliations/stanford-wordmark.png").is_file()
-    assert (output / "assets/affiliations/stanford-ai-lab.jpg").is_file()
-    assert (output / "assets/affiliations/stanford-svl.png").is_file()
-    assert (output / "assets/affiliations/stanford-src.webp").read_bytes() == (
-        REPO_ROOT / "docs/assets/affiliations/stanford-src.webp"
-    ).read_bytes()
-    assert (output / "assets/stylesheets/openwam.css").is_file()
-    assert (output / "assets/robot-teaser.gif").read_bytes() == (
-        REPO_ROOT / "docs/assets/robot-teaser.gif"
-    ).read_bytes()
-    assert not (output / "m5_gjd_uva_libero10_comparison.md").exists()
-    assert not (output / "engineering-notes").exists()
-    assert not (output / "CHECKPOINT.md").exists()
-    assert not (output / "camera_sync_deploy_issue.md").exists()
-    assert not (output / "github_pages.md").exists()
-    assert not (output / "dual_expert_refactor_characterization.md").exists()
-    assert not (output / "staging").exists()
+    expected_pages = {
+        path.with_name("index.md") if path.name == "README.md" else path
+        for path in builder.PUBLIC_MARKDOWN_PATHS
+    }
+    expected_files = {
+        *expected_pages,
+        *builder.PUBLIC_ASSET_PATHS,
+        Path(builder.OUTPUT_SENTINEL),
+    }
+    actual_files = {
+        path.relative_to(output) for path in output.rglob("*") if path.is_file()
+    }
+    assert actual_files == expected_files
+    for relative in builder.PUBLIC_ASSET_PATHS:
+        assert (output / relative).read_bytes() == (
+            builder.PUBLIC_DOCS / relative
+        ).read_bytes()
     assert builder.scan_private_fragments(output) == []
     assert builder.scan_broken_local_links(output) == []
     assert builder.scan_broken_local_links(
