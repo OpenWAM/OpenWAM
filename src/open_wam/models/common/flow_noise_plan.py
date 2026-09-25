@@ -7,16 +7,10 @@ import torch
 
 from open_wam.configs.enums import JointTimestepCoupling
 from open_wam.models.common.flow_schedule import (
+    TimestepGridSchedulerLike as TimestepGridSchedulerLike,
     sample_timestep_id,
+    timesteps_matching_sigmas,
 )
-
-
-class TimestepGridSchedulerLike(Protocol):
-    """Minimal scheduler interface for sampling from a discrete timestep grid."""
-
-    num_train_timesteps: int
-    timesteps: torch.Tensor
-    sigmas: torch.Tensor
 
 
 class SigmaLookupSchedulerLike(Protocol):
@@ -91,8 +85,8 @@ def sample_coupled_timestep_values(
     )
     sigma_values = video_scheduler.sigmas.to(device=device)[timestep_ids]
     return CoupledTimestepValues(
-        video_timesteps=_timesteps_matching_sigmas(video_scheduler, sigma_values),
-        action_timesteps=_timesteps_matching_sigmas(action_scheduler, sigma_values),
+        video_timesteps=timesteps_matching_sigmas(video_scheduler, sigma_values),
+        action_timesteps=timesteps_matching_sigmas(action_scheduler, sigma_values),
         sigma_values=sigma_values,
     )
 
@@ -192,17 +186,6 @@ def _validate_timestep_grid(scheduler: TimestepGridSchedulerLike) -> int:
             f"got timesteps={timesteps_len}, sigmas={sigmas_len}."
         )
     return timesteps_len
-
-
-def _timesteps_matching_sigmas(
-    scheduler: TimestepGridSchedulerLike,
-    sigma_values: torch.Tensor,
-) -> torch.Tensor:
-    scheduler_sigmas = scheduler.sigmas.to(device=sigma_values.device, dtype=sigma_values.dtype)
-    scheduler_timesteps = scheduler.timesteps.to(device=sigma_values.device)
-    flat_sigmas = sigma_values.reshape(-1)
-    indices = torch.argmin((scheduler_sigmas[:, None] - flat_sigmas[None]).abs(), dim=0)
-    return scheduler_timesteps[indices].reshape(sigma_values.shape)
 
 
 def frame_sigmas_for_timesteps(

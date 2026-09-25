@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import torch
 from torch import nn
 
 from open_wam.configs import (
@@ -24,7 +23,6 @@ from .reference_core_weights import (
     load_reference_weights_into_replica_core,
 )
 from .reference_loader import resolve_runtime_backbone_dir
-from .reference_transformer import preferred_reference_dtype
 
 
 def initialize_runtime_backbone(
@@ -163,65 +161,6 @@ def validate_runtime_backbone_request(
             f"action_dim, requested={requested_action_dim}, "
             f"tower_action_dim={configured_action_dim}."
         )
-
-
-def ensure_runtime_module_device(
-    runtime_backbone: nn.Module,
-    *,
-    device,
-) -> nn.Module:
-    """Move a runtime backbone only when its device or floating dtype differs."""
-
-    device = torch.device(device)
-    target_dtype = preferred_reference_dtype(device)
-    parameters = tuple(runtime_backbone.parameters())
-    if any(
-        callable(getattr(parameter, "full_tensor", None))
-        for parameter in parameters
-    ):
-        # FSDP owns both placement and mixed-precision materialization for
-        # DTensor parameters. Calling ``module.to(dtype=...)`` after sharding
-        # mutates the shard dtype without updating FSDP's reduction metadata.
-        misplaced = [
-            parameter.device
-            for parameter in parameters
-            if parameter.device != device
-        ]
-        misplaced.extend(
-            buffer.device
-            for buffer in runtime_backbone.buffers()
-            if buffer.device != device
-        )
-        if misplaced:
-            raise RuntimeError(
-                "A sharded runtime backbone cannot be moved after strategy preparation; "
-                f"requested device={device}, observed devices="
-                f"{sorted({str(value) for value in misplaced})}."
-            )
-        for buffer in runtime_backbone.buffers():
-            if buffer.is_floating_point() and buffer.dtype != target_dtype:
-                buffer.data = buffer.data.to(dtype=target_dtype)
-        return runtime_backbone
-
-    needs_move = False
-    for parameter in parameters:
-        if parameter.device != device:
-            needs_move = True
-            break
-        if parameter.is_floating_point() and parameter.dtype != target_dtype:
-            needs_move = True
-            break
-    if not needs_move:
-        for buffer in runtime_backbone.buffers():
-            if buffer.device != device:
-                needs_move = True
-                break
-            if buffer.is_floating_point() and buffer.dtype != target_dtype:
-                needs_move = True
-                break
-    if needs_move:
-        runtime_backbone.to(device=device, dtype=target_dtype)
-    return runtime_backbone
 
 
 def reset_runtime_module_cache(
