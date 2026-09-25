@@ -135,10 +135,9 @@ arbitrary old checkpoint/config compatibility or identical rollouts.
 Retain strict checkpoint loading, inspect its compatibility report, and test
 full-state resume separately from weight initialization.
 
-Training recipes and third-party dependency pins are not changed by the
-release-preparation branch. The release includes intentional inference and
-one-rank FSDP behavior changes already merged into the implementation, plus
-an explicit-CPU FSDP placement correction found during release testing.
+Version 0.2.0 retains training recipes and third-party dependency pins.
+The inference and FSDP changes above still require validation before resuming
+an existing experiment.
 
 ## Upgrade Checklist
 
@@ -154,7 +153,7 @@ an explicit-CPU FSDP placement correction found during release testing.
 5. Use the corresponding source revision and frozen lock for characterization;
    a wheel install resolves allowed dependency ranges instead.
 
-The draft does not claim new task-success rates or universal old/new bitwise
+This release does not claim new task-success rates or universal old/new bitwise
 parity. See [Compatibility](compatibility.md), [Testing](testing.md), and
 [Releases](release.md). Deferred upgrades leave existing, expiring
 dependency-risk exceptions in force; they do not fix the vulnerabilities.

@@ -3,8 +3,17 @@
 from __future__ import annotations
 
 import math
+from typing import Protocol
 
 import torch
+
+
+class TimestepGridSchedulerLike(Protocol):
+    """Minimal scheduler interface for sampling from a discrete timestep grid."""
+
+    num_train_timesteps: int
+    timesteps: torch.Tensor
+    sigmas: torch.Tensor
 
 
 class FlowMatchScheduler:
@@ -254,9 +263,11 @@ def sample_timestep_id(
 
 
 def timesteps_matching_sigmas(
-    scheduler: FlowMatchScheduler,
+    scheduler: TimestepGridSchedulerLike,
     sigma_values: torch.Tensor,
 ) -> torch.Tensor:
+    """Select the nearest grid sigma, retaining the first index on ties."""
+
     scheduler_sigmas = scheduler.sigmas.to(device=sigma_values.device, dtype=sigma_values.dtype)
     scheduler_timesteps = scheduler.timesteps.to(device=sigma_values.device)
     flat_sigmas = sigma_values.reshape(-1)
@@ -266,6 +277,7 @@ def timesteps_matching_sigmas(
 
 __all__ = [
     "FlowMatchScheduler",
+    "TimestepGridSchedulerLike",
     "zero_terminal_next_sigma",
     "explicit_sigma_euler_step",
     "expand_scalar_timestep",

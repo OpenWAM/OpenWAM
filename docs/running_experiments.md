@@ -137,6 +137,20 @@ path when resuming a published run. Enabling FSDP is a numerical execution
 change, not a promise of bitwise parity with that old fallback. One-rank DDP
 continues to use the unwrapped model.
 
+#### Training precision ownership
+
+The training strategy owns model placement and mixed-precision execution.
+With FP32-initialized parameters and `bf16-mixed`, optimizer parameters and
+Adam moments stay FP32; autocast or FSDP supplies BF16 computation. Policy
+forward methods access the prepared backbone without moving or recasting it.
+This contract is shared by Parallel Stream, Dual Expert, and causal video.
+
+Older unsharded Parallel Stream training cast the backbone to BF16 during
+forward, also leaving Adam moments in BF16. This fix prevents future casts;
+loading those checkpoints cannot recover updates lost to BF16 rounding.
+Use a clean initialization for a controlled precision comparison, and retain
+full training state when resuming corrected runs.
+
 #### Effective batch does not follow the config across process counts
 
 The optimizer sees `train_batch_size x gradient_accumulation_steps x
@@ -433,6 +447,9 @@ available. Canonical manifests declare
 `reference_branch`, and an artifact-relative `raw_payload_root` that locates
 aligned action and proprio payloads. Absolute `dataset_root`, config, and
 checkpoint paths are provenance only and are never runtime location fields.
+The reference label need not occur in a CF-only artifact. Preflight requires
+nonempty rows for each requested source: asking a CF-only artifact for
+`real_demo` data fails rather than reclassifying a perturbed trajectory.
 Canonical loading is strict: migrate an unversioned or pre-relocation v1 root
 once before training:
 

@@ -16,6 +16,7 @@ import yaml
 from open_wam.runtime.control import ControlCommand, ControlTransition
 
 from open_wam.configs import DataConfig
+from open_wam.integrations.image_ops import resize_nearest_to_height
 from open_wam.integrations.simulator_configs import RobotwinEnvConfig as RobotwinEnvConfig
 from open_wam.simulators import SimulatorCapabilities, normalize_quaternion_xyzw
 
@@ -167,7 +168,7 @@ class RobotwinBenchmarkAdapter:
         )]
         heights = [frame.shape[0] for frame in frames]
         target_h = max(heights)
-        resized = [_resize_nearest_to_height(frame, target_h) for frame in frames]
+        resized = [resize_nearest_to_height(frame, target_h) for frame in frames]
         return np.concatenate(resized, axis=1)
 
     def close(self) -> None:
@@ -632,14 +633,3 @@ def _euler_xyz_to_quat_xyzw(euler: np.ndarray) -> np.ndarray:
     )
     quat /= max(float(np.linalg.norm(quat)), 1e-8)
     return quat
-
-
-def _resize_nearest_to_height(frame: np.ndarray, target_h: int) -> np.ndarray:
-    frame = np.asarray(frame)
-    if frame.shape[0] == target_h:
-        return frame
-    scale = target_h / frame.shape[0]
-    target_w = max(1, int(round(frame.shape[1] * scale)))
-    y_indices = np.clip((np.arange(target_h) / scale).astype(np.int64), 0, frame.shape[0] - 1)
-    x_indices = np.clip((np.arange(target_w) / scale).astype(np.int64), 0, frame.shape[1] - 1)
-    return frame[y_indices][:, x_indices]

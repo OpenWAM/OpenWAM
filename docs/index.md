@@ -13,8 +13,7 @@
 </div>
 
 OpenWAM is an extensible library for training and evaluating world action
-models while keeping the shared visual backbone stable. The public docs focus
-on reproducible usage, typed extension points, and benchmark contracts.
+models while keeping the shared visual backbone stable. Start with a CPU example, then choose a training, evaluation, or extension workflow.
 
 ## Start Here
 
@@ -37,5 +36,6 @@ on reproducible usage, typed extension points, and benchmark contracts.
 ## Reference
 
 - [CLI Reference](cli.md): commands and examples.
+- [Rollout Contracts](rollout_contracts.md): sessions, executed history, and control integration.
 - [Testing](testing.md): local tests and numerical comparisons for extensions.
 - [Releases](release.md): package versions and reproducible installation.

@@ -495,9 +495,8 @@ class ParallelStreamPolicyVariant(VideoActionPolicyVariant):
         # still owns the transformer weights, but train-time packing, attention
         # profile selection, and projection semantics live in the exact runtime
         # helper to preserve LingBot behavior.
-        reference_transformer = visual_tower.ensure_runtime_backbone_device(
+        reference_transformer = visual_tower.get_runtime_backbone(
             action_dim=self.action_dim,
-            device=prepared_inputs.batch.actions.device,
         )
         train_artifacts = prepared_inputs.variant_inputs["parallel_train_artifacts"]
         self.conditioning.append_generalist_mode_text_token(

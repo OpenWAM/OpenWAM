@@ -49,6 +49,7 @@ nav:
       - Add A Simulator Adapter: cookbooks/new_simulator_adapter.md
       - Reproduce A Result: cookbooks/reproduce_result.md
   - Development:
+      - Rollout Contracts: rollout_contracts.md
       - Testing: testing.md
       - Releases: release.md
       - Migrating To 0.2: migration_0_2.md

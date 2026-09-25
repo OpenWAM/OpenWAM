@@ -11,23 +11,15 @@ architecture change.
 
 ## Runtime Compatibility
 
-Runtime modernization is allowed and encouraged. The compatibility rule is:
-introduce the new path first, keep old experiment paths working through
-wrappers or aliases, warn before deprecating, and remove legacy only in a later
-explicit removal PR.
+Follow the [compatibility policy](docs/compatibility.md). Refactors preserve
+supported configurations, checkpoint loading, and model behavior. Intentional
+breaking changes require a migration guide; do not silently revive retired
+fields or add compatibility branches to the active runtime.
 
-When changing runtime, scripts, configs, or result schemas:
-
-- keep existing experiment YAMLs loadable
-- keep current checkpoint layouts loadable
-- keep existing root `scripts/...` commands callable through wrappers or clear
-  migration messages
-- keep old config fields accepted while introducing new names
-- preserve visual packing, action packing, denoising-step semantics, cache
-  semantics, scheduler semantics, and policy outputs unless the PR is explicitly
-  a behavior change
-- write both old and new result fields for one compatibility window if an output
-  schema changes
+For model-facing changes, check visual/action packing, denoising schedules,
+attention, history, losses, and outputs. Test full-state resume when parameter
+ownership or checkpoint handling changes. Document any intentional numerical
+difference and its reproducibility limits.
 
 ## Extension Style
 
@@ -82,6 +74,20 @@ static config validation command:
 ```bash
 uv run openwam-validate-config configs/examples/<your_config>.yaml
 ```
+
+## Documentation And Tests
+
+Write public documentation for a reader using or extending the current package.
+Keep the README an entry point, guides task-oriented, and API contracts in the
+SDK/reference pages. Changelogs describe release impact, not review discussions,
+private experiments, test counts, or helper-by-helper refactor inventories.
+Internal run records belong outside the public documentation.
+
+Prefer tests of observable behavior: outputs, errors, gradients, state changes,
+and supported imports. Parameterize meaningful input boundaries instead of
+duplicating fixtures. Source inspection is useful for dependency rules and
+import safety, not for freezing private helper names or incidental file layout.
+Do not replace numerical or compatibility regression checks with prose.
 
 ## Pull Request Checklist
 

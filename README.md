@@ -49,20 +49,18 @@ share the same trainer and visual stack.
 
 ## Upcoming Research Release
 
-Detailed evaluation results, trained model checkpoints, datasets, and the
-OpenWAM research paper are being prepared for public release and will be
-available very soon. Canonical links and integrity metadata will be added to
+Policy evaluation results, trained policy checkpoints, datasets, and the
+OpenWAM research paper are being prepared for public release.
+Canonical links and integrity metadata will be added to
 the [artifact documentation](https://github.com/OpenWAM/OpenWAM/blob/main/docs/artifacts.md) as each resource is published.
 
 ## Research Scope
 
-For OpenWAM video pretraining, see the
-[pretraining datasets and workflow](https://github.com/OpenWAM/OpenWAM/blob/main/docs/pretraining/index.md). The guide covers
-the nine pretraining data sources, downloads, RGB multi-view composition before
-VAE encoding, task text, verified object storage with a bounded cache, training,
-checkpoints, and inference. These inputs are the pretraining corpus; downstream
-robot policy fine-tuning and evaluation have their own dataset configurations.
-Published model weights are available at
+Train video models, fine-tune robot policies, and evaluate them through shared
+data and simulator interfaces. The
+[video pretraining guide](https://github.com/OpenWAM/OpenWAM/blob/main/docs/pretraining/index.md)
+covers data preparation through prediction. Released pretraining weights are
+available at
 [OpenWAM-Stanford/OpenWAM-Pretraining on Hugging Face](https://huggingface.co/OpenWAM-Stanford/OpenWAM-Pretraining).
 
 OpenWAM provides:
@@ -73,29 +71,21 @@ OpenWAM provides:
 - full-state checkpoint continuation and versioned run provenance;
 - adapters for LIBERO, RoboTwin, CALVIN, heterogeneous LeRobot data, and
   synthetic fixtures;
-- role-scoped extension APIs for datasets, policies, decoders, attention
-  profiles, and simulators; and
-- CPU semantic tests plus opt-in real-checkpoint GPU parity gates for changes
-  near model numerics.
+- extension APIs for datasets, policies, decoders, attention profiles, and
+  simulators.
 
 ### Maintained Methods
 
 | Architecture | Topology | Maintained programs |
 | --- | --- | --- |
-| `parallel_stream` | Video and action tokens share one transformer. | Six standard programs, GJD, and standalone conditional FDM/IDM through the exact LingBot-compatible runtime. |
+| `parallel_stream` | Video and action tokens share one transformer. | Six standard programs, GJD, and standalone conditional FDM/IDM. |
 | `dual_expert` | Video and action use separate transformer experts. | Six standard programs, GJD, and standalone conditional FDM/IDM. |
 | `causal_video_prediction` | The visual model runs without action supervision. | Video-only prediction. |
 
-The six standard program selectors are `video_then_action`,
-`action_then_video`, `joint`, `decoupled_same_step`,
-`video_noisy_to_action`, and `action_noisy_to_video`. GJD samples joint,
-forward-dynamics (FDM), and inverse-dynamics (IDM) submodes within one model.
-Standalone `forward_dynamics` and `inverse_dynamics` preserve the strict GJD
-conditional contract: one clean t0 latent in a singleton chunk, one-frame
-conditional history, no task text, and only the matching prediction loss.
-
-Experiment configs and public commands use architecture and program names
-directly.
+Programs control how video and action condition one another. GJD combines
+joint prediction, forward dynamics (FDM), and inverse dynamics (IDM) in one
+model. See [Policy Architectures and Programs](docs/policy_architectures.md)
+for the complete program list and conditioning rules.
 
 ## Installation
 
@@ -214,16 +204,11 @@ uv run --extra train torchrun --standalone --nproc-per-node=4 \
   --expected-world-size 4
 ```
 
-`--resume-from` requires `full_training_state.pt` and restores model, optimizer,
-scheduler, strategy/scaler, step state, and the next sampler epoch/batch cursor.
-Resumable checkpoints are written only at optimizer boundaries because partial
-gradients are not serialized. Exact loader-cursor continuation also requires a
-sized training dataloader. Process and stochastic dataset/worker RNG streams are
-not checkpointed, so a restarted run is not bitwise identical. Use
-`--initialize-weights-from` for a fresh run initialized from model weights. The
-removed ambiguous `--checkpoint-root` operation always errors. Every checkpoint
-stores its resolved config as an audit record; it is not merged into the
-invocation config.
+`--resume-from` requires `full_training_state.pt` and restores training state.
+Use `--initialize-weights-from` instead for a fresh run from model weights.
+Resume does not guarantee bitwise replay of stochastic data loading; see
+[initialization and resume](docs/running_experiments.md#initialization-and-full-state-resume)
+for requirements and limits.
 
 Conditional FDM/IDM uses the dynamics-routing data adapter. The maintained
 config mixes real demonstrations with encoded counterfactual train and
@@ -317,10 +302,8 @@ openwam-eval --cfg evaluation.yaml --output-json result.json \
   --provenance-mode full
 ```
 
-Exact numerical claims use the locked dependency graph and documented
-hardware/software stack. A refactor near model execution must pass immutable
-training-step, recurrent-inference, cache-rollover, and full-state-resume
-characterization; expected values are not regenerated by the refactor. See
+For numerical comparisons, keep the dependency lock, hardware/software stack,
+checkpoint, input data, and evaluation settings fixed. See
 [Reproducibility](https://github.com/OpenWAM/OpenWAM/blob/main/docs/reproducibility.md),
 [Compatibility](https://github.com/OpenWAM/OpenWAM/blob/main/docs/compatibility.md), and [Testing](https://github.com/OpenWAM/OpenWAM/blob/main/docs/testing.md).
 

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
+import pytest
 import torch
 
 from open_wam.configs import InferenceConfig, TrainingConfig
@@ -11,6 +14,58 @@ from open_wam.models.common import (
     FlowMatchScheduler,
 )
 from open_wam.models.common.flow_supervision import build_video_frame_loss_mask
+from open_wam.models.common import flow_noise_plan, flow_schedule
+
+
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16, torch.float32, torch.float64])
+@pytest.mark.parametrize("layout", ["vector", "matrix", "scalar", "empty"])
+def test_shared_sigma_lookup_preserves_grid_ties_shape_and_dtype(dtype, layout) -> None:
+    scheduler = SimpleNamespace(
+        num_train_timesteps=1000,
+        sigmas=torch.tensor([1.0, 0.5, 0.5, 0.0], dtype=torch.float64),
+        timesteps=torch.tensor([1000.0, 600.0, 400.0, 0.0], dtype=torch.float64),
+    )
+    values = torch.tensor([0.5, 0.75, 0.25, -0.25, 1.25, 0.0], dtype=dtype)
+    expected = scheduler.timesteps[torch.tensor([1, 0, 1, 3, 0, 3])]
+    if layout == "matrix":
+        values, expected = values.reshape(2, 3).T, expected.reshape(2, 3).T
+    elif layout == "scalar":
+        values, expected = values[0], expected[0]
+    elif layout == "empty":
+        values, expected = values[:0], expected[:0]
+
+    actual = flow_schedule.timesteps_matching_sigmas(scheduler, values)
+
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+    assert actual.device == values.device
+
+
+def test_coupled_sampling_reuses_lookup_without_changing_rng_consumption() -> None:
+    video = FlowMatchScheduler(num_train_timesteps=20, shift=5.0)
+    action = FlowMatchScheduler(num_train_timesteps=20, shift=1.0)
+    video.set_timesteps(20)
+    action.set_timesteps(13)
+
+    with torch.random.fork_rng(devices=[]):
+        torch.manual_seed(71)
+        indices = flow_schedule.sample_timestep_id(
+            batch_size=9, num_train_timesteps=20, device=torch.device("cpu")
+        )
+        sigmas = video.sigmas[indices]
+        expected_rng = torch.get_rng_state()
+        torch.manual_seed(71)
+        result = flow_noise_plan.sample_coupled_timestep_values(
+            video_scheduler=video,
+            action_scheduler=action,
+            num_frames=9,
+            device=torch.device("cpu"),
+        )
+        assert torch.equal(torch.get_rng_state(), expected_rng)
+
+    assert torch.equal(result.sigma_values, sigmas)
+    for scheduler, actual in ((video, result.video_timesteps), (action, result.action_timesteps)):
+        nearest = (scheduler.sigmas[:, None] - sigmas[None]).abs().argmin(dim=0)
+        assert torch.equal(actual, scheduler.timesteps[nearest])
 
 
 def test_video_frame_loss_mask_uses_target_local_ranges_after_prefix() -> None:
