@@ -125,6 +125,35 @@ def test_readme_distinguishes_paper_blog_and_technical_docs() -> None:
 
 
 @pytest.mark.unit
+def test_readme_links_models_to_released_pretraining_weights() -> None:
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    model_url = "https://huggingface.co/OpenWAM-Stanford/OpenWAM-Pretraining"
+    header, body = readme.split("## Capabilities", maxsplit=1)
+
+    assert f'<a href="{model_url}">Models</a>' in header
+    assert f"]({model_url})" in body
+    assert "docs/artifacts.md" in body
+    assert "docs/pretraining/index.md" in body
+
+
+@pytest.mark.unit
+def test_readme_separates_cpu_example_from_reference_training() -> None:
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    quickstart = readme.split("## Quickstart\n", maxsplit=1)[1].split("\n##", maxsplit=1)[0]
+    training = readme.split("## Train a policy\n", maxsplit=1)[1].split("\n##", maxsplit=1)[0]
+
+    assert "uv sync --frozen --group dev --extra train --extra eval" in quickstart
+    assert "openwam-sanity" in quickstart
+    assert "--device cpu --max-batches 1 --rollout-steps 1" in quickstart
+    assert "configs/examples/public_tiny_synthetic_contract.yaml" in quickstart
+    assert "configs/experiments/dual_expert_libero_joint.yaml" in training
+    assert "--nproc-per-node=4" in training
+    assert "--expected-world-size 4" in training
+    assert "docs/running_experiments.md#data-prerequisites" in training
+    assert "robotwin_smoke" not in readme
+
+
+@pytest.mark.unit
 def test_docs_and_package_link_to_research_paper() -> None:
     docs_index = (REPO_ROOT / "docs" / "index.md").read_text(encoding="utf-8")
     project = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
