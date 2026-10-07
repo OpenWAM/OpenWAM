@@ -56,6 +56,7 @@ PUBLIC_ASSET_PATHS = (
     Path("assets/affiliations/SOURCES.txt"),
     Path("assets/affiliations/stanford-ai-lab.jpg"),
     Path("assets/affiliations/stanford-src.webp"),
+    Path("assets/affiliations/stanford-stai.png"),
     Path("assets/affiliations/stanford-svl.png"),
     Path("assets/affiliations/stanford-wordmark.png"),
     Path("assets/stylesheets/openwam.css"),

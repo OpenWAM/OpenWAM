@@ -27,11 +27,13 @@ Its upstream attribution and Apache-2.0 terms are preserved.
 
 - Components: `docs/assets/affiliations/stanford-wordmark.png`,
   `docs/assets/affiliations/stanford-ai-lab.jpg`,
-  `docs/assets/affiliations/stanford-svl.png`, and
+  `docs/assets/affiliations/stanford-svl.png`,
+  `docs/assets/affiliations/stanford-stai.png`, and
   `docs/assets/affiliations/stanford-src.webp`
 - Sources: [Stanford Identity Guide](https://identity.stanford.edu/visual-identity/stanford-logos/wordmarks/),
   [Stanford Artificial Intelligence Laboratory](https://ai.stanford.edu/logo/),
   [Stanford Vision and Learning Lab](https://svl.stanford.edu/),
+  [Stanford Translational AI (STAI) Lab](https://stai.stanford.edu/),
   and [Stanford Robotics Center](https://src.stanford.edu/)
 - Rights holder: Stanford University
 

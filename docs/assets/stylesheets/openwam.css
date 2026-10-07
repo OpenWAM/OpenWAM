@@ -33,6 +33,31 @@
   width: 28px;
 }
 
+.rst-content .openwam-affiliation-stai {
+  width: 38px;
+}
+
 .rst-content .openwam-affiliation-src {
   width: 73px;
+}
+
+@media (max-width: 480px) {
+  .openwam-affiliations {
+    display: grid;
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+    column-gap: 0.5rem;
+  }
+
+  .openwam-affiliations a {
+    grid-column: span 2;
+    justify-content: center;
+  }
+
+  .openwam-affiliations a:nth-child(-n+2) {
+    grid-column: span 3;
+  }
+
+  .rst-content .openwam-affiliations img {
+    max-width: 100%;
+  }
 }

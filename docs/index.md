@@ -10,6 +10,7 @@
   <a href="https://www.stanford.edu/"><img class="openwam-affiliation-wordmark" src="assets/affiliations/stanford-wordmark.png" alt="Stanford University" height="20"></a>
   <a href="https://ai.stanford.edu/"><img class="openwam-affiliation-sail" src="assets/affiliations/stanford-ai-lab.jpg" alt="Stanford Artificial Intelligence Laboratory" height="28"></a>
   <a href="https://svl.stanford.edu/"><img class="openwam-affiliation-svl" src="assets/affiliations/stanford-svl.png" alt="Stanford Vision and Learning Lab" height="28"></a>
+  <a href="https://stai.stanford.edu/"><img class="openwam-affiliation-stai" src="assets/affiliations/stanford-stai.png" alt="Stanford Translational AI (STAI) Lab" height="32"></a>
   <a href="https://src.stanford.edu/"><img class="openwam-affiliation-src" src="assets/affiliations/stanford-src.webp" alt="Stanford Robotics Center" height="32"></a>
 </div>
 

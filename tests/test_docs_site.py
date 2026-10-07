@@ -43,12 +43,32 @@ def test_readme_leads_with_paper_title_and_arxiv_badge() -> None:
         "OpenWAM: An Open Framework for Composable World-Action Models"
     )
 
-    first_badge = re.search(r'<a href="([^"]+)"><img [^>]+></a>', readme)
+    first_badge = re.search(
+        r'<a href="([^"]+)"><img src="https://img\.shields\.io/[^>]+></a>', readme
+    )
     assert first_badge is not None
     assert first_badge.group(1) == "https://arxiv.org/pdf/2610.07922"
     assert 'alt="arXiv: 2610.07922"' in first_badge.group(0)
     assert "img.shields.io/badge/arXiv-2610.07922-b31b1b" in first_badge.group(0)
     assert first_badge.start() < readme.index("Paper (PDF)")
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("relative_path", ("README.md", "docs/index.md"))
+def test_affiliation_logos_include_stai_between_svl_and_src(relative_path: str) -> None:
+    content = (REPO_ROOT / relative_path).read_text(encoding="utf-8")
+    expected = [
+        "https://www.stanford.edu/",
+        "https://ai.stanford.edu/",
+        "https://svl.stanford.edu/",
+        "https://stai.stanford.edu/",
+        "https://src.stanford.edu/",
+    ]
+    image_links = re.findall(r'<a href="([^"]+)"[^>]*><img\b', content)
+    assert [url for url in image_links if url in expected] == expected
+    assert 'alt="Stanford Translational AI (STAI) Lab"' in content
+    assert "assets/affiliations/stanford-stai.png" in content
+    assert (REPO_ROOT / "docs/assets/affiliations/stanford-stai.png").is_file()
 
 
 @pytest.mark.unit
@@ -116,7 +136,7 @@ def test_docs_and_package_link_to_research_paper() -> None:
 @pytest.mark.unit
 @pytest.mark.parametrize(
     "relative_path",
-    ("README.md", "docs/index.md", "mkdocs.yml", "pyproject.toml"),
+    ("docs/index.md", "mkdocs.yml", "pyproject.toml"),
 )
 def test_project_descriptions_include_extensibility_and_composability(
     relative_path: str,
