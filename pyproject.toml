@@ -61,7 +61,7 @@ torch = [
     "pillow>=12.3.0",
     "safetensors>=0.4.3",
     "sentencepiece>=0.2.0",
-    "torch>=2.4",
+    "torch>=2.13.0",
     "transformers>=5.10.0,<5.11",
 ]
 train = [
@@ -78,7 +78,7 @@ train = [
     "pyarrow>=18.0",
     "safetensors>=0.4.3",
     "sentencepiece>=0.2.0",
-    "torch>=2.4",
+    "torch>=2.13.0",
     "transformers>=5.10.0,<5.11",
 ]
 eval = [
@@ -95,7 +95,7 @@ eval = [
     "pyarrow>=18.0",
     "safetensors>=0.4.3",
     "sentencepiece>=0.2.0",
-    "torch>=2.4",
+    "torch>=2.13.0",
     "transformers>=5.10.0,<5.11",
 ]
 tracking = [
@@ -151,7 +151,7 @@ sim = [
     "safetensors>=0.4.3",
     "sentencepiece>=0.2.0",
     "termcolor>=3.3.0",
-    "torch>=2.4",
+    "torch>=2.13.0",
     "transformers>=5.10.0,<5.11",
 ]
 docs = [
@@ -185,7 +185,7 @@ full = [
     "safetensors>=0.4.3",
     "sentencepiece>=0.2.0",
     "termcolor>=3.3.0",
-    "torch>=2.4",
+    "torch>=2.13.0",
     "transformers>=5.10.0,<5.11",
     "wandb>=0.25.1",
 ]
