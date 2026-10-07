@@ -18,7 +18,7 @@ PUBLIC_SDIST_ENTRIES = frozenset(
     {
         ".gitignore",
         "CHANGELOG.md",
-        "CITATION.cff",
+        "CITATION.bib",
         "LICENSE",
         "LICENSES",
         "NOTICE",
@@ -44,6 +44,7 @@ EXCLUDED_PUBLIC_PATHS = frozenset({"configs/local_paths.yaml"})
 PUBLIC_TEXT_SUFFIXES = frozenset(
     {
         "",
+        ".bib",
         ".cff",
         ".csv",
         ".jinja",
@@ -59,6 +60,7 @@ PUBLIC_TEXT_SUFFIXES = frozenset(
     }
 )
 REQUIRED_PROJECT_URLS = {
+    "Paper": "https://arxiv.org/pdf/2610.07922",
     "Documentation": "https://openwam.github.io/OpenWAM/",
     "Issues": "https://github.com/OpenWAM/OpenWAM/issues",
     "Repository": "https://github.com/OpenWAM/OpenWAM",
@@ -275,17 +277,8 @@ def validate_version_state(
     *,
     version: str,
     changelog: str,
-    citation: str,
     require_released: bool,
 ) -> None:
-    citation_version = re.search(r'^version:\s*["\']?([^"\'\s]+)', citation, re.MULTILINE)
-    if citation_version is None or citation_version.group(1) != version:
-        raise ValueError("CITATION.cff version must match the project version.")
-    citation_date = re.search(
-        r'^date-released:\s*["\']?(\d{4}-\d{2}-\d{2})',
-        citation,
-        re.MULTILINE,
-    )
     release_heading = re.search(
         rf"^## {re.escape(version)} - (Unreleased|\d{{4}}-\d{{2}}-\d{{2}})$",
         changelog,
@@ -297,17 +290,9 @@ def validate_version_state(
         )
     changelog_state = release_heading.group(1)
     if not require_released:
-        if changelog_state == "Unreleased" and citation_date is not None:
-            raise ValueError(
-                "CITATION.cff must omit date-released while the changelog is Unreleased."
-            )
         return
     if changelog_state == "Unreleased":
         raise ValueError("Release validation requires a dated changelog heading.")
-    if citation_date is None or citation_date.group(1) != changelog_state:
-        raise ValueError(
-            "CITATION.cff date-released must match the changelog release date."
-        )
     if date.fromisoformat(changelog_state) > date.today():
         raise ValueError("Release date cannot be in the future.")
 
@@ -359,8 +344,8 @@ def main(argv: list[str] | None = None) -> None:
     )
     version = pyproject["project"]["version"]
     changelog = (REPO_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
-    citation = (REPO_ROOT / "CITATION.cff").read_text(encoding="utf-8")
     required_docs = (
+        "CITATION.bib",
         "docs/release.md",
         "docs/experiment_cards.md",
         "docs/artifacts.md",
@@ -375,7 +360,6 @@ def main(argv: list[str] | None = None) -> None:
         validate_version_state(
             version=version,
             changelog=changelog,
-            citation=citation,
             require_released=bool(args.release),
         )
         if args.release:

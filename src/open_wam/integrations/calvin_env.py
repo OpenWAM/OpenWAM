@@ -15,6 +15,7 @@ from open_wam.simulators.contracts import SimulatorCapabilities, SimulatorObserv
 from open_wam.runtime.control import ControlCommand, ControlTransition
 
 from open_wam.configs import DataConfig
+from open_wam.integrations.image_ops import resize_nearest_to_height
 from open_wam.pipelines import VariantRolloutRunner, VariantRolloutSession
 from open_wam.integrations.simulator_configs import CalvinEnvConfig as CalvinEnvConfig
 
@@ -103,7 +104,7 @@ class CalvinBenchmarkAdapter:
         except Exception:
             return None
         static = _as_uint8(views["rgb_static"])
-        gripper = _resize_nearest_to_height(_as_uint8(views["rgb_gripper"]), static.shape[0])
+        gripper = resize_nearest_to_height(_as_uint8(views["rgb_gripper"]), static.shape[0])
         return np.concatenate([static, gripper], axis=1)
 
     def close(self) -> None:
@@ -356,14 +357,3 @@ def _as_uint8(value: np.ndarray) -> np.ndarray:
             array = array * 255.0
         array = np.clip(array, 0, 255).astype(np.uint8)
     return np.ascontiguousarray(array)
-
-
-def _resize_nearest_to_height(frame: np.ndarray, target_h: int) -> np.ndarray:
-    frame = np.asarray(frame)
-    if frame.shape[0] == target_h:
-        return frame
-    scale = target_h / frame.shape[0]
-    target_w = max(1, int(round(frame.shape[1] * scale)))
-    y_indices = np.clip((np.arange(target_h) / scale).astype(np.int64), 0, frame.shape[0] - 1)
-    x_indices = np.clip((np.arange(target_w) / scale).astype(np.int64), 0, frame.shape[1] - 1)
-    return frame[y_indices][:, x_indices]

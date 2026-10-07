@@ -4,6 +4,7 @@ import torch
 
 from open_wam.models.common.attention_backends import (
     select_attention_profile_mask,
+    shared_flex_kernel_options,
 )
 from open_wam.models.common.attention_contracts import PreparedAttentionProfile
 from open_wam.models.common.denoising_cache import DenoisingCache
@@ -229,8 +230,7 @@ def forward_dual_expert_packed_coupling_denoise(
         action_cross_attention_mask=None if packed_action_pre is None else packed_action_pre.cross_attention_mask,
         block_mask=profile_block_mask,
         flex_kernel_options=(
-            {"BLOCK_M": 64, "BLOCK_N": 64, "BLOCK_M1": 32,
-             "BLOCK_N1": 64, "BLOCK_M2": 64, "BLOCK_N2": 32}
+            shared_flex_kernel_options()
             if profile_block_mask is not None else None
         ),
         use_activation_checkpointing=use_activation_checkpointing,

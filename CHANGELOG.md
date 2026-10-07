@@ -49,23 +49,18 @@ datasets, and simulator installations remain separate artifacts.
   rather than letting PyTorch choose an accelerator implicitly.
 - LIBERO action-budget termination retains its budget reason rather than
   reporting it as native environment termination.
-- GPU architecture tests distinguish the Parallel training horizon from the
-  shorter inference chunk.
 
 ### Security And Validation
 
-- The characterized third-party dependency lock is unchanged. The proposed
-  Torch/Setuptools upgrade is deferred, not a vulnerability fix.
+- The characterized third-party dependency lock is unchanged. This release
+  does not include a Torch/Setuptools security upgrade.
 - Existing dependency-audit exceptions retain their scope and expiry.
   The maintainer renewed the Accelerate acceptance for 0.2.0; reassess before
   2026-10-09. The other current exceptions expire 2026-11-06. Only trusted artifacts are
   supported under the [artifact-trust policy](SECURITY.md#artifact-trust).
-- Release validation passed 3,551 distinct tests plus 18 subtests, including
-  all 38 fresh-cache two-rank FSDP cases. A full VTA checkpoint completed one
-  representative LIBERO rollout successfully using split frontend placement;
-  this is not an aggregate benchmark claim. Another 44 external-asset/opt-in
-  tests were not run. Numerical reproducibility requires the recorded dependency
-  and hardware stack, not just a matching package version.
+- Numerical reproducibility requires the recorded dependency and hardware
+  stack, not just a matching package version. See [Testing](docs/testing.md)
+  for CPU, distributed, and checkpoint-backed validation requirements.
 
 ## 0.1.1 - 2026-09-09
 
@@ -74,7 +69,6 @@ datasets, and simulator installations remain separate artifacts.
 - PyPI release tooling for the `openwam` SDK and exact-version installation
   aliases, with isolated installation tests and project-scoped Trusted
   Publishers. The initial publication targets `openwam` and `open-wam`.
-- Condensed public change snapshots in staging-to-production promotion PRs.
 
 ### Security
 

@@ -3,6 +3,9 @@
 OpenWAM extensions are ordinary installed Python modules. They register
 role-based components without modifying the OpenWAM source tree.
 
+For custom control loops, also read [Rollout Contracts](rollout_contracts.md).
+It covers session ownership, partial execution, action conversion, and termination.
+
 ## Compatibility Boundary
 
 Extensions written against 0.1.x must follow the
@@ -474,51 +477,12 @@ execution. The exact parallel-stream and dual-expert backends are checkpoint
 compatibility contracts with fixed layout semantics, not general attention
 extension points.
 
-The following built-in role modules are useful when contributing to OpenWAM
-itself, but are not stable extension APIs. The built-in attention
-implementation has three parameter-free roles:
+Visibility belongs to the prepared profile; the architecture supplies
+embeddings, model blocks, and projections. Do not duplicate the denoising loop
+or add method-name branches to shared execution. Built-in packing helpers and
+transformer internals are not stable extension APIs.
 
-- `open_wam.models.common.attention_contracts` owns profile records, coupling
-  names, and semantic normalization;
-- `open_wam.models.common.chunked_attention` assembles the maintained packed
-  chunk masks; and
-- `open_wam.models.common.attention_backends` selects and executes dense SDPA
-  or FlexAttention representations.
-
-Use the role module matching the operation when working on these implementations.
-
-Built-in DualExpert checkpoint layouts are narrower policy-internal contracts:
-
-- `open_wam.models.policy_variants.dual_expert.attention_unpacked` owns dense
-  diagnostic and checkpoint-compatibility layout builders; it is not a
-  maintained training or GJD execution path;
-- `open_wam.models.policy_variants.dual_expert.attention_packed` adapts the
-  canonical coupling profiles to paired expert tensors in training and inference.
-
-Extensions implementing a new attention paradigm should normally
-construct a common `PreparedAttentionProfile`; depend on a DualExpert role only when
-the extension deliberately implements that exact built-in sequence layout.
-
-Inference execution is organized by role, not by a program-to-backend registry:
-
-- `open_wam.models.common.denoising` derives required stages;
-- `open_wam.models.common.video_action_inference` handles their clocks,
-  clean-conditioning transitions, and guidance;
-- `open_wam.models.common.denoising_cache` reuses only attention-closed,
-  invariant features under the supplied attention profile;
-- `open_wam.models.common.video_action_layout` prepares aligned model-space
-  history, startup validity, proprio, and future chunks for both architectures;
-- `open_wam.models.policy_variants.dual_expert.coupling_semantics` resolves block and
-  timestep coupling; and
-- `open_wam.models.policy_variants.dual_expert.inference_backend` validates the
-  assembled blocks for paired numerical execution; it never moves parameters
-  between module owners.
-
-Architecture adapters supply embeddings, model blocks, and projections; they
-do not duplicate the denoising loop or select another runner by method name.
-A custom policy should express its behavior through its
-`PolicyVariant`, runtime program, prepared attention profile, and decoder
-rather than adding architecture-specific branches to shared execution.
+## Integrating A Control Loop
 
 For a new environment, implement `simulators.contracts.SimulatorBackend` and
 reuse `SimulatorPolicyAdapter` for normalized camera/state observations.
@@ -555,17 +519,9 @@ the engine treats their contents as opaque. Stateful streaming encoders must dec
 `supports_async=false`. LIBERO's blocking planner is an example, not a required base
 class. Keep benchmark rendering and artifact collection outside the engine.
 
-Closing cancels queued work and waits for any running model call to finish,
-preventing the old call from racing a new episode on the same pipeline. Unused
-planner failures and drain latency are teardown telemetry; they do not override
-a terminal simulator outcome. `RolloutResult.lifecycle` retains both the
-accepted policy session and the still-uncommitted executed observation interval.
-`close()` is idempotent and returns that result even on cancellation; normal
-completion retains its terminal outcome. Before the first control, close runs
-no model work and has no planner receipt. CALVIN's official `reset()` keeps its
-`None` return convention and exposes the result as `model.last_rollout_result`.
-Only transitions supplied to the stream count as executed; a final action whose
-observation was never sent is not invented in the completion record.
+For observation alignment, partial execution, termination, and teardown
+behavior, see [Rollout Contracts](rollout_contracts.md). Keep the returned
+session/result rather than reconstructing state from diagnostics.
 
 Independent video/action composition uses
 `PolicyVideoActionConsumerPlan.infer(...)`. It validates latent identity and
@@ -573,76 +529,19 @@ geometry, transfers the video product, and applies the consumer's declared RNG
 policy. The consumer owns its history and language visibility. New benchmarks
 do not need a second composition implementation.
 
-### Shared Transformer Primitives
+### Attention And Cache Safety
 
-`open_wam.models.visual_tower` exports the shared Wan-style transformer
-building blocks used by the visual core and action-side experts. Their
-canonical owners are:
+Use a `PreparedAttentionProfile` through `VisualCoreInput` for custom
+visibility. A new block topology or cache representation requires an in-tree
+runtime integration and numerical tests; importing a private tensor helper
+does not establish compatibility.
 
-- `shared_transformer_support` for `SharedTransformerAttention` and
-  `SharedTransformerBlock`, including the stable attention-backend patch
-  point;
-- `shared_transformer_embeddings` for timestep and rotary positional
-  embeddings plus rotary application;
-- `shared_transformer_layout` for chunk-slice and split-segment tensor
-  helpers;
-- `runtime_parameter_ops` for FSDP-safe linear, normalization, and
-  feed-forward helpers.
-
-Implementation code should import the role owner it uses. These functions own
-learned transformer execution or the explicit tensor
-operations supporting it, not sequence visibility or cache retention.
-Extensions should normally submit an attention profile through
-`VisualCoreInput`; use the lower-level primitives only when implementing a
-genuinely new reusable block outside the built-in core.
-
-### Cache Policy
-
-Maintained policy inference uses call-local `denoising_cache` feature reuse.
-For lower-level transformer integrations, the parameter-free cache API is
-split by role:
-
-- `open_wam.models.common.cache_backend_contracts` defines backend specs,
-  payload records, and backend selection;
-- `open_wam.models.common.cache_layout_policy` defines attention-mask,
-  prefix-visibility, packed-sequence, slot-retention, and prefix-merge policy;
-- `open_wam.models.common.cache_backend_lifecycle` defines payload allocation,
-  mutation, reset, and materialization.
-
-Custom policies that retain the built-in cache formats can reuse:
-
-- `prepare_sdpa_mask` and `prepend_cached_prefix_mask`;
-- `resolve_slot_pool_prefix_visibility`;
-- `packed_slot_pool_query_sequence_ids`;
-- `retained_slot_pool_indices_for_current_write`;
-- `merge_attention_cache_entries`.
-
-Custom runtime programs can use `init_cache_backend_payload`,
-`update_slot_pool_layer_state`, `clear_cache_backend_payload`, and
-`materialize_cache_backend_entries` from `cache_backend_lifecycle` without
-depending on transformer execution. The payload types come from
-`cache_backend_contracts`; do not duplicate their tensor-layout conventions in
-a policy variant.
-
-`open_wam.models.visual_tower.RuntimeCacheLifecycle` composes those backend
-operations into initialization, named-branch, retention, cursor-advance, and
-reset operations over the public `CacheState` contract. `VisualTower` exposes
-the same operations as its stable runtime facade and supplies the current
-backbone capability and layer count dynamically. The lifecycle is a frozen
-plain object, not an `nn.Module`, so using or replacing it cannot add
-checkpoint keys.
-
-Runtime-backbone checkpoint selection and operational compatibility live in
-`open_wam.models.visual_tower.runtime_backbone`. These helpers borrow the
-tower-owned module rather than wrapping it, so custom runtime programs can
-reuse access validation, device normalization, and cache reset without
-creating a second parameter owner.
-
-Attention profiles decide which tokens may interact. Cache policy decides how
-already-computed keys and values are represented, retained, and prepended.
-Neither contract owns learned parameters. A new cache representation still
-requires a backend integration; do not encode its retention rules inside a
-policy variant or transformer block.
+Built-in inference reuses attention-closed, invariant features within a
+denoising call. Recurrent observations, generated tensors, and validity remain
+in the session, not that feature cache. Cache enablement must not change
+conditioning, token positions, or denoising steps. Declare capabilities through
+`PolicyInferenceCapabilities`; feature reuse alone does not imply support for
+selective outputs, asynchronous planning, or observed-history reconciliation.
 
 ## Training And Checkpoints
 

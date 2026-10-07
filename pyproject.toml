@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "openwam"
 version = "0.2.0"
-description = "Extensible world-action-model training and evaluation with a LingBot-compatible visual core."
+description = "Extensible and composable world-action-model training and evaluation with a LingBot-compatible visual core."
 readme = "README.md"
 requires-python = ">=3.11,<3.13"
 license = "AGPL-3.0-only"
@@ -29,6 +29,7 @@ dependencies = [
 ]
 
 [project.urls]
+Paper = "https://arxiv.org/pdf/2610.07922"
 Documentation = "https://openwam.github.io/OpenWAM/"
 Issues = "https://github.com/OpenWAM/OpenWAM/issues"
 Repository = "https://github.com/OpenWAM/OpenWAM"
@@ -217,7 +218,7 @@ packages = ["src/open_wam"]
 only-include = [
     ".gitignore",
     "CHANGELOG.md",
-    "CITATION.cff",
+    "CITATION.bib",
     "LICENSE",
     "LICENSES",
     "NOTICE",

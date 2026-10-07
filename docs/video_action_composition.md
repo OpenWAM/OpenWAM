@@ -1,7 +1,7 @@
 # Generated Video To Action Composition
 
-This guide describes the inference contract and
-the parity gates that protect it.
+Connect a video-producing policy to an independent action model while keeping
+each model's conditioning and observed history explicit.
 
 ## Purpose
 
@@ -9,7 +9,7 @@ The composition runtime connects two independent policy sessions:
 
 1. a video producer emits a future latent-video artifact;
 2. an action consumer processes its own observed context plus that artifact;
-3. LIBERO executes the resulting actions;
+3. the environment executes the resulting actions;
 4. each session updates or reconciles its own recurrent history from the real
    observations and executed actions.
 
@@ -18,9 +18,9 @@ The interface is model-neutral. A causal video model, a selective
 be the producer. A native VTA action stage, strict IDM policy, or routed GJD IDM
 stage can be the consumer when it declares the matching composition capability.
 
-The ordinary one-model VTA route is unchanged. Composition is an ablation that
-materializes two models; it is not an optimization of native VTA and does not
-resume an in-flight call in the producer.
+Composition materializes two models. It is not an optimization of native VTA
+and does not resume an in-flight call in the producer. Use ordinary one-model
+VTA when no independent consumer is needed.
 
 ## Contracts
 
@@ -70,13 +70,12 @@ to emulate a particular method.
 | Consumer | Observed history visible to action queries | Text | Past action history | Generated future |
 | --- | --- | --- | --- | --- |
 | native VTA action stage | normal VTA recurrent video window | retained | masked by the maintained `video_only` history contract | inserted as clean timestep-zero video |
-| strict IDM / GJD IDM route | latest clean video frame only | zeroed | hidden by conditional video-only history semantics | clean conditioning video |
+| strict IDM / GJD IDM route | latest clean video frame only | removed | hidden by conditional video-only history semantics | clean conditioning video |
 
-For VTA, the independent consumer first builds its own cache from real observed
-video, then forwards the transferred future video at timestep zero to construct
-its own clean future K/V, and finally runs the unchanged VTA action denoiser.
-Every clean and predicted video token is therefore processed by the consumer
-model. The orchestrator still supplies prompt, proprioception, and executed
+For VTA, the independent consumer processes its real observed history and
+the transferred future video as clean conditioning for its action denoiser.
+Both observed and generated video are processed using the consumer's weights,
+not the producer's cached features. The orchestrator still supplies prompt, proprioception, and executed
 actions, but the policy's maintained sequence contract decides which streams
 are visible. Producer cache internals never cross the boundary.
 
@@ -135,7 +134,7 @@ A consumer declares a `video -> action` `PolicyCompositionCapability`. The
 declaration owns three independent choices:
 
 - the transferable input/output modalities;
-- how stochastic sampling obtains its RNG stream.
+- how stochastic sampling obtains its RNG stream;
 - any training objective that must have positive weight in the checkpoint's
   resolved training configuration.
 
@@ -294,59 +293,17 @@ ablation. Use a fixed IDM config or a GJD config with positive IDM routing for
 strict IDM. The batch entrypoint is
 `scripts/run_libero_policy_video_action_batch_visualization.py`.
 
-## Golden Parity
+## Validate A Composition
 
-The always-on CPU gate runs two recurrent chunks through three independently
-materialized VTA pipelines: native VTA, selective VTA video producer, and VTA
-action consumer. It requires exact generated latents, decoded actions, cursor
-state, and every action-cache K/V tensor.
+For a same-checkpoint VTA split, compare native and composed inference using
+identical observations, random streams, geometry, and execution settings.
+Check generated latents, actions, session positions, and executed history
+over multiple chunks, including partial execution.
 
-The opt-in real gate runs native VTA and two-model VTA on the same checkpoint.
-By default the producer/native model uses `cuda:0` and the consumer uses
-`cuda:1`, exercising the cross-device RNG bridge. It requires byte-identical
-action JSONL and comparison MP4, plus exact per-chunk policy debug payloads
-after asserting and removing the intentionally different device labels.
+For independent models, additionally verify latent-space compatibility and
+the consumer's conditioning contract. Successful assembly alone does not
+establish policy quality or equivalence to native inference. Keep evaluation
+inputs and simulator settings fixed when comparing checkpoints.
 
-```bash
-export OPEN_WAM_RUN_VTA_COMPOSITION_PARITY=1
-export OPEN_WAM_VTA_COMPOSITION_CONFIG=/path/to/vta/resolved_config.yaml
-export OPEN_WAM_VTA_COMPOSITION_CHECKPOINT=/path/to/vta/checkpoint
-# Set this only when the checkpoint does not bundle `transformer/` and the
-# resolved config points to a transformer location unavailable on this host.
-export OPEN_WAM_VTA_COMPOSITION_TRANSFORMER_DIR=/path/to/transformer
-export OPEN_WAM_VTA_COMPOSITION_DATASET_ROOT=/path/to/libero_10
-export OPEN_WAM_VTA_COMPOSITION_BASE_MODEL_ROOT=/path/to/lingbot-va-base
-export OPEN_WAM_LIBERO_REPO_ROOT=/path/to/LIBERO
-export OPEN_WAM_VTA_COMPOSITION_PRODUCER_DEVICE=cuda:0
-export OPEN_WAM_VTA_COMPOSITION_CONSUMER_DEVICE=cuda:1
-
-uv run pytest -q \
-  tests/test_policy_video_action_golden.py::test_real_vta_native_and_two_model_rollouts_are_bitwise_equal
-```
-
-The VTA-to-strict-IDM route is protected by a deterministic Task 0 / episode 0
-/ seed 0 golden at
-`tests/characterization/goldens/vta_external_idm_task0_ep0_seed0.json`. It
-checks the exact first-chunk action trace and complete rollout contract.
-
-```bash
-export OPEN_WAM_RUN_VTA_IDM_GOLDEN=1
-export OPEN_WAM_VTA_IDM_GOLDEN_SCOPE=first_chunk  # or full_rollout
-export OPEN_WAM_VTA_IDM_PRODUCER_CONFIG=/path/to/vta/resolved_config.yaml
-export OPEN_WAM_VTA_IDM_PRODUCER_CHECKPOINT=/path/to/vta/checkpoint
-export OPEN_WAM_VTA_IDM_CONSUMER_CONFIG=/path/to/idm/resolved_config.yaml
-export OPEN_WAM_VTA_IDM_CONSUMER_CHECKPOINT=/path/to/idm/checkpoint
-# These are optional when each checkpoint bundles `transformer/` or its
-# resolved config already names a valid local transformer.
-export OPEN_WAM_VTA_IDM_PRODUCER_TRANSFORMER_DIR=/path/to/producer/transformer
-export OPEN_WAM_VTA_IDM_CONSUMER_TRANSFORMER_DIR=/path/to/consumer/transformer
-export OPEN_WAM_VTA_IDM_DATASET_ROOT=/path/to/libero_10
-export OPEN_WAM_VTA_IDM_BASE_MODEL_ROOT=/path/to/lingbot-va-base
-export OPEN_WAM_LIBERO_REPO_ROOT=/path/to/LIBERO
-
-uv run pytest -q \
-  tests/test_policy_video_action_golden.py::test_real_vta_external_idm_rollout_matches_golden
-```
-
-These gates protect inference only. Training programs, losses, data sampling,
-checkpoint formats, and default native rollout routes are unchanged.
+See [Testing](testing.md#numerical-regression) for numerical checks and
+[Rollout Contracts](rollout_contracts.md) for history and control integration.

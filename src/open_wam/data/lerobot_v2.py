@@ -19,6 +19,7 @@ from .contracts import WAMSample
 from .replay_status import load_replay_status_records, split_episode_indices_by_replay_status
 from .row_action_targets import build_row_action_targets, resolve_row_key
 from .sequence_packing import pack_temporal_sequence
+from .window_indexing import observation_window_starts
 
 
 _resolve_row_key = resolve_row_key
@@ -190,28 +191,17 @@ class LeRobotV2WindowDataset(Dataset[WAMSample]):
         )
 
     def _build_sample_index(self) -> list[EpisodeWindow]:
-        num_frames = self.data_config.num_frames
-        frame_stride = self.data_config.frame_stride
-        action_horizon = self.data_config.action_schema.action_horizon
-        sample_stride = self.data_config.sample_stride
-
-        # A valid window needs:
-        # - `num_frames` observations sampled with `frame_stride`
-        # - `action_horizon` actions starting at the last observed frame
-        #
-        # So the last required frame index is:
-        #   start + (num_frames - 1) * frame_stride + action_horizon - 1
-        # and this must stay inside the episode.
-        required_span = (num_frames - 1) * frame_stride + action_horizon
-        windows: list[EpisodeWindow] = []
-        for episode_index in self.episodes:
-            record = self.episode_records[episode_index]
-            max_start = record.length - required_span
-            if max_start < 0:
-                continue
-            for start in range(0, max_start + 1, sample_stride):
-                windows.append(EpisodeWindow(episode_index=episode_index, observation_start=start))
-        return windows
+        return [
+            EpisodeWindow(episode_index=episode_index, observation_start=start)
+            for episode_index in self.episodes
+            for start in observation_window_starts(
+                episode_length=self.episode_records[episode_index].length,
+                num_frames=self.data_config.num_frames,
+                frame_stride=self.data_config.frame_stride,
+                action_horizon=self.data_config.action_schema.action_horizon,
+                sample_stride=self.data_config.sample_stride,
+            )
+        ]
 
     def _load_episode_rows(self, episode_index: int) -> list[dict[str, Any]]:
         if episode_index in self._episode_cache:

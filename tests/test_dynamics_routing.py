@@ -278,6 +278,28 @@ def test_encoded_dynamics_artifact_rejects_unknown_schema(tmp_path: Path) -> Non
         load_encoded_dynamics_artifact(encoded_root)
 
 
+def test_cf_only_artifact_requires_references_only_for_real_source(tmp_path: Path) -> None:
+    encoded_root, _ = _write_encoded_counterfactual_fixture(tmp_path)
+    index_path = encoded_root / "metadata" / "encoded_transitions.jsonl"
+    rows = [json.loads(line) for line in index_path.read_text().splitlines()]
+    _write_jsonl(index_path, [row for row in rows if row["branch"] != "gt"])
+
+    artifact = load_encoded_dynamics_artifact(encoded_root)
+    assert artifact.rows_for_source(DynamicsSource.REAL_DEMO) == ()
+    assert len(artifact.rows_for_source(DynamicsSource.COUNTERFACTUAL_DYNAMICS)) == 1
+    preflight_encoded_dynamics_artifact(
+        encoded_root,
+        sources=(DynamicsSource.COUNTERFACTUAL_DYNAMICS,),
+        config_path="data.dynamics_routing.train_latent_root",
+    )
+    with pytest.raises(DatasetArtifactPreflightError, match="no rows.*real_demo"):
+        preflight_encoded_dynamics_artifact(
+            encoded_root,
+            sources=(DynamicsSource.REAL_DEMO,),
+            config_path="data.dynamics_routing.train_latent_root",
+        )
+
+
 def test_encoded_dynamics_artifact_requires_explicit_schema(tmp_path: Path) -> None:
     encoded_root, _ = _write_encoded_counterfactual_fixture(tmp_path)
     manifest_path = encoded_root / "manifest.json"

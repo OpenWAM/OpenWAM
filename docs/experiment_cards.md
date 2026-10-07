@@ -24,12 +24,12 @@ checkpoint exists.
 | --- | --- | --- |
 | `parallel_stream` | six video/action programs; GJD | scaffolded; public checkpoint pending |
 | `dual_expert` | six video/action programs; GJD | scaffolded; public checkpoint pending |
-| `causal_video_prediction` | video-only causal prediction | scaffolded; public checkpoint pending |
+| `causal_video_prediction` | video-only causal prediction | task-level card pending; see [released pretraining weights](pretraining/training.md#7-download-the-released-pretraining-weights) |
 | fixture | `public_tiny_synthetic_contract` | public structural fixture card added |
 
 ## Current Cards
 
-- `docs/cards/public_tiny_synthetic_contract.md`
+- [Public Tiny Synthetic Contract](cards/public_tiny_synthetic_contract.md)
 
 ## Template
 

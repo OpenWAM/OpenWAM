@@ -212,11 +212,6 @@ def _build_encoded_dynamics_artifact(
                 "Encoded dynamics transition row "
                 f"{index} is missing required fields: {', '.join(missing)}."
             )
-    if not any(str(row["branch"]) == reference_branch for row in transition_rows):
-        raise ValueError(
-            "Encoded dynamics reference_branch is absent from the transition "
-            f"index: reference_branch={reference_branch!r}."
-        )
     artifact = EncodedDynamicsArtifact(
         root=root,
         manifest=manifest,

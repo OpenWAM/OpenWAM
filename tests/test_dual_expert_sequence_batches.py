@@ -124,6 +124,47 @@ def _fixture(program, device="cpu"):
     return tower, action, stack, requests
 
 
+@pytest.mark.parametrize("batched", [False, True])
+@pytest.mark.parametrize("has_block_mask", [False, True])
+def test_execution_passes_kernel_options_only_with_a_block_mask(monkeypatch, batched, has_block_mask):
+    from open_wam.models.common.attention_backends import shared_flex_kernel_options
+    from open_wam.models.policy_variants.dual_expert import batch_execution, dual_stream_execution
+
+    tower, _, _, requests = _fixture("joint")
+    block_mask = object() if has_block_mask else None
+    calls = []
+
+    def stack(video, action, **kwargs):
+        calls.append(kwargs)
+        return video, action
+
+    if batched:
+        original = batch_execution.build_sequence_batch_self_attention
+
+        def masks(*args, **kwargs):
+            dense, _, layout = original(*args, **kwargs)
+            return dense, block_mask, layout
+
+        monkeypatch.setattr(batch_execution, "build_sequence_batch_self_attention", masks)
+        forward_dual_expert_sequence_batch(
+            visual_tower=tower, requests=requests, padded=False, packed_block_stack=stack,
+        )
+    else:
+        monkeypatch.setattr(
+            dual_stream_execution, "select_attention_profile_mask",
+            lambda *args, **kwargs: (requests[0].attention_profile.self_attention_mask, block_mask),
+        )
+        forward_dual_expert_packed_coupling_denoise(
+            visual_tower=tower, packed_block_stack=stack, **requests[0].as_kwargs(),
+        )
+
+    assert len(calls) == 1
+    assert calls[0]["block_mask"] is block_mask
+    assert calls[0]["flex_kernel_options"] == (
+        shared_flex_kernel_options() if has_block_mask else None
+    )
+
+
 @pytest.mark.parametrize("program", PROGRAMS)
 @pytest.mark.parametrize("padded", [False, True])
 def test_sequence_batch_forward_gradient_parity_and_single_heavy_call(program, padded):
