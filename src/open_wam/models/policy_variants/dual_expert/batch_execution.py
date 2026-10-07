@@ -8,6 +8,7 @@ from typing import Any
 
 import torch
 
+from open_wam.models.common.attention_backends import shared_flex_kernel_options
 from open_wam.models.common.attention_contracts import PreparedAttentionProfile
 from open_wam.models.common.sequence_batch_attention import (
     build_sequence_batch_cross_attention,
@@ -144,14 +145,7 @@ def forward_dual_expert_sequence_batch(
         "block_mask": block_mask,
         "flex_kernel_options": None
         if block_mask is None
-        else {
-            "BLOCK_M": 64,
-            "BLOCK_N": 64,
-            "BLOCK_M1": 32,
-            "BLOCK_N1": 64,
-            "BLOCK_M2": 64,
-            "BLOCK_N2": 32,
-        },
+        else shared_flex_kernel_options(),
     }
     video_hidden, action_hidden = packed_block_stack(
         video_hidden,

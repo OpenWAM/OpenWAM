@@ -1,4 +1,4 @@
-"""Application-extensible simulator construction registry."""
+"""Application-extensible and composable simulator construction registry."""
 
 from __future__ import annotations
 

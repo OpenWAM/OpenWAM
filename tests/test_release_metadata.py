@@ -31,13 +31,28 @@ def test_public_project_metadata_is_complete() -> None:
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("paper_url", [None, "https://example.test/paper.pdf"])
+def test_public_project_metadata_requires_canonical_paper_url(
+    paper_url: str | None,
+) -> None:
+    pyproject = deepcopy(_pyproject())
+    urls = pyproject["project"]["urls"]
+    if paper_url is None:
+        urls.pop("Paper")
+    else:
+        urls["Paper"] = paper_url
+
+    with pytest.raises(ValueError, match="Project metadata URL mismatch"):
+        validate_project_metadata(pyproject)
+
+
+@pytest.mark.unit
 def test_checkout_release_metadata_is_consistent() -> None:
     pyproject = _pyproject()
     validate_release_build_config(pyproject)
     validate_version_state(
         version=pyproject["project"]["version"],
         changelog=(REPO_ROOT / "CHANGELOG.md").read_text(encoding="utf-8"),
-        citation=(REPO_ROOT / "CITATION.cff").read_text(encoding="utf-8"),
         require_released=False,
     )
 
@@ -47,7 +62,6 @@ def test_undated_release_draft_is_valid_but_cannot_be_published() -> None:
     metadata = {
         "version": "0.2.0",
         "changelog": "## 0.2.0 - Unreleased\n",
-        "citation": 'version: "0.2.0"\n',
     }
     validate_version_state(**metadata, require_released=False)
     with pytest.raises(ValueError, match="dated changelog"):
@@ -56,36 +70,32 @@ def test_undated_release_draft_is_valid_but_cannot_be_published() -> None:
 
 @pytest.mark.unit
 @pytest.mark.parametrize(
-    ("changelog", "citation", "require_released", "message"),
+    ("changelog", "require_released", "message"),
     [
         (
-            "## 0.2.0 - Unreleased",
-            'version: "0.1.1"',
+            "## 0.1.1 - Unreleased",
             False,
-            "version must match",
+            "CHANGELOG.md must contain",
         ),
         (
             "## 0.2.0 - Unreleased",
-            'version: "0.2.0"\ndate-released: "2026-09-09"',
-            False,
-            "omit date-released",
-        ),
-        (
-            "## 0.2.0 - 2026-09-09",
-            'version: "0.2.0"\ndate-released: "2026-09-08"',
             True,
-            "date-released must match",
+            "dated changelog",
+        ),
+        (
+            "## 0.2.0 - 2999-01-01",
+            True,
+            "future",
         ),
     ],
 )
 def test_release_metadata_rejects_partial_version_or_date_updates(
-    changelog: str, citation: str, require_released: bool, message: str,
+    changelog: str, require_released: bool, message: str,
 ) -> None:
     with pytest.raises(ValueError, match=message):
         validate_version_state(
             version="0.2.0",
             changelog=changelog,
-            citation=citation,
             require_released=require_released,
         )
 
@@ -95,7 +105,6 @@ def test_dated_consistent_metadata_passes_publication_gate() -> None:
     validate_version_state(
         version="0.2.0",
         changelog="## 0.2.0 - 2026-09-09",
-        citation='version: "0.2.0"\ndate-released: "2026-09-09"',
         require_released=True,
     )
 

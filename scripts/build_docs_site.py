@@ -43,6 +43,7 @@ PUBLIC_MARKDOWN_PATHS = (
     Path("quickstart.md"),
     Path("release.md"),
     Path("reproducibility.md"),
+    Path("rollout_contracts.md"),
     Path("running_experiments.md"),
     Path("testing.md"),
     Path("variable_length_training_batches.md"),

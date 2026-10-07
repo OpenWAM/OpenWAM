@@ -21,7 +21,7 @@ simulator integrations do not branch on architecture nicknames.
 
 | Architecture | Parameter topology | Maintained programs |
 | --- | --- | --- |
-| `parallel_stream` | Video and action tokens share one transformer and exact packed-stream cache lifecycle. | Six standard video/action programs, GJD, and conditional FDM/IDM through the maintained exact packed backend. |
+| `parallel_stream` | Video and action tokens share one transformer. | Six standard video/action programs, GJD, and conditional FDM/IDM through the maintained exact packed backend. |
 | `dual_expert` | Video and action have separate transformer experts that execute paired blocks. | Six standard video/action programs, GJD, and conditional FDM/IDM. |
 | `causal_video_prediction` | The visual model runs without action supervision. | Video-only prediction. |
 
@@ -90,35 +90,17 @@ Architecture implementations do not import one another. Shared behavior lives
 in typed config, sequence, attention, scheduler, and decoder-artifact
 contracts.
 
-Before modules are allocated, the typed policy config returns one
-`PolicyConditioningRequirements` value so the shared tower can create its
-proprio and dynamics-mode adapters in deterministic checkpoint order. After
-allocation, the policy returns `PolicyPipelineRequirements`; the factory checks
-that its model-space geometry and conditioning match the already assembled
-tower and decoder. When model and source action spaces differ, this latter
-contract declares every accepted source action shape and carries the
-source-channel projection into the decoder. Shared factories validate that
-contract without inspecting a backend's action adapter.
+The factory validates model geometry and conditioning against the selected
+tower and decoder. Shared dynamics contracts align clean/noisy modalities,
+losses, text, and chunk-boundary proprioception before architecture-specific
+packing.
 
-Dynamics-capable programs additionally share five typed boundaries:
-
-- `DynamicsSamplePlan` resolves program, routed objective, and sequence layout
-  before an architecture prepares training tensors.
-- `DynamicsTrainingPlan` owns clean/noisy slots, timesteps, text removal, and
-  loss activation.
-- `DynamicsRolloutRequest` carries the clean modality and committed action
-  history into either recurrent backend.
-- `DynamicsRolloutGeometry` resolves chunk size, attention window, history
-  stream visibility, and conditional-history policy once for either backend.
-- `HiddenProprioContext` preserves frame-versus-chunk sampling granularity and
-  projects both architectures onto the same chunk-boundary state sequence.
-
-Replacing `dual_expert` with `parallel_stream` therefore keeps the program,
-route metadata, sequence layout, rollout request, and resolved rollout geometry
-unchanged. The expected differences are parameter topology, model-space action
-packing, attention execution, and cache storage. A backend may reject geometry
-its native runtime cannot represent, but it must not reinterpret shared
-semantics.
+Changing architecture keeps the requested program and conditioning semantics,
+not necessarily identical predictions: the parameters, action packing, and
+attention implementation differ. Unsupported geometry is rejected rather than
+reinterpreted. See the [Extension SDK](extension_sdk.md#core-boundary-ownership)
+for implementation contracts and [Rollout Contracts](rollout_contracts.md) for
+session and history integration.
 
 ## Selecting A Program
 

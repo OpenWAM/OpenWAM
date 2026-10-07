@@ -11,46 +11,13 @@ from open_wam.models.action_decoders.base import (
     ActionDecoderTrainOutput,
     require_decoder_artifact_payload,
 )
+from open_wam.models.common.flow_supervision import masked_video_flow_match_loss, masked_video_latent_mse
 from open_wam.models.policy_variants.contracts import PolicyInferOutput, PolicyTrainBatch, PolicyTrainOutput
 from open_wam.models.decoder_artifacts import (
     VIDEO_FLOW_DECODER_ARTIFACT_CONTRACT,
     VideoFlowInferArtifacts,
     VideoFlowTrainArtifacts,
 )
-
-
-def _masked_video_flow_match_loss(
-    *,
-    flow_pred: torch.Tensor,
-    targets: torch.Tensor,
-    timesteps: torch.Tensor,
-    scheduler,
-    future_loss_mask: torch.Tensor,
-) -> torch.Tensor:
-    per_token_loss = torch.nn.functional.mse_loss(flow_pred.float(), targets.float().detach(), reduction="none")
-    timestep_weight = scheduler.training_weight(timesteps.flatten()).reshape(timesteps.shape)
-    per_token_loss = per_token_loss * timestep_weight[:, None, :, None, None]
-    per_token_loss = per_token_loss * future_loss_mask.float()
-    denom = future_loss_mask.float().sum().clamp_min(1.0) * float(flow_pred.shape[1] * flow_pred.shape[3] * flow_pred.shape[4])
-    return per_token_loss.sum() / denom
-
-
-def _masked_video_latent_mse(
-    *,
-    predicted_latents: torch.Tensor,
-    target_latents: torch.Tensor,
-    future_loss_mask: torch.Tensor,
-) -> torch.Tensor:
-    per_token = torch.nn.functional.mse_loss(
-        predicted_latents.float(),
-        target_latents.float(),
-        reduction="none",
-    )
-    per_token = per_token * future_loss_mask.float()
-    denom = future_loss_mask.float().sum().clamp_min(1.0) * float(
-        predicted_latents.shape[1] * predicted_latents.shape[3] * predicted_latents.shape[4]
-    )
-    return per_token.sum() / denom
 
 
 class VideoOnlyActionDecoder(ActionDecoder):
@@ -88,14 +55,14 @@ class VideoOnlyActionDecoder(ActionDecoder):
             payload_type=VideoFlowTrainArtifacts,
         )
 
-        latent_loss = _masked_video_flow_match_loss(
+        latent_loss = masked_video_flow_match_loss(
             flow_pred=artifacts.flow_pred,
             targets=artifacts.targets,
             timesteps=artifacts.timesteps,
             scheduler=artifacts.scheduler,
             future_loss_mask=artifacts.future_loss_mask,
         )
-        latent_mse = _masked_video_latent_mse(
+        latent_mse = masked_video_latent_mse(
             predicted_latents=artifacts.predicted_latents,
             target_latents=artifacts.target_latents,
             future_loss_mask=artifacts.future_loss_mask,

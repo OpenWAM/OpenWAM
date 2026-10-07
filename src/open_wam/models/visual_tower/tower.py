@@ -48,7 +48,6 @@ from .grid_ids import build_mesh_id, build_video_grid_ids
 from .reference_core_weights import BackboneLoadReport
 from .replica_core import SharedVideoTransformerCore
 from .runtime_backbone import (
-    ensure_runtime_module_device,
     initialize_runtime_backbone,
     log_runtime_backbone_missing_keys,
     reset_runtime_module_cache,
@@ -1381,11 +1380,6 @@ class VisualTower(nn.Module):
         )
         self._ensure_runtime_backbone_initialized()
         return self.core
-
-    def ensure_runtime_backbone_device(self, *, action_dim: int, device) -> nn.Module:
-        """Move the shared runtime backbone onto the requested device/dtype."""
-        transformer = self.get_runtime_backbone(action_dim=action_dim)
-        return ensure_runtime_module_device(transformer, device=device)
 
     def _ensure_frontend_runtime_device(self, device) -> None:
         device = torch.device(device)

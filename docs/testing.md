@@ -99,9 +99,14 @@ scaling up a run.
 
 ## Documentation And Static Checks
 
+Run static checks in an isolated, dependency-light environment, not the model
+virtualenv. The no-Torch check deliberately fails if Torch is importable.
+
 ```bash
-uv run python -m pyflakes src scripts tests baselines
-OPEN_WAM_CI_NO_TORCH=1 uv run python scripts/ci_basic_sanity.py
+uv run --isolated --no-project --with pyflakes==3.4.0 \
+  python -m pyflakes src scripts tests baselines
+OPEN_WAM_CI_NO_TORCH=1 uv run --isolated --no-project --with pyflakes==3.4.0 \
+  python scripts/ci_basic_sanity.py
 uv run --extra docs python scripts/build_docs_site.py --output .docs_site
 uv run --extra docs mkdocs build --strict
 ```

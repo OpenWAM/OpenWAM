@@ -1,27 +1,11 @@
-<h1 align="center">OpenWAM</h1>
-
-<p align="center"><strong>An extensible framework for video-action world models in robot learning</strong></p>
+<h1 align="center">OpenWAM: An Open Framework<br>for Composable World-Action Models</h1>
 
 <p align="center">
-  <a href="https://github.com/OpenWAM/OpenWAM/actions/workflows/ci.yml"><img src="https://github.com/OpenWAM/OpenWAM/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="https://openwam.github.io/OpenWAM/"><img src="https://img.shields.io/badge/docs-online-blue.svg" alt="Documentation"></a>
-  <a href="https://www.python.org/"><img src="https://img.shields.io/badge/python-3.11%20%7C%203.12-blue.svg" alt="Python 3.11 or 3.12"></a>
-  <a href="https://github.com/OpenWAM/OpenWAM/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-blue.svg" alt="License: AGPL v3"></a>
+  Heng&nbsp;Yu<sup>*</sup>, David&nbsp;D.&nbsp;Yuan<sup>*</sup>, Juze&nbsp;Zhang<sup>*</sup>, Changan&nbsp;Chen, Yao&nbsp;Feng,<br>
+  Michelle&nbsp;Baldonado, Steve&nbsp;Cousins, Li&nbsp;Fei-Fei, Jiajun&nbsp;Wu, Ehsan&nbsp;Adeli
 </p>
+<p align="center">Stanford University<br><sup>*</sup> Equal contribution</p>
 
-<p align="center">
-  <a href="https://openwam.github.io/OpenWAM/">Documentation</a> &middot;
-  <a href="https://github.com/OpenWAM/OpenWAM/blob/main/docs/quickstart.md">Quickstart</a> &middot;
-  <a href="https://github.com/OpenWAM/OpenWAM/blob/main/docs/policy_architectures.md">Methods</a> &middot;
-  <a href="https://github.com/OpenWAM/OpenWAM/blob/main/docs/running_experiments.md">Training and evaluation</a> &middot;
-  <a href="https://github.com/OpenWAM/OpenWAM/blob/main/docs/extension_sdk.md">Extension SDK</a> &middot;
-  <a href="#citation">Citation</a>
-</p>
-
-<p align="center">
-  Developed by the <strong>OpenWAM Team</strong> at the
-  <a href="https://svl.stanford.edu/"><strong>Stanford Vision and Learning Lab (SVL)</strong></a>.
-</p>
 
 <p align="center">
   <a href="https://www.stanford.edu/"><img src="https://raw.githubusercontent.com/OpenWAM/OpenWAM/main/docs/assets/affiliations/stanford-wordmark.png" alt="Stanford University" height="20" valign="middle"></a>
@@ -33,37 +17,66 @@
   <a href="https://src.stanford.edu/"><img src="https://images.squarespace-cdn.com/content/v1/66b6b61fc5e5030973bd431f/01e83141-2062-49fa-8043-730d17b75cca/SRClogo.png" alt="Stanford Robotics Center" height="32" valign="middle"></a>
 </p>
 
-OpenWAM separates model topology, video/action conditioning, sequence
-semantics, visual execution, and action decoding so that controlled experiments
-share the same trainer and visual stack.
+<br>
 
-> **Version 0.2.0:** OpenWAM remains alpha-stage Linux
-> research software; see the [0.2 migration guide](docs/migration_0_2.md) before upgrading.
-> The public CPU lifecycle and synthetic artifacts are self-contained. Large
-> benchmark runs use separately provisioned datasets and checkpoints described
-> by the [artifact contract](https://github.com/OpenWAM/OpenWAM/blob/main/docs/artifacts.md).
+<p align="center">
+  <a href="https://arxiv.org/pdf/2610.07922"><img src="https://img.shields.io/badge/arXiv-2610.07922-b31b1b?logo=arxiv&amp;logoColor=white" alt="arXiv: 2610.07922"></a>
+  <a href="https://openwam.stanford.edu/"><img src="https://img.shields.io/badge/research-blog-8C1515.svg" alt="Research blog"></a>
+  <a href="https://openwam.github.io/OpenWAM/"><img src="https://img.shields.io/badge/docs-online-blue.svg" alt="Technical documentation"></a>
+  <a href="https://github.com/OpenWAM/OpenWAM/actions/workflows/ci.yml"><img src="https://github.com/OpenWAM/OpenWAM/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://www.python.org/"><img src="https://img.shields.io/badge/python-3.11%20%7C%203.12-blue.svg" alt="Python 3.11 or 3.12"></a>
+  <a href="https://github.com/OpenWAM/OpenWAM/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-blue.svg" alt="License: AGPL v3"></a>
+</p>
+
+<p align="center">
+  <a href="https://arxiv.org/pdf/2610.07922">Paper (PDF)</a> &middot;
+  <a href="https://openwam.stanford.edu/">Research blog</a> &middot;
+  <a href="https://openwam.github.io/OpenWAM/">Technical documentation</a> &middot;
+  <a href="https://github.com/OpenWAM/OpenWAM/blob/main/docs/quickstart.md">Quickstart</a> &middot;
+  <a href="https://github.com/OpenWAM/OpenWAM/blob/main/docs/policy_architectures.md">Methods</a> &middot;
+  <a href="https://github.com/OpenWAM/OpenWAM/blob/main/docs/running_experiments.md">Training and evaluation</a> &middot;
+  <a href="https://github.com/OpenWAM/OpenWAM/blob/main/docs/extension_sdk.md">Extension SDK</a> &middot;
+  <a href="#citation">Citation</a>
+</p>
+
+
+
+**OpenWAM** is the official implementation of
+[our paper](https://arxiv.org/pdf/2610.07922) and a reusable framework for
+video-action world models in robot learning. It supports video pretraining,
+robot policies, and forward and inverse dynamics models within a shared
+training and evaluation stack.
+
+The [research blog](https://openwam.stanford.edu/) introduces the framework,
+demonstrations, and experimental results. The
+[technical documentation](https://openwam.github.io/OpenWAM/) covers
+installation, training, evaluation, and extension APIs.
 
 <p align="center">
   <img src="docs/assets/robot-teaser.gif" alt="OpenWAM robot manipulation teaser" width="720">
 </p>
 
-## Upcoming Research Release
+## Research Paper and Releases
 
-Detailed evaluation results, trained model checkpoints, datasets, and the
-OpenWAM research paper are being prepared for public release and will be
-available very soon. Canonical links and integrity metadata will be added to
+Our paper, [OpenWAM: An Open Framework for Composable World-Action
+Models](https://arxiv.org/pdf/2610.07922), presents the framework and experimental results.
+
+Trained policy checkpoints and datasets are being prepared for public release.
+Canonical links and integrity metadata will be added to
 the [artifact documentation](https://github.com/OpenWAM/OpenWAM/blob/main/docs/artifacts.md) as each resource is published.
 
 ## Research Scope
 
-For OpenWAM video pretraining, see the
-[pretraining datasets and workflow](https://github.com/OpenWAM/OpenWAM/blob/main/docs/pretraining/index.md). The guide covers
-the nine pretraining data sources, downloads, RGB multi-view composition before
-VAE encoding, task text, verified object storage with a bounded cache, training,
-checkpoints, and inference. These inputs are the pretraining corpus; downstream
-robot policy fine-tuning and evaluation have their own dataset configurations.
-Published model weights are available at
+Train video models, fine-tune robot policies, and evaluate them through shared
+data and simulator interfaces. The
+[video pretraining guide](https://github.com/OpenWAM/OpenWAM/blob/main/docs/pretraining/index.md)
+covers data preparation through prediction. Released pretraining weights are
+available at
 [OpenWAM-Stanford/OpenWAM-Pretraining on Hugging Face](https://huggingface.co/OpenWAM-Stanford/OpenWAM-Pretraining).
+
+OpenWAM separates model topology, video/action conditioning, sequence
+semantics, visual execution, and action decoding so that controlled experiments
+share the same trainer and visual stack.
 
 OpenWAM provides:
 
@@ -73,31 +86,29 @@ OpenWAM provides:
 - full-state checkpoint continuation and versioned run provenance;
 - adapters for LIBERO, RoboTwin, CALVIN, heterogeneous LeRobot data, and
   synthetic fixtures;
-- role-scoped extension APIs for datasets, policies, decoders, attention
-  profiles, and simulators; and
-- CPU semantic tests plus opt-in real-checkpoint GPU parity gates for changes
-  near model numerics.
+- extension APIs for datasets, policies, decoders, attention profiles, and
+  simulators.
 
 ### Maintained Methods
 
 | Architecture | Topology | Maintained programs |
 | --- | --- | --- |
-| `parallel_stream` | Video and action tokens share one transformer. | Six standard programs, GJD, and standalone conditional FDM/IDM through the exact LingBot-compatible runtime. |
+| `parallel_stream` | Video and action tokens share one transformer. | Six standard programs, GJD, and standalone conditional FDM/IDM. |
 | `dual_expert` | Video and action use separate transformer experts. | Six standard programs, GJD, and standalone conditional FDM/IDM. |
 | `causal_video_prediction` | The visual model runs without action supervision. | Video-only prediction. |
 
-The six standard program selectors are `video_then_action`,
-`action_then_video`, `joint`, `decoupled_same_step`,
-`video_noisy_to_action`, and `action_noisy_to_video`. GJD samples joint,
-forward-dynamics (FDM), and inverse-dynamics (IDM) submodes within one model.
-Standalone `forward_dynamics` and `inverse_dynamics` preserve the strict GJD
-conditional contract: one clean t0 latent in a singleton chunk, one-frame
-conditional history, no task text, and only the matching prediction loss.
-
-Experiment configs and public commands use architecture and program names
-directly.
+Programs control how video and action condition one another. GJD combines
+joint prediction, forward dynamics (FDM), and inverse dynamics (IDM) in one
+model. See [Policy Architectures and Programs](docs/policy_architectures.md)
+for the complete program list and conditioning rules.
 
 ## Installation
+
+> **Version 0.2.0:** OpenWAM remains alpha-stage Linux
+> research software; see the [0.2 migration guide](docs/migration_0_2.md) before upgrading.
+> The public CPU lifecycle and synthetic artifacts are self-contained. Large
+> benchmark runs use separately provisioned datasets and checkpoints described
+> by the [artifact contract](https://github.com/OpenWAM/OpenWAM/blob/main/docs/artifacts.md).
 
 OpenWAM is available on [PyPI](https://pypi.org/project/openwam/) for Linux
 with Python 3.11 or 3.12. In a virtual environment:
@@ -214,16 +225,11 @@ uv run --extra train torchrun --standalone --nproc-per-node=4 \
   --expected-world-size 4
 ```
 
-`--resume-from` requires `full_training_state.pt` and restores model, optimizer,
-scheduler, strategy/scaler, step state, and the next sampler epoch/batch cursor.
-Resumable checkpoints are written only at optimizer boundaries because partial
-gradients are not serialized. Exact loader-cursor continuation also requires a
-sized training dataloader. Process and stochastic dataset/worker RNG streams are
-not checkpointed, so a restarted run is not bitwise identical. Use
-`--initialize-weights-from` for a fresh run initialized from model weights. The
-removed ambiguous `--checkpoint-root` operation always errors. Every checkpoint
-stores its resolved config as an audit record; it is not merged into the
-invocation config.
+`--resume-from` requires `full_training_state.pt` and restores training state.
+Use `--initialize-weights-from` instead for a fresh run from model weights.
+Resume does not guarantee bitwise replay of stochastic data loading; see
+[initialization and resume](docs/running_experiments.md#initialization-and-full-state-resume)
+for requirements and limits.
 
 Conditional FDM/IDM uses the dynamics-routing data adapter. The maintained
 config mixes real demonstrations with encoded counterfactual train and
@@ -317,10 +323,8 @@ openwam-eval --cfg evaluation.yaml --output-json result.json \
   --provenance-mode full
 ```
 
-Exact numerical claims use the locked dependency graph and documented
-hardware/software stack. A refactor near model execution must pass immutable
-training-step, recurrent-inference, cache-rollover, and full-state-resume
-characterization; expected values are not regenerated by the refactor. See
+For numerical comparisons, keep the dependency lock, hardware/software stack,
+checkpoint, input data, and evaluation settings fixed. See
 [Reproducibility](https://github.com/OpenWAM/OpenWAM/blob/main/docs/reproducibility.md),
 [Compatibility](https://github.com/OpenWAM/OpenWAM/blob/main/docs/compatibility.md), and [Testing](https://github.com/OpenWAM/OpenWAM/blob/main/docs/testing.md).
 
@@ -357,18 +361,22 @@ for every changed contract. Read [CONTRIBUTING.md](https://github.com/OpenWAM/Op
 
 ## Citation
 
-If OpenWAM supports your research, cite the software record in
-[`CITATION.cff`](https://github.com/OpenWAM/OpenWAM/blob/main/CITATION.cff):
+If OpenWAM supports your research, please cite
+[our paper](https://arxiv.org/pdf/2610.07922):
 
 ```bibtex
-@software{open_wam_2026,
-  title   = {OpenWAM},
-  author  = {{OpenWAM Team}},
+@article{yu2026openwam,
+  title   = {{OpenWAM}: An Open Framework for Composable World-Action Models},
+  author  = {Yu, Heng and Yuan, David D. and Zhang, Juze and Chen, Changan and
+             Feng, Yao and Baldonado, Michelle and Cousins, Steve and
+             Fei-Fei, Li and Wu, Jiajun and Adeli, Ehsan},
+  journal = {arXiv preprint arXiv:2610.07922},
   year    = {2026},
-  version = {0.2.0},
-  url     = {https://github.com/OpenWAM/OpenWAM}
+  url     = {https://arxiv.org/pdf/2610.07922}
 }
 ```
+
+The BibTeX entry is also available in [CITATION.bib](CITATION.bib).
 
 ## License
 
@@ -376,8 +384,7 @@ OpenWAM is released under the [GNU Affero General Public License v3.0](https://g
 with the redistribution attribution described in [`NOTICE`](https://github.com/OpenWAM/OpenWAM/blob/main/NOTICE). Covered
 modified versions and network services must provide corresponding source, and
 redistributed copies must preserve the OpenWAM attribution notice. Academic
-work that uses OpenWAM should cite the software record in
-[`CITATION.cff`](https://github.com/OpenWAM/OpenWAM/blob/main/CITATION.cff).
+work that uses OpenWAM should cite the paper; see [Citation](#citation).
 
 Third-party components retain their own terms; the adapted LingBot-VA module
 is distributed under Apache License 2.0. Full attributions are listed in

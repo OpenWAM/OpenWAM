@@ -28,6 +28,18 @@ _COMPILED_FLEX_ATTENTION = None
 _COMPILED_CREATE_BLOCK_MASK = None
 
 
+def shared_flex_kernel_options() -> dict[str, int]:
+    """Return the existing shared tile preset, fresh for each explicit caller."""
+    return {
+        "BLOCK_M": 64,
+        "BLOCK_N": 64,
+        "BLOCK_M1": 32,
+        "BLOCK_N1": 64,
+        "BLOCK_M2": 64,
+        "BLOCK_N2": 32,
+    }
+
+
 def _resolve_compiled_flex_attention():
     global _COMPILED_FLEX_ATTENTION
     if flex_attention is None:
@@ -133,4 +145,5 @@ __all__ = [
     "apply_attention_backend",
     "resolve_attention_profile_backend",
     "select_attention_profile_mask",
+    "shared_flex_kernel_options",
 ]

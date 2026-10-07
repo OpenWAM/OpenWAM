@@ -1,5 +1,5 @@
 site_name: OpenWAM
-site_description: Extensible world-action-model training and evaluation documentation
+site_description: Extensible and composable world-action-model training and evaluation documentation
 site_url: https://openwam.github.io/OpenWAM/
 repo_url: https://github.com/OpenWAM/OpenWAM
 repo_name: OpenWAM/OpenWAM
@@ -49,6 +49,7 @@ nav:
       - Add A Simulator Adapter: cookbooks/new_simulator_adapter.md
       - Reproduce A Result: cookbooks/reproduce_result.md
   - Development:
+      - Rollout Contracts: rollout_contracts.md
       - Testing: testing.md
       - Releases: release.md
       - Migrating To 0.2: migration_0_2.md

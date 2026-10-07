@@ -1,12 +1,27 @@
 from __future__ import annotations
 
+from html import unescape
 import importlib.util
+import re
+import tomllib
 from pathlib import Path
 
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = REPO_ROOT / "scripts" / "build_docs_site.py"
+PAPER_AUTHORS = (
+    ("Heng", "Yu"),
+    ("David D.", "Yuan"),
+    ("Juze", "Zhang"),
+    ("Changan", "Chen"),
+    ("Yao", "Feng"),
+    ("Michelle", "Baldonado"),
+    ("Steve", "Cousins"),
+    ("Li", "Fei-Fei"),
+    ("Jiajun", "Wu"),
+    ("Ehsan", "Adeli"),
+)
 
 
 def _load_docs_builder():
@@ -19,44 +34,127 @@ def _load_docs_builder():
 
 
 @pytest.mark.unit
+def test_readme_leads_with_paper_title_and_arxiv_badge() -> None:
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+
+    heading = re.search(r'^<h1 align="center">(.+)</h1>', readme)
+    assert heading is not None
+    assert heading.group(1).replace("<br>", " ") == (
+        "OpenWAM: An Open Framework for Composable World-Action Models"
+    )
+
+    first_badge = re.search(r'<a href="([^"]+)"><img [^>]+></a>', readme)
+    assert first_badge is not None
+    assert first_badge.group(1) == "https://arxiv.org/pdf/2610.07922"
+    assert 'alt="arXiv: 2610.07922"' in first_badge.group(0)
+    assert "img.shields.io/badge/arXiv-2610.07922-b31b1b" in first_badge.group(0)
+    assert first_badge.start() < readme.index("Paper (PDF)")
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("relative_path", ("README.md", "docs/index.md"))
+def test_landing_pages_credit_paper_authors_in_order(relative_path: str) -> None:
+    content = (REPO_ROOT / relative_path).read_text(encoding="utf-8")
+    header = unescape(content.split("\n##", maxsplit=1)[0]).replace("\xa0", " ")
+    byline = re.search(r'<p align="center">\s*(Heng[\s\S]+?)</p>', header)
+    assert byline is not None
+    names = [f"{given} {family}" for given, family in PAPER_AUTHORS]
+    byline_text = " ".join(re.sub(r"<[^>]+>", "", byline.group(1)).split())
+    assert byline_text == ", ".join(
+        f"{name}*" if index < 3 else name for index, name in enumerate(names)
+    )
+    assert byline.group(1).count("<sup>*</sup>") == 3
+    for name in names[:3]:
+        assert f"{name}<sup>*</sup>" in byline.group(1)
+    assert "Stanford University" in header
+    assert "Equal contribution" in header
+
+
+@pytest.mark.unit
+def test_only_paper_citation_is_published() -> None:
+    citation = (REPO_ROOT / "CITATION.bib").read_text(encoding="utf-8").strip()
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    entries = re.findall(r"```bibtex\n([\s\S]*?)\n```", readme)
+    assert entries == [citation]
+    assert re.findall(r"^@\w+\{", citation, re.MULTILINE) == ["@article{"]
+    assert "title   = {{OpenWAM}: An Open Framework for Composable World-Action Models}" in citation
+    assert "journal = {arXiv preprint arXiv:2610.07922}" in citation
+    assert "year    = {2026}" in citation
+    assert "url     = {https://arxiv.org/pdf/2610.07922}" in citation
+    assert not (REPO_ROOT / "CITATION.cff").exists()
+    assert "@software" not in readme
+    assert "software record" not in readme
+    assert "version-specific" not in readme
+    bibtex = re.search(r"@article\{yu2026openwam,[\s\S]*?author\s*=\s*\{([^}]+)\}", citation)
+    assert bibtex is not None
+    assert " ".join(bibtex.group(1).split()) == " and ".join(
+        f"{family}, {given}" for given, family in PAPER_AUTHORS
+    )
+
+
+@pytest.mark.unit
+def test_readme_distinguishes_paper_blog_and_technical_docs() -> None:
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+
+    assert '<a href="https://arxiv.org/pdf/2610.07922">Paper (PDF)</a>' in readme
+    assert '<a href="https://openwam.stanford.edu/">Research blog</a>' in readme
+    assert (
+        '<a href="https://openwam.github.io/OpenWAM/">Technical documentation</a>'
+        in readme
+    )
+
+
+@pytest.mark.unit
+def test_docs_and_package_link_to_research_paper() -> None:
+    docs_index = (REPO_ROOT / "docs" / "index.md").read_text(encoding="utf-8")
+    project = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+
+    assert "[Research paper (PDF)](https://arxiv.org/pdf/2610.07922)" in docs_index
+    assert project["project"]["urls"]["Paper"] == "https://arxiv.org/pdf/2610.07922"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "relative_path",
+    ("README.md", "docs/index.md", "mkdocs.yml", "pyproject.toml"),
+)
+def test_project_descriptions_include_extensibility_and_composability(
+    relative_path: str,
+) -> None:
+    content = (REPO_ROOT / relative_path).read_text(encoding="utf-8")
+
+    assert "extensible and composable" in content.lower()
+
+
+@pytest.mark.unit
 def test_docs_site_stages_curated_public_docs_only(tmp_path: Path) -> None:
     builder = _load_docs_builder()
     output = tmp_path / "docs_site"
 
     summary = builder.build_docs_site(output)
 
-    assert summary["public_pages"] == len(builder.PUBLIC_MARKDOWN_PATHS) == 34
-    assert summary["public_assets"] == len(builder.PUBLIC_ASSET_PATHS) == 8
+    assert summary["public_pages"] == len(builder.PUBLIC_MARKDOWN_PATHS)
+    assert summary["public_assets"] == len(builder.PUBLIC_ASSET_PATHS)
     assert summary["notes_published"] is False
     assert summary["broken_local_links"] == 0
     assert summary["missing_repository_paths"] == 0
-    assert (output / "index.md").is_file()
-    assert (output / builder.OUTPUT_SENTINEL).is_file()
-    assert (output / "quickstart.md").is_file()
-    assert (output / "migration_0_2.md").is_file()
-    assert (output / "architecture.md").is_file()
-    assert (output / "policy_architectures.md").is_file()
-    assert (output / "benchmarks.md").is_file()
-    assert (output / "running_experiments.md").is_file()
-    assert (output / "variable_length_training_batches.md").is_file()
-    assert (output / "video_only_training.md").is_file()
-    assert (output / "assets/affiliations/stanford-wordmark.png").is_file()
-    assert (output / "assets/affiliations/stanford-ai-lab.jpg").is_file()
-    assert (output / "assets/affiliations/stanford-svl.png").is_file()
-    assert (output / "assets/affiliations/stanford-src.webp").read_bytes() == (
-        REPO_ROOT / "docs/assets/affiliations/stanford-src.webp"
-    ).read_bytes()
-    assert (output / "assets/stylesheets/openwam.css").is_file()
-    assert (output / "assets/robot-teaser.gif").read_bytes() == (
-        REPO_ROOT / "docs/assets/robot-teaser.gif"
-    ).read_bytes()
-    assert not (output / "m5_gjd_uva_libero10_comparison.md").exists()
-    assert not (output / "engineering-notes").exists()
-    assert not (output / "CHECKPOINT.md").exists()
-    assert not (output / "camera_sync_deploy_issue.md").exists()
-    assert not (output / "github_pages.md").exists()
-    assert not (output / "dual_expert_refactor_characterization.md").exists()
-    assert not (output / "staging").exists()
+    expected_pages = {
+        path.with_name("index.md") if path.name == "README.md" else path
+        for path in builder.PUBLIC_MARKDOWN_PATHS
+    }
+    expected_files = {
+        *expected_pages,
+        *builder.PUBLIC_ASSET_PATHS,
+        Path(builder.OUTPUT_SENTINEL),
+    }
+    actual_files = {
+        path.relative_to(output) for path in output.rglob("*") if path.is_file()
+    }
+    assert actual_files == expected_files
+    for relative in builder.PUBLIC_ASSET_PATHS:
+        assert (output / relative).read_bytes() == (
+            builder.PUBLIC_DOCS / relative
+        ).read_bytes()
     assert builder.scan_private_fragments(output) == []
     assert builder.scan_broken_local_links(output) == []
     assert builder.scan_broken_local_links(

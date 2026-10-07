@@ -1,9 +1,10 @@
 # OpenWAM Documentation
 
 <p align="center">
-  Developed by the <strong>OpenWAM Team</strong> at the
-  <a href="https://svl.stanford.edu/"><strong>Stanford Vision and Learning Lab (SVL)</strong></a>.
+  Heng&nbsp;Yu<sup>*</sup>, David&nbsp;D.&nbsp;Yuan<sup>*</sup>, Juze&nbsp;Zhang<sup>*</sup>, Changan&nbsp;Chen, Yao&nbsp;Feng,<br>
+  Michelle&nbsp;Baldonado, Steve&nbsp;Cousins, Li&nbsp;Fei-Fei, Jiajun&nbsp;Wu, Ehsan&nbsp;Adeli
 </p>
+<p align="center">Stanford University<br><sup>*</sup> Equal contribution</p>
 
 <div class="openwam-affiliations" aria-label="Stanford affiliations">
   <a href="https://www.stanford.edu/"><img class="openwam-affiliation-wordmark" src="assets/affiliations/stanford-wordmark.png" alt="Stanford University" height="20"></a>
@@ -12,9 +13,8 @@
   <a href="https://src.stanford.edu/"><img class="openwam-affiliation-src" src="assets/affiliations/stanford-src.webp" alt="Stanford Robotics Center" height="32"></a>
 </div>
 
-OpenWAM is an extensible library for training and evaluating world action
-models while keeping the shared visual backbone stable. The public docs focus
-on reproducible usage, typed extension points, and benchmark contracts.
+OpenWAM is an extensible and composable library for training and evaluating world action
+models while keeping the shared visual backbone stable. Start with a CPU example, then choose a training, evaluation, or extension workflow.
 
 ## Start Here
 
@@ -36,6 +36,8 @@ on reproducible usage, typed extension points, and benchmark contracts.
 
 ## Reference
 
+- [Research paper (PDF)](https://arxiv.org/pdf/2610.07922): framework, methods, and experimental results.
 - [CLI Reference](cli.md): commands and examples.
+- [Rollout Contracts](rollout_contracts.md): sessions, executed history, and control integration.
 - [Testing](testing.md): local tests and numerical comparisons for extensions.
 - [Releases](release.md): package versions and reproducible installation.

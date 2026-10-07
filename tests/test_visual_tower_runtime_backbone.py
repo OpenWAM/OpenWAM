@@ -16,7 +16,6 @@ from open_wam.models.visual_tower import VisualTower
 from open_wam.models.visual_tower import runtime_backbone as runtime_backbone_module
 from open_wam.models.visual_tower.reference_core_weights import BackboneLoadReport
 from open_wam.models.visual_tower.runtime_backbone import (
-    ensure_runtime_module_device,
     initialize_runtime_backbone,
     log_runtime_backbone_missing_keys,
     reset_runtime_module_cache,
@@ -167,30 +166,20 @@ def test_runtime_backbone_request_validation_preserves_access_contract() -> None
         )
 
 
-def test_runtime_backbone_device_normalizes_floating_state_in_place() -> None:
-    module = nn.Linear(2, 2, dtype=torch.float64)
-    module.register_buffer("floating_buffer", torch.ones(2, dtype=torch.float64))
-    module.register_buffer("integer_buffer", torch.ones(2, dtype=torch.int64))
+@pytest.mark.parametrize("dtype", (torch.float32, torch.float64, torch.bfloat16))
+def test_runtime_backbone_access_preserves_prepared_storage(dtype) -> None:
+    tower = VisualTower(_backbone_config(), action_dim=4, state_dim=4).to(dtype=dtype)
+    parameters = tuple(tower.core.parameters())
+    tower.core.register_buffer("floating_buffer", torch.ones(2, dtype=dtype))
+    tower.core.register_buffer("integer_buffer", torch.ones(2, dtype=torch.int64))
 
-    resolved = ensure_runtime_module_device(module, device="cpu")
+    resolved = tower.get_runtime_backbone(action_dim=4)
 
-    assert resolved is module
-    assert module.weight.dtype == torch.float32
-    assert module.floating_buffer.dtype == torch.float32
-    assert module.integer_buffer.dtype == torch.int64
-
-
-def test_runtime_backbone_device_preserves_sharded_parameter_dtype() -> None:
-    module = nn.Linear(2, 2, dtype=torch.float64)
-    module.weight.full_tensor = lambda: module.weight
-    module.register_buffer("floating_buffer", torch.ones(2, dtype=torch.float64))
-
-    resolved = ensure_runtime_module_device(module, device="cpu")
-
-    assert resolved is module
-    assert module.weight.dtype == torch.float64
-    assert module.bias.dtype == torch.float64
-    assert module.floating_buffer.dtype == torch.float32
+    assert resolved is tower.core
+    assert tuple(map(id, resolved.parameters())) == tuple(map(id, parameters))
+    assert all(parameter.dtype == dtype for parameter in resolved.parameters())
+    assert resolved.floating_buffer.dtype == dtype
+    assert resolved.integer_buffer.dtype == torch.int64
 
 
 class _ModernCacheModule(nn.Module):
