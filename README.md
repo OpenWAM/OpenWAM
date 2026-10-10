@@ -72,6 +72,14 @@ Policy checkpoints and OpenWAM datasets are being prepared for release.
 See the [artifact guide](https://github.com/OpenWAM/OpenWAM/blob/main/docs/artifacts.md)
 for release links and setup as these resources become available.
 
+## Release roadmap
+
+- [x] Training and evaluation framework
+- [x] Causal robot-video pretrained weights
+- [ ] LIBERO policy checkpoints
+- [ ] LIBERO-Long-CF dataset
+- [ ] Inverse dynamics (IDM) checkpoints and inference examples
+
 ## Quickstart
 
 Linux · Python 3.11 or 3.12 · Alpha-stage research software
