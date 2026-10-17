@@ -424,11 +424,23 @@ class RolloutEngine(Generic[Session, Observation]):
                     waited += time.perf_counter() - began
                     accept(candidate)
                     step = result.lifecycle.plan.get(cursor)
-                fallback = step is None
                 reason = None if termination_check is None else termination_check()
                 if reason is not None:
                     result.lifecycle = result.lifecycle.terminate(reason)
                     break
+                pause += waited
+                scheduled = (
+                    start_time + real_index / options.target_action_hz + pause
+                    if options.target_action_hz is not None
+                    else time.perf_counter()
+                )
+                time.sleep(max(0.0, scheduled - time.perf_counter()))
+                # A candidate can finish while this control is waiting for its tick.
+                # Publish it before execution advances the stale-control boundary.
+                if worker.ready:
+                    accept(worker.take())
+                step = result.lifecycle.plan.get(cursor)
+                fallback = step is None
                 control = (
                     self.adapter.fallback(last_action, current)
                     if fallback
@@ -440,13 +452,6 @@ class RolloutEngine(Generic[Session, Observation]):
                     np.array(control.source_action, copy=True),
                 )
                 action = control.action.copy()
-                pause += waited
-                scheduled = (
-                    start_time + real_index / options.target_action_hz + pause
-                    if options.target_action_hz is not None
-                    else time.perf_counter()
-                )
-                time.sleep(max(0.0, scheduled - time.perf_counter()))
                 began = time.perf_counter()
                 transition = yield action
                 current = transition.observation

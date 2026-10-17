@@ -102,6 +102,9 @@ Only planners declaring asynchronous support may run in the background.
 The LIBERO streaming-VAE planner is blocking because its encoder is mutable.
 Partially stale candidates are rejected atomically rather than reusing a
 conveniently aligned suffix.
+A background candidate that finishes during control pacing is checked before
+the next command is materialized. If its first control has already executed,
+whole-chunk rejection still applies.
 
 `max_plans` stops after complete executed plans, observing the final
 nonterminal interval without another prediction. Environment termination and
