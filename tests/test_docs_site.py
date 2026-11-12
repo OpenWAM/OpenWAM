@@ -125,15 +125,22 @@ def test_readme_distinguishes_paper_blog_and_technical_docs() -> None:
 
 
 @pytest.mark.unit
-def test_readme_links_models_to_released_pretraining_weights() -> None:
+def test_readme_links_models_to_released_checkpoints() -> None:
     readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
-    model_url = "https://huggingface.co/OpenWAM-Stanford/OpenWAM-Pretraining"
+    artifacts = (REPO_ROOT / "docs/artifacts.md").read_text(encoding="utf-8")
     header, body = readme.split("## Capabilities", maxsplit=1)
+    models = body.split("## Models and data\n", maxsplit=1)[1].split("\n##", maxsplit=1)[0]
 
-    assert f'<a href="{model_url}">Models</a>' in header
-    assert f"]({model_url})" in body
+    assert '<a href="#models-and-data">Models</a>' in header
+    for model in ("OpenWAM-Pretraining", "OpenWAM-IDM-Mixed-CF64k", "OpenWAM-IDM-CF64k"):
+        link = f"](https://huggingface.co/OpenWAM-Stanford/{model})"
+        assert link in models
+        assert link in artifacts
     assert "docs/artifacts.md" in body
     assert "docs/pretraining/index.md" in body
+    assert "docs/video_action_composition.md" in models
+    assert "[x] Inverse dynamics (IDM) checkpoints" in body
+    assert "[ ] LIBERO policy checkpoints" in body
 
 
 @pytest.mark.unit

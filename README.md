@@ -33,7 +33,7 @@
   <a href="https://arxiv.org/pdf/2610.07922">Paper (PDF)</a> &middot;
   <a href="https://openwam.stanford.edu/">Research blog</a> &middot;
   <a href="https://openwam.github.io/OpenWAM/">Technical documentation</a> &middot;
-  <a href="https://huggingface.co/OpenWAM-Stanford/OpenWAM-Pretraining">Models</a> &middot;
+  <a href="#models-and-data">Models</a> &middot;
   <a href="#citation">Citation</a>
 </p>
 
@@ -64,21 +64,28 @@ for supported configurations, including generalist joint denoising.
 
 ## Models and data
 
-[**Video-pretrained weights are available on Hugging Face.**](https://huggingface.co/OpenWAM-Stanford/OpenWAM-Pretraining)
-The release includes model weights, a reference configuration, and checksums.
-Video frontend and text-encoding assets, datasets, and training state are not included.
+Released models are available on Hugging Face:
 
-Policy checkpoints and OpenWAM datasets are being prepared for release.
+| Model | Purpose |
+| --- | --- |
+| [Video-pretrained backbone](https://huggingface.co/OpenWAM-Stanford/OpenWAM-Pretraining) | Causal robot-video prediction |
+| [Mixed IDM CF64k](https://huggingface.co/OpenWAM-Stanford/OpenWAM-IDM-Mixed-CF64k) | Inverse dynamics, post-trained on 60% counterfactual data and 40% demonstrations |
+| [CF-only IDM CF64k](https://huggingface.co/OpenWAM-Stanford/OpenWAM-IDM-CF64k) | Inverse dynamics, post-trained on counterfactual data only |
+
+The IDMs translate supplied video futures into robot actions; see
+[video-to-action composition](https://github.com/OpenWAM/OpenWAM/blob/main/docs/video_action_composition.md).
+Full LIBERO policy checkpoints and OpenWAM datasets are still being prepared.
 See the [artifact guide](https://github.com/OpenWAM/OpenWAM/blob/main/docs/artifacts.md)
-for release links and setup as these resources become available.
+for release contents and setup.
 
 ## Release roadmap
 
 - [x] Training and evaluation framework
 - [x] Causal robot-video pretrained weights
+- [x] Inverse dynamics (IDM) checkpoints
 - [ ] LIBERO policy checkpoints
 - [ ] LIBERO-Long-CF dataset
-- [ ] Inverse dynamics (IDM) checkpoints and inference examples
+- [ ] End-to-end inference examples with released checkpoints
 
 ## Quickstart
 
