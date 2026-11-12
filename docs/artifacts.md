@@ -2,6 +2,23 @@
 
 OpenWAM separates public experiment configs from machine-local artifact paths.
 
+## Released Models
+
+- [Video-pretrained backbone](https://huggingface.co/OpenWAM-Stanford/OpenWAM-Pretraining): causal robot-video prediction.
+- [Mixed IDM CF64k](https://huggingface.co/OpenWAM-Stanford/OpenWAM-IDM-Mixed-CF64k): inverse dynamics post-training with 60% counterfactual data and 40% real demonstrations.
+- [CF-only IDM CF64k](https://huggingface.co/OpenWAM-Stanford/OpenWAM-IDM-CF64k): inverse dynamics post-training with counterfactual data only.
+
+Each release includes `model_state.pt`, `resolved_config.yaml`, and
+`SHA256SUMS`. These are weights-only releases, not resumable training states.
+Frontend assets and datasets are installed separately. Both IDM checkpoints
+are released under AGPL-3.0-only, with upstream attribution included.
+
+Use the [pretraining guide](pretraining/training.md#7-download-the-released-pretraining-weights)
+for the video backbone and [video-to-action composition](video_action_composition.md)
+to pair an IDM with a compatible video producer. The IDM cards identify the
+video predictors and evaluation protocols behind their reported results;
+the IDMs are action components, not standalone planning policies.
+
 ## Local Path Registry
 
 Use `configs/local_paths.yaml` for local paths. Start from:
