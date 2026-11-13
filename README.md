@@ -33,7 +33,7 @@
   <a href="https://arxiv.org/pdf/2610.07922">Paper (PDF)</a> &middot;
   <a href="https://openwam.stanford.edu/">Research blog</a> &middot;
   <a href="https://openwam.github.io/OpenWAM/">Technical documentation</a> &middot;
-  <a href="#models-and-data">Models</a> &middot;
+  <a href="#models-and-data">Models and data</a> &middot;
   <a href="#citation">Citation</a>
 </p>
 
@@ -69,22 +69,27 @@ Released models are available on Hugging Face:
 | Model | Purpose |
 | --- | --- |
 | [Video-pretrained backbone](https://huggingface.co/OpenWAM-Stanford/OpenWAM-Pretraining) | Causal robot-video prediction |
+| [VTA for LIBERO-10](https://huggingface.co/OpenWAM-Stanford/OpenWAM-VTA-LIBERO10) | Video-then-action policy with both video and action experts |
 | [Mixed IDM CF64k](https://huggingface.co/OpenWAM-Stanford/OpenWAM-IDM-Mixed-CF64k) | Inverse dynamics, post-trained on 60% counterfactual data and 40% demonstrations |
 | [CF-only IDM CF64k](https://huggingface.co/OpenWAM-Stanford/OpenWAM-IDM-CF64k) | Inverse dynamics, post-trained on counterfactual data only |
 
 The IDMs translate supplied video futures into robot actions; see
 [video-to-action composition](https://github.com/OpenWAM/OpenWAM/blob/main/docs/video_action_composition.md).
-Full LIBERO policy checkpoints and OpenWAM datasets are still being prepared.
 See the [artifact guide](https://github.com/OpenWAM/OpenWAM/blob/main/docs/artifacts.md)
 for release contents and setup.
+
+[LIBERO-CF64k](https://huggingface.co/datasets/OpenWAM-Stanford/LIBERO-CF64k)
+contains 64,000 counterfactual motion segments across LIBERO-Long's ten tasks,
+with two-view video, actions, and proprioception for learning inverse and
+forward dynamics. Raw data, a reader, and integrity checks are publicly available.
 
 ## Release roadmap
 
 - [x] Training and evaluation framework
 - [x] Causal robot-video pretrained weights
 - [x] Inverse dynamics (IDM) checkpoints
-- [ ] LIBERO policy checkpoints
-- [ ] LIBERO-Long-CF dataset
+- [x] LIBERO video-then-action policy checkpoint
+- [x] LIBERO-CF64k counterfactual dataset
 - [ ] End-to-end inference examples with released checkpoints
 
 ## Quickstart

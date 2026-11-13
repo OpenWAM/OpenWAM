@@ -17,6 +17,16 @@
 OpenWAM is an extensible and composable library for training and evaluating world action
 models while keeping the shared visual backbone stable. Start with a CPU example, then choose a training, evaluation, or extension workflow.
 
+## Models And Data
+
+The [model catalog](artifacts.md#released-models) includes the video-pretrained
+backbone, [VTA policy for LIBERO-10](https://huggingface.co/OpenWAM-Stanford/OpenWAM-VTA-LIBERO10),
+and two inverse dynamics checkpoints for composing video prediction with control.
+
+[LIBERO-CF64k](https://huggingface.co/datasets/OpenWAM-Stanford/LIBERO-CF64k)
+provides counterfactual motion data for inverse and forward dynamics learning.
+Raw data, a reader, and integrity checks are publicly available.
+
 ## Start Here
 
 - [Quickstart](quickstart.md): install, validate configs, and run CPU-safe smoke checks.
