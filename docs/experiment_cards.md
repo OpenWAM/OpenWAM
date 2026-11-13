@@ -23,7 +23,7 @@ checkpoint exists.
 | Architecture | Current programs/profiles | Public card status |
 | --- | --- | --- |
 | `parallel_stream` | six video/action programs; GJD | scaffolded; public checkpoint pending |
-| `dual_expert` | six video/action programs; GJD | scaffolded; public checkpoint pending |
+| `dual_expert` | six video/action programs; GJD | VTA and IDM [checkpoints released](artifacts.md#released-models); task-level cards pending |
 | `causal_video_prediction` | video-only causal prediction | task-level card pending; see [released pretraining weights](pretraining/training.md#7-download-the-released-pretraining-weights) |
 | fixture | `public_tiny_synthetic_contract` | public structural fixture card added |
 

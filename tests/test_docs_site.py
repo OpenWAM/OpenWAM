@@ -131,8 +131,13 @@ def test_readme_links_models_to_released_checkpoints() -> None:
     header, body = readme.split("## Capabilities", maxsplit=1)
     models = body.split("## Models and data\n", maxsplit=1)[1].split("\n##", maxsplit=1)[0]
 
-    assert '<a href="#models-and-data">Models</a>' in header
-    for model in ("OpenWAM-Pretraining", "OpenWAM-IDM-Mixed-CF64k", "OpenWAM-IDM-CF64k"):
+    assert '<a href="#models-and-data">Models and data</a>' in header
+    for model in (
+        "OpenWAM-Pretraining",
+        "OpenWAM-VTA-LIBERO10",
+        "OpenWAM-IDM-Mixed-CF64k",
+        "OpenWAM-IDM-CF64k",
+    ):
         link = f"](https://huggingface.co/OpenWAM-Stanford/{model})"
         assert link in models
         assert link in artifacts
@@ -140,7 +145,21 @@ def test_readme_links_models_to_released_checkpoints() -> None:
     assert "docs/pretraining/index.md" in body
     assert "docs/video_action_composition.md" in models
     assert "[x] Inverse dynamics (IDM) checkpoints" in body
-    assert "[ ] LIBERO policy checkpoints" in body
+    assert "[x] LIBERO video-then-action policy checkpoint" in body
+    assert "[x] LIBERO-CF64k counterfactual dataset" in body
+    assert "Full LIBERO policy checkpoints and OpenWAM datasets are still being prepared" not in body
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("relative_path", ("README.md", "docs/index.md", "docs/artifacts.md"))
+def test_public_pages_link_released_cf64k_data_and_vta(relative_path: str) -> None:
+    content = (REPO_ROOT / relative_path).read_text(encoding="utf-8")
+    normalized = " ".join(content.lower().split())
+
+    assert "](https://huggingface.co/datasets/OpenWAM-Stanford/LIBERO-CF64k)" in content
+    assert "raw data, a reader, and integrity checks are publicly available" in normalized
+    assert "pending upload" not in normalized
+    assert "](https://huggingface.co/OpenWAM-Stanford/OpenWAM-VTA-LIBERO10)" in content
 
 
 @pytest.mark.unit
