@@ -55,6 +55,25 @@ def test_readme_leads_with_paper_title_and_arxiv_badge() -> None:
 
 @pytest.mark.unit
 @pytest.mark.parametrize("relative_path", ("README.md", "docs/index.md"))
+def test_landing_pages_scope_paper_award_to_corl_workshop(relative_path: str) -> None:
+    content = (REPO_ROOT / relative_path).read_text(encoding="utf-8")
+    header = content.split("\n##", maxsplit=1)[0]
+    award = re.search(
+        r'<p align="center">\s*<strong>Best Position Paper</strong>(.*?)</p>',
+        header,
+        re.DOTALL,
+    )
+
+    assert award is not None
+    assert "CoRL 2026 Workshop:" in award.group(1)
+    assert (
+        '<a href="https://do-robots-need-world-models.github.io/">'
+        "Do Robots Need World Models?</a>"
+    ) in award.group(1)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("relative_path", ("README.md", "docs/index.md"))
 def test_affiliation_logos_include_stai_between_svl_and_src(relative_path: str) -> None:
     content = (REPO_ROOT / relative_path).read_text(encoding="utf-8")
     expected = [

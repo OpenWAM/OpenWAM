@@ -37,6 +37,11 @@
   <a href="#citation">Citation</a>
 </p>
 
+<p align="center">
+  <strong>Best Position Paper</strong><br>
+  CoRL 2026 Workshop: <a href="https://do-robots-need-world-models.github.io/">Do Robots Need World Models?</a>
+</p>
+
 **OpenWAM** is an extensible and composable framework for world-action models
 and the official implementation of [our paper](https://arxiv.org/pdf/2610.07922).
 It brings causal robot-video pretraining, video-action policies, and

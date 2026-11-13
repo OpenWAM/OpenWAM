@@ -14,6 +14,11 @@
   <a href="https://src.stanford.edu/"><img class="openwam-affiliation-src" src="assets/affiliations/stanford-src.webp" alt="Stanford Robotics Center" height="32"></a>
 </div>
 
+<p align="center">
+  <strong>Best Position Paper</strong><br>
+  CoRL 2026 Workshop: <a href="https://do-robots-need-world-models.github.io/">Do Robots Need World Models?</a>
+</p>
+
 OpenWAM is an extensible and composable library for training and evaluating world action
 models while keeping the shared visual backbone stable. Start with a CPU example, then choose a training, evaluation, or extension workflow.
 
